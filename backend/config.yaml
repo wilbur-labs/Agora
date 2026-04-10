@@ -1,0 +1,44 @@
+# Agora Configuration
+
+models:
+  claude:
+    provider: claude-cli
+  gemini:
+    provider: gemini-cli
+  kiro:
+    provider: kiro-cli
+
+council:
+  # Default agents for discussion phase
+  default_agents: [scout, architect, critic]
+  # Available but not enabled by default
+  optional_agents: [sentinel]
+  # Model used for all council agents
+  model: kiro
+
+agents:
+  scout:
+    profile: scout.yaml
+  architect:
+    profile: architect.yaml
+  critic:
+    profile: critic.yaml
+  sentinel:
+    profile: sentinel.yaml
+
+# Gemini for lightweight utility tasks (summarize, translate, format)
+utility:
+  model: gemini
+
+memory:
+  enabled: true
+  memory_char_limit: 2200
+  user_char_limit: 1375
+  data_dir: ./data
+
+skills:
+  enabled: true
+  paths:
+    - ../skills/public
+    - ../skills/learned
+    - ../skills/custom
