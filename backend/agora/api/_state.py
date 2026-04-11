@@ -10,6 +10,7 @@ from agora.agents.council import Council
 from agora.config.settings import get_config
 from agora.context.shared import SharedContext
 from agora.memory.store import MemoryStore
+from agora.skills.store import SkillStore
 
 _council: Council | None = None
 
@@ -56,14 +57,23 @@ def get_council() -> Council:
         acfg = agent_cfgs.get(name, {})
         agents.append(Agent(name=name, profile=acfg.get("profile", f"{name}.yaml"), model_name=model))
 
-    # Moderator — clarify-first agent
+    # Moderator — routes requests
     moderator = Agent(name="moderator", profile="moderator.yaml", model_name=model)
+
+    # Synthesizer — distills discussion into structured conclusion
+    synthesizer = Agent(name="synthesizer", profile="synthesizer.yaml", model_name=model)
+
+    # Executor — executes tasks via underlying CLI tools
+    executor = Agent(name="executor", profile="executor.yaml", model_name=model)
 
     _council = Council(
         agents=agents,
         moderator=moderator,
+        synthesizer=synthesizer,
+        executor=executor,
         context=SharedContext(),
         memory=MemoryStore(),
+        skill_store=SkillStore(),
         user_profile=_load_user_profile(),
     )
     return _council

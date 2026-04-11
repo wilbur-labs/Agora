@@ -26,7 +26,7 @@ class Agent:
     def provider(self) -> ModelProvider:
         return get_registry().get(self.model_name)
 
-    def system_prompt(self, user_profile: str = "", memory: str = "") -> str:
+    def system_prompt(self, user_profile: str = "", memory: str = "", skills: str = "") -> str:
         parts = [
             f"You are {self.name} ({self.role}).\n\n{self.perspective}",
             "RULES:\n"
@@ -41,14 +41,16 @@ class Agent:
             parts.insert(1, f"<user_profile>\n{user_profile}\n</user_profile>")
         if memory:
             parts.insert(1, f"<memory>\n{memory}\n</memory>")
+        if skills:
+            parts.insert(1, f"<skills>\n{skills}\n</skills>")
         return "\n\n".join(parts)
 
-    async def respond(self, messages: list[dict], user_profile: str = "", memory: str = "") -> str:
-        full = [{"role": "system", "content": self.system_prompt(user_profile, memory)}] + messages
+    async def respond(self, messages: list[dict], user_profile: str = "", memory: str = "", skills: str = "") -> str:
+        full = [{"role": "system", "content": self.system_prompt(user_profile, memory, skills)}] + messages
         return await self.provider.generate(full)
 
-    async def stream_respond(self, messages: list[dict], user_profile: str = "", memory: str = "") -> AsyncIterator[str]:
-        full = [{"role": "system", "content": self.system_prompt(user_profile, memory)}] + messages
+    async def stream_respond(self, messages: list[dict], user_profile: str = "", memory: str = "", skills: str = "") -> AsyncIterator[str]:
+        full = [{"role": "system", "content": self.system_prompt(user_profile, memory, skills)}] + messages
         async for chunk in self.provider.stream(full):
             yield chunk
 
