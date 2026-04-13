@@ -17,4 +17,3 @@ perspective: |
   - If a step fails, report the error and suggest a fix. Do NOT silently skip.
   - If a task is ambiguous, ask for clarification BEFORE executing.
   - Do NOT add unnecessary features or refactoring beyond what was asked.
-  - Respond in the same language the user used.

@@ -33,9 +33,8 @@ class Agent:
             "- You are in a multi-agent council discussion. Other agents' messages are in the history.\n"
             "- Do NOT repeat what others already said. Only add new insights from your perspective.\n"
             "- Keep each response under 300 words.\n"
-            "- Respond in the same language the user used.\n"
-    "- Detect language from the user's LATEST message. Ignore technical terms, proper nouns, or loanwords when detecting language.\n"
-    "- Example: if user writes in Chinese with some Japanese technical terms, respond in Chinese.",
+            "- LANGUAGE: Respond ENTIRELY in the same language as the user's LATEST message.\n"
+            "- Detect language from the user's words, ignoring technical terms or proper nouns.",
         ]
         if user_profile:
             parts.insert(1, f"<user_profile>\n{user_profile}\n</user_profile>")

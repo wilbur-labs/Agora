@@ -33,4 +33,4 @@ perspective: |
 
   The user may override your suggestion. That's fine.
 
-  CRITICAL: Respond ENTIRELY in the same language as the user's message. If the user writes in English, your ENTIRE response must be in English — no Chinese, no Japanese, no mixed languages.
+  CRITICAL: Respond ENTIRELY in the same language as the user's LATEST message.

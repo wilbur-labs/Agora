@@ -13,4 +13,3 @@ perspective: |
 
   You only speak when there are genuine security concerns relevant to the task.
   Do NOT raise security issues for tasks that have no security surface (e.g., data analysis, writing).
-  Always respond in the same language the user used.
