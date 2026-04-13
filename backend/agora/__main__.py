@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import unicodedata
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import WordCompleter
@@ -21,6 +22,13 @@ B, D, R = "\033[1m", "\033[2m", "\033[0m"
 
 COMMANDS = ["/agents", "/reset", "/memory", "/skills", "/profile", "/ask", "/exec", "/quit", "/help"]
 
+ROUTE_LABELS = {"DISCUSS": "discuss", "EXECUTE": "execute", "QUICK": "quick"}
+
+
+def _safe(text: str) -> str:
+    """Replace characters that may render as garbled in some terminals."""
+    return text.encode("utf-8", errors="replace").decode("utf-8", errors="replace")
+
 
 def banner():
     print(f"""
@@ -39,6 +47,7 @@ def _print_agent(name: str, role: str, chunk: str, current: list):
         print(f"\n{B}{C.get(name, '')}◆ {name}{R} {D}({role}){R}")
     if not chunk:
         return
+    chunk = _safe(chunk)
     # Format tool-calling events
     if chunk.startswith("[tool_call] "):
         print(f"\n  {D}🔧 {chunk[12:]}{R}")
@@ -124,8 +133,9 @@ async def handle_input(user_input: str, session: PromptSession, force_mode: str 
             return
 
         # Ask user to confirm or override
+        suggested = ROUTE_LABELS.get(route, "discuss")
         choice = await _prompt_choice(
-            session, f"[d]iscuss / [e]xecute / [q]uick (suggested: {route[0].lower()})"
+            session, f"[D]iscuss  [E]xecute  [Q]uick  (enter={suggested})"
         )
         if choice in ("d", "discuss"):
             route = "DISCUSS"
@@ -134,8 +144,7 @@ async def handle_input(user_input: str, session: PromptSession, force_mode: str 
         elif choice in ("q", "quick"):
             route = "QUICK"
         elif choice == "":
-            # User pressed enter — use moderator's suggestion
-            pass
+            pass  # use moderator's suggestion
 
     # Execute the chosen route
     current = [""]
@@ -154,8 +163,8 @@ async def handle_input(user_input: str, session: PromptSession, force_mode: str 
         await _learn_discussion_skill()
 
         # After discussion, offer to execute
-        choice = await _prompt_choice(session, "Execute action items? [y/n]")
-        if choice in ("y", "yes"):
+        choice = await _prompt_choice(session, "Execute action items? [Y/n]")
+        if choice in ("y", "yes", ""):
             current = [""]
             async for name, role, chunk in council.stream_execute():
                 _print_agent(name, role, chunk, current)
