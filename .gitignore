@@ -9,3 +9,4 @@ build/
 .pytest_cache/
 PROJECT_STATUS.md
 PLAN.md
+*.cast
