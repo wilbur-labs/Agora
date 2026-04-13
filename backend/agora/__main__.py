@@ -149,22 +149,33 @@ async def handle_input(user_input: str, session: PromptSession, force_mode: str 
         council.context.add_user(user_input)
         route = force_mode
     else:
-        # Let moderator route (silently — only show route result)
+        # Let moderator route
+        mod_text = ""
         async for name, role, chunk in council.route(user_input):
-            pass  # moderator output not shown to user
+            mod_text += chunk
         route = council.last_route
 
         if route == "CLARIFY":
-            # Moderator asked questions — show those
-            # Re-display the moderator's message from context
-            msgs = council.context.get_messages()
-            for m in msgs:
-                if "[moderator]" in m.get("content", ""):
-                    text = m["content"].replace("[moderator] ", "")
-                    print(f"\n{B}{C.get('moderator', '')}◆ moderator{R} {D}(needs clarification){R}")
-                    print(_safe(text))
-                    print()
+            # Show moderator's clarification questions
+            print(f"\n{B}{C.get('moderator', '')}◆ moderator{R} {D}(needs clarification){R}")
+            # Strip ROUTE: prefix if present
+            display = "\n".join(
+                line for line in mod_text.strip().splitlines()
+                if not line.strip().upper().startswith("ROUTE:")
+            ).strip()
+            if display:
+                print(_safe(display))
+            print()
             return
+
+        # Show moderator's brief explanation (without ROUTE: line)
+        display = "\n".join(
+            line for line in mod_text.strip().splitlines()
+            if not line.strip().upper().startswith("ROUTE:")
+        ).strip()
+        if display:
+            print(f"\n{B}{C.get('moderator', '')}◆ moderator{R} {D}({route.lower()}){R}")
+            print(f"{D}{_safe(display)}{R}\n")
 
         # Ask user to confirm or override
         suggested = ROUTE_LABELS.get(route, "discuss")
