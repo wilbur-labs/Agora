@@ -9,6 +9,8 @@ _PROVIDER_MAP = {
     "claude-cli": "agora.models.providers:ClaudeCLIProvider",
     "gemini-cli": "agora.models.providers:GeminiCLIProvider",
     "kiro-cli": "agora.models.providers:KiroCLIProvider",
+    "openai-api": "agora.models.openai_provider:OpenAIProvider",
+    "azure-openai": "agora.models.openai_provider:AzureOpenAIProvider",
 }
 
 
@@ -36,6 +38,21 @@ class ModelRegistry:
         import importlib
         mod = importlib.import_module(module_path)
         cls = getattr(mod, cls_name)
+
+        # Pass config kwargs for API providers
+        if provider_type == "openai-api":
+            return cls(
+                api_key=cfg.get("api_key", ""),
+                base_url=cfg.get("base_url", "https://api.openai.com/v1"),
+                model=cfg.get("model", "gpt-4o"),
+            )
+        if provider_type == "azure-openai":
+            return cls(
+                api_key=cfg.get("api_key", ""),
+                base_url=cfg.get("base_url", ""),
+                deployment=cfg.get("deployment", ""),
+                api_version=cfg.get("api_version", "2024-02-01"),
+            )
         return cls()
 
     def list_models(self) -> list[str]:
@@ -50,3 +67,8 @@ def get_registry() -> ModelRegistry:
     if _registry is None:
         _registry = ModelRegistry()
     return _registry
+
+
+def reset_registry():
+    global _registry
+    _registry = None

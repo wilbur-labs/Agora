@@ -10,7 +10,9 @@ from agora.agents.council import Council
 from agora.config.settings import get_config
 from agora.context.shared import SharedContext
 from agora.memory.store import MemoryStore
+from agora.models.registry import get_registry
 from agora.skills.store import SkillStore
+from agora.tools.registry import ToolRegistry
 
 _council: Council | None = None
 
@@ -50,6 +52,8 @@ def get_council() -> Council:
     council_cfg = cfg.get("council", {})
     agent_cfgs = cfg.get("agents", {})
     model = council_cfg.get("model", "kiro")
+    executor_model = council_cfg.get("executor_model", model)
+    concurrent = council_cfg.get("concurrent", False)
     active = council_cfg.get("default_agents", ["scout", "architect", "critic"])
 
     agents = []
@@ -57,24 +61,37 @@ def get_council() -> Council:
         acfg = agent_cfgs.get(name, {})
         agents.append(Agent(name=name, profile=acfg.get("profile", f"{name}.yaml"), model_name=model))
 
-    # Moderator — routes requests
     moderator = Agent(name="moderator", profile="moderator.yaml", model_name=model)
-
-    # Synthesizer — distills discussion into structured conclusion
     synthesizer = Agent(name="synthesizer", profile="synthesizer.yaml", model_name=model)
+    executor = Agent(name="executor", profile="executor.yaml", model_name=executor_model)
 
-    # Executor — executes tasks via underlying CLI tools
-    executor = Agent(name="executor", profile="executor.yaml", model_name=model)
+    # Get executor provider for tool-calling (may be API-based or CLI-based)
+    registry = get_registry()
+    try:
+        executor_provider = registry.get(executor_model)
+    except Exception:
+        executor_provider = None
+
+    # Setup sandbox if enabled
+    sandbox = None
+    from agora.sandbox.docker import get_sandbox_config
+    sandbox_cfg = get_sandbox_config()
+    if sandbox_cfg.enabled:
+        from agora.sandbox.docker import DockerSandbox
+        sandbox = DockerSandbox(sandbox_cfg)
 
     _council = Council(
         agents=agents,
         moderator=moderator,
         synthesizer=synthesizer,
         executor=executor,
+        executor_provider=executor_provider,
         context=SharedContext(),
         memory=MemoryStore(),
         skill_store=SkillStore(),
+        tool_registry=ToolRegistry(sandbox=sandbox),
         user_profile=_load_user_profile(),
+        concurrent=concurrent,
     )
     return _council
 

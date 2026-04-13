@@ -1,10 +1,10 @@
 __pycache__/
 *.pyc
 .env
-data/MEMORY.md
-data/USER.md
-data/user_profile.yaml
+data/
 *.egg-info/
 dist/
 build/
 .venv/
+.pytest_cache/
+PROJECT_STATUS.md

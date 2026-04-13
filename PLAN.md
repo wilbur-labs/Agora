@@ -2,119 +2,112 @@
 
 ## 项目定位
 
-Agora = 多角色 AI 议会系统，面向开发者。
-一个模型扮演多个专业角色，像团队一样从不同视角审视问题，讨论后可直接执行。
+Agora = 全栈 AI agent 平台，面向开发者。
 
-核心能力 = DeerFlow（任务编排） + Hermes（自学习） 的融合。
+核心差异化：
+- **议会讨论**（护城河）— 多角色从不同视角审视问题，这是 DeerFlow 没有的
+- **全栈执行** — 自建工具层，不依赖外部 CLI 的黑盒能力
+- **自学习** — Hermes 风格，从讨论和执行中都提取经验
 
-## 当前状态（已完成）
-
-- [x] 多角色讨论（Scout / Architect / Critic / Sentinel）
-- [x] Moderator 澄清机制
-- [x] Synthesizer 结论收敛（Goal / Key Decisions / Action Items / Open Questions）
-- [x] 基础记忆（MEMORY.md / USER.md）
-- [x] 多模型后端（claude-cli / gemini-cli / kiro-cli）
-- [x] CLI + API 双入口
-- [x] 流式输出
+一句话：**先讨论再动手，做完了还会总结经验。**
 
 ---
 
-## Phase 2：任务编排（DeerFlow 能力）
+## 完成进度总览
 
-### 2.1 Moderator 升级 — 路由判断
-
-Moderator 从"澄清者"升级为"路由器"，判断用户输入走哪条路：
-
-- **快速回答** — 简单问题，单 agent 直接回答
-- **深度讨论** — 复杂问题，召集议会讨论 → Synthesizer 收敛
-- **直接执行** — 明确的执行指令，跳过讨论直接交给 Executor
-
-Moderator 判断后向用户确认："要深入讨论还是直接执行？"用户也可通过命令手动指定（如 `/ask` 快速问答）。
-
-### 2.2 Executor Agent — 执行者
-
-新增 Executor 角色，专门负责执行任务：
-
-- 不参与讨论，只在执行阶段出场
-- 接收 Synthesizer 的 Action Items 或用户的直接指令
-- 通过底层 CLI 工具（kiro-cli / claude / gemini）的能力来读写文件、跑命令
-- Executor 自身不实现工具，而是把任务描述清楚传给 CLI 工具执行
-
-### 2.3 执行流程
-
-```
-用户输入
-  → Moderator 判断路由 + 用户确认
-    → 快速回答：单 agent 直接回复
-    → 深度讨论：
-        Scout / Architect / Critic 讨论
-        → Synthesizer 产出 Action Items
-        → 用户确认要执行哪些
-        → Executor 逐项执行
-    → 直接执行：
-        → Executor 直接执行
-```
-
-### 2.4 用户确认环节
-
-执行前必须经过用户确认（人在回路）：
-- Synthesizer 输出 Action Items 后，用户选择执行哪些
-- Executor 执行过程中，危险操作（删除文件、跑未知命令）需二次确认
+| Phase | 内容 | 状态 |
+|-------|------|------|
+| Phase 1 | 多角色议会讨论 + 基础设施 | ✅ 完成 |
+| Phase 2 | 自建工具层 + Tool-calling 执行 | ✅ 完成 |
+| Phase 3 | 自学习系统（讨论+执行 skill） | ✅ 完成 |
+| Phase 4 | 执行流程完整闭环 | ✅ 完成 |
+| Phase 5 | 自定义角色 | ✅ 架构已支持 |
+| Phase 6 | Docker 沙箱 | ✅ 完成 |
+| Phase 7 | 测试体系 + 项目结构 + 部署 | ✅ 完成 |
+| Phase 8 | Embedding 向量检索 | ✅ 完成 |
+| Phase 9 | Web UI | 📋 计划中 |
+| Phase 10 | MCP Server 扩展 | 📋 计划中 |
+| 商业化 | API 计费 / Skill 市场 / SaaS | 🔒 保留 |
 
 ---
 
-## Phase 3：自学习（Hermes 能力）
+## ✅ 已完成的功能明细
 
-### 3.1 Skill 提取
+### 议会讨论系统
+- [x] 多角色讨论（Scout / Architect / Critic / Synthesizer）
+- [x] Moderator 路由（QUICK / DISCUSS / EXECUTE / CLARIFY）
+- [x] Agent 并发执行（config 开关 `concurrent: true`）
+- [x] Sentinel 安全审查（可选角色）
+- [x] 自定义角色（写 YAML profile 即可）
 
-每次任务执行成功后，LLM 回顾执行过程，提取 skill 文件：
+### 全栈执行
+- [x] 自建工具层（read_file / write_file / patch_file / list_dir / shell）
+- [x] OpenAI-compatible API provider（Azure / OpenAI / DeepSeek / 任何兼容 API）
+- [x] Executor tool-calling 循环（LLM 发 function call → 执行 → 返回结果 → 循环）
+- [x] 失败自动重试（Executor prompt 改进）
+- [x] CLI fallback（无 API 时退回 CLI 子进程模式）
 
-```yaml
-name: add_fastapi_endpoint
-trigger: "用户要求添加新的 API 端点"
-steps:
-  - 在 router 文件中添加路由
-  - 创建对应的 Pydantic schema
-  - 添加业务逻辑
-  - 更新导出
-lessons:
-  - 记得加 error handling
-  - 要同步更新 OpenAPI docs
-```
+### 自学习系统
+- [x] 执行 Skill 提取（从执行过程中学习操作步骤）
+- [x] 讨论 Skill 提取（从讨论中学习决策模式）
+- [x] Skill 成功/失败追踪（success_count / fail_count）
+- [x] Skill 合并（同名 skill 保存时累加计数）
+- [x] Skill 关键词匹配
+- [x] Skill LLM 语义匹配（fallback 关键词）
+- [x] 持久化记忆（MEMORY.md / USER.md，有界存储）
+- [x] 对话后自动提取记忆
 
-### 3.2 Skill 注入
+### 模型支持
+- [x] Azure OpenAI（function calling）
+- [x] OpenAI API
+- [x] Claude Code CLI
+- [x] Gemini CLI
+- [x] Kiro CLI
+- [x] 按角色配不同模型（讨论用 A，执行用 B）
 
-下次遇到类似需求时，匹配的 skill 注入到 agent prompt 中作为参考。agent 带着经验思考，不是机械执行模板。
+### 基础设施
+- [x] Docker 沙箱（ephemeral container，执行完自动删除）
+- [x] Docker Compose 部署（API + CLI 双模式）
+- [x] 项目结构规范化（配置在根目录）
+- [x] CLI 交互（prompt-toolkit，命令补全，历史记录）
+- [x] FastAPI SSE 流式 API
+- [x] Makefile（install / dev / cli / test / up / down）
 
-### 3.3 三层记忆
-
-| 层级 | 内容 | 文件 |
-|------|------|------|
-| Episodic | 历史任务、对话上下文 | MEMORY.md |
-| Semantic | 用户偏好、项目知识 | USER.md |
-| Procedural | 可复用的执行技能 | skills/*.yaml |
+### 测试体系
+- [x] 70 个单元测试（工具 / 记忆 / Skill / Council / 执行循环 / 配置）
+- [x] 9 个集成测试（LLM-as-Judge 质量评估）
+- [x] Judge 评估器（评估角色匹配度 / 讨论多视角 / 执行完成度 / 事实准确性）
 
 ---
 
-## Phase 4：自定义角色
+## 📋 下一步计划
 
-- 用户通过手动编写 YAML 文件创建自定义角色
-- 放到 profiles 目录，在 config.yaml 中配置即可启用
-- 现有架构已天然支持，无需大改
+### Phase 8: Embedding 向量检索
+- Skill 匹配：embedding 替代 LLM 调用，毫秒级 + 零成本
+- Memory 检索：只检索相关记忆注入 prompt，不全量注入
+- 技术方案：SQLite + numpy 余弦相似度（轻量，无额外依赖）
+- 后续可升级：PostgreSQL + pgvector
+
+### Phase 9: Web UI
+- 前端框架待定（React / Vue / Svelte）
+- 实时显示多 agent 讨论流
+- 执行过程可视化（tool call 时间线）
+- Skill 管理界面
+
+### Phase 10: MCP Server 扩展
+- 支持外部 MCP server 接入
+- 扩展工具能力（数据库查询、API 调用等）
 
 ---
 
-## 未来改善计划（Phase 5+）
+## 🔒 商业化（保留，等定制需求）
 
-以下功能在核心闭环跑通后再迭代：
-
-- [ ] Skill 成功率追踪（记录每个 skill 的执行成功/失败）
-- [ ] Skill 版本管理（skill 更新时保留历史版本）
-- [ ] Skill 匹配优化（从关键词匹配升级为语义匹配）
-- [ ] CLI 命令创建角色（`/role create name "description"`）
-- [ ] Agents 并发执行（讨论阶段多 agent 同时响应，不再顺序等待）
-- [ ] Web UI
-- [ ] 商业化层（多租户、权限、计费、数据隔离）
+### 变现路径
+1. **API 按量计费**（最快）— 加 API key + 用量统计
+2. **Skill 市场**（最有壁垒）— skill 评分/审核/分发
+3. **托管 SaaS** — Web UI + 多租户 + 计费
+4. **企业定制部署** — 私有化 + 对接内部系统
+5. **IDE 插件** — VS Code / JetBrains
 
 ---
 
@@ -122,9 +115,12 @@ lessons:
 
 | 决策 | 选择 | 理由 |
 |------|------|------|
-| 模型后端 | 支持 claude-cli / gemini-cli / kiro-cli / API / 本地模型 | 开源项目需要灵活性 |
-| Executor 工具实现 | 利用底层 CLI 工具能力，不自己造轮子 | kiro-cli/claude 已有成熟的文件操作和命令执行 |
-| 执行确认 | 人在回路，用户确认后才执行 | 安全，避免 agent 乱改代码 |
-| 路由判断 | Moderator 自动判断 + 用户可手动指定 | 兼顾效率和控制感 |
-| 自定义角色 | 手动写 YAML | 先简单实现，后续加 CLI 命令 |
-| 自学习水平 | 先做到 Hermes 基础水平 | 跑通闭环再迭代 |
+| 工具层 | 自建 Python 工具函数 | 全栈平台必须控制执行过程 |
+| 执行模型 | OpenAI-compatible API | CLI 子进程无法做 tool calling |
+| 讨论模型 | 保留 CLI provider 选项 | 讨论不需要 tool calling |
+| 沙箱 | Docker ephemeral container | 安全隔离，用完即删 |
+| 学习范围 | 讨论 + 执行 + 失败 | 全方位学习 |
+| Skill 匹配 | 关键词 → LLM → embedding（渐进） | 平衡成本和效果 |
+| 测试 | 单元(mock) + 集成(LLM-as-Judge) | AI 输出需要 AI 评判 |
+| 部署 | Docker Compose | 用户一键启动 |
+| 向量检索 | SQLite + numpy（计划） | 轻量，无额外依赖 |

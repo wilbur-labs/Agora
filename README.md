@@ -2,144 +2,258 @@
 
 **Multi-perspective AI council — discuss, design, execute, evolve.**
 
-Agora is not another AI chatbot. It's a **council of AI advisors** that discuss your ideas from different perspectives before taking action.
+Agora is a **full-stack AI agent platform** where multiple AI advisors discuss your ideas from different perspectives, then execute the plan — and learn from every interaction.
 
-You speak once. Multiple AI perspectives respond — a researcher finds evidence, a designer proposes solutions, a critic finds flaws. All sharing the same context. No copy-pasting between tools.
-
-## Why Agora?
-
-Every AI tool today is a **single brain**. You talk to ChatGPT, then copy the result to Claude for review, then ask Gemini to search for references. Each time you lose context, miss nuance, and waste time.
-
-Agora fixes this:
+You speak once. Multiple AI perspectives respond. Then they get to work.
 
 ```
-You: "I want to do OPCD distillation on top of LoRA training"
+You: "I want to add a caching layer to my Go project, QPS ~5000"
 
-◆ Scout (Researcher)
-  Found the OPCD paper (arXiv:2602.12275), key mechanism is...
-  Here's how it combines with LoRA...
-  Question: What's your terminology dataset size?
+◆ scout (Researcher)
+  Redis vs Memcached vs local cache comparison...
+  At 5000 QPS + 2GB data, all three can handle it...
 
-◆ Architect (Designer)  
-  Two-stage pipeline: Stage 1 LoRA SFT → Stage 2 OPCD + LoRA...
-  Hardware allocation for your GPU...
-  Trade-offs: [table]
+◆ architect (System Designer)
+  Recommending two-tier: ristretto (L1) + Redis (L2)...
+  Architecture: App → Local Cache → Redis → DB
 
-◆ Critic (Reviewer)
-  Reverse KL direction has mode-seeking risk for translation...
-  Teacher quality is the ceiling — validate before distilling...
-  Missing: no evaluation metric defined for terminology accuracy.
+◆ critic (Quality Reviewer)
+  Cache consistency between L1 and L2 not addressed.
+  Suggest adding pub/sub invalidation...
+
+◆ synthesizer (Discussion Synthesizer)
+  ## Action Items
+  - [ ] Add ristretto and go-redis dependencies
+  - [ ] Implement CacheManager interface
+  - [ ] Configure Redis connection pool
+
+Execute action items? [y/n] → y
+
+◆ executor (Task Executor)
+  🔧 shell(go get github.com/dgraph-io/ristretto)
+  → Success
+  🔧 write_file(internal/cache/manager.go)
+  → Wrote CacheManager implementation
+  ✅ Done
+
+🧠 Learned skill: go_cache_layer_setup
 ```
 
-One input. Three perspectives. Shared context. Real discussion.
+## What Makes Agora Different
+
+| | ChatGPT/Claude | Cursor/Windsurf | DeerFlow | **Agora** |
+|---|---|---|---|---|
+| Multi-perspective discussion | ❌ | ❌ | ❌ | ✅ |
+| Full-stack execution | Sandbox | Editor only | ✅ | ✅ |
+| Self-learning (discussion + execution) | ❌ | ❌ | Partial | ✅ |
+| Standalone deployment | ❌ | ❌ | ✅ | ✅ |
 
 ## Quick Start
 
+### Option 1: Docker (Recommended)
+
 ```bash
 git clone https://github.com/user/agora.git
-cd agora/backend
-pip install -e .
-python -m agora
+cd agora
+cp .env.example .env
+# Edit .env — add your API key
+docker compose up -d    # Start API server
 ```
 
-Requires one of: [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Gemini CLI](https://github.com/google-gemini/gemini-cli), or [Kiro CLI](https://kiro.dev).
+### Option 2: Local
+
+```bash
+git clone https://github.com/user/agora.git
+cd agora
+cp .env.example .env
+# Edit .env — add your API key
+make install
+make cli      # Interactive CLI
+# or
+make dev      # API server at http://localhost:8000
+```
+
+### Configuration
+
+Edit `config.yaml`:
+
+```yaml
+models:
+  gpt4o:
+    provider: azure-openai          # or openai-api
+    api_key: ${AZURE_OPENAI_API_KEY}
+    base_url: ${AZURE_OPENAI_BASE_URL}
+    deployment: gpt-4o-0513
+
+council:
+  default_agents: [scout, architect, critic]
+  model: gpt4o           # Discussion model
+  executor_model: gpt4o  # Execution model (supports function calling)
+  concurrent: false       # Parallel agent discussion
+```
+
+Supported model providers:
+- **Azure OpenAI** — `azure-openai` (recommended)
+- **OpenAI** — `openai-api`
+- **Claude Code CLI** — `claude-cli`
+- **Gemini CLI** — `gemini-cli`
+- **Kiro CLI** — `kiro-cli`
+- Any **OpenAI-compatible API** (DeepSeek, vLLM, OpenRouter, etc.)
 
 ## How It Works
 
 ```
-You → Agora Council → ┬─ Scout (research & evidence)
-                       ├─ Architect (design & structure)
-                       └─ Critic (review & challenge)
-                          ↓
-          All agents share the same conversation context
-          Results displayed in real-time, streaming
+User Input
+  → Moderator routes: QUICK / DISCUSS / EXECUTE / CLARIFY
+    → QUICK: Single agent answers directly
+    → DISCUSS:
+        Scout → Architect → Critic → Synthesizer
+        → User confirms action items
+        → Executor runs tool-calling loop
+        → Learn discussion + execution skills
+    → EXECUTE:
+        → Executor runs tool-calling loop directly
+        → Learn execution skill
 ```
 
 ### Council Agents
 
-| Agent | Role | Focus |
-|-------|------|-------|
-| **Scout** | Researcher | Find information, papers, related projects |
-| **Architect** | Designer | Propose technical solutions and architecture |
-| **Critic** | Reviewer | Challenge assumptions, find gaps and risks |
-| **Sentinel** | Security *(optional)* | Security review, only activated when relevant |
+| Agent | Role | When |
+|-------|------|------|
+| **Moderator** | Routes requests | Always first |
+| **Scout** | Research & evidence | Discussion |
+| **Architect** | Design & solutions | Discussion |
+| **Critic** | Review & challenge | Discussion |
+| **Sentinel** | Security review | Optional |
+| **Synthesizer** | Distill conclusions | End of discussion |
+| **Executor** | Execute with tools | Execution phase |
 
-### Supported Backends
+### Built-in Tools
 
-| Backend | Type | Cost |
-|---------|------|------|
-| Claude Code CLI | `claude -p` | Subscription |
-| Gemini CLI | `gemini -p` | Free / Subscription |
-| Kiro CLI | `kiro-cli chat` | Subscription |
+| Tool | Description |
+|------|-------------|
+| `read_file` | Read file contents |
+| `write_file` | Create or overwrite files |
+| `patch_file` | Replace specific strings in files |
+| `list_dir` | List directory contents |
+| `shell` | Execute shell commands (with timeout) |
 
-All agents can use any backend. Configure in `config.yaml`.
+### Self-Learning
+
+Agora learns from every interaction:
+
+- **Discussion skills** — Decision patterns, what each perspective found
+- **Execution skills** — Step-by-step procedures, lessons learned
+- **Success tracking** — Each skill tracks success/failure counts
+- **Memory** — User preferences, project context (MEMORY.md / USER.md)
+
+Skills are injected into future conversations, so agents improve over time.
 
 ## CLI Commands
 
 | Command | Description |
 |---------|-------------|
-| `/agents` | List active council agents |
-| `/reset` | Clear conversation context |
+| `/ask <question>` | Quick answer (skip discussion) |
+| `/exec <task>` | Direct execution (skip discussion) |
+| `/agents` | List council agents |
+| `/skills` | List learned skills |
 | `/memory` | View persistent memory |
-| `/profile` | View user profile |
+| `/profile` | View/set user profile |
+| `/reset` | Clear conversation context |
 | `/quit` | Exit |
 
 ## API
 
 ```bash
-# Start API server
-make dev
-
-# Chat (SSE streaming)
+# SSE streaming chat
 curl -N -X POST http://localhost:8000/api/chat \
   -H "Content-Type: application/json" \
   -d '{"message": "Design a CI/CD pipeline for my Go project"}'
 
+# Synchronous chat
+curl -X POST http://localhost:8000/api/chat/sync \
+  -H "Content-Type: application/json" \
+  -d '{"message": "What is Python GIL?"}'
+
 # List agents
 curl http://localhost:8000/api/agents
+
+# Health check
+curl http://localhost:8000/health
 ```
 
-## Configuration
+## Docker Sandbox
 
-Edit `config.yaml`:
+Enable isolated command execution:
 
 ```yaml
-council:
-  default_agents: [scout, architect, critic]
-  model: kiro  # All agents use this model
-
-# Add sentinel for security-sensitive tasks
-# default_agents: [scout, architect, critic, sentinel]
+# config.yaml
+sandbox:
+  enabled: true
+  image: python:3.12-slim
+  timeout: 120
+  memory_limit: 512m
 ```
 
-Edit `agora/agents/profiles/user.yaml` with your background — agents will tailor responses to you.
+When enabled, `shell` commands run inside ephemeral Docker containers that are automatically removed after execution.
 
-## Memory
+## Testing
 
-Agora remembers across sessions using bounded Markdown files (inspired by [Hermes Agent](https://github.com/NousResearch/hermes-agent)):
+```bash
+make test          # Unit tests only (70 tests, ~1s, no API calls)
+make test-all      # Unit + integration tests (79 tests, uses LLM-as-Judge)
+```
 
-- **MEMORY.md** — Agent notes, lessons learned, project context
-- **USER.md** — Your preferences and communication style
+Integration tests use **LLM-as-Judge** — GPT evaluates whether agent outputs match the user's question, fit the agent's role, and meet quality standards.
 
-Memory is injected into every conversation, keeping agents informed without you repeating yourself.
+## Project Structure
+
+```
+Agora/
+├── .env.example          # Environment template
+├── config.yaml           # Main configuration
+├── Dockerfile
+├── docker-compose.yaml
+├── Makefile
+├── skills/               # Learned and custom skills
+│   ├── public/
+│   ├── learned/
+│   └── custom/
+└── backend/
+    ├── agora/
+    │   ├── agents/       # Agent definitions & profiles
+    │   ├── api/          # FastAPI routes
+    │   ├── config/       # Configuration loader
+    │   ├── context/      # Shared conversation context
+    │   ├── embeddings/   # Vector search (optional)
+    │   ├── memory/       # Persistent memory (MEMORY.md/USER.md)
+    │   ├── models/       # LLM providers (Azure/OpenAI/CLI)
+    │   ├── sandbox/      # Docker sandbox
+    │   ├── skills/       # Skill extraction & matching
+    │   └── tools/        # Built-in tools (file, shell)
+    └── tests/
+```
 
 ## Roadmap
 
 - [x] Multi-perspective council discussion
-- [x] Streaming CLI with real-time output
-- [x] Persistent memory (Hermes-style)
-- [x] Multiple model backends (Claude/Gemini/Kiro)
-- [ ] Task decomposition & execution after discussion
-- [ ] Skill auto-learning from successful tasks
+- [x] Full-stack tool-calling execution
+- [x] Self-learning (discussion + execution skills)
+- [x] Docker sandbox isolation
+- [x] Multiple model backends
+- [x] LLM-as-Judge test suite
+- [x] Docker Compose deployment
+- [ ] Embedding-based semantic search
 - [ ] Web UI
-- [ ] Gemini as utility agent for lightweight tasks
+- [ ] MCP server extensions
+- [ ] Skill marketplace
 
 ## Philosophy
 
 > In ancient Athens, the Agora was where citizens gathered to discuss, debate, and decide.
 > Different perspectives. Shared context. Better decisions.
 >
-> Agora brings this to AI — not one model doing everything, but multiple perspectives collaborating on your behalf.
+> Agora brings this to AI — not one model doing everything, but multiple perspectives collaborating on your behalf. Then actually doing the work. And learning from it.
 
 ## License
 

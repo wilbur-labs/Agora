@@ -1,0 +1,67 @@
+# Agora Configuration
+
+models:
+  claude:
+    provider: claude-cli
+  gemini:
+    provider: gemini-cli
+  kiro:
+    provider: kiro-cli
+  gpt4o:
+    provider: azure-openai
+    api_key: ${AZURE_OPENAI_API_KEY}
+    base_url: ${AZURE_OPENAI_BASE_URL}
+    deployment: gpt-4o-0513
+    api_version: "2024-12-01-preview"
+
+council:
+  default_agents: [scout, architect, critic]
+  optional_agents: [sentinel]
+  model: gpt4o
+  executor_model: gpt4o
+  concurrent: false
+
+agents:
+  scout:
+    profile: scout.yaml
+  architect:
+    profile: architect.yaml
+  critic:
+    profile: critic.yaml
+  sentinel:
+    profile: sentinel.yaml
+
+utility:
+  model: gemini
+
+memory:
+  enabled: true
+  memory_char_limit: 2200
+  user_char_limit: 1375
+  data_dir: ./data
+
+skills:
+  enabled: true
+  paths:
+    - ./skills/public
+    - ./skills/learned
+    - ./skills/custom
+
+sandbox:
+  enabled: false
+  image: python:3.12-slim
+  timeout: 120
+  memory_limit: 512m
+  cpu_limit: 1.0
+  workspace_dir: /tmp/agora_workspace
+  network: true
+
+# Embedding for semantic skill matching and memory retrieval
+# Uncomment to enable (requires embedding model deployment)
+# embeddings:
+#   enabled: true
+#   provider: azure-openai
+#   api_key: ${AZURE_OPENAI_API_KEY}
+#   base_url: ${AZURE_OPENAI_BASE_URL}
+#   deployment: text-embedding-3-small
+#   api_version: "2024-12-01-preview"

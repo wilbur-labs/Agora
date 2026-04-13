@@ -37,7 +37,21 @@ def _print_agent(name: str, role: str, chunk: str, current: list):
             print()
         current[0] = name
         print(f"\n{B}{C.get(name, '')}◆ {name}{R} {D}({role}){R}")
-    if chunk:
+    if not chunk:
+        return
+    # Format tool-calling events
+    if chunk.startswith("[tool_call] "):
+        print(f"\n  {D}🔧 {chunk[12:]}{R}")
+    elif chunk.startswith("[tool_result] "):
+        result = chunk[14:]
+        if len(result) > 200:
+            result = result[:200] + "..."
+        print(f"  {D}   → {result}{R}")
+    elif chunk.startswith("[error] "):
+        print(f"  \033[31m✗ {chunk[8:]}{R}")
+    elif chunk.startswith("[done] "):
+        pass
+    else:
         print(chunk, end="", flush=True)
 
 
@@ -62,9 +76,20 @@ async def _learn_skill():
     """Best-effort skill extraction after execution."""
     council = get_council()
     try:
-        skill_name = await council.learn_skill()
+        skill_name = await council.learn_skill("execution")
         if skill_name:
-            print(f"{D}🧠 Learned skill: {skill_name}{R}\n")
+            print(f"{D}🧠 Learned execution skill: {skill_name}{R}\n")
+    except Exception:
+        pass
+
+
+async def _learn_discussion_skill():
+    """Best-effort skill extraction after discussion."""
+    council = get_council()
+    try:
+        skill_name = await council.learn_skill("discussion")
+        if skill_name:
+            print(f"{D}🧠 Learned discussion skill: {skill_name}{R}\n")
     except Exception:
         pass
 
@@ -120,9 +145,13 @@ async def handle_input(user_input: str, session: PromptSession, force_mode: str 
         print("\n")
 
     elif route == "DISCUSS":
-        async for name, role, chunk in council.stream_discuss():
+        discuss_fn = council.stream_discuss_concurrent if council.concurrent else council.stream_discuss
+        async for name, role, chunk in discuss_fn():
             _print_agent(name, role, chunk, current)
         print("\n")
+
+        # Learn from discussion
+        await _learn_discussion_skill()
 
         # After discussion, offer to execute
         choice = await _prompt_choice(session, "Execute action items? [y/n]")

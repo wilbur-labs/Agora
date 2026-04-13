@@ -1,0 +1,27 @@
+services:
+  agora-api:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./skills:/app/skills
+      - ./data:/app/backend/data
+    command: ["uvicorn", "agora.api.app:app", "--host", "0.0.0.0", "--port", "8000"]
+    restart: unless-stopped
+
+  agora-cli:
+    build: .
+    env_file:
+      - .env
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./skills:/app/skills
+      - ./data:/app/backend/data
+    command: ["python", "-m", "agora"]
+    stdin_open: true
+    tty: true
+    profiles:
+      - cli

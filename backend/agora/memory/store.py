@@ -73,3 +73,27 @@ class MemoryStore:
                 pct = int(used / self._limit(target) * 100)
                 parts.append(f"{label} [{pct}% — {used}/{self._limit(target)} chars]\n" + SEP.join(entries))
         return "\n\n".join(parts)
+
+    async def get_relevant_memories(self, query: str, embedding_provider, vector_store, top_k: int = 5) -> str:
+        """Retrieve only memories relevant to the query using embedding search."""
+        try:
+            q_emb = await embedding_provider.embed([query])
+            results = vector_store.search("memories", q_emb[0], top_k=top_k)
+            if not results:
+                return self.get_injection_text()
+            relevant = [text for text, score, _ in results if score > 0.4]
+            if not relevant:
+                return self.get_injection_text()
+            return "RELEVANT MEMORIES:\n" + "\n".join(f"- {r}" for r in relevant)
+        except Exception:
+            return self.get_injection_text()
+
+    async def index_memories(self, embedding_provider, vector_store):
+        """Index all memory entries into vector store."""
+        entries = self._read("memory") + self._read("user")
+        if not entries:
+            return
+        embeddings = await embedding_provider.embed(entries)
+        vector_store.clear("memories")
+        for text, emb in zip(entries, embeddings):
+            vector_store.add("memories", text, emb)

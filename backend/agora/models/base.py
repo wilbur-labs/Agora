@@ -2,12 +2,30 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import AsyncIterator, TypedDict
+from dataclasses import dataclass
+from typing import Any, AsyncIterator, TypedDict
 
 
 class Message(TypedDict, total=False):
     role: str
     content: str
+    tool_calls: list[dict]
+    tool_call_id: str
+    name: str
+
+
+@dataclass
+class ToolCall:
+    id: str
+    function_name: str
+    arguments: dict[str, Any]
+
+
+@dataclass
+class GenerateResult:
+    content: str
+    tool_calls: list[ToolCall]
+    finish_reason: str = "stop"
 
 
 class ModelProvider(ABC):
@@ -18,3 +36,11 @@ class ModelProvider(ABC):
 
     async def stream(self, messages: list[Message]) -> AsyncIterator[str]:
         yield await self.generate(messages)
+
+    async def generate_with_tools(
+        self, messages: list[Message], tools: list[dict],
+    ) -> GenerateResult:
+        """Generate with function calling support. Override in providers that support it."""
+        # Fallback: ignore tools, return plain text
+        text = await self.generate(messages)
+        return GenerateResult(content=text, tool_calls=[])

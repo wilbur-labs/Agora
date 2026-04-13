@@ -21,19 +21,27 @@ async def chat(req: ChatRequest):
     council = get_council()
 
     async def stream():
-        async for name, role, chunk in council.stream_discuss(req.message):
+        async for name, role, chunk in council.route(req.message):
             if chunk == "":
                 yield {"event": "agent_done", "data": json.dumps({"agent": name, "role": role})}
             else:
                 yield {"event": "token", "data": json.dumps({"agent": name, "role": role, "content": chunk})}
-        yield {"event": "done", "data": "{}"}
+
+        if council.last_route == "DISCUSS":
+            async for name, role, chunk in council.stream_discuss():
+                if chunk == "":
+                    yield {"event": "agent_done", "data": json.dumps({"agent": name, "role": role})}
+                else:
+                    yield {"event": "token", "data": json.dumps({"agent": name, "role": role, "content": chunk})}
+
+        yield {"event": "done", "data": json.dumps({"route": council.last_route})}
 
     return EventSourceResponse(stream())
 
 
 @router.post("/chat/sync")
 async def chat_sync(req: ChatRequest):
-    responses = await get_council().discuss(req.message)
+    responses = await get_council().discuss_and_return(req.message)
     return {"responses": [{"agent": r.agent_name, "role": r.role, "content": r.content} for r in responses]}
 
 
