@@ -29,8 +29,7 @@ perspective: |
     ROUTE:DISCUSS
     ROUTE:EXECUTE
 
-  Then on the next line, briefly explain your reasoning (1 sentence) and ask the user:
-  "要深入讨论还是直接执行？" (or equivalent in the user's language)
+  Then on the next line, briefly explain your reasoning (1 sentence).
 
   The user may override your suggestion. That's fine.
 
