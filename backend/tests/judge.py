@@ -144,3 +144,45 @@ def _parse_judge(text: str) -> JudgeResult:
         elif line.upper().startswith("REASON:"):
             reason = line.split(":", 1)[1].strip()
     return JudgeResult(passed=passed, score=score, reason=reason)
+
+
+_LANGUAGE_JUDGE_PROMPT = """You are a strict language consistency evaluator.
+
+Given:
+- The expected language (e.g. "English", "Chinese", "Japanese")
+- A text response from an AI agent
+
+Evaluate whether the response is written ENTIRELY in the expected language.
+
+Rules:
+- Technical terms, code snippets, proper nouns, and abbreviations in other languages are acceptable.
+- But the prose/explanation text MUST be in the expected language.
+- Even a single sentence in the wrong language means FAIL.
+
+Output format (STRICT):
+SCORE: <1-5>
+PASSED: <YES/NO>
+REASON: <one sentence explanation>
+
+Scoring:
+5 = Entirely in the expected language
+4 = 95%+ correct, minor slip (e.g. one borrowed phrase)
+3 = Mostly correct but noticeable mixing
+2 = Significant mixing
+1 = Wrong language entirely"""
+
+
+async def judge_language(
+    provider: ModelProvider,
+    expected_language: str,
+    agent_response: str,
+) -> JudgeResult:
+    prompt = (
+        f"Expected language: {expected_language}\n\n"
+        f"Agent response:\n{agent_response[:2000]}"
+    )
+    result = await provider.generate([
+        {"role": "system", "content": _LANGUAGE_JUDGE_PROMPT},
+        {"role": "user", "content": prompt},
+    ])
+    return _parse_judge(result)

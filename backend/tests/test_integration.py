@@ -11,7 +11,7 @@ import pytest
 from agora.api._state import get_council, reset_council
 from agora.config.settings import reset_config
 from agora.models.registry import get_registry, reset_registry
-from tests.judge import judge_response, judge_execution, judge_discussion
+from tests.judge import judge_response, judge_execution, judge_discussion, judge_language
 
 pytestmark = pytest.mark.integration
 
@@ -230,3 +230,60 @@ class TestQuickQuality:
         result = await judge_response(judge, question, agent_name, agent_role, text)
         assert result.passed, f"Quick answer failed: score={result.score}, reason={result.reason}"
         assert result.score >= 4, f"Quick answer low quality: score={result.score}, reason={result.reason}"
+
+
+# ── Language consistency (LLM-as-Judge, 3 languages) ──
+
+class TestLanguageConsistency:
+    """Verify that agents respond in the same language as the user's input."""
+
+    async def _collect_all_agent_text(self, question: str) -> dict[str, str]:
+        c = _fresh()
+        c.context.add_user(question)
+        agent_texts: dict[str, str] = {}
+        current_name, current_text = "", ""
+        async for name, role, chunk in c.stream_discuss():
+            if chunk == "":
+                if current_name:
+                    agent_texts[current_name] = current_text
+                current_name, current_text = "", ""
+            else:
+                current_name = name
+                current_text += chunk
+        return agent_texts
+
+    @SKIP
+    @pytest.mark.asyncio
+    async def test_english_input_english_output(self):
+        """English question → all agents respond in English."""
+        agent_texts = await self._collect_all_agent_text(
+            "Should I use PostgreSQL or MongoDB for a social media app with 100k users?"
+        )
+        judge = _get_judge_provider()
+        for name, text in agent_texts.items():
+            result = await judge_language(judge, "English", text)
+            assert result.score >= 4, f"{name} language fail (English): score={result.score}, reason={result.reason}"
+
+    @SKIP
+    @pytest.mark.asyncio
+    async def test_chinese_input_chinese_output(self):
+        """Chinese question → all agents respond in Chinese."""
+        agent_texts = await self._collect_all_agent_text(
+            "我的电商项目应该用微服务还是单体架构？日活大概 5 万用户。"
+        )
+        judge = _get_judge_provider()
+        for name, text in agent_texts.items():
+            result = await judge_language(judge, "Chinese", text)
+            assert result.score >= 4, f"{name} language fail (Chinese): score={result.score}, reason={result.reason}"
+
+    @SKIP
+    @pytest.mark.asyncio
+    async def test_japanese_input_japanese_output(self):
+        """Japanese question → all agents respond in Japanese."""
+        agent_texts = await self._collect_all_agent_text(
+            "Reactとvueのどちらを使うべきですか？チームは5人で、全員TypeScript経験があります。"
+        )
+        judge = _get_judge_provider()
+        for name, text in agent_texts.items():
+            result = await judge_language(judge, "Japanese", text)
+            assert result.score >= 4, f"{name} language fail (Japanese): score={result.score}, reason={result.reason}"
