@@ -149,14 +149,21 @@ async def handle_input(user_input: str, session: PromptSession, force_mode: str 
         council.context.add_user(user_input)
         route = force_mode
     else:
-        # Let moderator route
+        # Let moderator route (silently — only show route result)
         async for name, role, chunk in council.route(user_input):
-            _print_agent(name, role, chunk, current)
-        print("\n")
+            pass  # moderator output not shown to user
         route = council.last_route
 
         if route == "CLARIFY":
-            # Moderator asked questions, wait for user answer
+            # Moderator asked questions — show those
+            # Re-display the moderator's message from context
+            msgs = council.context.get_messages()
+            for m in msgs:
+                if "[moderator]" in m.get("content", ""):
+                    text = m["content"].replace("[moderator] ", "")
+                    print(f"\n{B}{C.get('moderator', '')}◆ moderator{R} {D}(needs clarification){R}")
+                    print(_safe(text))
+                    print()
             return
 
         # Ask user to confirm or override
