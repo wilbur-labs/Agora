@@ -58,6 +58,8 @@ def _print_agent(name: str, role: str, chunk: str, current: list):
         print(f"  {D}   → {result}{R}")
     elif chunk.startswith("[error] "):
         print(f"  \033[31m✗ {chunk[8:]}{R}")
+    elif chunk.startswith("[tool_skipped] "):
+        print(f"  {D}   ⏭ skipped by user{R}")
     elif chunk.startswith("[done] "):
         pass
     else:
@@ -101,6 +103,31 @@ async def _learn_discussion_skill():
             print(f"{D}🧠 Learned discussion skill: {skill_name}{R}\n")
     except Exception:
         pass
+
+
+_cli_session: PromptSession | None = None
+
+
+async def _confirm_tool(tool_name: str, description: str, dangerous: bool) -> bool:
+    """Ask user to confirm a tool call. Returns True to proceed."""
+    if dangerous:
+        label = f"\033[31m⚠ DANGEROUS\033[0m {D}{description}{R}"
+    else:
+        label = f"{D}{description}{R}"
+    print(f"\n  {label}")
+    if _cli_session:
+        try:
+            choice = await _cli_session.prompt_async(HTML("  <b>Allow? [Y/n/skip-all]: </b>"))
+            choice = choice.strip().lower()
+            if choice in ("n", "no"):
+                return False
+            if choice in ("skip-all", "s"):
+                # Disable confirmation for rest of this session
+                get_council().confirm_callback = None
+                return True
+        except (EOFError, KeyboardInterrupt):
+            return False
+    return True
 
 
 async def _prompt_choice(session: PromptSession, options: str) -> str:
@@ -242,6 +269,7 @@ async def command(cmd: str, session: PromptSession) -> bool:
 
 
 async def main():
+    global _cli_session
     banner()
     council = get_council()
     names = " ".join(f"{C.get(a.name, '')}{a.name}{R}" for a in council.agents)
@@ -258,6 +286,8 @@ async def main():
         completer=WordCompleter(COMMANDS, sentence=True),
         multiline=False,
     )
+    _cli_session = session
+    council.confirm_callback = _confirm_tool
 
     while True:
         try:

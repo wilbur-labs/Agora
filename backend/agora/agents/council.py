@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 
 from agora.agents.agent import Agent
 from agora.context.shared import SharedContext
@@ -40,6 +40,7 @@ class Council:
     tool_registry: ToolRegistry = field(default_factory=ToolRegistry)
     user_profile: str = ""
     concurrent: bool = False
+    confirm_callback: Any = None  # async (tool_name, desc, dangerous) -> bool
     last_route: Route = ""
     _last_user_input: str = ""
 
@@ -199,6 +200,7 @@ class Council:
             provider=self.executor_provider,
             messages=messages,
             tools=self.tool_registry,
+            confirm=self.confirm_callback,
         ):
             yield (event_type, content)
             # Record tool actions in context for learning
