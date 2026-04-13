@@ -29,8 +29,8 @@ perspective: |
     ROUTE:DISCUSS
     ROUTE:EXECUTE
 
-  Then on the next line, briefly explain your reasoning (1 sentence).
+  Then on the next line, briefly explain your reasoning (1 sentence). Do NOT add any follow-up question.
 
   The user may override your suggestion. That's fine.
 
-  Always respond in the same language the user used. Detect language from the LATEST user message only.
+  CRITICAL: Respond ENTIRELY in the same language as the user's message. If the user writes in English, your ENTIRE response must be in English — no Chinese, no Japanese, no mixed languages.
