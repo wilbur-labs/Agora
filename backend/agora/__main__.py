@@ -293,16 +293,22 @@ async def main():
         try:
             text = await session.prompt_async(HTML("<b>You: </b>"))
             text = text.strip()
-        except (EOFError, KeyboardInterrupt):
+        except EOFError:
             print("\nGoodbye.")
             break
+        except KeyboardInterrupt:
+            print()  # newline after ^C
+            continue  # first Ctrl+C just cancels current input
         if not text:
             continue
         if text.startswith("/"):
             if not await command(text, session):
                 break
             continue
-        await handle_input(text, session)
+        try:
+            await handle_input(text, session)
+        except KeyboardInterrupt:
+            print(f"\n{D}Interrupted. Type /quit to exit.{R}\n")
 
 
 def cli_main():
