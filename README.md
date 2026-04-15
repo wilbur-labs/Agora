@@ -43,12 +43,12 @@ Execute action items? [y/n] → y
 
 ## What Makes Agora Different
 
-| | ChatGPT/Claude | Cursor/Windsurf | DeerFlow | **Agora** |
-|---|---|---|---|---|
-| Multi-perspective discussion | ❌ | ❌ | ❌ | ✅ |
-| Full-stack execution | Sandbox | Editor only | ✅ | ✅ |
-| Self-learning (discussion + execution) | ❌ | ❌ | Partial | ✅ |
-| Standalone deployment | ❌ | ❌ | ✅ | ✅ |
+- 🏛 **Council, not chatbot** — Multiple AI agents discuss your problem from different angles (research, architecture, critique, security), then synthesize a unified conclusion.
+- 🔧 **Discussion → Execution** — Agents don't just advise. After discussion, the executor calls real tools (file I/O, shell commands) to implement the plan.
+- 🧠 **Self-improving** — Every discussion and execution is distilled into reusable skills. Agents get better at your specific workflows over time.
+- ⚙️ **Fully customizable** — Create your own agents with custom prompts. Assign different LLM providers per agent. Configure via YAML, not code.
+- 🔌 **Model agnostic** — Azure OpenAI, OpenAI, Kiro CLI, Claude CLI, Gemini CLI, or any OpenAI-compatible API. Mix and match per agent.
+- 🐳 **Self-hosted** — One `docker compose up` and you own the whole stack. No vendor lock-in, no data leaving your network.
 
 ## Quick Start
 
