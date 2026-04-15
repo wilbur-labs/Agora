@@ -90,5 +90,5 @@ Agoraは以下の優れたオープンソースプロジェクトから多大な
 
 ご質問、ご提案、コラボレーションのご相談はお気軽にどうぞ：
 
-- 📧 Email: `[your-email@example.com]`
+- 📧 Email: wilbur.ai.dev@gmail.com
 - 🐛 Issues: [GitHub Issues](https://github.com/wilbur-labs/Agora/issues)
