@@ -19,7 +19,8 @@ RUN pip install --no-cache-dir -e backend/
 COPY backend/ backend/
 COPY --from=frontend-build /app/frontend/out frontend/out
 COPY config.yaml .
-COPY skills/ skills/
+RUN mkdir -p skills/public skills/learned skills/custom
+COPY skill[s]/ skills/
 
 WORKDIR /app/backend
 
