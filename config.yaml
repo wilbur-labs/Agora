@@ -22,12 +22,16 @@ council:
   concurrent: false
 
 agents:
+  # Each agent can override the council model with its own.
+  # Add "model: <model_name>" to use a different provider.
+  # Model names must match a key in the "models" section above.
   scout:
     profile: scout.yaml
+    model: kiro              # Uses Kiro CLI (needs KIRO_API_KEY in .env)
   architect:
-    profile: architect.yaml
+    profile: architect.yaml  # Uses council default (gpt4o)
   critic:
-    profile: critic.yaml
+    profile: critic.yaml     # Uses council default (gpt4o)
   sentinel:
     profile: sentinel.yaml
 

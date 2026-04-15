@@ -1,5 +1,7 @@
 # 🏛 Agora
 
+**English** | [中文](README_zh.md) | [日本語](README_ja.md)
+
 **Multi-perspective AI council — discuss, design, execute, evolve.**
 
 Agora is a **full-stack AI agent platform** where multiple AI advisors discuss your ideas from different perspectives, then execute the plan — and learn from every interaction.
@@ -53,7 +55,7 @@ Execute action items? [y/n] → y
 ### Option 1: Docker (Recommended)
 
 ```bash
-git clone https://github.com/user/agora.git
+git clone https://github.com/wilbur-labs/Agora.git
 cd agora
 cp .env.example .env
 # Edit .env — add your API key
@@ -63,7 +65,7 @@ docker compose up -d    # Start API server
 ### Option 2: Local
 
 ```bash
-git clone https://github.com/user/agora.git
+git clone https://github.com/wilbur-labs/Agora.git
 cd agora
 cp .env.example .env
 # Edit .env — add your API key
@@ -258,3 +260,17 @@ Agora/
 ## License
 
 MIT
+
+## Acknowledgments
+
+Agora stands on the shoulders of these excellent open-source projects. We are deeply grateful:
+
+- **[DeerFlow](https://github.com/bytedance/deer-flow)** — ByteDance's long-horizon SuperAgent harness. Key inspiration for sandbox execution, memory systems, and agent orchestration.
+- **[Hermes Agent](https://github.com/NousResearch/hermes-agent)** — Nous Research's self-improving AI agent. Inspiration for the skill learning loop — autonomous skill creation, self-improvement during use, and persistent memory across sessions.
+
+## Contact
+
+Questions, suggestions, or collaboration inquiries are welcome:
+
+- 📧 Email: `[your-email@example.com]`
+- 🐛 Issues: [GitHub Issues](https://github.com/wilbur-labs/Agora/issues)

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, AsyncIterator
 
 import httpx
 
@@ -34,6 +34,29 @@ class OpenAIProvider(ModelProvider):
     async def generate(self, messages: list[Message]) -> str:
         result = await self.generate_with_tools(messages, tools=[])
         return result.content
+
+    async def stream(self, messages: list[Message]) -> AsyncIterator[str]:
+        body = self._body(messages, tools=[])
+        body["stream"] = True
+        async with httpx.AsyncClient(timeout=180) as client:
+            async with client.stream(
+                "POST", self._url(), headers=self._headers(), json=body,
+            ) as resp:
+                resp.raise_for_status()
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    data = line[6:]
+                    if data == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data)
+                        delta = chunk["choices"][0].get("delta", {})
+                        content = delta.get("content")
+                        if content:
+                            yield content
+                    except (json.JSONDecodeError, KeyError, IndexError):
+                        continue
 
     async def generate_with_tools(self, messages: list[Message], tools: list[dict]) -> GenerateResult:
         async with httpx.AsyncClient(timeout=180) as client:
