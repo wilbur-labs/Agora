@@ -59,7 +59,8 @@ def get_council() -> Council:
     agents = []
     for name in active:
         acfg = agent_cfgs.get(name, {})
-        agents.append(Agent(name=name, profile=acfg.get("profile", f"{name}.yaml"), model_name=model))
+        agent_model = acfg.get("model", model)  # per-agent model override
+        agents.append(Agent(name=name, profile=acfg.get("profile", f"{name}.yaml"), model_name=agent_model))
 
     moderator = Agent(name="moderator", profile="moderator.yaml", model_name=model)
     synthesizer = Agent(name="synthesizer", profile="synthesizer.yaml", model_name=model)

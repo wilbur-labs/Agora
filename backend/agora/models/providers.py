@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import asyncio
+import re
 
 from .base import Message, ModelProvider
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
 class _CLIProvider(ModelProvider):
@@ -35,12 +38,14 @@ class _CLIProvider(ModelProvider):
             chunk = await proc.stdout.read(64)
             if not chunk:
                 break
-            yield chunk.decode("utf-8", errors="replace")
+            text = _ANSI_RE.sub("", chunk.decode("utf-8", errors="replace"))
+            if text:
+                yield text
         await proc.wait()
         if proc.returncode != 0:
             err = (await proc.stderr.read()).decode()
             if err:
-                yield f"\n[Error: {err.strip()}]"
+                yield f"\n[Error: {_ANSI_RE.sub('', err.strip())}]"
 
 
 class ClaudeCLIProvider(_CLIProvider):

@@ -1,3 +1,10 @@
+FROM node:20-slim AS frontend-build
+WORKDIR /app/frontend
+COPY frontend/package.json frontend/pnpm-lock.yaml ./
+RUN corepack enable && pnpm install --frozen-lockfile
+COPY frontend/ .
+RUN pnpm build
+
 FROM python:3.12-slim
 
 ENV LANG=C.UTF-8
@@ -10,6 +17,7 @@ COPY backend/pyproject.toml backend/
 RUN pip install --no-cache-dir -e backend/
 
 COPY backend/ backend/
+COPY --from=frontend-build /app/frontend/out frontend/out
 COPY config.yaml .
 COPY skills/ skills/
 
@@ -17,5 +25,4 @@ WORKDIR /app/backend
 
 EXPOSE 8000
 
-# Default: run CLI. Override with docker compose for API mode.
 CMD ["python", "-m", "agora"]

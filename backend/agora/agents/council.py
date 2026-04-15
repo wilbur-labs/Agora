@@ -163,12 +163,16 @@ class Council:
 
         provider = self.executor_provider
         if provider and hasattr(provider, 'generate_with_tools'):
-            # Use real tool-calling loop
+            full_text = ""
             async for event_type, content in self._tool_execute():
-                yield ("executor", "Task Executor", f"[{event_type}] {content}" if event_type != "text" else content)
-            yield ("executor", "Task Executor", "")
+                # Yield with event_type prefix so API layer can emit proper SSE events
+                yield ("executor", event_type, content)
+                if event_type == "text":
+                    full_text += content
+            if full_text:
+                self.context.add_agent("executor", full_text)
+            yield ("executor", "agent_done", "")
         elif self.executor:
-            # Fallback: CLI-based executor (old behavior)
             mem, skills = self._get_injections()
             async for item in self._stream_agent(self.executor, mem, skills):
                 yield item

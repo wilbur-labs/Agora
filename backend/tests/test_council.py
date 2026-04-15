@@ -241,14 +241,13 @@ class TestCouncilExecution:
         )
 
         events = []
-        async for name, role, chunk in council.stream_execute():
+        async for name, event_type, chunk in council.stream_execute():
             if chunk:
-                events.append(chunk)
+                events.append((event_type, chunk))
 
-        # Should have tool_call, tool_result, text, and empty terminator
-        has_tool_call = any("[tool_call]" in e for e in events)
-        has_tool_result = any("[tool_result]" in e for e in events)
-        has_text = any("File created" in e for e in events)
+        has_tool_call = any(et == "tool_call" for et, _ in events)
+        has_tool_result = any(et == "tool_result" for et, _ in events)
+        has_text = any("File created" in c for et, c in events if et == "text")
         assert has_tool_call, f"Expected tool_call event, got: {events}"
         assert has_tool_result, f"Expected tool_result event, got: {events}"
         assert has_text, f"Expected text with 'File created', got: {events}"
