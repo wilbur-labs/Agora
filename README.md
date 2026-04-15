@@ -272,5 +272,5 @@ Agora stands on the shoulders of these excellent open-source projects. We are de
 
 Questions, suggestions, or collaboration inquiries are welcome:
 
-- 📧 Email: `[your-email@example.com]`
+- 📧 Email: `[wilbur.ai.dev@gmail.com]`
 - 🐛 Issues: [GitHub Issues](https://github.com/wilbur-labs/Agora/issues)
