@@ -157,28 +157,69 @@ class Council:
                 yield item
 
     async def stream_execute(self, task: str | None = None) -> AsyncIterator[tuple[str, str, str]]:
-        """Execute using tool-calling loop if API provider available, else fallback to CLI agent."""
+        """Execute using tool-calling loop if API provider available, else fallback to CLI agent.
+
+        When the task contains multiple action items (bullet list), each item is
+        executed in its own tool-calling loop so that (1) no single LLM call is
+        overwhelmingly large, (2) the frontend can show per-item progress, and
+        (3) a failure in one item does not block the rest.
+        """
         if task:
             self.context.add_user(task)
 
         provider = self.executor_provider
         if provider and hasattr(provider, 'generate_with_tools'):
-            full_text = ""
-            async for event_type, content in self._tool_execute():
-                # Yield with event_type prefix so API layer can emit proper SSE events
-                yield ("executor", event_type, content)
-                if event_type == "text":
-                    full_text += content
-            if full_text:
-                self.context.add_agent("executor", full_text)
+            items = self._parse_action_items()
+            if len(items) > 1:
+                # Sequential per-item execution
+                for i, item in enumerate(items, 1):
+                    header = f"[{i}/{len(items)}] {item}"
+                    yield ("executor", "text", f"\n### {header}\n")
+                    full_text = ""
+                    async for event_type, content in self._tool_execute(override_task=item):
+                        yield ("executor", event_type, content)
+                        if event_type == "text":
+                            full_text += content
+                    if full_text:
+                        self.context.add_agent("executor", f"[{i}/{len(items)}] {item}\n{full_text}")
+            else:
+                # Single task — execute directly
+                full_text = ""
+                async for event_type, content in self._tool_execute():
+                    yield ("executor", event_type, content)
+                    if event_type == "text":
+                        full_text += content
+                if full_text:
+                    self.context.add_agent("executor", full_text)
             yield ("executor", "agent_done", "")
         elif self.executor:
             mem, skills = self._get_injections()
             async for item in self._stream_agent(self.executor, mem, skills):
                 yield item
 
-    async def _tool_execute(self) -> AsyncIterator[tuple[str, str]]:
-        """Run the tool-calling execution loop."""
+    def _parse_action_items(self) -> list[str]:
+        """Extract individual action items from the last user message."""
+        msgs = self.context.get_messages()
+        last_user = ""
+        for m in reversed(msgs):
+            if m.get("role") == "user":
+                last_user = m.get("content", "")
+                break
+        items = []
+        for line in last_user.splitlines():
+            stripped = line.strip()
+            if stripped.startswith(("- ", "* ", "• ")):
+                item = stripped.lstrip("-*• ").strip()
+                if item:
+                    items.append(item)
+        return items if items else [last_user]
+
+    async def _tool_execute(self, override_task: str | None = None) -> AsyncIterator[tuple[str, str]]:
+        """Run the tool-calling execution loop.
+
+        If *override_task* is given, only that single task is sent to the LLM
+        (used by the sequential per-item executor).
+        """
         from agora.tools.executor import run_tool_loop
 
         # Build system prompt for executor
@@ -198,7 +239,12 @@ class Council:
             system_parts.append(f"<skills>\n{skills}\n</skills>")
 
         messages = [{"role": "system", "content": "\n\n".join(system_parts)}]
-        messages.extend(self.context.get_messages())
+
+        if override_task:
+            # Only include prior context summary + the single item
+            messages.append({"role": "user", "content": override_task})
+        else:
+            messages.extend(self.context.get_messages())
 
         async for event_type, content in run_tool_loop(
             provider=self.executor_provider,

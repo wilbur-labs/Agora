@@ -38,7 +38,7 @@ class OpenAIProvider(ModelProvider):
     async def stream(self, messages: list[Message]) -> AsyncIterator[str]:
         body = self._body(messages, tools=[])
         body["stream"] = True
-        async with httpx.AsyncClient(timeout=180) as client:
+        async with httpx.AsyncClient(timeout=300) as client:
             async with client.stream(
                 "POST", self._url(), headers=self._headers(), json=body,
             ) as resp:
@@ -59,7 +59,7 @@ class OpenAIProvider(ModelProvider):
                         continue
 
     async def generate_with_tools(self, messages: list[Message], tools: list[dict]) -> GenerateResult:
-        async with httpx.AsyncClient(timeout=180) as client:
+        async with httpx.AsyncClient(timeout=300) as client:
             resp = await client.post(self._url(), headers=self._headers(), json=self._body(messages, tools))
             resp.raise_for_status()
             return self._parse_response(resp.json())
