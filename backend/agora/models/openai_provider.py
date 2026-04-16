@@ -1,12 +1,20 @@
 """OpenAI-compatible API provider — supports function calling (OpenAI + Azure)."""
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 from typing import Any, AsyncIterator
 
 import httpx
 
 from .base import GenerateResult, Message, ModelProvider, ToolCall
+
+logger = logging.getLogger(__name__)
+
+_MAX_RETRIES = 2
+_RETRY_DELAY = 1.0
+_TIMEOUT = httpx.Timeout(connect=30, read=600, write=30, pool=30)
 
 
 class OpenAIProvider(ModelProvider):
@@ -38,31 +46,50 @@ class OpenAIProvider(ModelProvider):
     async def stream(self, messages: list[Message]) -> AsyncIterator[str]:
         body = self._body(messages, tools=[])
         body["stream"] = True
-        async with httpx.AsyncClient(timeout=300) as client:
-            async with client.stream(
-                "POST", self._url(), headers=self._headers(), json=body,
-            ) as resp:
-                resp.raise_for_status()
-                async for line in resp.aiter_lines():
-                    if not line.startswith("data: "):
-                        continue
-                    data = line[6:]
-                    if data == "[DONE]":
-                        break
-                    try:
-                        chunk = json.loads(data)
-                        delta = chunk["choices"][0].get("delta", {})
-                        content = delta.get("content")
-                        if content:
-                            yield content
-                    except (json.JSONDecodeError, KeyError, IndexError):
-                        continue
+        last_exc: Exception | None = None
+        for attempt in range(_MAX_RETRIES + 1):
+            try:
+                async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+                    async with client.stream(
+                        "POST", self._url(), headers=self._headers(), json=body,
+                    ) as resp:
+                        resp.raise_for_status()
+                        async for line in resp.aiter_lines():
+                            if not line.startswith("data: "):
+                                continue
+                            data = line[6:]
+                            if data == "[DONE]":
+                                break
+                            try:
+                                chunk = json.loads(data)
+                                delta = chunk["choices"][0].get("delta", {})
+                                content = delta.get("content")
+                                if content:
+                                    yield content
+                            except (json.JSONDecodeError, KeyError, IndexError):
+                                continue
+                return  # success
+            except httpx.ConnectError as e:
+                last_exc = e
+                if attempt < _MAX_RETRIES:
+                    logger.warning("ConnectError on stream attempt %d, retrying...", attempt + 1)
+                    await asyncio.sleep(_RETRY_DELAY)
+        raise last_exc  # type: ignore[misc]
 
     async def generate_with_tools(self, messages: list[Message], tools: list[dict]) -> GenerateResult:
-        async with httpx.AsyncClient(timeout=300) as client:
-            resp = await client.post(self._url(), headers=self._headers(), json=self._body(messages, tools))
-            resp.raise_for_status()
-            return self._parse_response(resp.json())
+        last_exc: Exception | None = None
+        for attempt in range(_MAX_RETRIES + 1):
+            try:
+                async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+                    resp = await client.post(self._url(), headers=self._headers(), json=self._body(messages, tools))
+                    resp.raise_for_status()
+                    return self._parse_response(resp.json())
+            except httpx.ConnectError as e:
+                last_exc = e
+                if attempt < _MAX_RETRIES:
+                    logger.warning("ConnectError on generate attempt %d, retrying...", attempt + 1)
+                    await asyncio.sleep(_RETRY_DELAY)
+        raise last_exc  # type: ignore[misc]
 
     async def stream_generate_with_tools(
         self, messages: list[Message], tools: list[dict],
@@ -73,7 +100,7 @@ class OpenAIProvider(ModelProvider):
         content_parts: list[str] = []
         tool_calls_map: dict[int, dict] = {}  # index -> {id, name, arguments_str}
 
-        async with httpx.AsyncClient(timeout=300) as client:
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
             async with client.stream("POST", self._url(), headers=self._headers(), json=body) as resp:
                 resp.raise_for_status()
                 async for line in resp.aiter_lines():

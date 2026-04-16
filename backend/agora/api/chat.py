@@ -3,12 +3,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 
 from fastapi import APIRouter
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
 from agora.api._state import get_council
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -62,12 +65,16 @@ async def chat(req: ChatRequest):
     council = get_council()
 
     async def stream():
-        async for name, role, chunk in council.route(req.message):
-            if chunk == "":
-                yield {"event": "agent_done", "data": json.dumps({"agent": name, "role": role})}
-            else:
-                yield {"event": "token", "data": json.dumps({"agent": name, "role": role, "content": chunk})}
-        yield {"event": "route", "data": json.dumps({"route": council.last_route})}
+        try:
+            async for name, role, chunk in council.route(req.message):
+                if chunk == "":
+                    yield {"event": "agent_done", "data": json.dumps({"agent": name, "role": role})}
+                else:
+                    yield {"event": "token", "data": json.dumps({"agent": name, "role": role, "content": chunk})}
+            yield {"event": "route", "data": json.dumps({"route": council.last_route})}
+        except Exception as e:
+            logger.exception("Error in chat stream")
+            yield {"event": "error", "data": json.dumps({"content": str(e)})}
 
     return EventSourceResponse(stream())
 
@@ -91,16 +98,20 @@ async def chat_continue(req: ContinueRequest):
     council.confirm_callback = web_confirm
 
     async def stream():
-        if route == "DISCUSS":
-            async for item in _agent_events(council.stream_discuss()):
-                yield item
-        elif route == "QUICK":
-            async for item in _agent_events(council.stream_quick()):
-                yield item
-        elif route == "EXECUTE":
-            async for item in _agent_events(council.stream_execute()):
-                yield item
-        yield {"event": "done", "data": json.dumps({"route": route})}
+        try:
+            if route == "DISCUSS":
+                async for item in _agent_events(council.stream_discuss()):
+                    yield item
+            elif route == "QUICK":
+                async for item in _agent_events(council.stream_quick()):
+                    yield item
+            elif route == "EXECUTE":
+                async for item in _agent_events(council.stream_execute()):
+                    yield item
+            yield {"event": "done", "data": json.dumps({"route": route})}
+        except Exception as e:
+            logger.exception("Error in chat continue stream")
+            yield {"event": "error", "data": json.dumps({"content": str(e)})}
 
     return EventSourceResponse(stream())
 

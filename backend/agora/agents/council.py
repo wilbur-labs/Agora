@@ -177,19 +177,25 @@ class Council:
                     header = f"[{i}/{len(items)}] {item}"
                     yield ("executor", "text", f"\n### {header}\n")
                     full_text = ""
-                    async for event_type, content in self._tool_execute(override_task=item):
-                        yield ("executor", event_type, content)
-                        if event_type == "text":
-                            full_text += content
+                    try:
+                        async for event_type, content in self._tool_execute(override_task=item):
+                            yield ("executor", event_type, content)
+                            if event_type == "text":
+                                full_text += content
+                    except Exception as e:
+                        yield ("executor", "error", f"Failed: {e}")
                     if full_text:
                         self.context.add_agent("executor", f"[{i}/{len(items)}] {item}\n{full_text}")
             else:
                 # Single task — execute directly
                 full_text = ""
-                async for event_type, content in self._tool_execute():
-                    yield ("executor", event_type, content)
-                    if event_type == "text":
-                        full_text += content
+                try:
+                    async for event_type, content in self._tool_execute():
+                        yield ("executor", event_type, content)
+                        if event_type == "text":
+                            full_text += content
+                except Exception as e:
+                    yield ("executor", "error", f"Failed: {e}")
                 if full_text:
                     self.context.add_agent("executor", full_text)
             yield ("executor", "agent_done", "")
@@ -226,8 +232,9 @@ class Council:
         # Build system prompt for executor
         mem, skills = self._get_injections()
         system_parts = [
-            "You are the Executor. You execute tasks using the provided tools.",
-            "Break down the task into concrete steps and execute each one.",
+            "You are the Executor. You MUST use the provided tools to complete tasks.",
+            "NEVER output code or file contents as text. ALWAYS use write_file to create files and shell to run commands.",
+            "Break down the task into concrete steps and execute each one using tools.",
             "If a step fails, analyze the error and retry with a corrected approach. Do NOT give up after one failure.",
             "Do NOT add unnecessary features beyond what was asked.",
             "Verify your work — if the task asks you to create and run something, confirm the output is correct.",
