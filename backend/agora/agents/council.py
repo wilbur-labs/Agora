@@ -41,6 +41,7 @@ class Council:
     user_profile: str = ""
     concurrent: bool = False
     confirm_callback: Any = None  # async (tool_name, desc, dangerous) -> bool
+    workspace: str = ""
     last_route: Route = ""
     _last_user_input: str = ""
 
@@ -231,6 +232,8 @@ class Council:
             "Do NOT add unnecessary features beyond what was asked.",
             "Verify your work — if the task asks you to create and run something, confirm the output is correct.",
         ]
+        if self.workspace:
+            system_parts.append(f"IMPORTANT: Create all files and projects under {self.workspace}. Use absolute paths.")
         if self.user_profile:
             system_parts.append(f"<user_profile>\n{self.user_profile}\n</user_profile>")
         if mem:

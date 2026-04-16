@@ -20,6 +20,7 @@ council:
   model: gpt4o
   executor_model: gpt4o
   concurrent: false
+  workspace: ~/agora-workspace  # Executor creates files here
 
 agents:
   # Each agent can override the council model with its own.

@@ -54,6 +54,7 @@ def get_council() -> Council:
     model = council_cfg.get("model", "kiro")
     executor_model = council_cfg.get("executor_model", model)
     concurrent = council_cfg.get("concurrent", False)
+    workspace = str(Path(council_cfg.get("workspace", "")).expanduser()) if council_cfg.get("workspace") else ""
     active = council_cfg.get("default_agents", ["scout", "architect", "critic"])
 
     agents = []
@@ -93,6 +94,7 @@ def get_council() -> Council:
         tool_registry=ToolRegistry(sandbox=sandbox),
         user_profile=_load_user_profile(),
         concurrent=concurrent,
+        workspace=workspace,
     )
     return _council
 
