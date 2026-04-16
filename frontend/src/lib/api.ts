@@ -1,6 +1,6 @@
 import { Agent } from "@/lib/types";
 
-function getApiBase(): string {
+export function getApiBase(): string {
   if (typeof window === "undefined") return "";
   if (window.location.port === "3000") {
     return `${window.location.protocol}//${window.location.hostname}:8000`;
@@ -29,6 +29,14 @@ export async function setActiveAgents(names: string[]): Promise<Agent[]> {
 
 export async function resetChat(): Promise<void> {
   await fetch(`${getApiBase()}/api/chat/reset`, { method: "POST" });
+}
+
+export async function restoreContext(messages: object[]): Promise<void> {
+  await fetch(`${getApiBase()}/api/chat/restore`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ messages }),
+  });
 }
 
 // Sessions API
@@ -71,6 +79,14 @@ export async function sendFeedback(messageId: string, rating: "up" | "down"): Pr
   });
 }
 
+export async function respondConfirm(approved: boolean): Promise<void> {
+  await fetch(`${getApiBase()}/api/chat/confirm`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ approved }),
+  });
+}
+
 export type SSECallbacks = {
   onToken: (agent: string, role: string, content: string) => void;
   onAgentDone: (agent: string, role: string) => void;
@@ -80,6 +96,7 @@ export type SSECallbacks = {
   onToolCall?: (content: string) => void;
   onToolResult?: (content: string) => void;
   onToolSkipped?: (content: string) => void;
+  onConfirm?: (content: string) => void;
 };
 
 function parseSSEStream(
@@ -126,6 +143,7 @@ function parseSSEStream(
                 case "tool_call": cb.onToolCall?.(data.content); break;
                 case "tool_result": cb.onToolResult?.(data.content); break;
                 case "tool_skipped": cb.onToolSkipped?.(data.content); break;
+                case "confirm": cb.onConfirm?.(data.content); break;
                 case "error": cb.onError(data.content ?? "Unknown error"); break;
               }
             } catch { /* skip */ }

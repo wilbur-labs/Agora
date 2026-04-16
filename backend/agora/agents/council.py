@@ -253,9 +253,6 @@ class Council:
             confirm=self.confirm_callback,
         ):
             yield (event_type, content)
-            # Record tool actions in context for learning
-            if event_type == "text" and content:
-                self.context.add_agent("executor", content)
 
     async def learn_skill(self, skill_type: str = "execution") -> str | None:
         if not self.skill_store.enabled:

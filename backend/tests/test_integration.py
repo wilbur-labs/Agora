@@ -146,8 +146,8 @@ class TestExecutionQuality:
 
         tool_events = []
         async for name, role, chunk in c.stream_execute():
-            if chunk and ("[tool_call]" in chunk or "[tool_result]" in chunk):
-                tool_events.append(chunk)
+            if chunk and (role in ("tool_call", "tool_result")):
+                tool_events.append(f"[{role}] {chunk}")
 
         # Check actual file state
         path = "/tmp/agora_judge_test/config.json"
@@ -182,9 +182,9 @@ class TestExecutionQuality:
         async for name, role, chunk in c.stream_execute():
             if not chunk:
                 continue
-            if "[tool_call]" in chunk or "[tool_result]" in chunk:
-                tool_events.append(chunk)
-            elif not chunk.startswith("["):
+            if role in ("tool_call", "tool_result"):
+                tool_events.append(f"[{role}] {chunk}")
+            elif role == "text":
                 text_output += chunk
 
         path = "/tmp/agora_multi_judge/main.py"

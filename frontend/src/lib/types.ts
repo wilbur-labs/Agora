@@ -7,7 +7,7 @@ export interface Agent {
 
 export interface ChatMessage {
   id: string;
-  type: "user" | "agent" | "system" | "route" | "tool_call" | "tool_result";
+  type: "user" | "agent" | "system" | "route" | "tool_call" | "tool_result" | "confirm";
   agent?: string;
   role?: string;
   content: string;
@@ -15,6 +15,7 @@ export interface ChatMessage {
   feedback?: "up" | "down";
   confirmed?: boolean;
   toolStatus?: "running" | "done" | "skipped" | "error";
+  dangerous?: boolean;
 }
 
 export const AGENT_COLORS: Record<string, string> = {

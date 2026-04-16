@@ -8,9 +8,9 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { AGENT_DOT_COLORS } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-const API = typeof window !== "undefined" && window.location.port === "3000"
-  ? `${window.location.protocol}//${window.location.hostname}:8000`
-  : "";
+import { getApiBase } from "@/lib/api";
+
+const API = typeof window !== "undefined" ? getApiBase() : "";
 
 interface AgentInfo {
   name: string;
@@ -24,6 +24,8 @@ export default function AgentsPage() {
   const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [selected, setSelected] = useState<AgentInfo | null>(null);
   const [activeNames, setActiveNames] = useState<string[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [editRole, setEditRole] = useState("");
   const [editPrompt, setEditPrompt] = useState("");
   const [creating, setCreating] = useState(false);
@@ -36,12 +38,20 @@ export default function AgentsPage() {
   const abortRef = useRef<AbortController | null>(null);
 
   const load = useCallback(async () => {
-    const [avail, active] = await Promise.all([
-      fetch(`${API}/api/agents/available`).then((r) => r.json()),
-      fetch(`${API}/api/agents`).then((r) => r.json()),
-    ]);
-    setAgents(avail.agents);
-    setActiveNames(active.agents.map((a: AgentInfo) => a.name));
+    try {
+      setLoading(true);
+      setError(null);
+      const [avail, active] = await Promise.all([
+        fetch(`${API}/api/agents/available`).then((r) => r.json()),
+        fetch(`${API}/api/agents`).then((r) => r.json()),
+      ]);
+      setAgents(avail.agents);
+      setActiveNames(active.agents.map((a: AgentInfo) => a.name));
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
   useEffect(() => { load(); }, [load]);
@@ -154,7 +164,9 @@ export default function AgentsPage() {
         <Separator />
         <ScrollArea className="flex-1 p-2">
           <div className="space-y-0.5">
-            {agents.map((a) => (
+            {loading && <p className="text-xs text-muted-foreground p-3">Loading agents…</p>}
+            {error && <p className="text-xs text-red-400 p-3">Error: {error}</p>}
+            {!loading && !error && agents.map((a) => (
               <div
                 key={a.name}
                 onClick={() => selectAgent(a.name)}

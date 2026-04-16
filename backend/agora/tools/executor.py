@@ -5,7 +5,7 @@ import json
 import re
 from typing import AsyncIterator, Callable, Awaitable
 
-from agora.models.base import GenerateResult, Message, ModelProvider
+from agora.models.base import GenerateResult, Message, ModelProvider, ToolCall
 from agora.tools.registry import ToolRegistry
 
 _MAX_ITERATIONS = 20
@@ -54,14 +54,28 @@ async def run_tool_loop(
     chat: list[Message] = list(messages)
 
     for _ in range(max_iterations):
-        result: GenerateResult = await provider.generate_with_tools(chat, schemas)
-
-        if result.content:
-            yield ("text", result.content)
-
-        if not result.tool_calls:
-            yield ("done", "")
-            return
+        # Use streaming if available for real-time text output
+        result: GenerateResult | None = None
+        if hasattr(provider, 'stream_generate_with_tools'):
+            async for item in provider.stream_generate_with_tools(chat, schemas):
+                if isinstance(item, str):
+                    yield ("text", item)
+                elif isinstance(item, GenerateResult):
+                    result = item
+            if result is None:
+                # Stream ended with no GenerateResult — text-only response
+                yield ("done", "")
+                return
+            if not result.tool_calls:
+                yield ("done", "")
+                return
+        else:
+            result = await provider.generate_with_tools(chat, schemas)
+            if result.content:
+                yield ("text", result.content)
+            if not result.tool_calls:
+                yield ("done", "")
+                return
 
         assistant_msg: Message = {"role": "assistant", "content": result.content or ""}
         assistant_msg["tool_calls"] = [
@@ -82,13 +96,15 @@ async def run_tool_loop(
             yield ("tool_call", call_desc)
 
             # Ask for confirmation on write operations
-            if confirm and tc.function_name in _WRITE_TOOLS:
-                approved = await confirm(tc.function_name, call_desc, dangerous)
-                if not approved:
-                    output = "User rejected this operation."
-                    yield ("tool_skipped", call_desc)
-                    chat.append({"role": "tool", "tool_call_id": tc.id, "content": output})
-                    continue
+            if tc.function_name in _WRITE_TOOLS:
+                yield ("confirm", json.dumps({"tool": tc.function_name, "desc": call_desc, "dangerous": dangerous}))
+                if confirm:
+                    approved = await confirm(tc.function_name, call_desc, dangerous)
+                    if not approved:
+                        output = "User rejected this operation."
+                        yield ("tool_skipped", call_desc)
+                        chat.append({"role": "tool", "tool_call_id": tc.id, "content": output})
+                        continue
 
             if not tool:
                 output = f"Unknown tool: {tc.function_name}"

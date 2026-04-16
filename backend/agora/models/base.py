@@ -44,3 +44,16 @@ class ModelProvider(ABC):
         # Fallback: ignore tools, return plain text
         text = await self.generate(messages)
         return GenerateResult(content=text, tool_calls=[])
+
+    async def stream_generate_with_tools(
+        self, messages: list[Message], tools: list[dict],
+    ) -> AsyncIterator[GenerateResult | str]:
+        """Streaming generate with tool support. Yields str chunks for text, then a final GenerateResult if tool_calls present.
+
+        Default: falls back to non-streaming generate_with_tools.
+        """
+        result = await self.generate_with_tools(messages, tools)
+        if result.content:
+            yield result.content
+        if result.tool_calls:
+            yield result

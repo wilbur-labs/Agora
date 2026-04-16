@@ -5,8 +5,9 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Separator } from "@/components/ui/separator";
 
-const API = typeof window !== "undefined" && window.location.port === "3000"
-  ? `${window.location.protocol}//${window.location.hostname}:8000` : "";
+import { getApiBase } from "@/lib/api";
+
+const API = typeof window !== "undefined" ? getApiBase() : "";
 
 export default function SettingsPage() {
   const [memory, setMemory] = useState("");
@@ -14,10 +15,15 @@ export default function SettingsPage() {
   const [newKey, setNewKey] = useState("");
   const [newVal, setNewVal] = useState("");
   const [saved, setSaved] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch(`${API}/api/memory`).then((r) => r.json()).then((d) => setMemory(d.memory || "(empty)")).catch(() => {});
-    fetch(`${API}/api/profile`).then((r) => r.json()).then((d) => setProfile(d.profile || {})).catch(() => {});
+    setLoading(true);
+    Promise.all([
+      fetch(`${API}/api/memory`).then((r) => r.json()).then((d) => setMemory(d.memory || "(empty)")),
+      fetch(`${API}/api/profile`).then((r) => r.json()).then((d) => setProfile(d.profile || {})),
+    ]).catch((e) => setError((e as Error).message)).finally(() => setLoading(false));
   }, []);
 
   const saveProfile = useCallback(async () => {
@@ -45,6 +51,11 @@ export default function SettingsPage() {
       </div>
 
       {/* Profile */}
+      {loading ? (
+        <p className="text-sm text-muted-foreground">Loading settings…</p>
+      ) : error ? (
+        <p className="text-sm text-red-400">Error: {error}</p>
+      ) : (<>
       <section className="space-y-3">
         <h2 className="text-lg font-semibold">User Profile</h2>
         <p className="text-sm text-muted-foreground">Agents use this to personalize responses.</p>
@@ -83,6 +94,7 @@ export default function SettingsPage() {
         <p className="text-sm text-muted-foreground">Persistent memory from past conversations (read-only).</p>
         <Textarea value={memory} readOnly rows={12} className="font-mono text-xs" />
       </section>
+      </>)}
 
       <div className="pt-4">
         <a href="/chat" className="text-sm text-muted-foreground hover:text-foreground">← Back to Chat</a>

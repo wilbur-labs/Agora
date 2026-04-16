@@ -5,8 +5,9 @@ import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
 
-const API = typeof window !== "undefined" && window.location.port === "3000"
-  ? `${window.location.protocol}//${window.location.hostname}:8000` : "";
+import { getApiBase } from "@/lib/api";
+
+const API = typeof window !== "undefined" ? getApiBase() : "";
 
 interface Skill {
   name: string; type: string; trigger: string;
@@ -17,9 +18,12 @@ export default function SkillsPage() {
   const [skills, setSkills] = useState<Skill[]>([]);
   const [selected, setSelected] = useState<Skill | null>(null);
   const [filter, setFilter] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch(`${API}/api/skills`).then((r) => r.json()).then((d) => setSkills(d.skills)).catch(() => {});
+    setLoading(true);
+    fetch(`${API}/api/skills`).then((r) => r.json()).then((d) => setSkills(d.skills)).catch((e) => setError(e.message)).finally(() => setLoading(false));
   }, []);
 
   const filtered = skills.filter((s) =>
@@ -43,10 +47,12 @@ export default function SkillsPage() {
         </div>
         <Separator />
         <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
-          {filtered.length === 0 && (
+          {loading && <p className="text-xs text-muted-foreground p-3">Loading skills…</p>}
+          {error && <p className="text-xs text-red-400 p-3">Error: {error}</p>}
+          {!loading && !error && filtered.length === 0 && (
             <p className="text-xs text-muted-foreground p-3">No skills learned yet.</p>
           )}
-          {filtered.map((s) => (
+          {!loading && !error && filtered.map((s) => (
             <div
               key={s.name}
               onClick={() => setSelected(s)}

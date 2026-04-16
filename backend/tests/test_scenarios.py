@@ -72,13 +72,13 @@ async def scenario_1():
     exec_events: list[str] = []
     exec_text = ""
     async for name, role, chunk in council.stream_execute():
-        if chunk.startswith("[tool_call]"):
+        if role == "tool_call":
             exec_events.append("tool_call")
-        elif chunk.startswith("[tool_result]"):
+        elif role == "tool_result":
             exec_events.append("tool_result")
-        elif chunk.startswith("[done]"):
+        elif role == "agent_done":
             exec_events.append("done")
-        elif not chunk.startswith("["):
+        elif role == "text" and chunk:
             exec_text += chunk
 
     # Executor should either call tools OR produce text output
@@ -103,11 +103,11 @@ async def scenario_2():
     exec_events: list[str] = []
     exec_text = ""
     async for name, role, chunk in council.stream_execute():
-        if chunk.startswith("[tool_call]"):
+        if role == "tool_call":
             exec_events.append(chunk)
-        elif chunk.startswith("[tool_result]"):
+        elif role == "tool_result":
             exec_events.append("tool_result")
-        elif not chunk.startswith("["):
+        elif role == "text" and chunk:
             exec_text += chunk
 
     has_write = any("write_file" in e for e in exec_events)

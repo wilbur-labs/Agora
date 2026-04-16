@@ -292,3 +292,107 @@ class TestCouncilReset:
         assert len(council.context.messages) == 0
         assert council.last_route == ""
         assert council._last_user_input == ""
+
+
+class TestParseActionItems:
+    def test_bullet_list(self):
+        council = _make_council()
+        council.context.add_user("Execute:\n- Create file\n- Run tests\n- Deploy")
+        items = council._parse_action_items()
+        assert items == ["Create file", "Run tests", "Deploy"]
+
+    def test_asterisk_list(self):
+        council = _make_council()
+        council.context.add_user("Do these:\n* First thing\n* Second thing")
+        items = council._parse_action_items()
+        assert items == ["First thing", "Second thing"]
+
+    def test_single_message_no_bullets(self):
+        council = _make_council()
+        council.context.add_user("Just do this one thing")
+        items = council._parse_action_items()
+        assert items == ["Just do this one thing"]
+
+    def test_empty_bullets_ignored(self):
+        council = _make_council()
+        council.context.add_user("Tasks:\n- Real task\n- \n- Another task")
+        items = council._parse_action_items()
+        assert items == ["Real task", "Another task"]
+
+    def test_mixed_content(self):
+        council = _make_council()
+        council.context.add_user("Please do:\nSome intro text\n- Task A\nMore text\n- Task B")
+        items = council._parse_action_items()
+        assert items == ["Task A", "Task B"]
+
+
+class TestSequentialExecution:
+    @pytest.mark.asyncio
+    async def test_multi_item_yields_progress_headers(self):
+        council = _make_council()
+        council.context.add_user("Execute:\n- Task one\n- Task two")
+        council.executor_provider = MockProviderWithToolSequence(
+            tool_calls=[], final_response="Done.",
+        )
+
+        events = []
+        async for name, event_type, chunk in council.stream_execute():
+            if chunk:
+                events.append((name, event_type, chunk))
+
+        # Should have progress headers [1/2] and [2/2]
+        text_events = [c for _, et, c in events if et == "text"]
+        all_text = "".join(text_events)
+        assert "[1/2]" in all_text
+        assert "[2/2]" in all_text
+
+    @pytest.mark.asyncio
+    async def test_multi_item_context_per_item(self):
+        council = _make_council()
+        council.context.add_user("Execute:\n- Alpha\n- Beta")
+        council.executor_provider = MockProviderWithToolSequence(
+            tool_calls=[], final_response="Completed.",
+        )
+
+        async for _ in council.stream_execute():
+            pass
+
+        # Context should have entries for each item
+        msgs = council.context.get_messages()
+        executor_msgs = [m for m in msgs if "[executor]" in m.get("content", "")]
+        assert len(executor_msgs) == 2
+        assert "[1/2]" in executor_msgs[0]["content"]
+        assert "[2/2]" in executor_msgs[1]["content"]
+
+    @pytest.mark.asyncio
+    async def test_single_item_no_progress_header(self):
+        council = _make_council()
+        council.context.add_user("Just one task")
+        council.executor_provider = MockProviderWithToolSequence(
+            tool_calls=[], final_response="Done.",
+        )
+
+        events = []
+        async for name, event_type, chunk in council.stream_execute():
+            if chunk:
+                events.append((name, event_type, chunk))
+
+        all_text = "".join(c for _, et, c in events if et == "text")
+        assert "[1/" not in all_text  # No progress header for single item
+
+    @pytest.mark.asyncio
+    async def test_context_not_duplicated(self):
+        """I10 regression: context should not be added twice."""
+        council = _make_council()
+        council.context.add_user("Do something")
+        council.executor_provider = MockProviderWithToolSequence(
+            tool_calls=[], final_response="Result text.",
+        )
+
+        async for _ in council.stream_execute():
+            pass
+
+        msgs = council.context.get_messages()
+        executor_msgs = [m for m in msgs if "[executor]" in m.get("content", "")]
+        # Should be exactly 1, not 2 (the I10 bug was double-adding)
+        assert len(executor_msgs) == 1

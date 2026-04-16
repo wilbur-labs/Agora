@@ -1,6 +1,7 @@
 """Chat API — SSE streaming multi-agent responses."""
 from __future__ import annotations
 
+import asyncio
 import json
 
 from fastapi import APIRouter
@@ -10,6 +11,10 @@ from sse_starlette.sse import EventSourceResponse
 from agora.api._state import get_council
 
 router = APIRouter()
+
+# Pending confirmation state for Human-in-the-Loop
+_confirm_event: asyncio.Event | None = None
+_confirm_result: bool = False
 
 
 class ChatRequest(BaseModel):
@@ -25,6 +30,10 @@ class FeedbackRequest(BaseModel):
     rating: str
 
 
+class RestoreContextRequest(BaseModel):
+    messages: list[dict]
+
+
 def _agent_events(aiter):
     """Convert agent stream to SSE dicts. Handles both discussion and executor events."""
     async def gen():
@@ -32,6 +41,9 @@ def _agent_events(aiter):
             # Executor tool events: event_or_role is event_type (tool_call, tool_result, etc.)
             if name == "executor" and event_or_role in ("tool_call", "tool_result", "tool_skipped", "error"):
                 yield {"event": event_or_role, "data": json.dumps({"agent": name, "content": chunk})}
+            elif name == "executor" and event_or_role == "confirm":
+                # Human-in-the-Loop: send confirm event and wait for user response
+                yield {"event": "confirm", "data": json.dumps({"agent": name, "content": chunk})}
             elif name == "executor" and event_or_role == "done":
                 continue  # skip internal done, we emit our own
             elif name == "executor" and event_or_role == "agent_done":
@@ -65,6 +77,19 @@ async def chat_continue(req: ContinueRequest):
     council = get_council()
     route = req.route.upper()
 
+    # Set up web-based Human-in-the-Loop confirmation
+    async def web_confirm(tool_name: str, desc: str, dangerous: bool) -> bool:
+        global _confirm_event, _confirm_result
+        _confirm_event = asyncio.Event()
+        _confirm_result = False
+        # The SSE stream will yield a confirm event (via _tool_execute yielding ("confirm", desc))
+        # We wait here until the user responds via POST /chat/confirm
+        await _confirm_event.wait()
+        _confirm_event = None
+        return _confirm_result
+
+    council.confirm_callback = web_confirm
+
     async def stream():
         if route == "DISCUSS":
             async for item in _agent_events(council.stream_discuss()):
@@ -95,3 +120,33 @@ async def chat_reset():
 @router.post("/chat/feedback")
 async def chat_feedback(req: FeedbackRequest):
     return {"status": "ok", "message_id": req.message_id, "rating": req.rating}
+
+
+@router.post("/chat/restore")
+async def chat_restore(req: RestoreContextRequest):
+    """Restore backend context from frontend session history."""
+    council = get_council()
+    council.reset()
+    for msg in req.messages:
+        msg_type = msg.get("type", "")
+        content = msg.get("content", "")
+        if msg_type == "user":
+            council.context.add_user(content)
+        elif msg_type == "agent" and msg.get("agent"):
+            council.context.add_agent(msg["agent"], content)
+    return {"status": "ok", "message_count": len(council.context.messages)}
+
+
+class ConfirmResponse(BaseModel):
+    approved: bool
+
+
+@router.post("/chat/confirm")
+async def chat_confirm(req: ConfirmResponse):
+    """User responds to a Human-in-the-Loop confirmation request."""
+    global _confirm_event, _confirm_result
+    if _confirm_event is None:
+        return {"status": "no_pending_confirmation"}
+    _confirm_result = req.approved
+    _confirm_event.set()
+    return {"status": "ok"}

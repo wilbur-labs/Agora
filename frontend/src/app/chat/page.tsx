@@ -8,8 +8,9 @@ import { ChatInput } from "@/components/chat-input";
 import { Welcome } from "@/components/welcome";
 import { ChatMessage } from "@/lib/types";
 
-const API = typeof window !== "undefined" && window.location.port === "3000"
-  ? `${window.location.protocol}//${window.location.hostname}:8000` : "";
+import { getApiBase } from "@/lib/api";
+
+const API = typeof window !== "undefined" ? getApiBase() : "";
 
 function exportMarkdown(messages: ChatMessage[]) {
   const lines = messages.map((m) => {
@@ -29,7 +30,7 @@ function exportMarkdown(messages: ChatMessage[]) {
 }
 
 export default function ChatPage() {
-  const { messages, streaming, pendingRoute, sessionId, send, confirmRoute, stop, reset, feedback, executeItems, selectSession } = useChat();
+  const { messages, streaming, pendingRoute, sessionId, send, confirmRoute, confirmTool, stop, reset, feedback, executeItems, selectSession } = useChat();
   const bottomRef = useRef<HTMLDivElement>(null);
   const [shareUrl, setShareUrl] = useState<string | null>(null);
 
@@ -80,10 +81,29 @@ export default function ChatPage() {
                   message={m}
                   onFeedback={feedback}
                   onConfirmRoute={confirmRoute}
+                  onConfirmTool={confirmTool}
                   onExecuteItems={executeItems}
                   pendingRoute={pendingRoute}
                 />
               ))}
+              {streaming && (() => {
+                const last = messages[messages.length - 1];
+                const hasActiveAgent = last?.type === "agent" && last.streaming;
+                if (hasActiveAgent) return null;
+                const isExecuting = last?.type === "tool_call" || last?.type === "tool_result" || (last?.type === "route" && last.confirmed);
+                return (
+                  <div className="max-w-3xl w-full mx-auto mt-4">
+                    <div className="flex items-center gap-2 px-4 py-3 text-sm text-muted-foreground">
+                      <span className="flex gap-1">
+                        <span className="w-1.5 h-1.5 rounded-full bg-current animate-bounce [animation-delay:0ms]" />
+                        <span className="w-1.5 h-1.5 rounded-full bg-current animate-bounce [animation-delay:150ms]" />
+                        <span className="w-1.5 h-1.5 rounded-full bg-current animate-bounce [animation-delay:300ms]" />
+                      </span>
+                      <span className="text-xs">{isExecuting ? "Executing…" : "Thinking…"}</span>
+                    </div>
+                  </div>
+                );
+              })()}
               <div ref={bottomRef} />
             </div>
           </div>

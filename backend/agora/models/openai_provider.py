@@ -64,6 +64,70 @@ class OpenAIProvider(ModelProvider):
             resp.raise_for_status()
             return self._parse_response(resp.json())
 
+    async def stream_generate_with_tools(
+        self, messages: list[Message], tools: list[dict],
+    ) -> AsyncIterator[GenerateResult | str]:
+        """Stream text tokens, then yield a GenerateResult if tool_calls are present."""
+        body = self._body(messages, tools)
+        body["stream"] = True
+        content_parts: list[str] = []
+        tool_calls_map: dict[int, dict] = {}  # index -> {id, name, arguments_str}
+
+        async with httpx.AsyncClient(timeout=300) as client:
+            async with client.stream("POST", self._url(), headers=self._headers(), json=body) as resp:
+                resp.raise_for_status()
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    data = line[6:]
+                    if data == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data)
+                        delta = chunk["choices"][0].get("delta", {})
+
+                        # Text content
+                        text = delta.get("content")
+                        if text:
+                            content_parts.append(text)
+                            yield text
+
+                        # Tool call deltas
+                        for tc_delta in delta.get("tool_calls") or []:
+                            idx = tc_delta["index"]
+                            if idx not in tool_calls_map:
+                                tool_calls_map[idx] = {
+                                    "id": tc_delta.get("id", ""),
+                                    "name": tc_delta.get("function", {}).get("name", ""),
+                                    "arguments": "",
+                                }
+                            entry = tool_calls_map[idx]
+                            if tc_delta.get("id"):
+                                entry["id"] = tc_delta["id"]
+                            fn = tc_delta.get("function", {})
+                            if fn.get("name"):
+                                entry["name"] = fn["name"]
+                            if fn.get("arguments"):
+                                entry["arguments"] += fn["arguments"]
+                    except (json.JSONDecodeError, KeyError, IndexError):
+                        continue
+
+        # If tool calls were accumulated, yield a GenerateResult
+        if tool_calls_map:
+            tcs: list[ToolCall] = []
+            for idx in sorted(tool_calls_map):
+                entry = tool_calls_map[idx]
+                try:
+                    args = json.loads(entry["arguments"])
+                except (json.JSONDecodeError, TypeError):
+                    args = {}
+                tcs.append(ToolCall(id=entry["id"], function_name=entry["name"], arguments=args))
+            yield GenerateResult(
+                content="".join(content_parts),
+                tool_calls=tcs,
+                finish_reason="tool_calls",
+            )
+
     @staticmethod
     def _parse_response(data: dict) -> GenerateResult:
         choice = data["choices"][0]

@@ -2,7 +2,7 @@
 
 import { useCallback, useRef, useState } from "react";
 import { ChatMessage } from "@/lib/types";
-import { streamChat, streamContinue, resetChat, sendFeedback, createSession, saveSession, loadSession, SSECallbacks } from "@/lib/api";
+import { streamChat, streamContinue, resetChat, restoreContext, sendFeedback, respondConfirm, createSession, saveSession, loadSession, SSECallbacks } from "@/lib/api";
 
 let msgId = 0;
 function nextId() {
@@ -65,7 +65,7 @@ export function useChat() {
           return [...prev, { id: nextId(), type: "agent", agent, role, content, streaming: true }];
         });
       },
-      onAgentDone(agent) {
+      onAgentDone(agent, _role) {
         const pending = bufferRef.current.get(agent);
         bufferRef.current.delete(agent);
         setMessages((prev) =>
@@ -106,6 +106,20 @@ export function useChat() {
           return prev;
         });
       },
+      onConfirm(content) {
+        try {
+          const data = JSON.parse(content);
+          setMessages((prev) => [
+            ...prev,
+            { id: nextId(), type: "confirm", content: data.desc || content, dangerous: data.dangerous },
+          ]);
+        } catch {
+          setMessages((prev) => [
+            ...prev,
+            { id: nextId(), type: "confirm", content },
+          ]);
+        }
+      },
       onRoute: opts?.onRoute,
       onDone() {
         if (rafRef.current) cancelAnimationFrame(rafRef.current);
@@ -119,7 +133,17 @@ export function useChat() {
         setStreaming(false);
       },
       onError(error) {
-        setMessages((prev) => [...prev, { id: nextId(), type: "system", content: `Error: ${error}` }]);
+        // Show error inline with the last tool_call if one is running, otherwise as system message
+        setMessages((prev) => {
+          const idx = prev.findLastIndex((m) => m.type === "tool_call" && m.toolStatus === "running");
+          if (idx >= 0) {
+            const next = [...prev];
+            next[idx] = { ...next[idx], toolStatus: "error" };
+            next.splice(idx + 1, 0, { id: nextId(), type: "system", content: `⚠ Error: ${error}` });
+            return next;
+          }
+          return [...prev, { id: nextId(), type: "system", content: `⚠ Error: ${error}` }];
+        });
         setStreaming(false);
       },
     }),
@@ -224,11 +248,21 @@ export function useChat() {
     [streaming, send],
   );
 
+  const confirmTool = useCallback(async (approved: boolean) => {
+    await respondConfirm(approved);
+    setMessages((prev) =>
+      prev.map((m) => (m.type === "confirm" && !m.confirmed ? { ...m, confirmed: true } : m)),
+    );
+  }, []);
+
   const selectSession = useCallback(async (sid: string) => {
     abortRef.current?.abort();
     await resetChat();
     const data = await loadSession(sid);
-    setMessages(data.messages as ChatMessage[]);
+    const msgs = data.messages as ChatMessage[];
+    setMessages(msgs);
+    // Restore backend context from session history
+    await restoreContext(msgs);
     sessionIdRef.current = sid;
     setSessionId(sid);
     setStreaming(false);
@@ -236,5 +270,5 @@ export function useChat() {
     lastConfirmedRouteRef.current = null;
   }, []);
 
-  return { messages, streaming, pendingRoute, sessionId, send, confirmRoute, stop, reset, feedback, executeItems, selectSession };
+  return { messages, streaming, pendingRoute, sessionId, send, confirmRoute, confirmTool, stop, reset, feedback, executeItems, selectSession };
 }

@@ -18,6 +18,7 @@ interface MessageBubbleProps {
   message: ChatMessage;
   onFeedback?: (id: string, rating: "up" | "down") => void;
   onConfirmRoute?: (route: string) => void;
+  onConfirmTool?: (approved: boolean) => void;
   onExecuteItems?: (items: string[]) => void;
   pendingRoute?: string | null;
 }
@@ -155,7 +156,26 @@ function SynthesizerHighlights({ content, onExecuteItems }: { content: string; o
   );
 }
 
-export function MessageBubble({ message, onFeedback, onConfirmRoute, onExecuteItems, pendingRoute }: MessageBubbleProps) {
+function ItemProgress({ content }: { content: string }) {
+  const match = content.match(/###\s*\[(\d+)\/(\d+)\]\s*(.*)/);
+  if (!match) return null;
+  const [, current, total, title] = match;
+  const cur = parseInt(current), tot = parseInt(total);
+  const pct = Math.round((cur / tot) * 100);
+  return (
+    <div className="max-w-3xl w-full mx-auto mt-3">
+      <div className="flex items-center gap-3 px-4 py-2 rounded-lg border border-cyan-500/30 bg-cyan-500/5 text-sm">
+        <span className="text-cyan-400 font-mono text-xs font-semibold">[{current}/{total}]</span>
+        <span className="flex-1 truncate">{title}</span>
+        <div className="w-24 h-1.5 rounded-full bg-muted overflow-hidden">
+          <div className="h-full rounded-full bg-cyan-400 transition-all duration-300" style={{ width: `${pct}%` }} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export function MessageBubble({ message, onFeedback, onConfirmRoute, onConfirmTool, onExecuteItems, pendingRoute }: MessageBubbleProps) {
   if (message.type === "user") {
     return (
       <div className="max-w-3xl w-full mx-auto mt-4">
@@ -212,18 +232,27 @@ export function MessageBubble({ message, onFeedback, onConfirmRoute, onExecuteIt
 
   if (message.type === "tool_call") {
     const isDangerous = message.content.startsWith("shell(");
+    const isRunning = message.toolStatus === "running";
     return (
       <div className="max-w-3xl w-full mx-auto mt-2">
         <div className={cn(
-          "flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-mono border",
+          "flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-mono border transition-colors",
           isDangerous ? "border-amber-500/30 bg-amber-500/5" : "border-border bg-muted/30",
+          isRunning && "border-cyan-500/40 bg-cyan-500/5",
           message.toolStatus === "skipped" && "opacity-50 line-through",
+          message.toolStatus === "error" && "border-red-500/40 bg-red-500/5",
         )}>
-          <span>{message.toolStatus === "running" ? "⏳" : message.toolStatus === "done" ? "✅" : message.toolStatus === "skipped" ? "⏭️" : "🔧"}</span>
-          <span className={isDangerous ? "text-amber-400" : "text-muted-foreground"}>
+          <span className={isRunning ? "animate-spin" : ""}>
+            {isRunning ? "⚙️" : message.toolStatus === "done" ? "✅" : message.toolStatus === "skipped" ? "⏭️" : message.toolStatus === "error" ? "❌" : "🔧"}
+          </span>
+          <span className={cn(
+            isDangerous ? "text-amber-400" : "text-muted-foreground",
+            isRunning && "text-cyan-400",
+          )}>
             🔧 {message.content}
           </span>
-          {isDangerous && <span className="text-amber-400 text-[10px] ml-auto">⚠ shell</span>}
+          {isRunning && <span className="ml-auto text-[10px] text-cyan-400 animate-pulse">running…</span>}
+          {isDangerous && !isRunning && <span className="text-amber-400 text-[10px] ml-auto">⚠ shell</span>}
         </div>
       </div>
     );
@@ -244,13 +273,46 @@ export function MessageBubble({ message, onFeedback, onConfirmRoute, onExecuteIt
     );
   }
 
+  if (message.type === "confirm") {
+    return (
+      <div className="max-w-3xl w-full mx-auto mt-2">
+        <div className={cn(
+          "px-4 py-3 rounded-lg border text-sm",
+          message.dangerous ? "border-red-500/40 bg-red-500/5" : "border-amber-500/30 bg-amber-500/5",
+        )}>
+          <div className="flex items-center gap-2 mb-2">
+            <span>{message.dangerous ? "🚨" : "⚠️"}</span>
+            <span className={message.dangerous ? "text-red-400 font-semibold" : "text-amber-400 font-semibold"}>
+              {message.dangerous ? "Dangerous operation" : "Confirm operation"}
+            </span>
+          </div>
+          <pre className="text-xs font-mono text-muted-foreground mb-3 whitespace-pre-wrap">{message.content}</pre>
+          {!message.confirmed && onConfirmTool && (
+            <div className="flex gap-2">
+              <Button size="sm" onClick={() => onConfirmTool(true)}>✓ Approve</Button>
+              <Button size="sm" variant="outline" onClick={() => onConfirmTool(false)}>✕ Reject</Button>
+            </div>
+          )}
+          {message.confirmed && <span className="text-xs text-muted-foreground">✓ Responded</span>}
+        </div>
+      </div>
+    );
+  }
+
   const name = message.agent ?? "agent";
   const colorClass = AGENT_COLORS[name] ?? "text-muted-foreground";
   const dotClass = AGENT_DOT_COLORS[name] ?? "bg-muted-foreground";
   const borderClass = AGENT_BORDER_COLORS[name] ?? "border-l-muted-foreground";
 
+  // For executor messages, extract [i/n] progress headers
+  const progressMatch = name === "executor" ? message.content.match(/###\s*\[(\d+)\/(\d+)\]\s*(.*)/) : null;
+  const displayContent = progressMatch
+    ? message.content.replace(/###\s*\[\d+\/\d+\]\s*.*\n?/, "").trim()
+    : message.content;
+
   return (
     <div className="max-w-3xl w-full mx-auto mt-4 animate-in fade-in slide-in-from-bottom-1 duration-200">
+      {progressMatch && <ItemProgress content={message.content} />}
       <div className="flex items-center gap-2 px-1 mb-1.5">
         <span className={cn("w-2 h-2 rounded-full", dotClass)} />
         <span className={cn("font-semibold text-[13px]", colorClass)}>{name}</span>
@@ -270,7 +332,7 @@ export function MessageBubble({ message, onFeedback, onConfirmRoute, onExecuteIt
           borderClass,
         )}
       >
-        <MarkdownContent content={message.content} />
+        <MarkdownContent content={displayContent} />
         {message.streaming && (
           <span className="inline-block w-[2px] h-4 bg-primary ml-0.5 animate-pulse align-text-bottom" />
         )}
