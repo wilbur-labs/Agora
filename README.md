@@ -245,8 +245,11 @@ Agora/
 - [x] Multiple model backends
 - [x] LLM-as-Judge test suite
 - [x] Docker Compose deployment
-- [ ] Embedding-based semantic search
-- [ ] Web UI
+- [x] Embedding-based semantic search
+- [x] Web UI (Next.js + SSE streaming + session management)
+- [x] Streaming tool-calling with real-time output
+- [x] Human-in-the-Loop confirmation for dangerous operations
+- [x] Executor workspace configuration
 - [ ] MCP server extensions
 - [ ] Skill marketplace
 
