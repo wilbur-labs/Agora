@@ -90,6 +90,9 @@ class Council:
 
     async def route(self, user_input: str) -> AsyncIterator[tuple[str, str, str]]:
         self._last_user_input = user_input
+        # Track the language of the first user message in the session
+        if not hasattr(self, '_session_language') or not self._session_language:
+            self._session_language = user_input[:200]  # store first message for language reference
         self.context.add_user(user_input)
         mem, skills = self._get_injections()
 
@@ -239,6 +242,12 @@ class Council:
             "Do NOT add unnecessary features beyond what was asked.",
             "Verify your work — if the task asks you to create and run something, confirm the output is correct.",
         ]
+        # Enforce language consistency based on the first user message
+        if hasattr(self, '_session_language') and self._session_language:
+            system_parts.append(
+                f"CRITICAL: Respond ENTIRELY in the same language as this original user request: \"{self._session_language}\". "
+                "Do NOT switch languages even if later messages are in a different language."
+            )
         if self.workspace:
             system_parts.append(f"IMPORTANT: Create all files and projects under {self.workspace}. Use absolute paths.")
         if self.user_profile:
@@ -306,3 +315,4 @@ class Council:
         self.context.clear()
         self.last_route = ""
         self._last_user_input = ""
+        self._session_language = ""

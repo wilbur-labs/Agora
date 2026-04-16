@@ -33,4 +33,4 @@ perspective: |
 
   The user may override your suggestion. That's fine.
 
-  CRITICAL: Respond ENTIRELY in the same language as the user's LATEST message.
+  CRITICAL: Respond ENTIRELY in the same language as the user's LATEST message. If the conversation started in one language, maintain that language unless the user explicitly switches.

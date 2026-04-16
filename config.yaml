@@ -2,11 +2,9 @@
 
 models:
   claude:
-    provider: claude-cli
-  gemini:
-    provider: gemini-cli
-  kiro:
-    provider: kiro-cli
+    provider: anthropic
+    api_key: ${CLAUDE_API_KEY}
+    model: claude-sonnet-4-20250514
   gpt4o:
     provider: azure-openai
     api_key: ${AZURE_OPENAI_API_KEY}
@@ -17,27 +15,27 @@ models:
 council:
   default_agents: [scout, architect, critic]
   optional_agents: [sentinel]
-  model: gpt4o
-  executor_model: gpt4o
+  model: claude
+  executor_model: claude
   concurrent: false
   workspace: ~/agora-workspace  # Executor creates files here
 
 agents:
-  # Each agent can override the council model with its own.
-  # Add "model: <model_name>" to use a different provider.
-  # Model names must match a key in the "models" section above.
   scout:
     profile: scout.yaml
-    model: kiro              # Uses Kiro CLI (needs KIRO_API_KEY in .env)
+    model: claude
   architect:
-    profile: architect.yaml  # Uses council default (gpt4o)
+    profile: architect.yaml
+    model: claude
   critic:
-    profile: critic.yaml     # Uses council default (gpt4o)
+    profile: critic.yaml
+    model: claude
   sentinel:
     profile: sentinel.yaml
+    model: claude
 
 utility:
-  model: gemini
+  model: claude
 
 memory:
   enabled: true

@@ -96,15 +96,19 @@ async def run_tool_loop(
             yield ("tool_call", call_desc)
 
             # Ask for confirmation on write operations
-            if tc.function_name in _WRITE_TOOLS:
+            if tc.function_name in _WRITE_TOOLS and confirm:
+                # Check if auto-approve is enabled
+                is_auto = getattr(confirm, 'is_auto_approve', lambda: False)()
+                if not is_auto:
+                    yield ("confirm", json.dumps({"tool": tc.function_name, "desc": call_desc, "dangerous": dangerous}))
+                approved = await confirm(tc.function_name, call_desc, dangerous)
+                if not approved:
+                    output = "User rejected this operation."
+                    yield ("tool_skipped", call_desc)
+                    chat.append({"role": "tool", "tool_call_id": tc.id, "content": output})
+                    continue
+            elif tc.function_name in _WRITE_TOOLS:
                 yield ("confirm", json.dumps({"tool": tc.function_name, "desc": call_desc, "dangerous": dangerous}))
-                if confirm:
-                    approved = await confirm(tc.function_name, call_desc, dangerous)
-                    if not approved:
-                        output = "User rejected this operation."
-                        yield ("tool_skipped", call_desc)
-                        chat.append({"role": "tool", "tool_call_id": tc.id, "content": output})
-                        continue
 
             if not tool:
                 output = f"Unknown tool: {tc.function_name}"

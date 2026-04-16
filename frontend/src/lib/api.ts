@@ -87,6 +87,20 @@ export async function respondConfirm(approved: boolean): Promise<void> {
   });
 }
 
+export async function setAutoApprove(enabled: boolean): Promise<void> {
+  await fetch(`${getApiBase()}/api/chat/auto-approve`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled }),
+  });
+}
+
+export async function getAutoApprove(): Promise<boolean> {
+  const res = await fetch(`${getApiBase()}/api/chat/auto-approve`);
+  const data = await res.json();
+  return data.auto_approve;
+}
+
 export type SSECallbacks = {
   onToken: (agent: string, role: string, content: string) => void;
   onAgentDone: (agent: string, role: string) => void;

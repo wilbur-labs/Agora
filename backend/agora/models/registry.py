@@ -11,6 +11,7 @@ _PROVIDER_MAP = {
     "kiro-cli": "agora.models.providers:KiroCLIProvider",
     "openai-api": "agora.models.openai_provider:OpenAIProvider",
     "azure-openai": "agora.models.openai_provider:AzureOpenAIProvider",
+    "anthropic": "agora.models.anthropic_provider:AnthropicProvider",
 }
 
 
@@ -52,6 +53,11 @@ class ModelRegistry:
                 base_url=cfg.get("base_url", ""),
                 deployment=cfg.get("deployment", ""),
                 api_version=cfg.get("api_version", "2024-02-01"),
+            )
+        if provider_type == "anthropic":
+            return cls(
+                api_key=cfg.get("api_key", ""),
+                model=cfg.get("model", "claude-sonnet-4-20250514"),
             )
         return cls()
 

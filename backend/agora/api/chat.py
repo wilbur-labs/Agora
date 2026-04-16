@@ -18,6 +18,7 @@ router = APIRouter()
 # Pending confirmation state for Human-in-the-Loop
 _confirm_event: asyncio.Event | None = None
 _confirm_result: bool = False
+_auto_approve: bool = False
 
 
 class ChatRequest(BaseModel):
@@ -86,15 +87,16 @@ async def chat_continue(req: ContinueRequest):
 
     # Set up web-based Human-in-the-Loop confirmation
     async def web_confirm(tool_name: str, desc: str, dangerous: bool) -> bool:
-        global _confirm_event, _confirm_result
+        global _confirm_event, _confirm_result, _auto_approve
+        if _auto_approve:
+            return True
         _confirm_event = asyncio.Event()
         _confirm_result = False
-        # The SSE stream will yield a confirm event (via _tool_execute yielding ("confirm", desc))
-        # We wait here until the user responds via POST /chat/confirm
         await _confirm_event.wait()
         _confirm_event = None
         return _confirm_result
 
+    web_confirm.is_auto_approve = lambda: _auto_approve  # type: ignore[attr-defined]
     council.confirm_callback = web_confirm
 
     async def stream():
@@ -161,3 +163,21 @@ async def chat_confirm(req: ConfirmResponse):
     _confirm_result = req.approved
     _confirm_event.set()
     return {"status": "ok"}
+
+
+class AutoApproveRequest(BaseModel):
+    enabled: bool
+
+
+@router.post("/chat/auto-approve")
+async def chat_auto_approve(req: AutoApproveRequest):
+    """Toggle auto-approve mode for tool confirmations."""
+    global _auto_approve
+    _auto_approve = req.enabled
+    return {"status": "ok", "auto_approve": _auto_approve}
+
+
+@router.get("/chat/auto-approve")
+async def chat_auto_approve_status():
+    """Get current auto-approve status."""
+    return {"auto_approve": _auto_approve}

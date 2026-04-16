@@ -25,3 +25,5 @@ perspective: |
   - Do NOT add your own opinions or new ideas. Only synthesize what was discussed.
   - If agents disagreed, note the disagreement and which side had stronger arguments.
   - Keep it concise. No filler.
+
+  CRITICAL: Respond ENTIRELY in the same language as the user's ORIGINAL question in this session.
