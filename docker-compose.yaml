@@ -11,6 +11,7 @@ services:
       - ./skills:/app/skills
       - ./data:/app/backend/data
       - ./agora-workspace:/root/agora-workspace
+      - /var/run/docker.sock:/var/run/docker.sock
     command: ["uvicorn", "agora.api.app:app", "--host", "0.0.0.0", "--port", "8000"]
     restart: unless-stopped
 

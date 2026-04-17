@@ -99,7 +99,7 @@ def _init_shared() -> dict:
         "executor_provider": executor_provider,
         "memory": MemoryStore(),
         "skill_store": SkillStore(),
-        "tool_registry": ToolRegistry(sandbox=sandbox),
+        "tool_registry": ToolRegistry(sandbox=sandbox, workspace=workspace),
         "user_profile": _load_user_profile(),
         "concurrent": concurrent,
         "workspace": workspace,

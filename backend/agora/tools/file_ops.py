@@ -8,6 +8,14 @@ from .base import Tool, ToolResult
 _MAX_READ = 100_000  # chars
 
 
+def _resolve(path: str, workspace: str) -> Path:
+    """Resolve path: if workspace is set and path is relative, resolve under workspace."""
+    p = Path(path).expanduser()
+    if workspace and not p.is_absolute():
+        p = Path(workspace) / p
+    return p
+
+
 class ReadFile(Tool):
     name = "read_file"
     description = "Read the contents of a file. Returns the text content."
@@ -19,8 +27,11 @@ class ReadFile(Tool):
         "required": ["path"],
     }
 
+    def __init__(self, workspace: str = ""):
+        self._workspace = workspace
+
     async def execute(self, *, path: str, **_) -> ToolResult:
-        p = Path(path).expanduser()
+        p = _resolve(path, self._workspace)
         if not p.exists():
             return ToolResult(False, "", f"File not found: {path}")
         if not p.is_file():
@@ -43,14 +54,16 @@ class WriteFile(Tool):
         "required": ["path", "content"],
     }
 
+    def __init__(self, workspace: str = ""):
+        self._workspace = workspace
+
     async def execute(self, *, path: str, content: str, **_) -> ToolResult:
-        p = Path(path).expanduser()
+        p = _resolve(path, self._workspace)
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content)
-        # Track as artifact
         from agora.api.artifacts import track_artifact
         track_artifact(str(p))
-        return ToolResult(True, f"Wrote {len(content)} chars to {path}")
+        return ToolResult(True, f"Wrote {len(content)} chars to {p}")
 
 
 class PatchFile(Tool):
@@ -66,8 +79,11 @@ class PatchFile(Tool):
         "required": ["path", "old_str", "new_str"],
     }
 
+    def __init__(self, workspace: str = ""):
+        self._workspace = workspace
+
     async def execute(self, *, path: str, old_str: str, new_str: str, **_) -> ToolResult:
-        p = Path(path).expanduser()
+        p = _resolve(path, self._workspace)
         if not p.is_file():
             return ToolResult(False, "", f"File not found: {path}")
         text = p.read_text()
@@ -79,7 +95,7 @@ class PatchFile(Tool):
         p.write_text(text.replace(old_str, new_str, 1))
         from agora.api.artifacts import track_artifact
         track_artifact(str(p))
-        return ToolResult(True, f"Patched {path}")
+        return ToolResult(True, f"Patched {p}")
 
 
 class ListDir(Tool):
@@ -92,8 +108,11 @@ class ListDir(Tool):
         },
     }
 
+    def __init__(self, workspace: str = ""):
+        self._workspace = workspace
+
     async def execute(self, *, path: str = ".", **_) -> ToolResult:
-        p = Path(path).expanduser()
+        p = _resolve(path, self._workspace)
         if not p.is_dir():
             return ToolResult(False, "", f"Not a directory: {path}")
         entries = sorted(p.iterdir(), key=lambda x: (x.is_file(), x.name))

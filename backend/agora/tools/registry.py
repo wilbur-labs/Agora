@@ -8,9 +8,9 @@ from .web import WebSearch, WebFetch
 
 
 class ToolRegistry:
-    def __init__(self, sandbox=None):
+    def __init__(self, sandbox=None, workspace: str = ""):
         self._tools: dict[str, Tool] = {}
-        for t in [ReadFile(), WriteFile(), PatchFile(), ListDir(), Shell(sandbox=sandbox), WebSearch(), WebFetch()]:
+        for t in [ReadFile(workspace), WriteFile(workspace), PatchFile(workspace), ListDir(workspace), Shell(sandbox=sandbox), WebSearch(), WebFetch()]:
             self._tools[t.name] = t
 
     def get(self, name: str) -> Tool | None:
