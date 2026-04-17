@@ -27,15 +27,19 @@ export async function setActiveAgents(names: string[]): Promise<Agent[]> {
   return (await res.json()).agents;
 }
 
-export async function resetChat(): Promise<void> {
-  await fetch(`${getApiBase()}/api/chat/reset`, { method: "POST" });
+export async function resetChat(sessionId?: string | null): Promise<void> {
+  await fetch(`${getApiBase()}/api/chat/reset`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session_id: sessionId }),
+  });
 }
 
-export async function restoreContext(messages: object[]): Promise<void> {
+export async function restoreContext(messages: object[], sessionId?: string | null): Promise<void> {
   await fetch(`${getApiBase()}/api/chat/restore`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ messages }),
+    body: JSON.stringify({ messages, session_id: sessionId }),
   });
 }
 
@@ -196,15 +200,15 @@ function parseSSEStream(
 }
 
 /** Phase 1: send message, get moderator routing only */
-export function streamChat(message: string, cb: SSECallbacks): AbortController {
+export function streamChat(message: string, cb: SSECallbacks, sessionId?: string | null): AbortController {
   const controller = new AbortController();
-  parseSSEStream("/api/chat", { message }, cb, controller.signal);
+  parseSSEStream("/api/chat", { message, session_id: sessionId }, cb, controller.signal);
   return controller;
 }
 
 /** Phase 2: user confirmed route, execute it */
-export function streamContinue(route: string, cb: SSECallbacks): AbortController {
+export function streamContinue(route: string, cb: SSECallbacks, sessionId?: string | null): AbortController {
   const controller = new AbortController();
-  parseSSEStream("/api/chat/continue", { route }, cb, controller.signal);
+  parseSSEStream("/api/chat/continue", { route, session_id: sessionId }, cb, controller.signal);
   return controller;
 }
