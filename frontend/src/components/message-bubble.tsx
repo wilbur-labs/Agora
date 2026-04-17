@@ -142,30 +142,34 @@ function SynthesizerHighlights({ content, onExecuteItems }: { content: string; o
     });
   }, []);
   if (!questions && actionLines.length === 0) return null;
+  const hasQuestions = !!questions && questions.toLowerCase() !== "none." && questions.toLowerCase() !== "none";
   return (
     <div className="mt-3 space-y-2">
-      {actionLines.length > 0 && (
-        <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 px-4 py-3">
-          <div className="text-xs font-semibold text-emerald-400 mb-2">📋 Action Items</div>
-          <div className="space-y-1.5">
-            {actionLines.map((item, i) => (
-              <label key={i} className="flex items-start gap-2 text-sm cursor-pointer hover:bg-emerald-500/5 rounded px-1 py-0.5">
-                <input type="checkbox" checked={checked.has(i)} onChange={() => toggle(i)} className="mt-1 accent-emerald-500" />
-                <span className={checked.has(i) ? "" : "text-muted-foreground"}>{item}</span>
-              </label>
-            ))}
-          </div>
-          {checked.size > 0 && onExecuteItems && (
-            <Button size="sm" className="mt-3" onClick={() => onExecuteItems(actionLines.filter((_, i) => checked.has(i)))}>
-              ▶ Execute Selected ({checked.size})
-            </Button>
-          )}
-        </div>
-      )}
       {questions && (
         <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-4 py-3">
           <div className="text-xs font-semibold text-amber-400 mb-2">❓ Questions for You</div>
           <div className="text-sm leading-relaxed whitespace-pre-wrap">{questions}</div>
+        </div>
+      )}
+      {actionLines.length > 0 && (
+        <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 px-4 py-3">
+          <div className="text-xs font-semibold text-emerald-400 mb-2">📋 Action Items</div>
+          {hasQuestions && (
+            <p className="text-xs text-amber-400 mb-2">⚠ Answer the questions above first, then select items to execute.</p>
+          )}
+          <div className="space-y-1.5">
+            {actionLines.map((item, i) => (
+              <label key={i} className="flex items-start gap-2 text-sm cursor-pointer hover:bg-emerald-500/5 rounded px-1 py-0.5">
+                <input type="checkbox" checked={checked.has(i)} onChange={() => toggle(i)} className="mt-1 accent-emerald-500" disabled={hasQuestions} />
+                <span className={checked.has(i) ? "" : "text-muted-foreground"}>{item}</span>
+              </label>
+            ))}
+          </div>
+          {checked.size > 0 && onExecuteItems && !hasQuestions && (
+            <Button size="sm" className="mt-3" onClick={() => onExecuteItems(actionLines.filter((_, i) => checked.has(i)))}>
+              ▶ Execute Selected ({checked.size})
+            </Button>
+          )}
         </div>
       )}
     </div>

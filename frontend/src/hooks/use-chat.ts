@@ -256,12 +256,23 @@ export function useChat() {
   }, []);
 
   const selectSession = useCallback(async (sid: string) => {
+    // Save current session before switching (including any in-progress streaming)
     abortRef.current?.abort();
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    bufferRef.current.clear();
+    if (sessionIdRef.current) {
+      // Use a promise to get current messages from state
+      const currentSid = sessionIdRef.current;
+      setMessages((prev) => {
+        const snapshot = prev.map((m) => (m.streaming ? { ...m, streaming: false } : m));
+        saveSession(currentSid, snapshot).catch(() => {});
+        return snapshot;
+      });
+    }
     await resetChat();
     const data = await loadSession(sid);
     const msgs = data.messages as ChatMessage[];
     setMessages(msgs);
-    // Restore backend context from session history
     await restoreContext(msgs);
     sessionIdRef.current = sid;
     setSessionId(sid);

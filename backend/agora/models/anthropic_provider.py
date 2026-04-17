@@ -34,9 +34,18 @@ class AnthropicProvider(ModelProvider):
             "Content-Type": "application/json",
         }
 
+    async def _check_response(self, resp: httpx.Response, msgs: list[dict]) -> None:
+        """Log error details and raise on non-200."""
+        if resp.status_code != 200:
+            body = await resp.aread() if hasattr(resp, 'aread') else b""
+            logger.error("Anthropic %d: %s | roles=%s", resp.status_code, body.decode()[:500], [m["role"] for m in msgs])
+        resp.raise_for_status()
+
     def _convert_messages(self, messages: list[Message]) -> tuple[str, list[dict]]:
         """Convert OpenAI-style messages to Anthropic format.
         Returns (system_prompt, messages_list).
+        Anthropic requires strict user/assistant alternation, so consecutive
+        same-role messages are merged.
         """
         system = ""
         converted = []
@@ -69,7 +78,11 @@ class AnthropicProvider(ModelProvider):
                         })
                     converted.append({"role": "assistant", "content": blocks})
                 else:
-                    converted.append({"role": "assistant", "content": content or ""})
+                    # Merge with previous assistant message if consecutive
+                    if converted and converted[-1]["role"] == "assistant" and isinstance(converted[-1]["content"], str):
+                        converted[-1]["content"] += "\n\n" + (content or "")
+                    else:
+                        converted.append({"role": "assistant", "content": content or ""})
 
             elif role == "tool":
                 # Tool result message
@@ -83,7 +96,20 @@ class AnthropicProvider(ModelProvider):
                 })
 
             elif role == "user":
-                converted.append({"role": "user", "content": content or ""})
+                # Merge with previous user message if consecutive
+                if converted and converted[-1]["role"] == "user" and isinstance(converted[-1]["content"], str):
+                    converted[-1]["content"] += "\n\n" + (content or "")
+                else:
+                    converted.append({"role": "user", "content": content or ""})
+
+        # Anthropic requires first message to be user role
+        if converted and converted[0]["role"] != "user":
+            converted.insert(0, {"role": "user", "content": "(context from prior discussion)"})
+
+        # Anthropic rejects trailing whitespace in assistant messages
+        for m in converted:
+            if m["role"] == "assistant" and isinstance(m["content"], str):
+                m["content"] = m["content"].strip()
 
         return system, converted
 
@@ -106,10 +132,12 @@ class AnthropicProvider(ModelProvider):
 
     async def stream(self, messages: list[Message]) -> AsyncIterator[str]:
         system, msgs = self._convert_messages(messages)
+        logger.info("Anthropic stream: system=%d chars, msgs=%d, roles=%s",
+                     len(system), len(msgs), [m["role"] for m in msgs])
         body: dict[str, Any] = {
             "model": self.model,
             "messages": msgs,
-            "max_tokens": 4096,
+            "max_tokens": 16384,
             "stream": True,
         }
         if system:
@@ -120,7 +148,7 @@ class AnthropicProvider(ModelProvider):
                 "POST", f"{self.base_url}/messages",
                 headers=self._headers(), json=body,
             ) as resp:
-                resp.raise_for_status()
+                await self._check_response(resp, msgs)
                 async for line in resp.aiter_lines():
                     if not line.startswith("data: "):
                         continue
@@ -141,7 +169,7 @@ class AnthropicProvider(ModelProvider):
         body: dict[str, Any] = {
             "model": self.model,
             "messages": msgs,
-            "max_tokens": 4096,
+            "max_tokens": 16384,
         }
         if system:
             body["system"] = system
@@ -157,7 +185,7 @@ class AnthropicProvider(ModelProvider):
                         f"{self.base_url}/messages",
                         headers=self._headers(), json=body,
                     )
-                    resp.raise_for_status()
+                    await self._check_response(resp, msgs)
                     return self._parse_response(resp.json())
             except (httpx.ConnectError, httpx.HTTPStatusError) as e:
                 last_exc = e
@@ -174,7 +202,7 @@ class AnthropicProvider(ModelProvider):
         body: dict[str, Any] = {
             "model": self.model,
             "messages": msgs,
-            "max_tokens": 4096,
+            "max_tokens": 16384,
             "stream": True,
         }
         if system:
@@ -192,7 +220,7 @@ class AnthropicProvider(ModelProvider):
                 "POST", f"{self.base_url}/messages",
                 headers=self._headers(), json=body,
             ) as resp:
-                resp.raise_for_status()
+                await self._check_response(resp, msgs)
                 async for line in resp.aiter_lines():
                     if not line.startswith("data: "):
                         continue

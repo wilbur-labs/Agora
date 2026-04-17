@@ -42,18 +42,17 @@ def _agent_events(aiter):
     """Convert agent stream to SSE dicts. Handles both discussion and executor events."""
     async def gen():
         async for name, event_or_role, chunk in aiter:
-            # Executor tool events: event_or_role is event_type (tool_call, tool_result, etc.)
-            if name == "executor" and event_or_role in ("tool_call", "tool_result", "tool_skipped", "error"):
+            # Tool events from any agent (executor, scout research phase, etc.)
+            if event_or_role in ("tool_call", "tool_result", "tool_skipped", "error"):
                 yield {"event": event_or_role, "data": json.dumps({"agent": name, "content": chunk})}
-            elif name == "executor" and event_or_role == "confirm":
-                # Human-in-the-Loop: send confirm event and wait for user response
+            elif event_or_role == "confirm":
                 yield {"event": "confirm", "data": json.dumps({"agent": name, "content": chunk})}
-            elif name == "executor" and event_or_role == "done":
+            elif event_or_role == "done":
                 continue  # skip internal done, we emit our own
-            elif name == "executor" and event_or_role == "agent_done":
-                yield {"event": "agent_done", "data": json.dumps({"agent": name, "role": "Task Executor"})}
-            elif name == "executor" and event_or_role == "text":
-                yield {"event": "token", "data": json.dumps({"agent": name, "role": "Task Executor", "content": chunk})}
+            elif event_or_role == "agent_done":
+                yield {"event": "agent_done", "data": json.dumps({"agent": name, "role": "Task Executor" if name == "executor" else event_or_role})}
+            elif event_or_role == "text":
+                yield {"event": "token", "data": json.dumps({"agent": name, "role": "Task Executor" if name == "executor" else "Researcher", "content": chunk})}
             elif chunk == "":
                 yield {"event": "agent_done", "data": json.dumps({"agent": name, "role": event_or_role})}
             else:

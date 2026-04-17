@@ -120,11 +120,92 @@ class Council:
     async def stream_discuss(self) -> AsyncIterator[tuple[str, str, str]]:
         mem, skills = self._get_injections()
         for agent in self.agents:
-            async for item in self._stream_agent(agent, mem, skills):
-                yield item
+            # Scout gets a research phase with web tools before discussing
+            if agent.name == "scout" and self.executor_provider and self.tool_registry.get("web_search"):
+                async for item in self._research_phase(agent):
+                    yield item
+            else:
+                async for item in self._stream_agent(agent, mem, skills):
+                    yield item
         if self.synthesizer:
             async for item in self._stream_agent(self.synthesizer, mem, skills):
                 yield item
+
+    async def _research_phase(self, agent: Agent) -> AsyncIterator[tuple[str, str, str]]:
+        """Scout uses web_search/web_fetch to gather info, then provides a brief summary.
+        
+        Full research details are stored in context for other agents.
+        User only sees a concise summary.
+        """
+        from agora.tools.executor import run_tool_loop
+        from agora.tools.registry import ToolRegistry
+
+        # Build a research-only tool registry (web tools only)
+        research_tools = ToolRegistry.__new__(ToolRegistry)
+        research_tools._tools = {
+            name: tool for name, tool in self.tool_registry._tools.items()
+            if name in ("web_search", "web_fetch")
+        }
+
+        msgs = self.context.get_messages()
+        last_user = ""
+        for m in reversed(msgs):
+            if m.get("role") == "user":
+                last_user = m.get("content", "")
+                break
+
+        system = (
+            f"You are {agent.name}, a research specialist.\n\n"
+            "RESEARCH STRATEGY:\n"
+            "1. Identify specific projects, tools, or technologies mentioned in the user's question\n"
+            "2. Search for their official pages (GitHub, docs) FIRST\n"
+            "3. Use web_fetch to read their README or overview pages\n"
+            "4. Then search for comparisons, reviews, or alternatives\n\n"
+            "RULES:\n"
+            "- Do at most 3 web_search calls and 2 web_fetch calls\n"
+            "- Focus on architecture, features, pros/cons of mentioned projects\n\n"
+            "OUTPUT FORMAT (strict):\n"
+            "After research, output EXACTLY this format:\n"
+            "---SUMMARY---\n"
+            "(2-3 bullet points of key findings, max 100 words total)\n"
+            "---DETAILS---\n"
+            "(Full organized research notes for other team members)\n\n"
+            "CRITICAL: Respond in the same language as the user's question."
+        )
+        messages: list[dict] = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": last_user},
+        ]
+
+        full_text = ""
+        async for event_type, content in run_tool_loop(
+            provider=self.executor_provider,
+            messages=messages,
+            tools=research_tools,
+            max_iterations=5,
+        ):
+            if event_type == "text":
+                full_text += content
+            elif event_type == "tool_call":
+                yield (agent.name, "tool_call", content)
+            elif event_type == "tool_result":
+                yield (agent.name, "tool_result", content)
+
+        # Split output: show summary to user, store full details in context
+        if "---SUMMARY---" in full_text and "---DETAILS---" in full_text:
+            summary = full_text.split("---SUMMARY---")[1].split("---DETAILS---")[0].strip()
+            details = full_text.split("---DETAILS---")[1].strip()
+            # Yield only the summary to the user
+            yield (agent.name, agent.role, summary)
+            yield (agent.name, agent.role, "")
+            # Store full details in context for other agents
+            self.context.add_agent(agent.name, f"Research Summary:\n{summary}\n\nDetailed Findings:\n{details}")
+        else:
+            # Fallback: show everything
+            yield (agent.name, agent.role, full_text)
+            yield (agent.name, agent.role, "")
+            if full_text:
+                self.context.add_agent(agent.name, full_text)
 
     async def stream_discuss_concurrent(self) -> AsyncIterator[tuple[str, str, str]]:
         """Concurrent discussion — all agents respond in parallel, results yielded in order."""
