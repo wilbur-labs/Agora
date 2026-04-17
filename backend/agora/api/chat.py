@@ -9,7 +9,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
-from agora.api._state import get_council
+from agora.api._state import get_council, reset_council
 
 logger = logging.getLogger(__name__)
 
@@ -23,10 +23,12 @@ _auto_approve: bool = False
 
 class ChatRequest(BaseModel):
     message: str
+    session_id: str | None = None
 
 
 class ContinueRequest(BaseModel):
     route: str
+    session_id: str | None = None
 
 
 class FeedbackRequest(BaseModel):
@@ -36,6 +38,7 @@ class FeedbackRequest(BaseModel):
 
 class RestoreContextRequest(BaseModel):
     messages: list[dict]
+    session_id: str | None = None
 
 
 def _agent_events(aiter):
@@ -64,7 +67,7 @@ def _agent_events(aiter):
 
 @router.post("/chat")
 async def chat(req: ChatRequest):
-    council = get_council()
+    council = get_council(req.session_id)
 
     async def stream():
         try:
@@ -83,7 +86,7 @@ async def chat(req: ChatRequest):
 
 @router.post("/chat/continue")
 async def chat_continue(req: ContinueRequest):
-    council = get_council()
+    council = get_council(req.session_id)
     route = req.route.upper()
 
     # Set up web-based Human-in-the-Loop confirmation
@@ -125,9 +128,13 @@ async def chat_sync(req: ChatRequest):
     return {"responses": [{"agent": r.agent_name, "role": r.role, "content": r.content} for r in responses]}
 
 
+class ResetRequest(BaseModel):
+    session_id: str | None = None
+
+
 @router.post("/chat/reset")
-async def chat_reset():
-    get_council().reset()
+async def chat_reset(req: ResetRequest = ResetRequest()):
+    reset_council(req.session_id)
     from agora.api.artifacts import clear_artifacts
     clear_artifacts()
     return {"status": "reset"}
@@ -141,7 +148,7 @@ async def chat_feedback(req: FeedbackRequest):
 @router.post("/chat/restore")
 async def chat_restore(req: RestoreContextRequest):
     """Restore backend context from frontend session history."""
-    council = get_council()
+    council = get_council(req.session_id)
     council.reset()
     for msg in req.messages:
         msg_type = msg.get("type", "")

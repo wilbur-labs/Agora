@@ -10,12 +10,22 @@ function nextId() {
 }
 
 export function useChat() {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [messages, _setMessages] = useState<ChatMessage[]>([]);
   const [streaming, setStreaming] = useState(false);
   const [pendingRoute, setPendingRoute] = useState<string | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [artifacts, setArtifacts] = useState<string[]>([]);
   const sessionIdRef = useRef<string | null>(null);
+  const messagesRef = useRef<ChatMessage[]>([]);
+
+  // Wrapper that keeps ref in sync with state
+  const setMessages = useCallback((action: ChatMessage[] | ((prev: ChatMessage[]) => ChatMessage[])) => {
+    _setMessages((prev) => {
+      const next = typeof action === "function" ? action(prev) : action;
+      messagesRef.current = next;
+      return next;
+    });
+  }, []);
   const abortRef = useRef<AbortController | null>(null);
   const bufferRef = useRef<Map<string, string>>(new Map());
   const rafRef = useRef<number>(0);
@@ -130,7 +140,6 @@ export function useChat() {
         bufferRef.current.clear();
         setMessages((prev) => {
           const updated = prev.map((m) => (m.streaming ? { ...m, streaming: false } : m));
-          // Auto-save after streaming completes
           autoSave(updated, sessionIdRef.current);
           return updated;
         });
@@ -167,7 +176,7 @@ export function useChat() {
         setSessionId(sid);
       }
 
-      setMessages((prev) => [...prev, { id: nextId(), type: "user", content: text }]);
+      setMessages((prev) => [...prev, { id: nextId(), type: "user" as const, content: text }]);
       setStreaming(true);
       setPendingRoute(null);
 
@@ -180,7 +189,7 @@ export function useChat() {
             // Auto-continue: show route badge as confirmed, then immediately continue
             setMessages((prev) => [...prev, { id: nextId(), type: "route", content: route, confirmed: true }]);
             // Continue with the same route type
-            abortRef.current = streamContinue(route, makeCallbacks());
+            abortRef.current = streamContinue(route, makeCallbacks(), sessionIdRef.current);
             lastConfirmedRouteRef.current = route;
           } else {
             // First time: pause for user confirmation
@@ -197,7 +206,7 @@ export function useChat() {
         if (!prevRoute) setStreaming(false);
       };
 
-      abortRef.current = streamChat(text, cb);
+      abortRef.current = streamChat(text, cb, sessionIdRef.current);
     },
     [streaming, makeCallbacks],
   );
@@ -211,7 +220,7 @@ export function useChat() {
       setMessages((prev) =>
         prev.map((m) => (m.type === "route" && !m.confirmed ? { ...m, confirmed: true, content: route } : m)),
       );
-      abortRef.current = streamContinue(route, makeCallbacks());
+      abortRef.current = streamContinue(route, makeCallbacks(), sessionIdRef.current);
     },
     [makeCallbacks],
   );
@@ -229,7 +238,12 @@ export function useChat() {
     abortRef.current?.abort();
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
     bufferRef.current.clear();
-    await resetChat();
+    // Save current session before resetting
+    if (sessionIdRef.current && messagesRef.current.length > 0) {
+      const snapshot = messagesRef.current.map((m) => (m.streaming ? { ...m, streaming: false } : m));
+      await saveSession(sessionIdRef.current, snapshot).catch(() => {});
+    }
+    await resetChat(sessionIdRef.current);
     setMessages([]);
     setStreaming(false);
     setPendingRoute(null);
@@ -261,28 +275,28 @@ export function useChat() {
   }, []);
 
   const selectSession = useCallback(async (sid: string) => {
-    // Save current session before switching (including any in-progress streaming)
     abortRef.current?.abort();
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
     bufferRef.current.clear();
+    // Save current session synchronously before switching
     if (sessionIdRef.current) {
-      // Use a promise to get current messages from state
       const currentSid = sessionIdRef.current;
-      setMessages((prev) => {
-        const snapshot = prev.map((m) => (m.streaming ? { ...m, streaming: false } : m));
-        saveSession(currentSid, snapshot).catch(() => {});
-        return snapshot;
-      });
+      const snapshot = messagesRef.current.map((m) => (m.streaming ? { ...m, streaming: false } : m));
+      console.log(`[selectSession] saving ${currentSid}: ${snapshot.length} messages`, snapshot.map(m => m.type + ':' + m.content?.slice(0, 30)));
+      await saveSession(currentSid, snapshot).catch((e) => console.error('[selectSession] save failed', e));
     }
-    await resetChat();
+    await resetChat(sid);
     const data = await loadSession(sid);
     const msgs = data.messages as ChatMessage[];
+    console.log(`[selectSession] loaded ${sid}: ${msgs.length} messages`, msgs.map(m => m.type + ':' + m.content?.slice(0, 30)));
     setMessages(msgs);
-    await restoreContext(msgs);
+    await restoreContext(msgs, sid);
     sessionIdRef.current = sid;
     setSessionId(sid);
     setStreaming(false);
-    setPendingRoute(null);
+    // Restore pendingRoute if there's an unconfirmed route message
+    const pendingRouteMsg = msgs.findLast((m: ChatMessage) => m.type === "route" && !m.confirmed);
+    setPendingRoute(pendingRouteMsg ? pendingRouteMsg.content : null);
     lastConfirmedRouteRef.current = null;
   }, []);
 
