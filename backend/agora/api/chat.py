@@ -47,6 +47,8 @@ def _agent_events(aiter):
                 yield {"event": event_or_role, "data": json.dumps({"agent": name, "content": chunk})}
             elif event_or_role == "confirm":
                 yield {"event": "confirm", "data": json.dumps({"agent": name, "content": chunk})}
+            elif event_or_role == "artifact_created":
+                yield {"event": "artifact_created", "data": json.dumps({"path": chunk})}
             elif event_or_role == "done":
                 continue  # skip internal done, we emit our own
             elif event_or_role == "agent_done":
@@ -126,6 +128,8 @@ async def chat_sync(req: ChatRequest):
 @router.post("/chat/reset")
 async def chat_reset():
     get_council().reset()
+    from agora.api.artifacts import clear_artifacts
+    clear_artifacts()
     return {"status": "reset"}
 
 

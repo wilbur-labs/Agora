@@ -101,6 +101,28 @@ export async function getAutoApprove(): Promise<boolean> {
   return data.auto_approve;
 }
 
+// Artifacts API
+export interface ArtifactInfo {
+  path: string;
+  name: string;
+  size: number;
+  ext: string;
+}
+
+export async function fetchArtifacts(): Promise<ArtifactInfo[]> {
+  const res = await fetch(`${getApiBase()}/api/artifacts`);
+  return (await res.json()).artifacts;
+}
+
+export async function fetchArtifactContent(path: string): Promise<string> {
+  const res = await fetch(`${getApiBase()}/api/artifacts/${encodeURIComponent(path)}`);
+  return res.text();
+}
+
+export function getArtifactDownloadUrl(path: string): string {
+  return `${getApiBase()}/api/artifacts/${encodeURIComponent(path)}?download=true`;
+}
+
 export type SSECallbacks = {
   onToken: (agent: string, role: string, content: string) => void;
   onAgentDone: (agent: string, role: string) => void;
@@ -111,6 +133,7 @@ export type SSECallbacks = {
   onToolResult?: (content: string) => void;
   onToolSkipped?: (content: string) => void;
   onConfirm?: (content: string) => void;
+  onArtifactCreated?: (path: string) => void;
 };
 
 function parseSSEStream(
@@ -158,6 +181,7 @@ function parseSSEStream(
                 case "tool_result": cb.onToolResult?.(data.content); break;
                 case "tool_skipped": cb.onToolSkipped?.(data.content); break;
                 case "confirm": cb.onConfirm?.(data.content); break;
+                case "artifact_created": cb.onArtifactCreated?.(data.path); break;
                 case "error": cb.onError(data.content ?? "Unknown error"); break;
               }
             } catch { /* skip */ }

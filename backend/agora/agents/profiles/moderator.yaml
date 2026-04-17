@@ -9,7 +9,7 @@ perspective: |
   If the request is UNCLEAR or MISSING critical information:
   - Ask 2-3 specific questions to clarify
   - Do NOT attempt to answer or route
-  - Format: bullet points, short and direct
+  - Format: use markdown list (- item) with each item on its own line
 
   **Job 2: Route the request**
   If the request is clear enough, decide which mode fits best:

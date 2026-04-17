@@ -14,6 +14,7 @@ export function useChat() {
   const [streaming, setStreaming] = useState(false);
   const [pendingRoute, setPendingRoute] = useState<string | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [artifacts, setArtifacts] = useState<string[]>([]);
   const sessionIdRef = useRef<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const bufferRef = useRef<Map<string, string>>(new Map());
@@ -119,6 +120,9 @@ export function useChat() {
             { id: nextId(), type: "confirm", content },
           ]);
         }
+      },
+      onArtifactCreated(path) {
+        setArtifacts((prev) => prev.includes(path) ? prev : [...prev, path]);
       },
       onRoute: opts?.onRoute,
       onDone() {
@@ -232,6 +236,7 @@ export function useChat() {
     lastConfirmedRouteRef.current = null;
     sessionIdRef.current = null;
     setSessionId(null);
+    setArtifacts([]);
   }, []);
 
   const feedback = useCallback(async (messageId: string, rating: "up" | "down") => {
@@ -281,5 +286,5 @@ export function useChat() {
     lastConfirmedRouteRef.current = null;
   }, []);
 
-  return { messages, streaming, pendingRoute, sessionId, send, confirmRoute, confirmTool, stop, reset, feedback, executeItems, selectSession };
+  return { messages, streaming, pendingRoute, sessionId, artifacts, send, confirmRoute, confirmTool, stop, reset, feedback, executeItems, selectSession };
 }

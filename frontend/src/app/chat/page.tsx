@@ -6,6 +6,7 @@ import { Sidebar } from "@/components/sidebar";
 import { MessageBubble } from "@/components/message-bubble";
 import { ChatInput } from "@/components/chat-input";
 import { Welcome } from "@/components/welcome";
+import { ArtifactsPanel } from "@/components/artifacts-panel";
 import { ChatMessage } from "@/lib/types";
 
 import { getApiBase, setAutoApprove, getAutoApprove } from "@/lib/api";
@@ -30,9 +31,15 @@ function exportMarkdown(messages: ChatMessage[]) {
 }
 
 export default function ChatPage() {
-  const { messages, streaming, pendingRoute, sessionId, send, confirmRoute, confirmTool, stop, reset, feedback, executeItems, selectSession } = useChat();
+  const { messages, streaming, pendingRoute, sessionId, artifacts, send, confirmRoute, confirmTool, stop, reset, feedback, executeItems, selectSession } = useChat();
   const bottomRef = useRef<HTMLDivElement>(null);
   const [shareUrl, setShareUrl] = useState<string | null>(null);
+  const [artifactsOpen, setArtifactsOpen] = useState(false);
+
+  // Auto-open artifacts panel when first artifact is created
+  useEffect(() => {
+    if (artifacts.length > 0 && !artifactsOpen) setArtifactsOpen(true);
+  }, [artifacts.length]);
   const [autoApproveOn, setAutoApproveOn] = useState(false);
 
   useEffect(() => {
@@ -94,6 +101,11 @@ export default function ChatPage() {
             <button onClick={handleShare} className="text-muted-foreground hover:text-foreground transition-colors">
               🔗 Share
             </button>
+            {artifacts.length > 0 && (
+              <button onClick={() => setArtifactsOpen(!artifactsOpen)} className="text-muted-foreground hover:text-foreground transition-colors">
+                📁 Files ({artifacts.length})
+              </button>
+            )}
             {shareUrl && <span className="text-emerald-400">✓ Link copied!</span>}
           </div>
         )}
@@ -140,6 +152,8 @@ export default function ChatPage() {
 
         <ChatInput onSend={send} onStop={stop} streaming={streaming} />
       </main>
+
+      <ArtifactsPanel artifacts={artifacts} open={artifactsOpen} onClose={() => setArtifactsOpen(false)} />
     </div>
   );
 }

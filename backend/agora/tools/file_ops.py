@@ -47,6 +47,9 @@ class WriteFile(Tool):
         p = Path(path).expanduser()
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content)
+        # Track as artifact
+        from agora.api.artifacts import track_artifact
+        track_artifact(str(p))
         return ToolResult(True, f"Wrote {len(content)} chars to {path}")
 
 
@@ -74,6 +77,8 @@ class PatchFile(Tool):
         if count > 1:
             return ToolResult(False, "", f"old_str matches {count} times, must be unique")
         p.write_text(text.replace(old_str, new_str, 1))
+        from agora.api.artifacts import track_artifact
+        track_artifact(str(p))
         return ToolResult(True, f"Patched {path}")
 
 

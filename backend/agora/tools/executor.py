@@ -117,6 +117,9 @@ async def run_tool_loop(
                 tr = await tool.execute(**tc.arguments)
                 output = tr.output if tr.success else f"ERROR: {tr.error}\n{tr.output}".strip()
                 yield ("tool_result", output[:2000])
+                # Notify frontend about new/modified files
+                if tr.success and tc.function_name in ("write_file", "patch_file"):
+                    yield ("artifact_created", tc.arguments.get("path", ""))
 
             chat.append({"role": "tool", "tool_call_id": tc.id, "content": output})
 

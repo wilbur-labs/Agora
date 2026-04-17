@@ -202,7 +202,7 @@ def test_registry_get():
 def test_registry_function_schemas():
     reg = ToolRegistry()
     schemas = reg.function_schemas()
-    assert len(schemas) == 5
+    assert len(schemas) == 7
     for s in schemas:
         assert s["type"] == "function"
         assert "name" in s["function"]
