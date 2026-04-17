@@ -15,27 +15,27 @@ models:
 council:
   default_agents: [scout, architect, critic]
   optional_agents: [sentinel]
-  model: claude
-  executor_model: claude
+  model: gpt4o
+  executor_model: gpt4o
   concurrent: false
   workspace: ~/agora-workspace  # Executor creates files here
 
 agents:
   scout:
     profile: scout.yaml
-    model: claude
+    model: gpt4o
   architect:
     profile: architect.yaml
-    model: claude
+    model: gpt4o
   critic:
     profile: critic.yaml
-    model: claude
+    model: gpt4o
   sentinel:
     profile: sentinel.yaml
-    model: claude
+    model: gpt4o
 
 utility:
-  model: claude
+  model: gpt4o
 
 memory:
   enabled: true

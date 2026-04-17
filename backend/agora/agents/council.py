@@ -118,16 +118,49 @@ class Council:
             yield item
 
     async def stream_discuss(self) -> AsyncIterator[tuple[str, str, str]]:
+        import asyncio
         mem, skills = self._get_injections()
+
+        # Phase 1: Scout research (serial — other agents need the results)
+        remaining_agents = []
         for agent in self.agents:
-            # Scout gets a research phase with web tools before discussing
             if agent.name == "scout" and self.executor_provider and self.tool_registry.get("web_search"):
                 async for item in self._research_phase(agent):
                     yield item
-            else:
+            elif agent.name == "scout":
                 async for item in self._stream_agent(agent, mem, skills):
                     yield item
+            else:
+                remaining_agents.append(agent)
+
+        # Phase 2: Remaining agents in parallel
+        if remaining_agents:
+            mem, skills = self._get_injections()  # refresh after scout
+
+            async def _collect(agent: Agent) -> list[tuple[str, str, str]]:
+                chunks: list[tuple[str, str, str]] = []
+                full = ""
+                try:
+                    async for chunk in agent.stream_respond(
+                        self.context.get_messages(), self.user_profile, mem, skills
+                    ):
+                        full += chunk
+                        chunks.append((agent.name, agent.role, chunk))
+                except Exception as e:
+                    full = f"[Error: {e}]"
+                    chunks.append((agent.name, agent.role, full))
+                chunks.append((agent.name, agent.role, ""))
+                self.context.add_agent(agent.name, full)
+                return chunks
+
+            results = await asyncio.gather(*[_collect(a) for a in remaining_agents])
+            for chunks in results:
+                for item in chunks:
+                    yield item
+
+        # Phase 3: Synthesizer (needs all agent output)
         if self.synthesizer:
+            mem, skills = self._get_injections()
             async for item in self._stream_agent(self.synthesizer, mem, skills):
                 yield item
 

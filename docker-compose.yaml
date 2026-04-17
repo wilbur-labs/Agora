@@ -1,5 +1,6 @@
 services:
   agora-api:
+    container_name: agora
     build: .
     ports:
       - "8000:8000"
