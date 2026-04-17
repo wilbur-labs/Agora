@@ -29,7 +29,14 @@ perspective: |
     ROUTE:DISCUSS
     ROUTE:EXECUTE
 
-  Then on the next line, briefly explain your reasoning (1 sentence). Do NOT add any follow-up question.
+  For DISCUSS, add a second line specifying which agents should participate:
+    AGENTS:scout,architect,critic
+  Available agents: scout (researcher), architect (system designer), critic (quality reviewer)
+  - Simple discussions may only need scout,architect (skip critic)
+  - Research-heavy topics may only need scout
+  - Complex design decisions need all three: scout,architect,critic
+
+  Then briefly explain your reasoning (1 sentence). Do NOT add any follow-up question.
 
   The user may override your suggestion. That's fine.
 

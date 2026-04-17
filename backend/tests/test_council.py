@@ -17,22 +17,32 @@ from tests.conftest import MockProvider, MockProviderWithToolSequence
 
 class TestParseRoute:
     def test_discuss(self):
-        assert _parse_route("ROUTE:DISCUSS\nLet me think...") == "DISCUSS"
+        assert _parse_route("ROUTE:DISCUSS\nLet me think...") == ("DISCUSS", [])
 
     def test_quick(self):
-        assert _parse_route("ROUTE:QUICK\nSimple question.") == "QUICK"
+        assert _parse_route("ROUTE:QUICK\nSimple question.") == ("QUICK", [])
 
     def test_execute(self):
-        assert _parse_route("ROUTE:EXECUTE\nClear task.") == "EXECUTE"
+        assert _parse_route("ROUTE:EXECUTE\nClear task.") == ("EXECUTE", [])
 
     def test_clarify_when_no_route(self):
-        assert _parse_route("I need more information. What do you mean?") == "CLARIFY"
+        assert _parse_route("I need more information. What do you mean?") == ("CLARIFY", [])
 
     def test_case_insensitive(self):
-        assert _parse_route("route:discuss") == "DISCUSS"
+        assert _parse_route("route:discuss") == ("DISCUSS", [])
 
     def test_route_in_middle_of_text(self):
-        assert _parse_route("Let me check... ROUTE:EXECUTE ok") == "EXECUTE"
+        assert _parse_route("Let me check... ROUTE:EXECUTE ok") == ("EXECUTE", [])
+
+    def test_with_agents(self):
+        route, agents = _parse_route("ROUTE:DISCUSS\nAGENTS:scout,architect\nComplex question.")
+        assert route == "DISCUSS"
+        assert agents == ["scout", "architect"]
+
+    def test_with_all_agents(self):
+        route, agents = _parse_route("ROUTE:DISCUSS\nAGENTS:scout,architect,critic\nNeed full review.")
+        assert route == "DISCUSS"
+        assert agents == ["scout", "architect", "critic"]
 
 
 # ── SharedContext ──

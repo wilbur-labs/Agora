@@ -22,9 +22,15 @@ class AgentResponse:
     content: str
 
 
-def _parse_route(response: str) -> Route:
+def _parse_route(response: str) -> tuple[Route, list[str]]:
+    """Parse route and optional agent list from moderator response."""
     m = re.search(r"ROUTE:(QUICK|DISCUSS|EXECUTE)", response.upper())
-    return m.group(1) if m else "CLARIFY"
+    route = m.group(1) if m else "CLARIFY"
+    agents: list[str] = []
+    am = re.search(r"AGENTS:\s*([\w,]+)", response, re.IGNORECASE)
+    if am:
+        agents = [a.strip().lower() for a in am.group(1).split(",") if a.strip()]
+    return route, agents
 
 
 @dataclass
@@ -44,6 +50,7 @@ class Council:
     workspace: str = ""
     last_route: Route = ""
     _last_user_input: str = ""
+    _active_agents: list[str] = field(default_factory=list)  # agents selected by moderator
 
     def _get_injections(self) -> tuple[str, str]:
         mem = self.memory.get_injection_text()
@@ -108,7 +115,7 @@ class Council:
             yield (self.moderator.name, self.moderator.role, chunk)
         yield (self.moderator.name, self.moderator.role, "")
         self.context.add_agent(self.moderator.name, mod_response)
-        self.last_route = _parse_route(mod_response)
+        self.last_route, self._active_agents = _parse_route(mod_response)
 
     async def stream_quick(self) -> AsyncIterator[tuple[str, str, str]]:
         if not self.agents:
@@ -121,9 +128,16 @@ class Council:
         import asyncio
         mem, skills = self._get_injections()
 
+        # Filter agents based on moderator's selection (fallback to all)
+        active = self.agents
+        if self._active_agents:
+            active = [a for a in self.agents if a.name in self._active_agents]
+            if not active:
+                active = self.agents  # fallback if no match
+
         # Phase 1: Scout research (serial — other agents need the results)
         remaining_agents = []
-        for agent in self.agents:
+        for agent in active:
             if agent.name == "scout" and self.executor_provider and self.tool_registry.get("web_search"):
                 async for item in self._research_phase(agent):
                     yield item
@@ -187,16 +201,26 @@ class Council:
                 last_user = m.get("content", "")
                 break
 
+        # Extract entities for targeted search
+        entities = self._extract_entities(last_user)
+        search_plan = ""
+        if entities:
+            search_plan = (
+                "\n\nMANDATORY SEARCH PLAN (do these searches FIRST):\n"
+                + "\n".join(f"- web_search(query='{e} GitHub') or web_search(query='{e} official site')" for e in entities)
+                + "\nAfter these mandatory searches, you may do additional searches if needed.\n"
+            )
+
         system = (
             f"You are {agent.name}, a research specialist.\n\n"
             "RESEARCH STRATEGY:\n"
-            "1. Identify specific projects, tools, or technologies mentioned in the user's question\n"
-            "2. Search for their official pages (GitHub, docs) FIRST\n"
-            "3. Use web_fetch to read their README or overview pages\n"
-            "4. Then search for comparisons, reviews, or alternatives\n\n"
+            "1. Search for specific projects/technologies mentioned — find their GitHub or official pages FIRST\n"
+            "2. Use web_fetch to read their README or overview\n"
+            "3. Then search for comparisons, reviews, or alternatives\n\n"
             "RULES:\n"
             "- Do at most 3 web_search calls and 2 web_fetch calls\n"
-            "- Focus on architecture, features, pros/cons of mentioned projects\n\n"
+            "- Focus on architecture, features, pros/cons of mentioned projects\n"
+            f"{search_plan}\n"
             "OUTPUT FORMAT (strict):\n"
             "After research, output EXACTLY this format:\n"
             "---SUMMARY---\n"
@@ -321,6 +345,36 @@ class Council:
             async for item in self._stream_agent(self.executor, mem, skills):
                 yield item
 
+    @staticmethod
+    def _extract_entities(text: str) -> list[str]:
+        """Extract project names, tools, and technologies from user input."""
+        entities: list[str] = []
+        seen = set()
+
+        def _add(name: str):
+            low = name.lower()
+            if low not in seen and len(name) >= 2:
+                seen.add(low)
+                entities.append(name)
+
+        # Quoted strings
+        for m in re.finditer(r'["\u201c]([^"\u201d]+)["\u201d]', text):
+            _add(m.group(1))
+        # CamelCase / PascalCase (DeerFlow, FastAPI, LangChain, CrewAI)
+        for m in re.finditer(r'([A-Z][a-z]+(?:[A-Z][a-zA-Z]*)+)', text):
+            _add(m.group(1))
+        # Hyphenated project names (hermes-agent, deer-flow)
+        skip = {"built-in", "real-time", "open-source", "self-learning", "multi-agent"}
+        for m in re.finditer(r'([a-zA-Z]+-[a-zA-Z]+(?:-[a-zA-Z]+)*)', text):
+            if m.group(1).lower() not in skip:
+                _add(m.group(1))
+        # Standalone capitalized tech words surrounded by non-alpha (Redis, Memcached, Django, Python, etc.)
+        for m in re.finditer(r'(?:^|[^a-zA-Z])([A-Z][a-z]{2,}(?:[A-Z][a-z]*)*)', text):
+            word = m.group(1)
+            if word not in ("The", "This", "That", "What", "How", "Why", "Which"):
+                _add(word)
+        return entities[:5]
+
     def _parse_action_items(self) -> list[str]:
         """Extract individual action items from the last user message."""
         msgs = self.context.get_messages()
@@ -430,3 +484,4 @@ class Council:
         self.last_route = ""
         self._last_user_input = ""
         self._session_language = ""
+        self._active_agents = []
