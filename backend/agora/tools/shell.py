@@ -11,7 +11,7 @@ _MAX_OUTPUT = 50_000
 
 class Shell(Tool):
     name = "shell"
-    description = "Execute a shell command. Returns stdout and stderr."
+    description = "Execute a shell command. Returns stdout and stderr. Use '. venv/bin/activate' instead of 'source' (POSIX compatible). For long-running servers, use '&' to background them and 'sleep 2' to wait."
     parameters = {
         "type": "object",
         "properties": {
@@ -39,6 +39,9 @@ class Shell(Tool):
             )
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=_TIMEOUT)
         except asyncio.TimeoutError:
+            # For backgrounded commands, timeout is expected — treat as success
+            if "&" in command:
+                return ToolResult(True, f"Command started in background (timed out after {_TIMEOUT}s, likely still running)", "")
             proc.kill()
             return ToolResult(False, "", f"Command timed out after {_TIMEOUT}s")
         except Exception as e:

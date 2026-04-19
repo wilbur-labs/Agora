@@ -32,3 +32,7 @@ Thumbs.db
 
 # Test artifacts
 backend/test.md
+backend/data/.input_history
+
+# Workspace output
+agora-workspace/

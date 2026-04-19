@@ -306,6 +306,7 @@ class Council:
         overwhelmingly large, (2) the frontend can show per-item progress, and
         (3) a failure in one item does not block the rest.
         """
+        import asyncio
         if task:
             self.context.add_user(task)
 
@@ -315,6 +316,9 @@ class Council:
             if len(items) > 1:
                 # Sequential per-item execution
                 for i, item in enumerate(items, 1):
+                    # Rate limit protection: pause between steps
+                    if i > 1:
+                        await asyncio.sleep(15)
                     header = f"[{i}/{len(items)}] {item}"
                     yield ("executor", "text", f"\n### {header}\n")
                     full_text = ""
@@ -390,7 +394,7 @@ class Council:
                 item = stripped.lstrip("-*• ").strip()
                 if item:
                     items.append(item)
-        return items if items else [last_user]
+        return items if len(items) > 5 else [last_user]
 
     async def _tool_execute(self, override_task: str | None = None) -> AsyncIterator[tuple[str, str]]:
         """Run the tool-calling execution loop.
@@ -409,6 +413,11 @@ class Council:
             "If a step fails, analyze the error and retry with a corrected approach. Do NOT give up after one failure.",
             "Do NOT add unnecessary features beyond what was asked.",
             "Verify your work — if the task asks you to create and run something, confirm the output is correct.",
+            "SHELL ENVIRONMENT: The shell is /bin/sh (POSIX), NOT bash. Use '. venv/bin/activate' instead of 'source'. "
+            "For long-running servers (uvicorn, flask, etc.), start them in background with '&' and use 'sleep 2 && curl ...' to verify.",
+            "PORT CONFLICT: Port 8000 is already in use by this system. When starting web servers, ALWAYS use a different port (e.g. 8080, 9000). "
+            "NEVER run 'pkill uvicorn' or 'kill' commands that could affect the host system.",
+            "Keep your text responses concise. Focus on executing, not explaining.",
         ]
         # Enforce language consistency based on the first user message
         if hasattr(self, '_session_language') and self._session_language:

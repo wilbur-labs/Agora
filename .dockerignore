@@ -1,0 +1,7 @@
+agora-workspace/
+data/
+.git/
+.env
+__pycache__/
+*.pyc
+node_modules/
