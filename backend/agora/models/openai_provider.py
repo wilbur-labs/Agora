@@ -46,6 +46,7 @@ class OpenAIProvider(ModelProvider):
     async def stream(self, messages: list[Message]) -> AsyncIterator[str]:
         body = self._body(messages, tools=[])
         body["stream"] = True
+        logger.info("Stream request body keys: %s, max_completion_tokens=%s", list(body.keys()), body.get("max_completion_tokens"))
         last_exc: Exception | None = None
         for attempt in range(_MAX_RETRIES + 1):
             try:
@@ -62,10 +63,14 @@ class OpenAIProvider(ModelProvider):
                                 break
                             try:
                                 chunk = json.loads(data)
-                                delta = chunk["choices"][0].get("delta", {})
+                                choice = chunk["choices"][0]
+                                delta = choice.get("delta", {})
                                 content = delta.get("content")
                                 if content:
                                     yield content
+                                finish = choice.get("finish_reason")
+                                if finish and finish == "length":
+                                    logger.warning("Stream response truncated: finish_reason=length")
                             except (json.JSONDecodeError, KeyError, IndexError):
                                 continue
                 return  # success
@@ -190,7 +195,7 @@ class AzureOpenAIProvider(OpenAIProvider):
         return f"{self.base_url}/openai/deployments/{self.deployment}/chat/completions?api-version={self.api_version}"
 
     def _body(self, messages: list[Message], tools: list[dict]) -> dict[str, Any]:
-        body: dict[str, Any] = {"messages": messages}
+        body: dict[str, Any] = {"messages": messages, "max_completion_tokens": 16384}
         if tools:
             body["tools"] = tools
         return body

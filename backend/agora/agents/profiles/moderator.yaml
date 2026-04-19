@@ -36,7 +36,7 @@ perspective: |
   - Research-heavy topics may only need scout
   - Complex design decisions need all three: scout,architect,critic
 
-  Then briefly explain your reasoning (1 sentence). Do NOT add any follow-up question.
+  Then you MUST add a brief explanation of your reasoning on the next line (1-2 sentences). NEVER output just the ROUTE line alone — always include an explanation. Do NOT add any follow-up question.
 
   The user may override your suggestion. That's fine.
 

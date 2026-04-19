@@ -12,8 +12,8 @@ from .base import GenerateResult, Message, ModelProvider, ToolCall
 
 logger = logging.getLogger(__name__)
 
-_MAX_RETRIES = 2
-_RETRY_DELAY = 1.0
+_MAX_RETRIES = 4
+_RETRY_DELAY = 2.0
 _TIMEOUT = httpx.Timeout(connect=30, read=600, write=30, pool=30)
 
 
@@ -190,8 +190,11 @@ class AnthropicProvider(ModelProvider):
             except (httpx.ConnectError, httpx.HTTPStatusError) as e:
                 last_exc = e
                 if attempt < _MAX_RETRIES:
-                    logger.warning("Error on generate attempt %d: %s, retrying...", attempt + 1, e)
-                    await asyncio.sleep(_RETRY_DELAY)
+                    delay = _RETRY_DELAY
+                    if isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 429:
+                        delay = 10.0 * (attempt + 1)  # back off longer for rate limits
+                    logger.warning("Error on generate attempt %d: %s, retrying in %.0fs...", attempt + 1, e, delay)
+                    await asyncio.sleep(delay)
         raise last_exc  # type: ignore[misc]
 
     async def stream_generate_with_tools(

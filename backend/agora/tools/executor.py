@@ -116,7 +116,7 @@ async def run_tool_loop(
             else:
                 tr = await tool.execute(**tc.arguments)
                 output = tr.output if tr.success else f"ERROR: {tr.error}\n{tr.output}".strip()
-                yield ("tool_result", output[:2000])
+                yield ("tool_result", output[:4000])
                 # Notify frontend about new/modified files
                 if tr.success and tc.function_name in ("write_file", "patch_file"):
                     yield ("artifact_created", tc.arguments.get("path", ""))

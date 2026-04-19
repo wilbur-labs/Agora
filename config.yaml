@@ -9,14 +9,14 @@ models:
     provider: azure-openai
     api_key: ${AZURE_OPENAI_API_KEY}
     base_url: ${AZURE_OPENAI_BASE_URL}
-    deployment: gpt-4o-0513
+    deployment: gpt-4o
     api_version: "2024-12-01-preview"
 
 council:
   default_agents: [scout, architect, critic]
   optional_agents: [sentinel]
   model: gpt4o
-  executor_model: gpt4o
+  executor_model: claude
   concurrent: false
   workspace: ~/agora-workspace  # Executor creates files here
 

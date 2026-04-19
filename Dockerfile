@@ -16,6 +16,8 @@ WORKDIR /app
 COPY backend/pyproject.toml backend/
 RUN pip install --no-cache-dir -e backend/
 
+RUN apt-get update && apt-get install -y --no-install-recommends curl procps && rm -rf /var/lib/apt/lists/*
+
 COPY backend/ backend/
 COPY --from=frontend-build /app/frontend/out frontend/out
 COPY config.yaml .
