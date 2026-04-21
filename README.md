@@ -17,6 +17,18 @@ Open-source AI system where multiple agents debate your problem from different p
 - 🔌 **Model agnostic** — OpenAI, Azure OpenAI, Claude CLI, Gemini CLI, Kiro CLI, and OpenAI-compatible APIs.
 - 🐳 **Self-hosted** — Run it with Docker and keep control of your data.
 
+## Agora vs. other tools
+
+|                                         | Agora | ChatGPT | AutoGPT | LangChain |
+| --------------------------------------- | :---: | :-----: | :-----: | :-------: |
+| Multi-agent debate before action        |   ✅   |    ❌    |    ❌    |    DIY    |
+| Learns from discussion disagreements    |   ✅   |    ❌    |    ❌    |     ❌     |
+| Execution skills learned from use       |   ✅   |    ❌    |   ⚠️    |     ❌     |
+| Human-in-the-loop approval              |   ✅   |    ❌    |   ⚠️    |    DIY    |
+| Self-hosted & open source               |   ✅   |    ❌    |    ✅    |     ✅     |
+
+Agora builds on ideas from [DeerFlow](https://github.com/bytedance/deer-flow) (sandbox + memory) and [Hermes Agent](https://github.com/hermes-agent) (self-improving skills). Its original contribution is the **council discussion** model, which lets skills be learned not only from execution but from how multiple agents disagree and resolve.
+
 ## What it looks like
 
 ```text
@@ -31,10 +43,6 @@ Execute? → yes
 
 executor → writes code and runs commands
 ```
-
-🎬 **Full Demo**
-
-[Watch the full demo video](https://youtu.be/placeholder)
 
 ## Quick Start
 
