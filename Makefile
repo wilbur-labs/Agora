@@ -2,7 +2,7 @@
 
 # Local development
 install:
-	cd backend && pip install -e ".[dev]"
+	cd backend && pip3 install -e ".[dev]"
 	cd frontend && pnpm install
 
 dev:
@@ -12,13 +12,13 @@ dev-ui:
 	cd frontend && pnpm dev --hostname 0.0.0.0
 
 cli:
-	cd backend && python -m agora
+	cd backend && python3 -m agora
 
 test:
-	cd backend && python -m pytest tests/ -v --tb=short -m "not integration"
+	cd backend && python3 -m pytest tests/ -v --tb=short -m "not integration"
 
 test-all:
-	cd backend && python -m pytest tests/ -v --tb=short
+	cd backend && python3 -m pytest tests/ -v --tb=short
 
 frontend:
 	cd frontend && pnpm build

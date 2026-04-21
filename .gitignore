@@ -36,3 +36,7 @@ backend/data/.input_history
 
 # Workspace output
 agora-workspace/
+
+# Runtime logs
+nohup.out
+*.log
