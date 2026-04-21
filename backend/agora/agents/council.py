@@ -394,7 +394,7 @@ class Council:
                 item = stripped.lstrip("-*• ").strip()
                 if item:
                     items.append(item)
-        return items if len(items) > 5 else [last_user]
+        return items if items else [last_user]
 
     async def _tool_execute(self, override_task: str | None = None) -> AsyncIterator[tuple[str, str]]:
         """Run the tool-calling execution loop.
