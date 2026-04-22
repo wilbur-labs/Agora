@@ -2,6 +2,11 @@
 
 All notable changes to Agora are documented here. This project follows [Semantic Versioning](https://semver.org/).
 
+## [0.4.2] — 2026-04-22
+
+### Fixed
+- Broken Hermes Agent URL in English, Chinese, and Japanese READMEs. The previous link (`https://github.com/hermes-agent`) resolved to an empty GitHub user profile. Corrected to the real repository (`https://github.com/NousResearch/hermes-agent`) and added "Nous Research" as the author qualifier.
+
 ## [0.4.1] — 2026-04-21
 
 ### Fixed

@@ -157,7 +157,7 @@ MIT
 ## 致谢
 
 - [DeerFlow](https://github.com/bytedance/deer-flow) — 沙箱执行、记忆系统和编排的灵感来源
-- [Hermes Agent](https://github.com/hermes-agent) — 自我进化技能和持久记忆的灵感来源
+- [Hermes Agent](https://github.com/NousResearch/hermes-agent)（Nous Research 出品）— 自我进化技能和持久记忆的灵感来源
 
 ## 联系
 

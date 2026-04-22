@@ -157,7 +157,7 @@ MIT
 ## 謝辞
 
 - [DeerFlow](https://github.com/bytedance/deer-flow) — サンドボックス実行、メモリシステム、オーケストレーションのインスピレーション
-- [Hermes Agent](https://github.com/hermes-agent) — 自己進化スキルと永続メモリのインスピレーション
+- [Hermes Agent](https://github.com/NousResearch/hermes-agent)（Nous Research 製）— 自己進化スキルと永続メモリのインスピレーション
 
 ## お問い合わせ
 

@@ -27,7 +27,7 @@ Open-source AI system where multiple agents debate your problem from different p
 | Human-in-the-loop approval              |   ✅   |    ❌    |   ⚠️    |    DIY    |
 | Self-hosted & open source               |   ✅   |    ❌    |    ✅    |     ✅     |
 
-Agora builds on ideas from [DeerFlow](https://github.com/bytedance/deer-flow) (sandbox + memory) and [Hermes Agent](https://github.com/hermes-agent) (self-improving skills). Its original contribution is the **council discussion** model, which lets skills be learned not only from execution but from how multiple agents disagree and resolve.
+Agora builds on ideas from [DeerFlow](https://github.com/bytedance/deer-flow) (sandbox + memory) and [Hermes Agent](https://github.com/NousResearch/hermes-agent) by Nous Research (self-improving skills). Its original contribution is the **council discussion** model, which lets skills be learned not only from execution but from how multiple agents disagree and resolve.
 
 ## What it looks like
 
@@ -180,7 +180,7 @@ MIT
 ## Acknowledgments
 
 - [DeerFlow](https://github.com/bytedance/deer-flow) — inspiration for sandbox execution, memory systems, and orchestration
-- [Hermes Agent](https://github.com/hermes-agent) — inspiration for self-improving skills and persistent memory
+- [Hermes Agent](https://github.com/NousResearch/hermes-agent) by Nous Research — inspiration for self-improving skills and persistent memory
 
 ## Contact
 
