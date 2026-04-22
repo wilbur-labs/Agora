@@ -21,6 +21,18 @@
 - 🔌 **モデル非依存** — OpenAI、Azure OpenAI、Claude CLI、Gemini CLI、Kiro CLI、OpenAI互換API。
 - 🐳 **セルフホスト** — Dockerで実行し、データを完全に管理できます。
 
+## Agora と他のツールの比較
+
+|                                  | Agora | ChatGPT | AutoGPT | LangChain |
+| -------------------------------- | :---: | :-----: | :-----: | :-------: |
+| 行動前のマルチエージェント議論   |   ✅   |    ❌    |    ❌    |    DIY    |
+| 議論の不一致から学習             |   ✅   |    ❌    |    ❌    |     ❌     |
+| 利用から実行スキルを学習         |   ✅   |    ❌    |   ⚠️    |     ❌     |
+| 人間による承認（HITL）           |   ✅   |    ❌    |   ⚠️    |    DIY    |
+| セルフホスト & オープンソース    |   ✅   |    ❌    |    ✅    |     ✅     |
+
+Agora は [DeerFlow](https://github.com/bytedance/deer-flow)（サンドボックス + メモリ）と Nous Research の [Hermes Agent](https://github.com/NousResearch/hermes-agent)（自己進化スキル）のアイデアを基にしています。独自の貢献は **カウンシル議論** モデル — スキルが実行からだけでなく、複数エージェントの不一致と解決から学習されることです。
+
 ## クイックスタート
 
 ### Docker

@@ -21,6 +21,18 @@
 - 🔌 **模型无关** — OpenAI、Azure OpenAI、Claude CLI、Gemini CLI、Kiro CLI 及 OpenAI 兼容 API。
 - 🐳 **自托管** — Docker 一键部署，数据完全掌控。
 
+## Agora 与其他工具对比
+
+|                         | Agora | ChatGPT | AutoGPT | LangChain |
+| ----------------------- | :---: | :-----: | :-----: | :-------: |
+| 动手前的多 agent 议论   |   ✅   |    ❌    |    ❌    |    DIY    |
+| 从讨论分歧中学习        |   ✅   |    ❌    |    ❌    |     ❌     |
+| 从使用中学习执行技能    |   ✅   |    ❌    |   ⚠️    |     ❌     |
+| 人工审核（HITL）        |   ✅   |    ❌    |   ⚠️    |    DIY    |
+| 自部署 & 开源           |   ✅   |    ❌    |    ✅    |     ✅     |
+
+Agora 借鉴了 [DeerFlow](https://github.com/bytedance/deer-flow)（沙箱 + 记忆）和 Nous Research 出品的 [Hermes Agent](https://github.com/NousResearch/hermes-agent)（自我进化技能）的思想。原创贡献是 **议会讨论** 模型——让技能不仅从执行中学习，还从多 agent 如何分歧和解决的过程中学习。
+
 ## 快速开始
 
 ### Docker
