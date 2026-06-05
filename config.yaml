@@ -20,6 +20,44 @@ council:
   concurrent: false
   workspace: ~/agora-workspace  # Executor creates files here
 
+projects:
+  registry_path: /work01/s141026/ai-projects/Agora/.agora/projects.yaml
+  default: agora
+  projects:
+    agora:
+      name: Agora
+      root: /work01/s141026/ai-projects/Agora
+      workspaces:
+        codex: /work01/s141026/codex-workspace/agora
+        claude: /work01/s141026/claude-workspace/agora
+        kiro: /work01/s141026/kiro-workspace/agora
+
+research:
+  artifact_dir: /work01/s141026/ai-projects/Agora/research
+  workspaces:
+    codex: /work01/s141026/codex-workspace
+    claude: /work01/s141026/claude-workspace
+    kiro: /work01/s141026/kiro-workspace
+  dispatch:
+    enabled: true
+    timeout_seconds: 600
+  workers:
+    claude-research:
+      enabled: true
+      command: claude
+      args: ["-p", "{prompt}", "--output-format", "text"]
+      workspace_key: claude
+    codex-engineering:
+      enabled: true
+      command: codex
+      args: ["exec", "--skip-git-repo-check"]
+      workspace_key: codex
+    kiro-spec:
+      enabled: true
+      command: kiro-cli
+      args: ["chat", "--no-interactive", "--trust-all-tools"]
+      workspace_key: kiro
+
 agents:
   scout:
     profile: scout.yaml

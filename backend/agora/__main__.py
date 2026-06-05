@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import shlex
 import unicodedata
 
 from prompt_toolkit import PromptSession
@@ -20,7 +21,7 @@ C = {
 }
 B, D, R = "\033[1m", "\033[2m", "\033[0m"
 
-COMMANDS = ["/agents", "/reset", "/memory", "/skills", "/profile", "/ask", "/exec", "/quit", "/help"]
+COMMANDS = ["/agents", "/projects", "/project", "/doctor", "/reset", "/memory", "/skills", "/profile", "/ask", "/exec", "/research", "/quit", "/help"]
 
 ROUTE_LABELS = {"DISCUSS": "discuss", "EXECUTE": "execute", "QUICK": "quick"}
 
@@ -237,6 +238,53 @@ async def command(cmd: str, session: PromptSession) -> bool:
             print(f"  {C.get(a.name, '')}● {a.name}{R} ({a.role}) → {a.model_name}")
         if council.executor:
             print(f"  {C.get('executor', '')}● executor{R} ({council.executor.role}) → {council.executor.model_name}")
+    elif parts[0] == "/projects":
+        from agora.config.settings import get_config
+        from agora.projects import ProjectRegistry
+
+        registry = ProjectRegistry(get_config())
+        if len(parts) >= 4 and parts[1] == "add":
+            try:
+                project = registry.add(parts[2], parts[3])
+                print(f"{D}Project added:{R} {project.project_id} → {project.root}")
+            except (KeyError, ValueError) as e:
+                print(f"{D}{e}{R}")
+        else:
+            current_id = registry.current_project_id()
+            for project_id, project in registry.list_projects().items():
+                marker = "*" if project_id == current_id else " "
+                print(f"  {marker} {project_id:<18} {project.root}")
+    elif parts[0] == "/project":
+        from agora.config.settings import get_config
+        from agora.projects import ProjectRegistry
+
+        registry = ProjectRegistry(get_config())
+        if len(parts) >= 3 and parts[1] == "use":
+            try:
+                project = registry.use(parts[2])
+                print(f"{D}Current project:{R} {project.project_id} → {project.root}")
+            except KeyError as e:
+                print(f"{D}{e}{R}")
+        elif len(parts) >= 2 and parts[1] == "current":
+            project = registry.current_project()
+            print(f"{D}Current project:{R} {project.project_id} → {project.root}")
+            print(f"{D}Research artifacts:{R} {project.research_dir}")
+        else:
+            print(f"{D}Usage: /project current | /project use <id>{R}")
+    elif parts[0] == "/doctor":
+        from agora.doctor import run_doctor
+
+        report = run_doctor()
+        project = report["project"]
+        print(f"{D}Project:{R} {project['id']} → {project['root']}")
+        print(f"{D}Research artifacts:{R} {project['research_dir']}")
+        for worker in report["workers"]:
+            marker = "OK" if worker["status"] == "ready" else "--"
+            print(f"  {marker} {worker['worker']}")
+            print(f"     CLI: {worker['cli_path'] or 'missing'}")
+            print(f"     Workspace: {worker['workspace'] or 'missing'}")
+            print(f"     Auth: {worker['auth']}")
+            print(f"     Action: {worker['action']}")
     elif parts[0] == "/reset":
         council.reset()
         print(f"{D}Context cleared.{R}")
@@ -269,11 +317,48 @@ async def command(cmd: str, session: PromptSession) -> bool:
             await handle_input(text, session, force_mode="EXECUTE")
         else:
             print(f"{D}Usage: /exec <task>{R}")
+    elif parts[0] == "/research":
+        raw = cmd[len("/research"):].strip()
+        tokens = shlex.split(raw)
+        dispatch = False
+        only_worker = None
+        idx = 0
+        while idx < len(tokens):
+            token = tokens[idx]
+            if token == "--dispatch":
+                dispatch = True
+                idx += 1
+            elif token == "--worker" and idx + 1 < len(tokens):
+                only_worker = tokens[idx + 1]
+                idx += 2
+            else:
+                break
+        text = " ".join(tokens[idx:])
+        if text:
+            from agora.research import ResearchOrchestrator
+
+            orchestrator = ResearchOrchestrator()
+            task = await orchestrator.run(text, dispatch=dispatch, only_worker=only_worker)
+            print(f"{D}Research artifact created:{R} {task.task_dir}")
+            print(f"{D}Task type:{R} {task.decision['task_type']}")
+            print(f"{D}Dispatch:{R} {dispatch}")
+            print(f"{D}Primary worker:{R} {task.decision['primary_worker']}")
+            secondary = ", ".join(task.decision.get("secondary_workers", [])) or "(none)"
+            print(f"{D}Secondary workers:{R} {secondary}")
+        else:
+            print(f"{D}Usage: /research [--dispatch] [--worker <name>] <question>{R}")
     elif parts[0] == "/help":
         print(f"""
   {B}/agents{R}                    List council agents
+  {B}/projects{R}                  List registered projects
+  {B}/projects add <id> <root>{R}  Register a project root
+  {B}/project current{R}           Show active project
+  {B}/project use <id>{R}          Switch active project
+  {B}/doctor{R}                    Check worker CLI and workspace readiness
   {B}/ask <question>{R}            Quick answer (skip discussion)
   {B}/exec <task>{R}               Direct execution (skip discussion)
+  {B}/research <question>{R}       Create a research task artifact and router decision
+  {B}/research --dispatch <q>{R}   Create and dispatch ready configured workers
   {B}/skills{R}                    List learned skills
   {B}/reset{R}                     Clear conversation context
   {B}/memory{R}                    View persistent memory
@@ -292,6 +377,14 @@ async def main():
     council = get_council()
     names = " ".join(f"{C.get(a.name, '')}{a.name}{R}" for a in council.agents)
     print(f"{D}Council:{R} {names}")
+    try:
+        from agora.config.settings import get_config
+        from agora.projects import ProjectRegistry
+
+        project = ProjectRegistry(get_config()).current_project()
+        print(f"{D}Project:{R} {project.project_id} → {project.root}")
+    except Exception:
+        pass
 
     mem = council.memory.get_injection_text()
     if mem:

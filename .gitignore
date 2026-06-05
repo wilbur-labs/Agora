@@ -40,3 +40,10 @@ agora-workspace/
 # Runtime logs
 nohup.out
 *.log
+
+# Agora control-plane runtime state
+.agora/projects.yaml
+.agora/audit.log
+.agora/research/
+.agora/specs/
+.agora/decisions/
