@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import shlex
 import unicodedata
 
@@ -140,6 +141,35 @@ async def _prompt_choice(session: PromptSession, options: str) -> str:
         return ""
 
 
+async def _run_research_task(question: str, dispatch: bool = True, only_worker: str | None = None):
+    from agora.research import ResearchOrchestrator
+
+    orchestrator = ResearchOrchestrator()
+    task = await orchestrator.run(question, dispatch=dispatch, only_worker=only_worker)
+    decision = task.decision
+    workers = [decision["primary_worker"], *decision.get("secondary_workers", [])]
+    if only_worker:
+        workers = [only_worker]
+
+    print(f"{D}Mode:{R} research_dispatch")
+    print(f"{D}Research artifact:{R} {task.task_dir}")
+    print(f"{D}Task type:{R} {decision['task_type']}")
+    print(f"{D}Dispatch:{R} {dispatch}")
+    print(f"{D}Workers:{R} {', '.join(workers)}")
+    print(f"{D}Router reason:{R} {decision.get('reason', '(none)')}")
+
+    results_path = task.task_dir / "worker-results.json"
+    if results_path.exists():
+        results = json.loads(results_path.read_text(encoding="utf-8"))
+        if results:
+            print(f"{D}Worker results:{R}")
+            for result in results:
+                reason = f" ({result['reason']})" if result.get("reason") else ""
+                print(f"  {result['worker']}: {result['status']}{reason}")
+    print()
+    return task
+
+
 async def handle_input(user_input: str, session: PromptSession, force_mode: str = ""):
     """Main input handler with routing."""
     council = get_council()
@@ -150,6 +180,12 @@ async def handle_input(user_input: str, session: PromptSession, force_mode: str 
         council.context.add_user(user_input)
         route = force_mode
     else:
+        from agora.research.router import should_auto_dispatch
+
+        if should_auto_dispatch(user_input):
+            await _run_research_task(user_input, dispatch=True)
+            return
+
         # Let moderator route
         mod_text = ""
         async for name, role, chunk in council.route(user_input):
@@ -320,13 +356,16 @@ async def command(cmd: str, session: PromptSession) -> bool:
     elif parts[0] == "/research":
         raw = cmd[len("/research"):].strip()
         tokens = shlex.split(raw)
-        dispatch = False
+        dispatch = True
         only_worker = None
         idx = 0
         while idx < len(tokens):
             token = tokens[idx]
             if token == "--dispatch":
                 dispatch = True
+                idx += 1
+            elif token in ("--no-dispatch", "--plan-only"):
+                dispatch = False
                 idx += 1
             elif token == "--worker" and idx + 1 < len(tokens):
                 only_worker = tokens[idx + 1]
@@ -335,18 +374,9 @@ async def command(cmd: str, session: PromptSession) -> bool:
                 break
         text = " ".join(tokens[idx:])
         if text:
-            from agora.research import ResearchOrchestrator
-
-            orchestrator = ResearchOrchestrator()
-            task = await orchestrator.run(text, dispatch=dispatch, only_worker=only_worker)
-            print(f"{D}Research artifact created:{R} {task.task_dir}")
-            print(f"{D}Task type:{R} {task.decision['task_type']}")
-            print(f"{D}Dispatch:{R} {dispatch}")
-            print(f"{D}Primary worker:{R} {task.decision['primary_worker']}")
-            secondary = ", ".join(task.decision.get("secondary_workers", [])) or "(none)"
-            print(f"{D}Secondary workers:{R} {secondary}")
+            await _run_research_task(text, dispatch=dispatch, only_worker=only_worker)
         else:
-            print(f"{D}Usage: /research [--dispatch] [--worker <name>] <question>{R}")
+            print(f"{D}Usage: /research [--plan-only] [--worker <name>] <question>{R}")
     elif parts[0] == "/help":
         print(f"""
   {B}/agents{R}                    List council agents
@@ -357,8 +387,9 @@ async def command(cmd: str, session: PromptSession) -> bool:
   {B}/doctor{R}                    Check worker CLI and workspace readiness
   {B}/ask <question>{R}            Quick answer (skip discussion)
   {B}/exec <task>{R}               Direct execution (skip discussion)
-  {B}/research <question>{R}       Create a research task artifact and router decision
-  {B}/research --dispatch <q>{R}   Create and dispatch ready configured workers
+  {B}<question>{R}                 Auto-route research-like prompts to dispatch workers
+  {B}/research <question>{R}       Create and dispatch a research task
+  {B}/research --plan-only <q>{R}  Create artifacts without worker dispatch
   {B}/skills{R}                    List learned skills
   {B}/reset{R}                     Clear conversation context
   {B}/memory{R}                    View persistent memory

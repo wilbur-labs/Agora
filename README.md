@@ -82,6 +82,49 @@ council:
   concurrent: false
 ```
 
+## Runtime Modes and API Requirements
+
+Agora currently has two main runtime modes:
+
+| Mode | Purpose | Invocation | Does Agora need model API credentials? |
+|------|---------|------------|----------------------------------------|
+| Chat / Council | Web UI chat, `/api/chat`, multi-agent discussion, QUICK / DISCUSS / EXECUTE routing | Agora calls the configured model providers directly | Yes. Configure `CLAUDE_API_KEY`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_BASE_URL`, or the provider credentials selected in `config.yaml` |
+| Research Dispatch Worker | Background research tasks routed to `claude-research`, `codex-engineering`, and `kiro-spec` | Agora launches local CLIs: `claude`, `codex`, and `kiro-cli` | Not directly for Agora. The CLIs must be installed, available on `PATH`, and authenticated through their own login or environment setup |
+
+Natural-language research dispatch is the default user experience. In the CLI, ask the question directly:
+
+```text
+Agora> 比较生产级 RAG 系统可用的开源 reranker，并推荐一个。
+```
+
+Agora classifies research-like prompts, selects the appropriate workers, dispatches them, and writes artifacts under `.agora/research/<task-id>/`. The explicit `/research` command remains available for advanced usage:
+
+```text
+/research <question>              # dispatch workers
+/research --plan-only <question>  # create artifacts without dispatch
+/research --worker codex-engineering <question>  # debug one worker
+```
+
+Current research worker configuration example:
+
+```yaml
+research:
+  dispatch:
+    enabled: true
+  workers:
+    claude-research:
+      command: claude
+      args: ["-p", "{prompt}", "--output-format", "text"]
+    codex-engineering:
+      command: codex
+      args: ["exec", "--skip-git-repo-check"]
+    kiro-spec:
+      command: kiro-cli
+      args: ["chat", "--no-interactive", "--trust-all-tools"]
+```
+
+In short: Agora own chat, council, and agent execution flows need model API credentials. Research dispatch only starts Claude Code, Codex, and Kiro CLI workers, so authentication is handled by those CLIs.
+
 ## How It Works
 
 ```

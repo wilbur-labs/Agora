@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 
 from agora.research import ResearchOrchestrator
-from agora.research.router import classify
+from agora.research.router import classify, should_auto_dispatch
 
 
 def test_classify_library_evaluation_routes_to_codex():
@@ -15,6 +15,14 @@ def test_classify_library_evaluation_routes_to_codex():
     assert "verifier" in decision["secondary_workers"]
     assert decision["needs_repo_execution"] is True
     assert decision["needs_spec"] is True
+
+
+def test_should_auto_dispatch_research_like_prompt():
+    assert should_auto_dispatch("比较生产级 RAG 系统可用的开源 reranker，并推荐一个。") is True
+
+
+def test_should_not_auto_dispatch_simple_chat_prompt():
+    assert should_auto_dispatch("你好，今天怎么样？") is False
 
 
 def test_research_orchestrator_writes_artifacts(tmp_path):

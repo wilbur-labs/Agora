@@ -17,6 +17,52 @@ ROUTE_TABLE = {
     "code_implementation": ("codex-engineering", ["kiro-spec"]),
 }
 
+AUTO_DISPATCH_TASK_TYPES = {
+    "paper_survey",
+    "official_docs_comparison",
+    "library_evaluation",
+    "repo_deep_dive",
+    "architecture_decision",
+    "poc_or_benchmark",
+    "migration_plan",
+    "spec_generation",
+    "code_implementation",
+}
+
+RESEARCH_INTENT_KEYWORDS = (
+    "research",
+    "survey",
+    "compare",
+    "comparison",
+    "evaluate",
+    "evaluation",
+    "recommend",
+    "architecture",
+    "migration",
+    "benchmark",
+    "poc",
+    "spec",
+    "requirements",
+    "deep dive",
+    "调研",
+    "研究",
+    "比较",
+    "对比",
+    "评估",
+    "推荐",
+    "选型",
+    "架构",
+    "迁移",
+    "基准",
+    "验证",
+    "规格",
+    "需求",
+    "设计",
+    "任务拆解",
+    "源码",
+    "开源",
+)
+
 
 def classify(question: str) -> dict[str, Any]:
     text = question.lower()
@@ -81,6 +127,17 @@ def classify(question: str) -> dict[str, Any]:
         "confidence": confidence,
         "reason": reason,
     }
+
+
+def should_auto_dispatch(question: str) -> bool:
+    """Return True when a natural-language prompt should use research workers."""
+    decision = classify(question)
+    if decision["task_type"] in AUTO_DISPATCH_TASK_TYPES and decision["confidence"] >= 0.75:
+        return True
+    text = question.lower()
+    return decision["task_type"] == "technical_report" and any(
+        keyword in text for keyword in RESEARCH_INTENT_KEYWORDS
+    )
 
 
 def _output_artifacts(task_type: str, needs_repo_execution: bool, needs_spec: bool) -> list[str]:
