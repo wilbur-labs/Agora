@@ -19,6 +19,16 @@ Branch: `feat/control-plane-phase1`
 - [x] Claude review pass 2: `APPROVE` with no blocking correctness, transaction, concurrency, or security findings.
 - [ ] Create the reviewed Phase 1 commit.
 
+## 2026-07-13 — Network policy
+
+- [x] Phase 1 foundation committed as `d92bf93` after Claude approval.
+- [x] Confirmed external TCP/HTTPS works without a proxy.
+- [x] Confirmed Agora inherited `HTTP_PROXY`/`HTTPS_PROXY` and failed with HTTP 407.
+- [x] Added configurable `web.network_mode`: `direct` ignores proxy variables; `system` inherits them.
+- [x] Network policy tests and existing WebTools regression: 7 passed.
+- [x] Claude review: `APPROVE`; no correctness, security, or compatibility defects found.
+- [ ] Commit the reviewed network policy change.
+
 ### Full-suite baseline failure groups
 
 - POSIX-only path and shell assertions (`/`, `pwd`, `sleep`) on Windows.

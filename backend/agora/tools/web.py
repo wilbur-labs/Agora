@@ -4,10 +4,22 @@ from __future__ import annotations
 import httpx
 from lxml import html as lxml_html
 
+from agora.config.settings import get_config
+
 from .base import Tool, ToolResult
 
 _TIMEOUT = 30
 _MAX_CONTENT = 8_000
+
+
+def _client_options() -> dict[str, bool]:
+    """Map Agora's network policy to httpx environment handling."""
+    mode = str(get_config().get("web", {}).get("network_mode", "system")).lower()
+    if mode == "direct":
+        return {"trust_env": False}
+    if mode == "system":
+        return {"trust_env": True}
+    raise ValueError("web.network_mode must be 'direct' or 'system'")
 
 
 class WebSearch(Tool):
@@ -24,7 +36,11 @@ class WebSearch(Tool):
 
     async def execute(self, *, query: str, max_results: int = 5, **_) -> ToolResult:
         try:
-            async with httpx.AsyncClient(timeout=_TIMEOUT, follow_redirects=True) as client:
+            async with httpx.AsyncClient(
+                timeout=_TIMEOUT,
+                follow_redirects=True,
+                **_client_options(),
+            ) as client:
                 resp = await client.get(
                     "https://html.duckduckgo.com/html/",
                     params={"q": query},
@@ -68,7 +84,11 @@ class WebFetch(Tool):
 
     async def execute(self, *, url: str, **_) -> ToolResult:
         try:
-            async with httpx.AsyncClient(timeout=_TIMEOUT, follow_redirects=True) as client:
+            async with httpx.AsyncClient(
+                timeout=_TIMEOUT,
+                follow_redirects=True,
+                **_client_options(),
+            ) as client:
                 resp = await client.get(url, headers={"User-Agent": "Mozilla/5.0 (compatible; AgoraBot/1.0)"})
                 resp.raise_for_status()
             ct = resp.headers.get("content-type", "")

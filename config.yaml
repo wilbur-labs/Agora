@@ -97,6 +97,12 @@ sandbox:
   workspace_dir: /tmp/agora_workspace
   network: true
 
+# Network route for Agora's HTTP web tools.
+# direct: ignore HTTP(S)_PROXY and use the external network directly.
+# system: inherit proxy settings from the process environment.
+web:
+  network_mode: direct
+
 # Embedding for semantic skill matching and memory retrieval
 # Uncomment to enable (requires embedding model deployment)
 # embeddings:
