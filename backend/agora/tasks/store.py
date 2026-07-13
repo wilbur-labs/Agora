@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
-from contextlib import closing
+from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -88,13 +88,28 @@ class TaskStore:
                     ON task_events(task_id, created_at, event_id);
                 """
             )
+            from agora.requirements.schema import initialize_requirement_schema
+
+            initialize_requirement_schema(db)
             db.commit()
+
+    @contextmanager
+    def _transaction(self):
+        db = self._connect()
+        try:
+            db.execute("BEGIN IMMEDIATE")
+            yield db
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
 
     def create(self, request: CreateTaskRequest) -> TaskManifest:
         task_id = self._new_id("task")
         now = utc_now()
-        with closing(self._connect()) as db:
-            db.execute("BEGIN IMMEDIATE")
+        with self._transaction() as db:
             db.execute(
                 """
                 INSERT INTO tasks (
@@ -130,7 +145,6 @@ class TaskStore:
                 payload={"state": TaskState.BACKLOG.value, "version": 1},
                 created_at=now,
             )
-            db.commit()
         task = self.get(task_id)
         assert task is not None
         return task
@@ -179,8 +193,7 @@ class TaskStore:
         expected_version: int | None = None,
     ) -> TaskManifest:
         now = utc_now()
-        with closing(self._connect()) as db:
-            db.execute("BEGIN IMMEDIATE")
+        with self._transaction() as db:
             row = db.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
             if not row:
                 raise TaskNotFoundError(task_id)
@@ -192,6 +205,18 @@ class TaskStore:
                 )
             if not can_transition(current, target):
                 raise InvalidTransitionError(f"Cannot transition {current.value} to {target.value}")
+            if target == TaskState.DESIGN:
+                approved = db.execute(
+                    """
+                    SELECT 1 FROM requirement_specs
+                    WHERE task_id = ? AND state = 'approved' LIMIT 1
+                    """,
+                    (task_id,),
+                ).fetchone()
+                if not approved:
+                    raise InvalidTransitionError(
+                        "Task requires an approved spec to advance to design"
+                    )
             next_version = current_version + 1
             cursor = db.execute(
                 """
@@ -215,7 +240,6 @@ class TaskStore:
                 },
                 created_at=now,
             )
-            db.commit()
         task = self.get(task_id)
         assert task is not None
         return task
@@ -240,7 +264,7 @@ class TaskStore:
         if self.get(task_id) is None:
             raise TaskNotFoundError(task_id)
         now = utc_now()
-        with closing(self._connect()) as db:
+        with self._transaction() as db:
             event = self._insert_event(
                 db,
                 task_id=task_id,
@@ -249,7 +273,6 @@ class TaskStore:
                 payload=request.payload,
                 created_at=now,
             )
-            db.commit()
         return event
 
     def events(self, task_id: str) -> list[TaskEvent]:

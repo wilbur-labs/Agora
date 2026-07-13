@@ -12,6 +12,7 @@ from agora.api.sessions import router as sessions_router
 from agora.api.extras import router as extras_router
 from agora.api.artifacts import router as artifacts_router
 from agora.tasks.router import router as tasks_router
+from agora.requirements.router import router as requirements_router
 
 app = FastAPI(title="Agora", version="0.1.0", description="Multi-perspective AI council")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -21,6 +22,7 @@ app.include_router(sessions_router, prefix="/api")
 app.include_router(extras_router, prefix="/api")
 app.include_router(artifacts_router, prefix="/api")
 app.include_router(tasks_router, prefix="/api")
+app.include_router(requirements_router, prefix="/api")
 
 # Serve Next.js static export (frontend/out/) if available
 _frontend_out = Path(__file__).resolve().parent.parent.parent.parent / "frontend" / "out"

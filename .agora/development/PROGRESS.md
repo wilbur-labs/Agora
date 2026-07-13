@@ -29,6 +29,19 @@ Branch: `feat/control-plane-phase1`
 - [x] Claude review: `APPROVE`; no correctness, security, or compatibility defects found.
 - [ ] Commit the reviewed network policy change.
 
+## 2026-07-13 — Requirements Studio backend
+
+- [x] Network policy committed as `797e8e9` after Claude approval.
+- [x] Kiro produced the Phase 2 Requirements Studio specification (0.90 credits).
+- [x] Added versioned structured specs, human approval/rejection, CR lifecycle, and per-requirement traceability.
+- [x] Added the approved-spec gate for `requirements → design`.
+- [x] Added REST endpoints and append-only `spec.*` / `cr.*` audit events.
+- [x] Relevant regression suite: 28 passed, 1 dependency warning.
+- [x] Claude review pass 1: `CHANGES_REQUESTED` (design-gate bypass, schema init, optimistic revision, rollback clarity).
+- [x] Addressed all requested changes; relevant regression suite increased to 29 passed.
+- [x] Claude review pass 2: `APPROVE`; no remaining high/medium defects.
+- [ ] Commit the reviewed Requirements Studio backend.
+
 ### Full-suite baseline failure groups
 
 - POSIX-only path and shell assertions (`/`, `pwd`, `sleep`) on Windows.

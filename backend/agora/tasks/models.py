@@ -82,7 +82,7 @@ class AppendEventRequest(BaseModel):
     @field_validator("event_type")
     @classmethod
     def reserved_event_type(cls, value: str) -> str:
-        if value in {"task_created", "state_changed"}:
+        if value in {"task_created", "state_changed"} or value.startswith(("spec.", "cr.")):
             raise ValueError(f"{value} is reserved for the control plane")
         return value
 
