@@ -2,23 +2,23 @@
 
 # Local development
 install:
-	cd backend && pip3 install -e ".[dev]"
+	cd backend && uv sync --extra dev
 	cd frontend && pnpm install
 
 dev:
-	cd backend && uvicorn agora.api.app:app --reload --host 0.0.0.0 --port 8000
+	cd backend && uv run uvicorn agora.api.app:app --reload --host 0.0.0.0 --port 8000
 
 dev-ui:
 	cd frontend && pnpm dev --hostname 0.0.0.0
 
 cli:
-	cd backend && python3 -m agora
+	cd backend && uv run python -m agora
 
 test:
-	cd backend && python3 -m pytest tests/ -v --tb=short -m "not integration"
+	cd backend && uv run pytest tests/ -v --tb=short -m "not integration"
 
 test-all:
-	cd backend && python3 -m pytest tests/ -v --tb=short
+	cd backend && uv run pytest tests/ -v --tb=short
 
 frontend:
 	cd frontend && pnpm build
