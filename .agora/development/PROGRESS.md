@@ -40,7 +40,23 @@ Branch: `feat/control-plane-phase1`
 - [x] Claude review pass 1: `CHANGES_REQUESTED` (design-gate bypass, schema init, optimistic revision, rollback clarity).
 - [x] Addressed all requested changes; relevant regression suite increased to 29 passed.
 - [x] Claude review pass 2: `APPROVE`; no remaining high/medium defects.
-- [ ] Commit the reviewed Requirements Studio backend.
+- [x] Requirements Studio backend committed as `ed00446` after Claude approval.
+
+## 2026-07-13 — Portfolio and Requirements Studio UI
+
+- [x] Defined typed frontend contracts for task lifecycle and requirement specs.
+- [x] Added a reusable Delivery Control Plane navigation shell.
+- [x] Added a live cross-project Portfolio board, attention lane, filters, and task creation.
+- [x] Added Requirements Studio task selection, lifecycle entry, structured draft creation, version viewing, and human approval.
+- [x] Changed-file ESLint passes; production build and static export pass (11 pages).
+- [x] Recorded pre-existing full-frontend lint debt separately (16 errors in untouched legacy pages/components).
+- [x] Claude review pass 1: `CHANGES_REQUESTED` (design transition, rejection recovery, refresh selection, spec-local state, 409 recovery, dialog accessibility).
+- [x] Addressed every high/medium finding and reran changed-file lint plus production build successfully.
+- [x] Claude review pass 2: `CHANGES_REQUESTED` (composer remount and stale spec-response race).
+- [x] Added task-keyed composer state, loading isolation, and cancellation guards; lint/build pass again.
+- [x] Claude review pass 3: `APPROVE`; no remaining high/medium issues.
+- [x] Complete independent Claude review and address findings.
+- [ ] Commit the reviewed frontend increment.
 
 ### Full-suite baseline failure groups
 

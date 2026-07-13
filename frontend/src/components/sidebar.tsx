@@ -80,6 +80,12 @@ export function Sidebar({ onReset, currentSessionId, onSelectSession }: SidebarP
 
       {/* Bottom menu — always visible, never pushed off screen */}
       <div className="p-3 space-y-1 shrink-0">
+        <a href="/portfolio" className="flex items-center gap-2 w-full px-3 py-2 rounded-lg text-sm text-muted-foreground hover:text-foreground hover:bg-accent transition-colors">
+          <span>📊</span><span>Portfolio</span>
+        </a>
+        <a href="/requirements" className="flex items-center gap-2 w-full px-3 py-2 rounded-lg text-sm text-muted-foreground hover:text-foreground hover:bg-accent transition-colors">
+          <span>📋</span><span>Requirements</span>
+        </a>
         <a href="/agents" className="flex items-center gap-2 w-full px-3 py-2 rounded-lg text-sm text-muted-foreground hover:text-foreground hover:bg-accent transition-colors">
           <span>⚙️</span><span>Agents</span>
         </a>
@@ -99,11 +105,8 @@ export function Sidebar({ onReset, currentSessionId, onSelectSession }: SidebarP
 }
 
 function ThemeToggle() {
-  const { theme, setTheme } = useTheme();
-  const [mounted, setMounted] = useState(false);
-  useEffect(() => setMounted(true), []);
-  if (!mounted) return null;
-  const isDark = theme === "dark" || (theme === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+  const { resolvedTheme, setTheme } = useTheme();
+  const isDark = resolvedTheme === "dark";
   return (
     <button
       onClick={() => setTheme(isDark ? "light" : "dark")}
