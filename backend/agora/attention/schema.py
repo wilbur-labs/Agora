@@ -39,5 +39,17 @@ def initialize_attention_schema(db: sqlite3.Connection) -> None:
             ON attention_items(run_id) WHERE run_id IS NOT NULL;
         CREATE INDEX IF NOT EXISTS idx_attention_state_urgency
             ON attention_items(state, urgency, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS attention_bridge_events (
+            vendor TEXT NOT NULL,
+            run_id TEXT NOT NULL REFERENCES execution_runs(run_id),
+            vendor_event_id TEXT NOT NULL,
+            item_id TEXT NOT NULL UNIQUE REFERENCES attention_items(item_id),
+            delivery_mode TEXT NOT NULL,
+            received_at TEXT NOT NULL,
+            PRIMARY KEY (vendor, run_id, vendor_event_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_attention_bridge_item
+            ON attention_bridge_events(item_id);
         """
     )

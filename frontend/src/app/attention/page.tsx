@@ -79,6 +79,9 @@ export default function AttentionPage() {
     && (kindFilter === "all" || item.kind === kindFilter)
     && (projectFilter === "all" || item.project_id === projectFilter));
   const selected = items.find((item) => item.item_id === selectedId) ?? null;
+  const selectedBridge = selected?.context.bridge && typeof selected.context.bridge === "object"
+    ? selected.context.bridge as Record<string, unknown> : null;
+  const captureOnly = selectedBridge?.delivery_mode === "capture_only";
   const openCount = items.filter((item) => item.state === "open").length;
 
   useEffect(() => {
@@ -99,7 +102,9 @@ export default function AttentionPage() {
         action, response, actor: "user", expected_version: selected.version,
       });
       if (!mounted.current) return;
-      updateItem(updated); setMessage("Response recorded. The bridge can now deliver it to the waiting agent.");
+      updateItem(updated); setMessage(captureOnly
+        ? "Response recorded in Agora. This capture-only bridge cannot deliver it to the vendor process."
+        : "Response recorded. The bidirectional bridge can deliver it to the waiting agent.");
     } catch (err) {
       if (!mounted.current) return;
       if (err instanceof ApiError && err.status === 409) { setMessage("This item changed in another session; refreshed the authoritative state."); void load(false); }
@@ -159,10 +164,11 @@ export default function AttentionPage() {
             {!selected ? <div className="grid min-h-64 place-items-center text-center text-muted-foreground"><div><ShieldAlert className="mx-auto mb-3 size-8" /><p>Select an item to inspect and respond.</p></div></div> : <div className="space-y-5">
               <div><div className="flex gap-2"><Badge>{selected.kind}</Badge><Badge variant="outline">v{selected.version}</Badge></div><h2 className="mt-3 text-xl font-semibold">{selected.title}</h2><p className="mt-2 whitespace-pre-wrap text-sm">{selected.body}</p></div>
               <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm"><dt className="text-muted-foreground">Project</dt><dd>{selected.project_id}</dd><dt className="text-muted-foreground">Task</dt><dd className="break-all">{selected.task_id}</dd>{selected.run_id && <><dt className="text-muted-foreground">Run</dt><dd className="break-all">{selected.run_id}</dd></>}<dt className="text-muted-foreground">Requester</dt><dd>{selected.requester}</dd></dl>
+              {selectedBridge && <div className={cn("rounded-lg border p-3 text-sm", captureOnly ? "border-amber-500/40 bg-amber-500/10" : "border-emerald-500/40 bg-emerald-500/10")}><p className="font-medium">{String(selectedBridge.vendor)} bridge · {String(selectedBridge.delivery_mode)}</p><p className="mt-1 text-muted-foreground">{captureOnly ? "Agora captured this wait, but cannot send your answer back automatically. Resolve it in the vendor UI or cancel the run." : "Responses can be delivered over the verified structured channel."}</p></div>}
               {selected.state === "open" ? <div className="space-y-3 border-t pt-4">
                 {selected.kind === "approval" && <div className="flex gap-2"><Button variant={action === "approve" ? "default" : "outline"} onClick={() => setAction("approve")}><Check />Approve</Button><Button variant={action === "reject" ? "destructive" : "outline"} onClick={() => setAction("reject")}><X />Reject</Button></div>}
                 {selected.kind !== "approval" && <input type="hidden" value="answer" />}
-                {selected.options.length > 0 && <label className="block text-sm">Suggested answer<select className="mt-1 block w-full rounded-md border bg-background p-2" value={response} onChange={(e) => { setResponse(e.target.value); setAction("answer"); }}>{selected.options.map((value) => <option key={value}>{value}</option>)}</select></label>}
+                {selected.kind !== "approval" && selected.options.length > 0 && <label className="block text-sm">Suggested answer<select className="mt-1 block w-full rounded-md border bg-background p-2" value={response} onChange={(e) => { setResponse(e.target.value); setAction("answer"); }}>{selected.options.map((value) => <option key={value}>{value}</option>)}</select></label>}
                 <label className="block text-sm">Response<textarea className="mt-1 min-h-28 w-full rounded-md border bg-background p-3" value={response} onChange={(e) => setResponse(e.target.value)} placeholder="Provide context for the waiting agent" /></label>
                 <div className="flex flex-wrap gap-2"><Button disabled={acting || (action === "answer" && !response.trim())} onClick={() => void submitResponse()}>Submit response</Button><Button variant="outline" disabled={acting} onClick={() => void cancelSelected()}>Cancel item</Button></div>
               </div> : <div className="border-t pt-4"><p className="text-sm font-medium">Resolution</p><p className="mt-1 whitespace-pre-wrap text-sm text-muted-foreground">{selected.response_action ? `${selected.response_action}: ` : ""}{selected.response || selected.cancellation_reason || selected.state}</p></div>}

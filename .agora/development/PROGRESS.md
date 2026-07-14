@@ -139,8 +139,8 @@ No implementation commit may be created until:
 
 - Last reviewed commit: `1ccc37b feat: provision isolated agent worktrees`.
 - Branch: `feat/control-plane-phase1`.
-- Committed-platform estimate: 64%.
-- Working-tree estimate: 64%.
+- Committed-platform estimate: 67%.
+- Working-tree estimate: 67%.
 - Phase 6 state: implementation, review gate, and local commit complete.
 - Source of truth: this section must be updated whenever Phase 6 scope, tests, review state, or commit state changes.
 
@@ -176,3 +176,28 @@ No implementation commit may be created until:
 1. Keep vendor CLI bridge work as the next separately reviewable Phase 6b task.
 2. Define the neutral bridge delivery/acknowledgement contract before implementing vendor adapters.
 3. Implement and test Claude Code, Kiro CLI, and Codex adapters independently against that contract.
+
+## 2026-07-15 — Vendor Attention Bridge Foundation (Phase 6b, active)
+
+- [x] Verified local versions and surfaces: Claude Code 2.1.207, Codex CLI 0.144.1, Kiro CLI 2.12.1.
+- [x] Used the current official Codex manual to verify stable command hooks and app-server JSON-RPC boundaries.
+- [x] Kiro produced a read-only Phase 6b architecture review (1.50 credits).
+- [x] Rejected unverified assumptions about a Codex `--json-rpc` flag and automatic Claude approval delivery.
+- [x] Added a neutral `BridgeEventRequest` with explicit `capture_only` versus `bidirectional` capability.
+- [x] Added atomic database idempotency on vendor/run/event identity and append-only `attention.bridge_captured` events.
+- [x] Restricted public hook ingestion to active runs and `capture_only` mode until a delivery protocol is verified.
+- [x] Added pure Claude/Codex/Kiro hook payload normalization with redaction at the persistence boundary.
+- [x] Added a portable command-hook forwarding CLI without terminal keystroke injection.
+- [x] Added run/task/project correlation environment variables to execution subprocesses.
+- [x] Updated Attention Center to disclose capture-only limitations instead of claiming delivery.
+- [x] Added Phase 6b capability documentation and manually reviewed hook fragments.
+- [x] Bridge-focused Attention tests: 10 passed, 1 dependency deprecation warning.
+- [x] Final related backend regression suite: 49 passed, 1 dependency deprecation warning.
+- [x] Final frontend changed-file ESLint and production build passed; 13 pages generated.
+- [x] Claude review pass 1: `CHANGES_REQUESTED` (blocking hook exit code, unstable fallback identity, example portability, public-input bounds).
+- [x] Fixed all pass-1 findings and added regression coverage.
+- [x] Claude review pass 2: `CHANGES_REQUESTED` (argparse could still emit blocking exit 2; malformed success receipt handling).
+- [x] Normalized all hook CLI configuration failures to non-blocking exit 1 and covered malformed receipts.
+- [x] Claude review pass 3: `APPROVE`; no remaining high/medium findings.
+- [x] Committed Phase 6b locally after the review gate passed (the commit containing this snapshot).
+- [ ] True bidirectional delivery remains a later increment requiring generated, version-matched vendor protocol schemas and end-to-end tests.

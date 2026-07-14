@@ -12,6 +12,9 @@ from agora.attention.models import (
 )
 from agora.attention.router import get_attention_store
 from agora.attention.store import AttentionConflictError, AttentionNotFoundError, AttentionStore, AttentionValidationError
+from agora.attention.bridges.models import BridgeEventRequest, BridgeVendor, DeliveryMode
+from agora.attention.bridges.normalize import normalize_hook_event
+from agora.attention.bridges.hook_cli import main as hook_cli_main
 from agora.tasks.models import AppendEventRequest, CreateTaskRequest
 from agora.tasks.store import TaskStore
 
@@ -148,5 +151,108 @@ def test_attention_api_lifecycle_and_conflicts(tmp_path):
             })
             assert stale.status_code == 409
             assert client.get("/api/attention/missing").status_code == 404
+    finally:
+        app.dependency_overrides.clear()
+
+
+def _insert_active_run(tasks: TaskStore, task_id: str, project_id: str = "alpha") -> str:
+    now = datetime.now(timezone.utc).isoformat()
+    run_id = f"run_{task_id[-8:]}"
+    with tasks._transaction() as db:
+        db.execute(
+            """INSERT INTO execution_runs
+               (run_id, task_id, project_id, adapter, state, prompt, workspace, timeout_seconds, queued_at, actor)
+               VALUES (?, ?, ?, 'codex', 'running', 'x', '.', 60, ?, 'user')""",
+            (run_id, task_id, project_id, now),
+        )
+    return run_id
+
+
+def test_bridge_event_is_normalized_and_atomically_deduplicated(tmp_path):
+    tasks, store, task = _system(tmp_path)
+    run_id = _insert_active_run(tasks, task.task_id)
+    event = normalize_hook_event(BridgeVendor.CODEX, {
+        "hook_event_name": "PermissionRequest", "session_id": "session-1",
+        "tool_use_id": "tool-1", "tool_name": "Bash",
+        "tool_input": {"command": "echo access_token=bridge-secret"},
+    }, task_id=task.task_id, run_id=run_id)
+
+    first = store.create_bridge_event(event)
+    second = store.create_bridge_event(event)
+    assert first.created is True and second.created is False
+    assert first.item_id == second.item_id
+    item = store.require(first.item_id)
+    assert item.context["bridge"]["delivery_mode"] == "capture_only"
+    assert "bridge-secret" not in item.body
+    assert store.open_count() == 1
+    assert tasks.events(task.task_id)[-1].event_type == "attention.bridge_captured"
+
+    retry = normalize_hook_event(BridgeVendor.CODEX, {
+        "hook_event_name": "PermissionRequest", "session_id": "session-1",
+        "tool_name": "Bash", "tool_input": {"command": "echo stable"}, "timestamp": "first",
+    }, task_id=task.task_id, run_id=run_id)
+    retried = normalize_hook_event(BridgeVendor.CODEX, {
+        "hook_event_name": "PermissionRequest", "session_id": "session-1",
+        "tool_name": "Bash", "tool_input": {"command": "echo stable"}, "timestamp": "second",
+    }, task_id=task.task_id, run_id=run_id)
+    assert retry.vendor_event_id == retried.vendor_event_id
+
+
+def test_bridge_ingress_rejects_unverified_delivery_and_terminal_runs(tmp_path):
+    tasks, store, task = _system(tmp_path)
+    run_id = _insert_active_run(tasks, task.task_id)
+    base = dict(vendor="claude", vendor_event_id="event-1", task_id=task.task_id,
+                run_id=run_id, kind="approval", title="Permission", requester="claude-bridge")
+    with pytest.raises(AttentionValidationError, match="capture_only"):
+        store.create_bridge_event(BridgeEventRequest(**base, delivery_mode=DeliveryMode.BIDIRECTIONAL))
+    with tasks._transaction() as db:
+        db.execute("UPDATE execution_runs SET state = 'failed' WHERE run_id = ?", (run_id,))
+    with pytest.raises(AttentionValidationError, match="active run"):
+        store.create_bridge_event(BridgeEventRequest(**base))
+
+    with pytest.raises(ValueError, match="unique"):
+        BridgeEventRequest(**base, options=["same", "same"])
+    with pytest.raises(ValueError, match="16384"):
+        BridgeEventRequest(**base, correlation={"payload": "x" * 17_000})
+
+
+def test_hook_cli_configuration_failure_is_never_a_blocking_exit(monkeypatch):
+    monkeypatch.delenv("AGORA_TASK_ID", raising=False)
+    monkeypatch.delenv("AGORA_RUN_ID", raising=False)
+    assert hook_cli_main(["claude"]) == 1
+    assert hook_cli_main(["not-a-vendor"]) == 1
+    assert hook_cli_main([]) == 1
+
+
+def test_hook_cli_malformed_success_response_fails_cleanly(monkeypatch):
+    class Response:
+        def __enter__(self): return self
+        def __exit__(self, *_): return None
+        def read(self): return b"{}"
+
+    monkeypatch.setenv("AGORA_TASK_ID", "task_1")
+    monkeypatch.setenv("AGORA_RUN_ID", "run_1")
+    monkeypatch.setattr("sys.stdin", __import__("io").StringIO('{"event":"notification"}'))
+    monkeypatch.setattr("urllib.request.urlopen", lambda *_args, **_kwargs: Response())
+    assert hook_cli_main(["codex"]) == 1
+
+
+def test_bridge_ingress_api_returns_idempotent_receipt(tmp_path):
+    tasks, store, task = _system(tmp_path)
+    run_id = _insert_active_run(tasks, task.task_id)
+    app.dependency_overrides[get_attention_store] = lambda: store
+    payload = {
+        "vendor": "kiro", "vendor_event_id": "wait-1", "task_id": task.task_id,
+        "run_id": run_id, "kind": "question", "title": "Kiro needs input",
+        "requester": "kiro-bridge", "delivery_mode": "capture_only",
+    }
+    try:
+        with TestClient(app) as client:
+            first = client.post("/api/attention/bridge-events", json=payload)
+            second = client.post("/api/attention/bridge-events", json=payload)
+        assert first.status_code == 200 and first.json()["created"] is True
+        assert second.status_code == 200 and second.json() == {
+            **first.json(), "created": False,
+        }
     finally:
         app.dependency_overrides.clear()

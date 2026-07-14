@@ -14,6 +14,7 @@ from .models import (
     CancelAttentionRequest, CreateAttentionRequest, RespondAttentionRequest,
 )
 from .store import AttentionConflictError, AttentionNotFoundError, AttentionStore, AttentionValidationError
+from .bridges.models import BridgeEventReceipt, BridgeEventRequest
 
 
 router = APIRouter(tags=["attention"])
@@ -22,6 +23,18 @@ router = APIRouter(tags=["attention"])
 @lru_cache(maxsize=1)
 def get_attention_store() -> AttentionStore:
     return AttentionStore(get_task_store())
+
+
+@router.post("/attention/bridge-events", response_model=BridgeEventReceipt)
+async def capture_bridge_event(
+    request: BridgeEventRequest, store: AttentionStore = Depends(get_attention_store),
+):
+    try:
+        return await run_in_threadpool(store.create_bridge_event, request)
+    except AttentionNotFoundError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from None
+    except AttentionValidationError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from None
 
 
 @router.post("/attention", response_model=AttentionItem, status_code=status.HTTP_201_CREATED)

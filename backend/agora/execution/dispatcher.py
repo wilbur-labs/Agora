@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
@@ -154,6 +155,12 @@ class ExecutionDispatcher:
                     cwd=str(workspace),
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
+                    env={
+                        **os.environ,
+                        "AGORA_TASK_ID": run.task_id,
+                        "AGORA_RUN_ID": run.run_id,
+                        "AGORA_PROJECT_ID": run.project_id,
+                    },
                 )
             except (FileNotFoundError, OSError) as exc:
                 return self.store.finish(

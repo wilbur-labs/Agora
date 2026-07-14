@@ -17,6 +17,7 @@ from .models import (
     CancelAttentionRequest, CreateAttentionRequest, RespondAttentionRequest,
 )
 from .schema import initialize_attention_schema
+from .bridges.models import BridgeEventReceipt, BridgeEventRequest
 
 
 class AttentionNotFoundError(LookupError):
@@ -87,6 +88,60 @@ class AttentionStore:
             self._event(db, request.task_id, "attention.created", request.requester,
                         {"item_id": item_id, "kind": request.kind.value, "urgency": request.urgency.value}, now)
         return self.require(item_id)
+
+    def create_bridge_event(self, request: BridgeEventRequest) -> BridgeEventReceipt:
+        """Atomically deduplicate a vendor event and create its attention item."""
+        if request.delivery_mode.value != "capture_only":
+            raise AttentionValidationError("Public hook ingestion supports capture_only events")
+        now = utc_now()
+        item_id = f"attn_{uuid.uuid4().hex}"
+        with self._transaction() as db:
+            existing = db.execute(
+                """SELECT item_id, delivery_mode FROM attention_bridge_events
+                   WHERE vendor = ? AND run_id = ? AND vendor_event_id = ?""",
+                (request.vendor.value, request.run_id, request.vendor_event_id),
+            ).fetchone()
+            if existing:
+                return BridgeEventReceipt(
+                    item_id=existing["item_id"], created=False, delivery_mode=existing["delivery_mode"]
+                )
+            run = db.execute(
+                "SELECT task_id, project_id, state FROM execution_runs WHERE run_id = ?", (request.run_id,)
+            ).fetchone()
+            if run is None:
+                raise AttentionNotFoundError("Run not found")
+            if run["task_id"] != request.task_id:
+                raise AttentionValidationError("Run does not belong to the requested task")
+            if run["state"] not in {"queued", "running"}:
+                raise AttentionValidationError("Bridge events require an active run")
+            context = sanitize_data({
+                "bridge": {
+                    "vendor": request.vendor.value,
+                    "vendor_event_id": request.vendor_event_id,
+                    "delivery_mode": request.delivery_mode.value,
+                    "correlation": request.correlation,
+                }
+            })
+            db.execute(
+                """INSERT INTO attention_items (
+                    item_id, project_id, task_id, run_id, kind, state, urgency, title, body,
+                    options, context, requester, version, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, 1, ?, ?)""",
+                (item_id, run["project_id"], request.task_id, request.run_id, request.kind.value,
+                 request.urgency.value, redact_text(request.title.strip()), redact_text(request.body),
+                 self._json(request.options), self._json(context), request.requester, now, now),
+            )
+            db.execute(
+                """INSERT INTO attention_bridge_events
+                   (vendor, run_id, vendor_event_id, item_id, delivery_mode, received_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (request.vendor.value, request.run_id, request.vendor_event_id, item_id,
+                 request.delivery_mode.value, now),
+            )
+            self._event(db, request.task_id, "attention.bridge_captured", request.requester,
+                        {"item_id": item_id, "vendor": request.vendor.value,
+                         "delivery_mode": request.delivery_mode.value}, now)
+        return BridgeEventReceipt(item_id=item_id, created=True, delivery_mode=request.delivery_mode)
 
     def get(self, item_id: str) -> AttentionItem | None:
         self.expire_overdue()

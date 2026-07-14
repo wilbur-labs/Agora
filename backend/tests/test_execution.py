@@ -156,6 +156,20 @@ def test_workspace_must_be_under_an_explicit_allowed_root(tmp_path):
         dispatcher.queue(_request(task.task_id))
 
 
+def test_dispatcher_exposes_only_bridge_correlation_environment(tmp_path):
+    script = (
+        "import os; print(os.environ['AGORA_TASK_ID']); print(os.environ['AGORA_RUN_ID']); "
+        "print(os.environ['AGORA_PROJECT_ID'])"
+    )
+    tasks, store, dispatcher = _system(tmp_path, [sys.executable, "-c", script])
+    task = _planned_task(tasks)
+    queued = dispatcher.queue(_request(task.task_id))
+    result = asyncio.run(dispatcher.execute(queued.run_id))
+
+    assert result.state == RunState.SUCCEEDED
+    assert result.stdout_tail.splitlines() == [task.task_id, queued.run_id, "alpha"]
+
+
 def test_workspace_confinement_is_rechecked_before_process_start(tmp_path):
     tasks, store, dispatcher = _system(tmp_path, [sys.executable, "-c", "print('must not run')"])
     task = _planned_task(tasks)
