@@ -105,6 +105,25 @@ Branch: `feat/control-plane-phase1`
 - [x] Complete independent Claude review and address findings.
 - [x] Commit the reviewed Phase 4 increment.
 
+## 2026-07-14 — Git Worktree Workspace Provisioning
+
+- [x] Phase 4 Run Center committed as `3c10131` after Claude approval.
+- [x] Estimated complete-platform progress at 53% before Phase 5.
+- [x] Kiro produced the bounded Phase 5 provisioning specification (1.82 credits).
+- [x] Added explicit, idempotent, path-confined linked-worktree provisioning APIs.
+- [x] Added safe Git argv execution, deterministic collision-resistant branches, timeouts, and sanitized failures.
+- [x] Refused foreign directories, path escapes, checked-out branches, non-Git projects, and stale worktree metadata without deleting user data.
+- [x] Added Run Center workspace readiness checks and an explicit provision action.
+- [x] Workspace/execution/project focused backend suite: 49 passed; frontend lint/build pass (12 pages).
+- [x] Claude core review: `CHANGES_REQUESTED` (rmdir race mapping, list-endpoint 422 mapping, pre-mutation confinement recheck).
+- [x] Added safe filesystem-race mapping and tests for real foreign worktrees, missing Git, and escaped list status.
+- [x] Claude core re-review: `APPROVE`; no remaining high/medium provisioning findings.
+- [x] Claude frontend review: `CHANGES_REQUESTED` (stale provision response, POST cancellation, authoritative resync, live status).
+- [x] Added selection-keyed abort/guards, failure resync/retry, current-selection locking, and an aria-live status region.
+- [x] Claude frontend re-review: `APPROVE`; no remaining high/medium integration findings.
+- [x] Complete independent Claude review and address findings.
+- [x] Commit the reviewed Phase 5 increment.
+
 ## Review Gate
 
 No implementation commit may be created until:

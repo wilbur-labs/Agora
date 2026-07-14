@@ -1,5 +1,5 @@
 """Project registry and selection for Agora."""
 
-from .registry import ProjectRegistry
+from .registry import Project, ProjectRegistry
 
-__all__ = ["ProjectRegistry"]
+__all__ = ["Project", "ProjectRegistry"]

@@ -6,6 +6,7 @@ import { Bot, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ApiError, type TaskManifest } from "@/lib/control-plane";
 import { createRun, type ExecutionAdapter, type ExecutionRun } from "@/lib/execution";
+import { getWorkspaceStatus, provisionWorkspace, type WorkspaceStatus } from "@/lib/workspaces";
 
 const adapters: Array<{ value: ExecutionAdapter; label: string; detail: string }> = [
   { value: "codex", label: "Codex", detail: "Implementation and repository work" },
@@ -30,12 +31,36 @@ export function RunCreatePanel({
   const [prompt, setPrompt] = useState("");
   const [timeout, setTimeoutValue] = useState(600);
   const [submitting, setSubmitting] = useState(false);
+  const [provisioningKey, setProvisioningKey] = useState<string | null>(null);
+  const [workspaceRefresh, setWorkspaceRefresh] = useState(0);
+  const [workspaceLoading, setWorkspaceLoading] = useState(false);
+  const [workspace, setWorkspace] = useState<WorkspaceStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const panelRef = useRef<HTMLFormElement>(null);
   const mountedRef = useRef(true);
   const submittingRef = useRef(false);
+  const selectionRef = useRef("");
+  const provisionAbortRef = useRef<AbortController | null>(null);
   const selectedTask = eligible.find((task) => task.task_id === taskId) ?? null;
-  const valid = Boolean(selectedTask && prompt.trim() && prompt.length <= 16_000 && Number.isInteger(timeout) && timeout >= 1 && timeout <= 7200);
+  const selectionKey = selectedTask ? `${selectedTask.project_id}:${adapter}` : "";
+  const provisioning = provisioningKey === selectionKey;
+  const valid = Boolean(selectedTask && workspace?.state === "ready" && prompt.trim() && prompt.length <= 16_000 && Number.isInteger(timeout) && timeout >= 1 && timeout <= 7200);
+
+  useEffect(() => {
+    if (!selectedTask) { setWorkspace(null); return; }
+    const controller = new AbortController();
+    let retryTimer: number | undefined;
+    setWorkspaceLoading(true); setWorkspace(null); setError(null);
+    const refresh = () => getWorkspaceStatus(selectedTask.project_id, adapter, controller.signal)
+      .then((status) => {
+        setWorkspace(status);
+        if (status.state === "provisioning") retryTimer = window.setTimeout(refresh, 1500);
+      })
+      .catch((err) => { if ((err as Error).name !== "AbortError") setError((err as Error).message); })
+      .finally(() => { if (!controller.signal.aborted) setWorkspaceLoading(false); });
+    void refresh();
+    return () => { controller.abort(); if (retryTimer !== undefined) window.clearTimeout(retryTimer); };
+  }, [adapter, selectedTask, workspaceRefresh]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -61,6 +86,7 @@ export function RunCreatePanel({
     document.addEventListener("keydown", onKeyDown);
     return () => {
       mountedRef.current = false;
+      provisionAbortRef.current?.abort();
       document.removeEventListener("keydown", onKeyDown);
       background?.removeAttribute("inert");
       background?.removeAttribute("aria-hidden");
@@ -69,6 +95,10 @@ export function RunCreatePanel({
   }, [onClose]);
 
   useEffect(() => { submittingRef.current = submitting; }, [submitting]);
+  useEffect(() => {
+    selectionRef.current = selectionKey;
+    provisionAbortRef.current?.abort();
+  }, [selectionKey]);
 
   return createPortal(
     <div className="fixed inset-0 z-50 flex justify-end bg-black/40" onMouseDown={(event) => event.target === event.currentTarget && !submitting && onClose()}>
@@ -137,6 +167,50 @@ export function RunCreatePanel({
             ))}
           </div>
         </fieldset>
+
+        <section className="rounded-xl border p-4" aria-busy={workspaceLoading || provisioning} aria-live="polite">
+          <div className="flex items-start justify-between gap-3">
+            <div><h3 className="text-sm font-semibold">Agent workspace</h3><p className="mt-1 break-all text-xs text-muted-foreground">{workspace?.path ?? "Checking registered workspace…"}</p></div>
+            <span className="rounded-full border px-2 py-1 text-xs font-medium capitalize">{workspaceLoading ? "checking" : workspace?.state ?? "unknown"}</span>
+          </div>
+          {workspace?.state === "ready" && <p className="mt-3 text-xs text-emerald-700 dark:text-emerald-300">Ready on <strong>{workspace.branch}</strong> at {workspace.head_sha?.slice(0, 10)}.</p>}
+          {workspace && workspace.state !== "ready" && (
+            <div className="mt-3 space-y-3 text-xs text-muted-foreground">
+              <p>{workspace.state === "foreign" ? "This directory contains unmanaged files or a different worktree. Agora will not overwrite it." : workspace.error || (workspace.source_is_git ? "Create an isolated linked worktree containing this project's code." : "The project root is not a Git repository, so a linked worktree cannot be created.")}</p>
+              {(workspace.state === "missing" || workspace.state === "error") && workspace.source_is_git && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={provisioning}
+                  onClick={async () => {
+                    if (!selectedTask) return;
+                    const requestKey = `${selectedTask.project_id}:${adapter}`;
+                    provisionAbortRef.current?.abort();
+                    const controller = new AbortController();
+                    provisionAbortRef.current = controller;
+                    setProvisioningKey(requestKey); setError(null);
+                    setWorkspace((current) => current ? { ...current, state: "provisioning", error: null } : current);
+                    try {
+                      const result = await provisionWorkspace(selectedTask.project_id, adapter, controller.signal);
+                      if (mountedRef.current && selectionRef.current === requestKey) setWorkspace(result.status);
+                    } catch (err) {
+                      if ((err as Error).name !== "AbortError" && mountedRef.current && selectionRef.current === requestKey) {
+                        setError(`Workspace provisioning failed: ${(err as Error).message}`);
+                        setWorkspaceRefresh((value) => value + 1);
+                      }
+                    } finally {
+                      if (provisionAbortRef.current === controller) provisionAbortRef.current = null;
+                      if (mountedRef.current) setProvisioningKey((current) => current === requestKey ? null : current);
+                    }
+                  }}
+                >{provisioning ? "Provisioning…" : "Provision Git worktree"}</Button>
+              )}
+            </div>
+          )}
+          {!workspaceLoading && !workspace && selectedTask && (
+            <Button type="button" variant="outline" className="mt-3" onClick={() => setWorkspaceRefresh((value) => value + 1)}>Retry workspace check</Button>
+          )}
+        </section>
 
         <label className="block space-y-2 text-sm font-medium">
           <span className="flex items-center justify-between"><span>Prompt</span><span className="text-xs font-normal text-muted-foreground">{prompt.length.toLocaleString()} / 16,000</span></span>

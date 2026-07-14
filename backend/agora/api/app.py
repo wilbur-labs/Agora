@@ -16,6 +16,7 @@ from agora.tasks.router import router as tasks_router
 from agora.requirements.router import router as requirements_router
 from agora.execution.router import router as execution_router
 from agora.execution.router import get_execution_dispatcher
+from agora.workspaces.router import router as workspaces_router
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
@@ -35,6 +36,7 @@ app.include_router(artifacts_router, prefix="/api")
 app.include_router(tasks_router, prefix="/api")
 app.include_router(requirements_router, prefix="/api")
 app.include_router(execution_router, prefix="/api")
+app.include_router(workspaces_router, prefix="/api")
 
 # Serve Next.js static export (frontend/out/) if available
 _frontend_out = Path(__file__).resolve().parent.parent.parent.parent / "frontend" / "out"
