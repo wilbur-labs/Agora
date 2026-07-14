@@ -17,7 +17,7 @@ Branch: `feat/control-plane-phase1`
 - [x] Claude review pass 1: `CHANGES_REQUESTED` (project-id validation, sync DB in async routes, limits/order/tests).
 - [x] Addressed all requested changes; relevant regression suite increased to 19 passed.
 - [x] Claude review pass 2: `APPROVE` with no blocking correctness, transaction, concurrency, or security findings.
-- [ ] Create the reviewed Phase 1 commit.
+- [x] Phase 1 committed as `d92bf93` after Claude approval.
 
 ## 2026-07-13 — Network policy
 
@@ -27,7 +27,7 @@ Branch: `feat/control-plane-phase1`
 - [x] Added configurable `web.network_mode`: `direct` ignores proxy variables; `system` inherits them.
 - [x] Network policy tests and existing WebTools regression: 7 passed.
 - [x] Claude review: `APPROVE`; no correctness, security, or compatibility defects found.
-- [ ] Commit the reviewed network policy change.
+- [x] Network policy committed as `797e8e9` after Claude approval.
 
 ## 2026-07-13 — Requirements Studio backend
 
@@ -56,12 +56,35 @@ Branch: `feat/control-plane-phase1`
 - [x] Added task-keyed composer state, loading isolation, and cancellation guards; lint/build pass again.
 - [x] Claude review pass 3: `APPROVE`; no remaining high/medium issues.
 - [x] Complete independent Claude review and address findings.
-- [ ] Commit the reviewed frontend increment.
+- [x] Frontend increment committed as `7a3574b` after Claude approval.
+
+## 2026-07-13 — Delivery Execution Layer
+
+- [x] Estimated complete-platform progress at 35% before Phase 3.
+- [x] Kiro produced the bounded Phase 3 execution specification (1.39 credits).
+- [x] Added durable execution-run contracts, SQLite schema, adapters, dispatcher, and REST API.
+- [x] Added atomic `planned → running` queue gate and `run.*` task audit events.
+- [x] Added workspace isolation, bounded concurrency, timeout, cancellation, output redaction, and restart recovery.
+- [x] Replaced machine-specific `/work01` defaults with repository-anchored project and agent workspaces.
+- [x] Execution plus task/requirements/project/dispatch/config regression suite: 39 passed.
+- [x] Kiro security review: `CHANGES_REQUESTED`; addressed allowed workspace roots, safe errors/redaction, queued recovery, schema transactions, and API bounds.
+- [x] Kiro security re-review: `APPROVE`; its remaining pagination observation was fixed before final tests.
+- [x] Final full non-integration suite: 197 passed, 32 pre-existing Windows/sandbox/environment failures, 15 deselected.
+- [x] Claude core review pass 1: `CHANGES_REQUESTED` (pre-claim double spawn, Python 3.10 timeout leak, store-level redaction, symlink residual risk, cancelled-output audit).
+- [x] Addressed all findings with atomic pre-spawn claim, PID attachment CAS, cross-version timeout handling, persistence-boundary redaction, documented/rechecked workspace launch, and a final cancel-output event.
+- [x] Claude core review pass 2 found the same Python 3.10 timeout mismatch in terminate-to-kill escalation; fixed it and added a stubborn-process regression test.
+- [x] Claude core review pass 3: `APPROVE`; no remaining high/medium core findings.
+- [x] Claude integration review pass 1: `CHANGES_REQUESTED` (project IDs with separators rejected and blocking SQLite writes on the event loop).
+- [x] Fixed project-id validation and offloaded run queue/cancel persistence from the FastAPI event loop.
+- [x] Claude integration review pass 2: `APPROVE`; no remaining high/medium integration findings.
+- [x] Complete independent Claude review and address findings.
+- [x] Commit the reviewed Phase 3 increment.
 
 ### Full-suite baseline failure groups
 
 - POSIX-only path and shell assertions (`/`, `pwd`, `sleep`) on Windows.
-- External web tests blocked by the configured proxy.
+- Tests that write literal `/tmp` paths are blocked by the managed Windows sandbox.
+- External web tests blocked by the managed test network/environment.
 - Agent profile YAML read with CP932 instead of UTF-8.
 - Static frontend route tests run without a built `frontend/out` directory.
 

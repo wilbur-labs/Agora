@@ -62,3 +62,45 @@ def test_research_orchestrator_uses_current_project_artifact_dir(tmp_path):
     assert task.decision["project"]["id"] == "project-b"
     assert (task.task_dir / "router-decision.json").exists()
     assert (task.task_dir / "notes").exists()
+
+
+def test_relative_registry_project_and_workspace_paths_are_repo_anchored(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    config = {
+        "projects": {
+            "registry_path": ".agora/projects.yaml",
+            "default": "agora",
+            "projects": {
+                "agora": {
+                    "root": ".",
+                    "workspaces": {"codex": ".agora/workspaces/codex"},
+                }
+            },
+        }
+    }
+
+    registry = ProjectRegistry(config, project_root=repo)
+
+    project = registry.current_project()
+    assert registry.registry_path == repo / ".agora" / "projects.yaml"
+    assert project.root == repo
+    assert project.workspaces["codex"] == repo / ".agora" / "workspaces" / "codex"
+
+
+def test_add_accepts_documented_project_id_separators(tmp_path):
+    registry = ProjectRegistry(_config(tmp_path))
+
+    dashed = registry.add("new-project", tmp_path / "new-project")
+    underscored = registry.add("new_project_2", tmp_path / "new-project-2")
+
+    assert dashed.project_id == "new-project"
+    assert underscored.project_id == "new_project_2"
+    assert dashed.workspaces["codex"] == dashed.root / ".agora" / "workspaces" / "codex"
+
+    try:
+        registry.add("bad/project", tmp_path / "bad")
+    except ValueError as exc:
+        assert "letters, numbers, dashes, or underscores" in str(exc)
+    else:
+        raise AssertionError("path separators must not be accepted in project ids")

@@ -21,23 +21,24 @@ council:
   workspace: ~/agora-workspace  # Executor creates files here
 
 projects:
-  registry_path: /work01/s141026/ai-projects/Agora/.agora/projects.yaml
+  # Relative paths are anchored to the Agora repository root.
+  registry_path: .agora/projects.yaml
   default: agora
   projects:
     agora:
       name: Agora
-      root: /work01/s141026/ai-projects/Agora
+      root: .
       workspaces:
-        codex: /work01/s141026/codex-workspace/agora
-        claude: /work01/s141026/claude-workspace/agora
-        kiro: /work01/s141026/kiro-workspace/agora
+        codex: .agora/workspaces/codex
+        claude: .agora/workspaces/claude
+        kiro: .agora/workspaces/kiro
 
 research:
-  artifact_dir: /work01/s141026/ai-projects/Agora/research
+  artifact_dir: .agora/research
   workspaces:
-    codex: /work01/s141026/codex-workspace
-    claude: /work01/s141026/claude-workspace
-    kiro: /work01/s141026/kiro-workspace
+    codex: .agora/workspaces/codex
+    claude: .agora/workspaces/claude
+    kiro: .agora/workspaces/kiro
   dispatch:
     enabled: true
     timeout_seconds: 600
@@ -102,6 +103,24 @@ sandbox:
 # system: inherit proxy settings from the process environment.
 web:
   network_mode: direct
+
+# Durable delivery execution. Each adapter runs inside its registered project workspace.
+execution:
+  max_concurrent_global: 4
+  max_concurrent_per_project: 2
+  adapters:
+    codex:
+      enabled: true
+      command: [codex, exec, --skip-git-repo-check, --sandbox, workspace-write, --ephemeral, "{prompt}"]
+      workspace_key: codex
+    claude:
+      enabled: true
+      command: [claude, -p, "{prompt}", --output-format, text, --permission-mode, auto, --no-session-persistence]
+      workspace_key: claude
+    kiro:
+      enabled: true
+      command: [kiro-cli, chat, --no-interactive, --trust-all-tools, "{prompt}"]
+      workspace_key: kiro
 
 # Embedding for semantic skill matching and memory retrieval
 # Uncomment to enable (requires embedding model deployment)

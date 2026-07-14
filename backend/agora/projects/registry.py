@@ -25,11 +25,14 @@ class Project:
 
 
 class ProjectRegistry:
-    def __init__(self, config: dict[str, Any] | None = None):
+    def __init__(self, config: dict[str, Any] | None = None, *, project_root: Path | None = None):
         self.config = config or {}
-        self.project_root = Path(__file__).resolve().parents[3]
+        self.project_root = (project_root or Path(__file__).resolve().parents[3]).resolve()
         cfg = self.config.get("projects", {})
-        self.registry_path = Path(cfg.get("registry_path", self.project_root / ".agora" / "projects.yaml")).expanduser()
+        self.registry_path = self._resolve_path(
+            cfg.get("registry_path", self.project_root / ".agora" / "projects.yaml"),
+            self.project_root,
+        )
         self.default_project = cfg.get("default", "agora")
         self._configured_projects = cfg.get("projects", {})
         self.ensure_exists()
@@ -73,7 +76,7 @@ class ProjectRegistry:
         return self.get(project_id)
 
     def add(self, project_id: str, root: str | Path, name: str | None = None) -> Project:
-        if not project_id.replace("-", "_").isalnum():
+        if not project_id.replace("-", "").replace("_", "").isalnum():
             raise ValueError("Project id must contain only letters, numbers, dashes, or underscores")
         project_root = Path(root).expanduser().resolve()
         data = self._read()
@@ -83,7 +86,7 @@ class ProjectRegistry:
         projects[project_id] = {
             "name": name or project_id,
             "root": str(project_root),
-            "workspaces": self._default_workspaces(project_id),
+            "workspaces": self._default_workspaces(project_root),
         }
         self._ensure_project_dirs(projects[project_id])
         self._write(data)
@@ -105,11 +108,12 @@ class ProjectRegistry:
         self.registry_path.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
 
     def _project(self, project_id: str, data: dict[str, Any]) -> Project:
+        root = self._resolve_path(data["root"], self.project_root)
         return Project(
             project_id=project_id,
             name=data.get("name", project_id),
-            root=Path(data["root"]).expanduser(),
-            workspaces={k: Path(v).expanduser() for k, v in data.get("workspaces", {}).items()},
+            root=root,
+            workspaces={k: self._resolve_path(v, root) for k, v in data.get("workspaces", {}).items()},
         )
 
     def _default_projects(self) -> dict[str, Any]:
@@ -119,25 +123,30 @@ class ProjectRegistry:
             self.default_project: {
                 "name": "Agora",
                 "root": str(self.project_root),
-                "workspaces": {
-                    "claude": "/work01/s141026/claude-workspace/agora",
-                    "codex": "/work01/s141026/codex-workspace/agora",
-                    "kiro": "/work01/s141026/kiro-workspace/agora",
-                },
+                "workspaces": self._default_workspaces(self.project_root),
             }
         }
 
-    def _default_workspaces(self, project_id: str) -> dict[str, str]:
+    @staticmethod
+    def _default_workspaces(project_root: Path) -> dict[str, str]:
         return {
-            "claude": f"/work01/s141026/claude-workspace/{project_id}",
-            "codex": f"/work01/s141026/codex-workspace/{project_id}",
-            "kiro": f"/work01/s141026/kiro-workspace/{project_id}",
+            "claude": str(project_root / ".agora" / "workspaces" / "claude"),
+            "codex": str(project_root / ".agora" / "workspaces" / "codex"),
+            "kiro": str(project_root / ".agora" / "workspaces" / "kiro"),
         }
 
     def _ensure_project_dirs(self, data: dict[str, Any]) -> None:
-        root = Path(data["root"]).expanduser()
+        project = self._project("_setup", data)
+        root = project.root
         (root / ".agora" / "research").mkdir(parents=True, exist_ok=True)
         (root / ".agora" / "decisions").mkdir(parents=True, exist_ok=True)
         (root / ".agora" / "specs").mkdir(parents=True, exist_ok=True)
-        for path in data.get("workspaces", {}).values():
-            Path(path).expanduser().mkdir(parents=True, exist_ok=True)
+        for path in project.workspaces.values():
+            path.mkdir(parents=True, exist_ok=True)
+
+    @staticmethod
+    def _resolve_path(value: str | Path, base: Path) -> Path:
+        path = Path(value).expanduser()
+        if not path.is_absolute():
+            path = base / path
+        return path.resolve()
