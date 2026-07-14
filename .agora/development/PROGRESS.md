@@ -88,6 +88,23 @@ Branch: `feat/control-plane-phase1`
 - Agent profile YAML read with CP932 instead of UTF-8.
 - Static frontend route tests run without a built `frontend/out` directory.
 
+## 2026-07-14 — Execution Run Center UI
+
+- [x] Phase 3 execution layer committed as `48359a3` after Claude approval.
+- [x] Estimated complete-platform progress at 45% before Phase 4.
+- [x] Kiro produced the bounded Phase 4 Run Center specification (0.94 credits).
+- [x] Added typed execution API contracts and a Delivery Control Plane `/runs` route.
+- [x] Added cross-project filters, run composition, optimistic cancel, and detailed output inspection.
+- [x] Added visibility-aware polling, stale-version guards, and opt-in terminal browser notifications.
+- [x] Added accessible create/cancel dialogs, live status announcements, and text-only execution data rendering.
+- [x] Changed-file ESLint passes; production build and static generation pass (12 pages).
+- [x] Claude lifecycle review: `CHANGES_REQUESTED` (enum filter value, local notification noise, URL validation, request cancellation).
+- [x] Claude UI/accessibility review: `CHANGES_REQUESTED` (focus restoration, modal background isolation, in-flight dialog unmounts).
+- [x] Fixed all findings with validated filters, AbortControllers, silent notification baselines, portal/inert modals, focus restoration, and mounted guards.
+- [x] Claude targeted re-review: `APPROVE`; no remaining high/medium findings or fix regressions.
+- [x] Complete independent Claude review and address findings.
+- [x] Commit the reviewed Phase 4 increment.
+
 ## Review Gate
 
 No implementation commit may be created until:

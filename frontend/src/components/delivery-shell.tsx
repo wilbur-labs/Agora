@@ -3,12 +3,13 @@
 import type { ReactNode } from "react";
 import Link from "next/link";
 import { useTheme } from "next-themes";
-import { Bot, ClipboardCheck, Columns3, MessageSquare, Moon, Settings, Sun } from "lucide-react";
+import { Bot, ClipboardCheck, Columns3, MessageSquare, Moon, Play, Settings, Sun } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const links = [
   { href: "/portfolio", label: "Portfolio", icon: Columns3 },
   { href: "/requirements", label: "Requirements", icon: ClipboardCheck },
+  { href: "/runs", label: "Runs", icon: Play },
   { href: "/chat", label: "Council Chat", icon: MessageSquare },
   { href: "/agents", label: "Agents", icon: Bot },
   { href: "/settings", label: "Settings", icon: Settings },
@@ -18,7 +19,7 @@ export function DeliveryShell({ active, children }: { active: string; children: 
   const { resolvedTheme, setTheme } = useTheme();
 
   return (
-    <div className="min-h-screen bg-muted/20 lg:flex">
+    <div data-delivery-shell-root className="min-h-screen bg-muted/20 lg:flex">
       <aside className="border-b bg-sidebar lg:sticky lg:top-0 lg:h-screen lg:w-64 lg:border-b-0 lg:border-r">
         <div className="flex items-center justify-between px-5 py-4 lg:block lg:py-6">
           <Link href="/" className="flex items-center gap-3">
