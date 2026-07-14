@@ -3,13 +3,14 @@
 import type { ReactNode } from "react";
 import Link from "next/link";
 import { useTheme } from "next-themes";
-import { Bot, ClipboardCheck, Columns3, MessageSquare, Moon, Play, Settings, Sun } from "lucide-react";
+import { BellRing, Bot, ClipboardCheck, Columns3, MessageSquare, Moon, Play, Settings, Sun } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const links = [
   { href: "/portfolio", label: "Portfolio", icon: Columns3 },
   { href: "/requirements", label: "Requirements", icon: ClipboardCheck },
   { href: "/runs", label: "Runs", icon: Play },
+  { href: "/attention", label: "Attention", icon: BellRing },
   { href: "/chat", label: "Council Chat", icon: MessageSquare },
   { href: "/agents", label: "Agents", icon: Bot },
   { href: "/settings", label: "Settings", icon: Settings },

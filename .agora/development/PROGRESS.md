@@ -132,3 +132,47 @@ No implementation commit may be created until:
 2. Claude Code reviews the staged or working-tree diff independently.
 3. Actionable findings are fixed or explicitly recorded with rationale.
 4. Tests are rerun after fixes.
+
+## 2026-07-15 — Human Intervention / Attention Center (Phase 6, active)
+
+### Synchronized status snapshot
+
+- Last reviewed commit: `1ccc37b feat: provision isolated agent worktrees`.
+- Branch: `feat/control-plane-phase1`.
+- Committed-platform estimate: 64%.
+- Working-tree estimate: 64%.
+- Phase 6 state: implementation, review gate, and local commit complete.
+- Source of truth: this section must be updated whenever Phase 6 scope, tests, review state, or commit state changes.
+
+### Scope and task alignment
+
+- [x] Kiro produced a bounded, read-only Phase 6 specification (1.06 credits).
+- [x] Kept the core tool-neutral: questions, approvals, and blockers share one durable contract.
+- [x] Added urgency, optional expiry, project/task linkage, optional run linkage, response/cancel lifecycle, optimistic versions, and append-only `attention.*` audit events.
+- [x] Added REST create/list/get/count/respond/cancel endpoints; synchronous SQLite work is offloaded from async routes.
+- [x] Added cross-reference validation so a linked run must belong to the requested task/project.
+- [x] Added context secret sanitization and bounded request fields.
+- [x] Added `/attention` inbox UI with state/kind/project filters, response and approval actions, cancellation, polling, conflict refresh, and opt-in browser notifications.
+- [x] Added the Attention entry to the Delivery Control Plane navigation.
+- [ ] Add vendor bridge implementations for Claude Code, Kiro CLI, and Codex; explicitly deferred to Phase 6b so vendor rules do not enter the core model.
+- [x] Ran the full Phase 6 related backend regression suite: 43 passed, 1 dependency deprecation warning.
+- [x] Claude Code independent review pass 1: `CHANGES_REQUESTED` (write-path expiry race, unconditional read-path writer locks, incomplete free-text redaction).
+- [x] Fixed all findings with transactional expiry conflicts, a read-before-write expiry sweep, persistence-boundary text redaction, and additional regression tests.
+- [x] Claude Code review pass 2: `APPROVE`; no remaining high/medium findings.
+- [x] Reran frontend changed-file ESLint and production build successfully after review; 13 pages generated.
+- [x] Committed the reviewed Phase 6 increment locally (the commit containing this synchronized snapshot).
+
+### Verified data at this snapshot
+
+- Backend Attention lifecycle/API suite: 7 passed, 1 dependency deprecation warning.
+- Phase 6 related backend regression suite: 43 passed, 1 dependency deprecation warning.
+- Frontend changed-file ESLint: passed.
+- Frontend production build/static generation: passed, 13 pages including `/attention`.
+- Phase 6 backend, tests, frontend client/hook/page, and navigation integration are committed locally.
+- No push has been performed.
+
+### Next ordered actions
+
+1. Keep vendor CLI bridge work as the next separately reviewable Phase 6b task.
+2. Define the neutral bridge delivery/acknowledgement contract before implementing vendor adapters.
+3. Implement and test Claude Code, Kiro CLI, and Codex adapters independently against that contract.
