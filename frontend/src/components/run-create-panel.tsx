@@ -5,13 +5,16 @@ import { createPortal } from "react-dom";
 import { Bot, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ApiError, type TaskManifest } from "@/lib/control-plane";
-import { createRun, type ExecutionAdapter, type ExecutionRun } from "@/lib/execution";
+import { createRun, listExecutionAdapters, type AdapterCapability, type ExecutionAdapter, type ExecutionRun } from "@/lib/execution";
 import { getWorkspaceStatus, provisionWorkspace, type WorkspaceStatus } from "@/lib/workspaces";
 
-const adapters: Array<{ value: ExecutionAdapter; label: string; detail: string }> = [
-  { value: "codex", label: "Codex", detail: "Implementation and repository work" },
-  { value: "claude", label: "Claude Code", detail: "Deep reasoning and review" },
-  { value: "kiro", label: "Kiro CLI", detail: "Specifications and structured planning" },
+const adapterLabels: Record<ExecutionAdapter, string> = {
+  codex: "Codex", claude: "Claude Code", kiro: "Kiro CLI",
+};
+const fallbackAdapters: AdapterCapability[] = [
+  { name: "codex", execution_mode: "unknown", attention_mode: "capture_only", supports_tool_approval: false, supports_user_questions: false, detail: "Capability status is unavailable." },
+  { name: "claude", execution_mode: "unknown", attention_mode: "capture_only", supports_tool_approval: false, supports_user_questions: false, detail: "Capability status is unavailable." },
+  { name: "kiro", execution_mode: "unknown", attention_mode: "capture_only", supports_tool_approval: false, supports_user_questions: false, detail: "Capability status is unavailable." },
 ];
 
 export function RunCreatePanel({
@@ -28,6 +31,7 @@ export function RunCreatePanel({
   const eligible = useMemo(() => tasks.filter((task) => task.state === "planned" || task.state === "running"), [tasks]);
   const [taskId, setTaskId] = useState(eligible[0]?.task_id ?? "");
   const [adapter, setAdapter] = useState<ExecutionAdapter>("codex");
+  const [adapters, setAdapters] = useState<AdapterCapability[]>(fallbackAdapters);
   const [prompt, setPrompt] = useState("");
   const [timeout, setTimeoutValue] = useState(600);
   const [submitting, setSubmitting] = useState(false);
@@ -36,6 +40,7 @@ export function RunCreatePanel({
   const [workspaceLoading, setWorkspaceLoading] = useState(false);
   const [workspace, setWorkspace] = useState<WorkspaceStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [capabilityWarning, setCapabilityWarning] = useState<string | null>(null);
   const panelRef = useRef<HTMLFormElement>(null);
   const mountedRef = useRef(true);
   const submittingRef = useRef(false);
@@ -95,6 +100,20 @@ export function RunCreatePanel({
   }, [onClose]);
 
   useEffect(() => { submittingRef.current = submitting; }, [submitting]);
+  useEffect(() => {
+    const controller = new AbortController();
+    listExecutionAdapters(controller.signal)
+      .then((items) => {
+        if (!items.length) return;
+        setAdapters(items);
+        setAdapter((current) => items.some((item) => item.name === current) ? current : items[0].name);
+        setCapabilityWarning(null);
+      })
+      .catch((err) => {
+        if ((err as Error).name !== "AbortError") setCapabilityWarning("Live adapter capabilities are unavailable; showing conservative defaults.");
+      });
+    return () => controller.abort();
+  }, []);
   useEffect(() => {
     selectionRef.current = selectionKey;
     provisionAbortRef.current?.abort();
@@ -159,13 +178,15 @@ export function RunCreatePanel({
           <legend className="text-sm font-medium">Agent adapter</legend>
           <div className="grid gap-2 sm:grid-cols-3">
             {adapters.map((item) => (
-              <label key={item.value} className={`cursor-pointer rounded-xl border p-3 text-sm ${adapter === item.value ? "border-primary bg-primary/5" : "hover:bg-accent/50"}`}>
-                <input className="sr-only" type="radio" name="adapter" value={item.value} checked={adapter === item.value} onChange={() => setAdapter(item.value)} />
-                <span className="flex items-center gap-2 font-semibold"><Bot className="size-4" /> {item.label}</span>
-                <span className="mt-1 block text-xs font-normal leading-relaxed text-muted-foreground">{item.detail}</span>
+              <label key={item.name} className={`cursor-pointer rounded-xl border p-3 text-sm ${adapter === item.name ? "border-primary bg-primary/5" : "hover:bg-accent/50"}`}>
+                <input className="sr-only" type="radio" name="adapter" value={item.name} checked={adapter === item.name} onChange={() => setAdapter(item.name)} />
+                <span className="flex items-center gap-2 font-semibold"><Bot className="size-4" /> {adapterLabels[item.name]}</span>
+                <span className="mt-2 inline-flex rounded-full border px-2 py-0.5 text-[11px] font-medium">{item.attention_mode === "bidirectional" ? "Approval delivery" : "Capture only"}</span>
+                <span className="mt-2 block text-xs font-normal leading-relaxed text-muted-foreground">{item.detail}</span>
               </label>
             ))}
           </div>
+          {capabilityWarning && <p className="text-xs text-amber-700 dark:text-amber-300" role="status">{capabilityWarning}</p>}
         </fieldset>
 
         <section className="rounded-xl border p-4" aria-busy={workspaceLoading || provisioning} aria-live="polite">

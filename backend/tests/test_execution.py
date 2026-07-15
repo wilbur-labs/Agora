@@ -155,6 +155,41 @@ def test_adapter_keeps_prompt_as_one_argv_item_and_validates_template():
         }}})
 
 
+def test_adapter_capabilities_do_not_overstate_delivery():
+    cli = ExecutionAdapter("claude", ("claude", "{prompt}"), "claude")
+    assert cli.capability().attention_mode == "capture_only"
+    assert cli.capability().supports_tool_approval is False
+    codex = replace(
+        ExecutionAdapter("codex", ("codex", "{prompt}"), "codex"),
+        bridge_mode="codex_app_server",
+    )
+    capability = codex.capability()
+    assert capability.attention_mode == "bidirectional"
+    assert capability.supports_tool_approval is True
+    assert capability.supports_user_questions is False
+
+
+def test_execution_adapter_capability_api(monkeypatch, tmp_path):
+    _, _, dispatcher = _system(tmp_path, [sys.executable, "-c", "print('ok')"])
+    dispatcher.adapters["codex"] = replace(
+        dispatcher.adapters["codex"], bridge_mode="codex_app_server",
+    )
+    app.dependency_overrides[get_execution_dispatcher] = lambda: dispatcher
+    try:
+        response = TestClient(app).get("/api/execution-adapters")
+        assert response.status_code == 200
+        assert response.json() == [{
+            "name": "codex",
+            "execution_mode": "codex_app_server",
+            "attention_mode": "bidirectional",
+            "supports_tool_approval": True,
+            "supports_user_questions": False,
+            "detail": "Stable command and file approvals are delivered through Codex app-server; user questions remain experimental.",
+        }]
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_workspace_must_be_under_an_explicit_allowed_root(tmp_path):
     tasks, store, dispatcher = _system(tmp_path, [sys.executable, "-c", "print('ok')"])
     task = _planned_task(tasks)

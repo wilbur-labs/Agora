@@ -86,3 +86,12 @@ class RunSummary(BaseModel):
     started_at: str | None
     finished_at: str | None
     exit_code: int | None
+
+
+class AdapterCapability(BaseModel):
+    name: str
+    execution_mode: str
+    attention_mode: str
+    supports_tool_approval: bool
+    supports_user_questions: bool
+    detail: str

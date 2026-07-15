@@ -15,7 +15,7 @@ from agora.tasks.store import TaskNotFoundError
 
 from .adapters import build_adapter_registry
 from .dispatcher import ExecutionDispatcher
-from .models import CancelRunRequest, CreateRunRequest, ExecutionRun, RunState, RunSummary
+from .models import AdapterCapability, CancelRunRequest, CreateRunRequest, ExecutionRun, RunState, RunSummary
 from .store import ExecutionStore, RunConflictError, RunNotFoundError, RunValidationError
 
 
@@ -48,6 +48,13 @@ def get_execution_dispatcher() -> ExecutionDispatcher:
         max_concurrent_per_project=int(limits.get("max_concurrent_per_project", 2)),
         allowed_workspace_roots=allowed_roots,
     )
+
+
+@router.get("/execution-adapters", response_model=list[AdapterCapability])
+def list_execution_adapters(
+    dispatcher: ExecutionDispatcher = Depends(get_execution_dispatcher),
+):
+    return [adapter.capability() for adapter in dispatcher.adapters.values()]
 
 
 @router.post("/runs", response_model=ExecutionRun, status_code=status.HTTP_201_CREATED)

@@ -12,6 +12,15 @@ export type RunState =
 
 export type ExecutionAdapter = "codex" | "claude" | "kiro";
 
+export interface AdapterCapability {
+  name: ExecutionAdapter;
+  execution_mode: string;
+  attention_mode: "bidirectional" | "capture_only";
+  supports_tool_approval: boolean;
+  supports_user_questions: boolean;
+  detail: string;
+}
+
 export const TERMINAL_RUN_STATES: ReadonlySet<RunState> = new Set([
   "succeeded", "failed", "timed_out", "cancelled", "abandoned",
 ]);
@@ -96,6 +105,10 @@ export function listRuns(params: ListRunsParams = {}, signal?: AbortSignal): Pro
   if (params.offset !== undefined) query.set("offset", String(params.offset));
   const suffix = query.size ? `?${query.toString()}` : "";
   return request(`/api/runs${suffix}`, { signal });
+}
+
+export function listExecutionAdapters(signal?: AbortSignal): Promise<AdapterCapability[]> {
+  return request("/api/execution-adapters", { signal });
 }
 
 export function getRun(runId: string, signal?: AbortSignal): Promise<ExecutionRun> {

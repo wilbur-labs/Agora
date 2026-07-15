@@ -240,3 +240,22 @@ No implementation commit may be created until:
 - [x] Claude post-fix runner review: `APPROVE`; early approval delivery, identity checks, cancellation, and cleanup verified.
 - [x] Claude dispatcher/config review: `APPROVE`; CLI fallback, audit command, state races, and documentation verified.
 - [x] Commit the reviewed Phase 6d increment locally (the commit containing this snapshot).
+
+## 2026-07-15 — Truthful Adapter Capability Routing (Phase 6e, active)
+
+- [x] Revalidated local versions: Claude Code 2.1.210 and Kiro CLI 2.12.2.
+- [x] Verified Claude stream-json surfaces and the Agent SDK `can_use_tool` integration boundary.
+- [x] Rejected Kiro's speculative `claude agent --host stdio://` proposal because the installed CLI exposes no such command.
+- [x] Confirmed Claude Managed Agents supports indefinite confirmation events but uses Platform API authentication/billing rather than the Claude Code subscription.
+- [x] Kept Claude and Kiro on CLI/capture-only paths; no SDK install or global settings mutation.
+- [x] Added a typed execution-adapter capability contract and `GET /api/execution-adapters`.
+- [x] Updated Run Center dispatch cards to show bidirectional approval delivery versus capture-only behavior from live backend data.
+- [x] Execution adapter tests: 23 passed, 1 dependency deprecation warning.
+- [x] Changed-file frontend ESLint passed using the repository-installed toolchain.
+- [x] Related backend regression suite: 66 passed, 1 dependency deprecation warning.
+- [x] Frontend production build/static generation passed; 13 pages generated.
+- [x] Claude review pass 1: `APPROVE` with two low UI observations (fetch-warning scope and disabled-adapter selection).
+- [x] Applied both low-risk UI improvements before commit.
+- [x] Reran changed-file ESLint and production build after both UI improvements; 13 pages generated.
+- [x] Final focused Claude re-review: `APPROVE`; capability failure isolation and disabled-adapter reconciliation verified with no high/medium issues.
+- [x] Commit the reviewed Phase 6e increment locally (the commit containing this snapshot).

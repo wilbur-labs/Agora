@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .models import AdapterCapability
+
 
 @dataclass(frozen=True)
 class ExecutionAdapter:
@@ -26,6 +28,24 @@ class ExecutionAdapter:
         if self.workspace_key not in workspaces:
             raise KeyError(f"Project has no {self.workspace_key} workspace")
         return workspaces[self.workspace_key].expanduser().resolve()
+
+    def capability(self) -> AdapterCapability:
+        if self.bridge_mode == "codex_app_server":
+            return AdapterCapability(
+                name=self.name, execution_mode=self.bridge_mode, attention_mode="bidirectional",
+                supports_tool_approval=True, supports_user_questions=False,
+                detail="Stable command and file approvals are delivered through Codex app-server; user questions remain experimental.",
+            )
+        details = {
+            "claude": "Claude Code runs through the subscription CLI. Hooks may capture attention, but Agora cannot return delayed decisions to this process.",
+            "kiro": "Kiro CLI 2.12 exposes no verified machine-readable bidirectional prompt protocol; execution uses the CLI fallback.",
+            "codex": "Codex uses the non-interactive CLI fallback; no approval delivery channel is active.",
+        }
+        return AdapterCapability(
+            name=self.name, execution_mode="cli", attention_mode="capture_only",
+            supports_tool_approval=False, supports_user_questions=False,
+            detail=details.get(self.name, "CLI execution with no verified bidirectional attention channel."),
+        )
 
 
 DEFAULT_ADAPTERS: dict[str, dict[str, Any]] = {
