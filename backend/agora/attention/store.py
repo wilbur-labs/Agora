@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
+from datetime import datetime, timedelta, timezone
 from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Iterator
@@ -17,7 +18,9 @@ from .models import (
     CancelAttentionRequest, CreateAttentionRequest, RespondAttentionRequest,
 )
 from .schema import initialize_attention_schema
-from .bridges.models import BridgeEventReceipt, BridgeEventRequest
+from .bridges.models import (
+    BridgeDelivery, BridgeEventReceipt, BridgeEventRequest, BridgeVendor, DeliveryMode, DeliveryState,
+)
 
 
 class AttentionNotFoundError(LookupError):
@@ -33,6 +36,7 @@ class AttentionValidationError(ValueError):
 
 
 class AttentionStore:
+    MAX_OPEN_BRIDGE_ITEMS_PER_RUN = 50
     def __init__(self, task_store: TaskStore):
         self.tasks = task_store
         self.db_path = Path(task_store.db_path)
@@ -89,9 +93,11 @@ class AttentionStore:
                         {"item_id": item_id, "kind": request.kind.value, "urgency": request.urgency.value}, now)
         return self.require(item_id)
 
-    def create_bridge_event(self, request: BridgeEventRequest) -> BridgeEventReceipt:
+    def create_bridge_event(
+        self, request: BridgeEventRequest, *, trusted_bidirectional: bool = False,
+    ) -> BridgeEventReceipt:
         """Atomically deduplicate a vendor event and create its attention item."""
-        if request.delivery_mode.value != "capture_only":
+        if request.delivery_mode == DeliveryMode.BIDIRECTIONAL and not trusted_bidirectional:
             raise AttentionValidationError("Public hook ingestion supports capture_only events")
         now = utc_now()
         item_id = f"attn_{uuid.uuid4().hex}"
@@ -114,6 +120,12 @@ class AttentionStore:
                 raise AttentionValidationError("Run does not belong to the requested task")
             if run["state"] not in {"queued", "running"}:
                 raise AttentionValidationError("Bridge events require an active run")
+            open_count = db.execute(
+                "SELECT COUNT(*) FROM attention_items WHERE run_id = ? AND state = 'open'",
+                (request.run_id,),
+            ).fetchone()[0]
+            if int(open_count) >= self.MAX_OPEN_BRIDGE_ITEMS_PER_RUN:
+                raise AttentionValidationError("Run has too many open attention items")
             context = sanitize_data({
                 "bridge": {
                     "vendor": request.vendor.value,
@@ -142,6 +154,80 @@ class AttentionStore:
                         {"item_id": item_id, "vendor": request.vendor.value,
                          "delivery_mode": request.delivery_mode.value}, now)
         return BridgeEventReceipt(item_id=item_id, created=True, delivery_mode=request.delivery_mode)
+
+    def claim_ready_delivery(self, run_id: str, vendor: BridgeVendor) -> BridgeDelivery | None:
+        """Claim one answered bridge item exactly once for structured delivery."""
+        with self._transaction() as db:
+            row = db.execute(
+                """SELECT b.*, a.response_action, a.response, a.context
+                   FROM attention_bridge_events b JOIN attention_items a ON a.item_id = b.item_id
+                   WHERE b.run_id = ? AND b.vendor = ? AND b.delivery_mode = 'bidirectional'
+                     AND b.delivery_state = 'ready'
+                   ORDER BY b.received_at LIMIT 1""",
+                (run_id, vendor.value),
+            ).fetchone()
+            if row is None:
+                return None
+            cursor = db.execute(
+                """UPDATE attention_bridge_events SET delivery_state = 'delivering', delivery_error = NULL,
+                   claimed_at = ?
+                   WHERE item_id = ? AND delivery_state = 'ready'""",
+                (utc_now(), row["item_id"]),
+            )
+            if cursor.rowcount != 1:
+                return None
+            context = json.loads(row["context"])
+            return BridgeDelivery(
+                item_id=row["item_id"], run_id=row["run_id"], vendor=BridgeVendor(row["vendor"]),
+                vendor_event_id=row["vendor_event_id"], delivery_state=DeliveryState.DELIVERING,
+                response_action=row["response_action"], response=row["response"] or "",
+                correlation=context["bridge"]["correlation"],
+            )
+
+    def finish_delivery(self, item_id: str, *, delivered: bool, error: str | None = None) -> None:
+        now = utc_now()
+        state = DeliveryState.DELIVERED if delivered else DeliveryState.FAILED
+        safe_error = redact_text(error) if error else None
+        with self._transaction() as db:
+            row = db.execute(
+                """SELECT b.delivery_state, a.task_id FROM attention_bridge_events b
+                   JOIN attention_items a ON a.item_id = b.item_id WHERE b.item_id = ?""",
+                (item_id,),
+            ).fetchone()
+            if row is None:
+                raise AttentionNotFoundError("Bridge delivery not found")
+            if row["delivery_state"] != DeliveryState.DELIVERING.value:
+                raise AttentionConflictError("Bridge delivery is not claimed")
+            db.execute(
+                """UPDATE attention_bridge_events SET delivery_state = ?, delivery_error = ?, delivered_at = ?
+                   WHERE item_id = ? AND delivery_state = 'delivering'""",
+                (state.value, safe_error, now if delivered else None, item_id),
+            )
+            self._event(db, row["task_id"], f"attention.delivery_{state.value}", "bridge",
+                        {"item_id": item_id, "error": safe_error}, now)
+
+    def recover_stale_deliveries(self, *, max_age_seconds: int = 60) -> int:
+        if max_age_seconds < 1:
+            raise ValueError("max_age_seconds must be positive")
+        now = utc_now()
+        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=max_age_seconds)).isoformat()
+        with self._transaction() as db:
+            rows = db.execute(
+                """SELECT b.item_id, a.task_id FROM attention_bridge_events b
+                   JOIN attention_items a ON a.item_id = b.item_id
+                   WHERE b.delivery_state = 'delivering' AND b.claimed_at IS NOT NULL AND b.claimed_at <= ?""",
+                (cutoff,),
+            ).fetchall()
+            for row in rows:
+                db.execute(
+                    """UPDATE attention_bridge_events SET delivery_state = 'failed',
+                       delivery_error = 'delivery interrupted before acknowledgement'
+                       WHERE item_id = ? AND delivery_state = 'delivering'""",
+                    (row["item_id"],),
+                )
+                self._event(db, row["task_id"], "attention.delivery_failed", "system",
+                            {"item_id": row["item_id"], "error": "delivery interrupted before acknowledgement"}, now)
+            return len(rows)
 
     def get(self, item_id: str) -> AttentionItem | None:
         self.expire_overdue()
@@ -193,6 +279,13 @@ class AttentionStore:
             expired = self._expire_locked(db, row, now)
             if not expired:
                 self._assert_open_version(row, request.expected_version)
+                bridge = db.execute(
+                    "SELECT delivery_mode FROM attention_bridge_events WHERE item_id = ?", (item_id,)
+                ).fetchone()
+                if (bridge and bridge["delivery_mode"] == DeliveryMode.BIDIRECTIONAL.value
+                        and row["kind"] == "approval"
+                        and request.action.value not in {"approve", "reject"}):
+                    raise AttentionValidationError("Bidirectional approvals require approve or reject")
                 cursor = db.execute(
                     """UPDATE attention_items SET state = ?, response = ?, response_action = ?, responded_by = ?,
                        responded_at = ?, updated_at = ?, version = version + 1
@@ -204,6 +297,11 @@ class AttentionStore:
                     raise AttentionConflictError("Attention item changed while responding")
                 self._event(db, row["task_id"], "attention.responded", request.actor,
                             {"item_id": item_id, "action": request.action.value}, now)
+                db.execute(
+                    """UPDATE attention_bridge_events SET delivery_state = 'ready'
+                       WHERE item_id = ? AND delivery_mode = 'bidirectional' AND delivery_state = 'pending'""",
+                    (item_id,),
+                )
         if expired:
             raise AttentionConflictError("Attention item is already expired")
         return self.require(item_id)
@@ -227,6 +325,7 @@ class AttentionStore:
                     raise AttentionConflictError("Attention item changed while cancelling")
                 self._event(db, row["task_id"], "attention.cancelled", request.actor,
                             {"item_id": item_id, "reason": reason}, now)
+                self._fail_undelivered_bridge(db, row, now, "attention item cancelled")
         if expired:
             raise AttentionConflictError("Attention item is already expired")
         return self.require(item_id)
@@ -257,7 +356,21 @@ class AttentionStore:
         if not cursor.rowcount:
             return False
         self._event(db, row["task_id"], "attention.expired", "system", {"item_id": row["item_id"]}, now)
+        self._fail_undelivered_bridge(db, row, now, "attention item expired")
         return True
+
+    def _fail_undelivered_bridge(
+        self, db: sqlite3.Connection, row: sqlite3.Row, now: str, reason: str,
+    ) -> None:
+        cursor = db.execute(
+            """UPDATE attention_bridge_events SET delivery_state = 'failed', delivery_error = ?
+               WHERE item_id = ? AND delivery_mode = 'bidirectional'
+                 AND delivery_state IN ('pending', 'ready')""",
+            (reason, row["item_id"]),
+        )
+        if cursor.rowcount:
+            self._event(db, row["task_id"], "attention.delivery_failed", "system",
+                        {"item_id": row["item_id"], "error": reason}, now)
 
     @staticmethod
     def _locked(db: sqlite3.Connection, item_id: str) -> sqlite3.Row:

@@ -20,6 +20,14 @@ class DeliveryMode(str, Enum):
     BIDIRECTIONAL = "bidirectional"
 
 
+class DeliveryState(str, Enum):
+    PENDING = "pending"
+    READY = "ready"
+    DELIVERING = "delivering"
+    DELIVERED = "delivered"
+    FAILED = "failed"
+
+
 class BridgeEventRequest(BaseModel):
     vendor: BridgeVendor
     vendor_event_id: str = Field(min_length=1, max_length=256)
@@ -63,3 +71,22 @@ class BridgeEventReceipt(BaseModel):
     item_id: str
     created: bool
     delivery_mode: DeliveryMode
+
+
+class BridgeDelivery(BaseModel):
+    item_id: str
+    run_id: str
+    vendor: BridgeVendor
+    vendor_event_id: str
+    delivery_state: DeliveryState
+    response_action: str
+    response: str
+    correlation: dict[str, Any]
+
+
+class CodexApprovalCorrelation(BaseModel):
+    rpc_id: int | str
+    method: str
+    thread_id: str = Field(min_length=1)
+    turn_id: str = Field(min_length=1)
+    item_id: str = Field(min_length=1)

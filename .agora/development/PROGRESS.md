@@ -139,8 +139,8 @@ No implementation commit may be created until:
 
 - Last reviewed commit: `1ccc37b feat: provision isolated agent worktrees`.
 - Branch: `feat/control-plane-phase1`.
-- Committed-platform estimate: 67%.
-- Working-tree estimate: 67%.
+- Committed-platform estimate: 70%.
+- Working-tree estimate: 70%.
 - Phase 6 state: implementation, review gate, and local commit complete.
 - Source of truth: this section must be updated whenever Phase 6 scope, tests, review state, or commit state changes.
 
@@ -201,3 +201,23 @@ No implementation commit may be created until:
 - [x] Claude review pass 3: `APPROVE`; no remaining high/medium findings.
 - [x] Committed Phase 6b locally after the review gate passed (the commit containing this snapshot).
 - [ ] True bidirectional delivery remains a later increment requiring generated, version-matched vendor protocol schemas and end-to-end tests.
+
+## 2026-07-15 — Codex Bidirectional Approval Protocol (Phase 6c, active)
+
+- [x] Generated JSON schemas from the installed Codex CLI 0.144.1 app-server.
+- [x] Selected only stable command-execution and file-change approval server requests.
+- [x] Explicitly excluded experimental `item/tool/requestUserInput`.
+- [x] Added strongly typed Codex correlation and schema-bounded request/response codecs.
+- [x] Added durable `pending → ready → delivering → delivered|failed` lifecycle.
+- [x] Added atomic delivery claim, redacted delivery audit, and at-most-once-safe stale claim recovery.
+- [x] Added a 50-open-item per-run circuit breaker.
+- [x] Restricted public hook ingestion to loopback and retained capture-only trust boundaries.
+- [x] Kiro architecture review approved the foundation and identified recovery/cap hardening, which was applied.
+- [x] Codex bridge and Attention integration tests: 18 passed, 1 dependency deprecation warning.
+- [x] Kiro review observations applied: stale-delivery recovery, per-run cap, typed correlation, and loopback ingress.
+- [x] Full related regression suite: 57 passed, 1 dependency deprecation warning.
+- [x] Claude review pass 1: `CHANGES_REQUESTED` (cancelled/expired approval left delivery pending).
+- [x] Added atomic failed delivery transitions and audit events for cancellation and expiry.
+- [x] Claude review pass 2: `APPROVE`; no remaining high/medium findings.
+- [x] Committed the reviewed protocol foundation locally (the commit containing this snapshot).
+- [ ] Next increment: app-server process supervision and real stdin/stdout handshake integration.

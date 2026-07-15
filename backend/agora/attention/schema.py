@@ -46,6 +46,10 @@ def initialize_attention_schema(db: sqlite3.Connection) -> None:
             vendor_event_id TEXT NOT NULL,
             item_id TEXT NOT NULL UNIQUE REFERENCES attention_items(item_id),
             delivery_mode TEXT NOT NULL,
+            delivery_state TEXT NOT NULL DEFAULT 'pending',
+            delivery_error TEXT,
+            claimed_at TEXT,
+            delivered_at TEXT,
             received_at TEXT NOT NULL,
             PRIMARY KEY (vendor, run_id, vendor_event_id)
         );
@@ -53,3 +57,12 @@ def initialize_attention_schema(db: sqlite3.Connection) -> None:
             ON attention_bridge_events(item_id);
         """
     )
+    columns = {row[1] for row in db.execute("PRAGMA table_info(attention_bridge_events)")}
+    for name, ddl in (
+        ("delivery_state", "TEXT NOT NULL DEFAULT 'pending'"),
+        ("delivery_error", "TEXT"),
+        ("claimed_at", "TEXT"),
+        ("delivered_at", "TEXT"),
+    ):
+        if name not in columns:
+            db.execute(f"ALTER TABLE attention_bridge_events ADD COLUMN {name} {ddl}")
