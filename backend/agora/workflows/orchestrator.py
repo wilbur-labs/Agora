@@ -43,9 +43,13 @@ class WorkflowOrchestrator:
             return WorkflowDispatchResult(workflow_id=workflow_id, dispatched_run_ids=[], blockers=[])
         dispatched: list[str] = []
         blockers: list[WorkflowDispatchBlocker] = []
+        active_count = sum(step.state == WorkflowStepState.RUNNING for step in workflow.steps)
+        available_slots = max(0, workflow.max_concurrent_runs - active_count)
         for step in workflow.steps:
             if step.state != WorkflowStepState.READY:
                 continue
+            if available_slots <= 0:
+                break
             reason = self._blocker(step.task_id, step.adapter)
             if reason:
                 self.workflows.record_blocker(
@@ -80,6 +84,7 @@ class WorkflowOrchestrator:
                 continue
             self.dispatcher.schedule(run.run_id)
             dispatched.append(run.run_id)
+            available_slots -= 1
             try:
                 self.workflows.bind_run(
                     workflow_id, step.step_id, token=token, run_id=run.run_id,

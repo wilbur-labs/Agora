@@ -15,11 +15,13 @@ export interface WorkflowManifest {
   workflow_id: string; title: string; description: string; state: WorkflowState;
   steps: WorkflowStep[]; metadata: Record<string, unknown>; version: number;
   created_by: string; created_at: string; updated_at: string;
+  auto_dispatch: boolean; max_concurrent_runs: number;
 }
 
 export interface WorkflowSummary {
   workflow_id: string; title: string; state: WorkflowState; step_count: number;
   ready_count: number; version: number; created_at: string; updated_at: string;
+  auto_dispatch: boolean; max_concurrent_runs: number;
 }
 
 export interface WorkflowDispatchResult {
@@ -35,6 +37,8 @@ export interface CreateWorkflowInput {
     adapter: string; prompt: string; depends_on: string[];
   }>;
   created_by?: string;
+  auto_dispatch?: boolean;
+  max_concurrent_runs?: number;
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {

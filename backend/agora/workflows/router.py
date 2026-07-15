@@ -12,6 +12,8 @@ from agora.execution.router import get_execution_dispatcher
 from .models import (CreateWorkflowRequest, TransitionWorkflowStepRequest, WorkflowActionRequest,
                      WorkflowDispatchResult, WorkflowEvent, WorkflowManifest, WorkflowState, WorkflowSummary)
 from .orchestrator import WorkflowOrchestrator
+from .supervisor import WorkflowSupervisor
+from agora.config.settings import get_config
 from .store import WorkflowConflictError, WorkflowNotFoundError, WorkflowStore, WorkflowValidationError
 
 router = APIRouter(prefix="/workflows", tags=["workflows"])
@@ -24,6 +26,15 @@ def get_workflow_store() -> WorkflowStore: return WorkflowStore(get_task_store()
 @lru_cache(maxsize=1)
 def get_workflow_orchestrator() -> WorkflowOrchestrator:
     return WorkflowOrchestrator(get_workflow_store(), get_execution_dispatcher())
+
+
+@lru_cache(maxsize=1)
+def get_workflow_supervisor() -> WorkflowSupervisor:
+    settings = get_config().get("workflow_scheduler", {})
+    return WorkflowSupervisor(
+        get_workflow_store(), get_workflow_orchestrator(),
+        interval_seconds=float(settings.get("interval_seconds", 5)),
+    )
 
 
 @router.post("", response_model=WorkflowManifest, status_code=status.HTTP_201_CREATED)

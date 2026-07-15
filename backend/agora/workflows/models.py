@@ -48,6 +48,8 @@ class CreateWorkflowRequest(BaseModel):
     steps: list[CreateWorkflowStep] = Field(min_length=1, max_length=200)
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_by: str = Field(default="user", min_length=1, max_length=128)
+    auto_dispatch: bool = False
+    max_concurrent_runs: int = Field(default=4, ge=1, le=32)
 
     @model_validator(mode="after")
     def validate_graph_references(self):
@@ -128,6 +130,8 @@ class WorkflowManifest(BaseModel):
     created_by: str
     created_at: str
     updated_at: str
+    auto_dispatch: bool = False
+    max_concurrent_runs: int = 4
 
 
 class WorkflowSummary(BaseModel):
@@ -139,6 +143,8 @@ class WorkflowSummary(BaseModel):
     version: int
     created_at: str
     updated_at: str
+    auto_dispatch: bool = False
+    max_concurrent_runs: int = 4
 
 
 class WorkflowEvent(BaseModel):

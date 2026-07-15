@@ -19,11 +19,15 @@ from agora.execution.router import get_execution_dispatcher
 from agora.workspaces.router import router as workspaces_router
 from agora.attention.router import router as attention_router
 from agora.workflows.router import router as workflows_router
+from agora.workflows.router import get_workflow_supervisor
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     get_execution_dispatcher().resume_queued()
+    supervisor = get_workflow_supervisor()
+    supervisor.start()
     yield
+    await supervisor.shutdown()
     if get_execution_dispatcher.cache_info().currsize:
         await get_execution_dispatcher().shutdown()
 

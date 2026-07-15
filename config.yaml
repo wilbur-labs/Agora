@@ -104,6 +104,10 @@ sandbox:
 web:
   network_mode: direct
 
+# Opt-in workflow background reconciliation. Only workflows created with auto_dispatch run automatically.
+workflow_scheduler:
+  interval_seconds: 5
+
 # Durable delivery execution. Each adapter runs inside its registered project workspace.
 execution:
   max_concurrent_global: 4

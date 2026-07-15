@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import sys
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 
@@ -16,6 +17,7 @@ from agora.tasks.store import TaskStore
 from agora.workflows.models import CreateWorkflowRequest, WorkflowActionRequest, WorkflowState, WorkflowStepState
 from agora.workflows.orchestrator import WorkflowOrchestrator
 from agora.workflows.store import WorkflowStore
+from agora.workflows.supervisor import WorkflowSupervisor
 
 
 def _system(tmp_path):
@@ -198,3 +200,96 @@ async def test_failed_parallel_step_cancels_running_sibling(tmp_path):
     assert cleanup.dispatched_run_ids == []
     assert runs.require(slow_run_ids[0]).state == RunState.CANCELLED
     await asyncio.gather(*list(dispatcher._scheduled), return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_workflow_concurrency_cap_and_opt_in_supervisor(tmp_path):
+    tasks, runs, dispatcher, workflows, orchestrator = _system(tmp_path)
+    auto_tasks = [_planned(tasks, "alpha" if index % 2 == 0 else "beta", f"Auto {index}") for index in range(3)]
+    manual_task = _planned(tasks, "beta", "Manual")
+    auto = workflows.activate(workflows.create(CreateWorkflowRequest(
+        title="Auto", auto_dispatch=True, max_concurrent_runs=1,
+        steps=[{"key": f"auto-{index}", "title": f"Auto {index}", "project_id": task.project_id,
+                "task_id": task.task_id, "adapter": "codex", "prompt": f"auto-{index}"}
+               for index, task in enumerate(auto_tasks)],
+    )).workflow_id, WorkflowActionRequest(expected_version=1))
+    manual = workflows.activate(workflows.create(CreateWorkflowRequest(
+        title="Manual", auto_dispatch=False,
+        steps=[{"key": "manual", "title": "Manual", "project_id": "beta",
+                "task_id": manual_task.task_id, "adapter": "codex", "prompt": "manual"}],
+    )).workflow_id, WorkflowActionRequest(expected_version=1))
+    supervisor = WorkflowSupervisor(workflows, orchestrator, interval_seconds=1)
+
+    await supervisor.run_once()
+    auto_state = workflows.require(auto.workflow_id)
+    manual_state = workflows.require(manual.workflow_id)
+    assert sum(step.run_id is not None for step in auto_state.steps) == 1
+    assert all(step.run_id is None for step in manual_state.steps)
+    assert len(runs.list(limit=20)) == 1
+    await asyncio.gather(*list(dispatcher._scheduled))
+
+    await supervisor.run_once()
+    auto_state = workflows.require(auto.workflow_id)
+    assert sum(step.run_id is not None for step in auto_state.steps) == 2
+    assert auto_state.max_concurrent_runs == 1 and auto_state.auto_dispatch is True
+    await asyncio.gather(*list(dispatcher._scheduled))
+
+
+def test_workflow_supervisor_interval_is_bounded(tmp_path):
+    _, _, dispatcher, workflows, orchestrator = _system(tmp_path)
+    with pytest.raises(ValueError, match="between 1 and 300"):
+        WorkflowSupervisor(workflows, orchestrator, interval_seconds=0.5)
+
+
+@pytest.mark.asyncio
+async def test_workflow_supervisor_ticks_and_shuts_down(tmp_path):
+    _, _, _, workflows, orchestrator = _system(tmp_path)
+    supervisor = WorkflowSupervisor(workflows, orchestrator, interval_seconds=1)
+    supervisor.interval_seconds = 0.01
+    ticked_twice = asyncio.Event()
+    ticks = 0
+
+    async def count_tick():
+        nonlocal ticks
+        ticks += 1
+        if ticks >= 2:
+            ticked_twice.set()
+
+    supervisor.run_once = count_tick  # type: ignore[method-assign]
+    supervisor.start()
+    await asyncio.wait_for(ticked_twice.wait(), timeout=1)
+    await supervisor.shutdown()
+    assert ticks >= 2 and supervisor._task is None
+
+
+@pytest.mark.asyncio
+async def test_workflow_supervisor_isolates_dispatch_and_audit_failures():
+    summaries = [SimpleNamespace(workflow_id=value, auto_dispatch=True) for value in ("bad", "deleted", "good")]
+
+    class FakeWorkflows:
+        def __init__(self):
+            self.errors = []
+
+        def list(self, **_kwargs):
+            return summaries
+
+        def record_scheduler_error(self, workflow_id, _step_id, *, error):
+            if workflow_id == "deleted":
+                raise RuntimeError("workflow was deleted")
+            self.errors.append((workflow_id, error))
+
+    class FakeOrchestrator:
+        def __init__(self):
+            self.attempted = []
+
+        async def dispatch(self, workflow_id):
+            self.attempted.append(workflow_id)
+            if workflow_id != "good":
+                raise RuntimeError("dispatch failed")
+
+    workflows = FakeWorkflows()
+    orchestrator = FakeOrchestrator()
+    supervisor = WorkflowSupervisor(workflows, orchestrator, interval_seconds=1)  # type: ignore[arg-type]
+    await supervisor.run_once()
+    assert orchestrator.attempted == ["bad", "deleted", "good"]
+    assert workflows.errors and workflows.errors[0][0] == "bad"

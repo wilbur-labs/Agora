@@ -43,9 +43,13 @@ class WorkflowStore:
                     if task["project_id"] != step.project_id:
                         raise WorkflowValidationError(f"Task project does not match step {step.key}")
             db.execute(
-                "INSERT INTO workflows VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)",
+                """INSERT INTO workflows (
+                    workflow_id, title, description, state, metadata, version, created_by,
+                    created_at, updated_at, auto_dispatch, max_concurrent_runs
+                ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)""",
                 (workflow_id, redact_text(request.title), redact_text(request.description), WorkflowState.DRAFT.value,
-                 self._json(sanitize_data(request.metadata)), request.created_by, now, now),
+                 self._json(sanitize_data(request.metadata)), request.created_by, now, now,
+                 int(request.auto_dispatch), request.max_concurrent_runs),
             )
             for step in request.steps:
                 db.execute(
@@ -90,7 +94,8 @@ class WorkflowStore:
                 GROUP BY w.workflow_id ORDER BY w.created_at DESC LIMIT ? OFFSET ?""", values).fetchall()
         return [WorkflowSummary(workflow_id=r["workflow_id"], title=r["title"], state=r["state"],
             step_count=r["step_count"], ready_count=r["ready_count"], version=r["version"],
-            created_at=r["created_at"], updated_at=r["updated_at"]) for r in rows]
+            created_at=r["created_at"], updated_at=r["updated_at"], auto_dispatch=bool(r["auto_dispatch"]),
+            max_concurrent_runs=r["max_concurrent_runs"]) for r in rows]
 
     def activate(self, workflow_id: str, request: WorkflowActionRequest) -> WorkflowManifest:
         now = utc_now()
@@ -283,7 +288,8 @@ class WorkflowStore:
                 title=s["title"], project_id=s["project_id"], task_id=s["task_id"], adapter=s["adapter"], prompt=s["prompt"],
                 depends_on=json.loads(s["depends_on"]), state=s["state"], version=s["version"], created_at=s["created_at"], updated_at=s["updated_at"],
                 run_id=s["run_id"], dispatch_token=s["dispatch_token"], dispatch_error=s["dispatch_error"]) for s in steps],
-            metadata=json.loads(row["metadata"]), version=row["version"], created_by=row["created_by"], created_at=row["created_at"], updated_at=row["updated_at"])
+            metadata=json.loads(row["metadata"]), version=row["version"], created_by=row["created_by"], created_at=row["created_at"], updated_at=row["updated_at"],
+            auto_dispatch=bool(row["auto_dispatch"]), max_concurrent_runs=row["max_concurrent_runs"])
 
     @staticmethod
     def _id(prefix): return f"{prefix}_{uuid.uuid4().hex}"

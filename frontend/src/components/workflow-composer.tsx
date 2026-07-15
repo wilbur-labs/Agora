@@ -19,12 +19,16 @@ export function WorkflowComposer({ tasks, onClose, onCreated }: {
   const [description, setDescription] = useState("");
   const [steps, setSteps] = useState<DraftStep[]>(() => eligible[0] ? [newStep(eligible[0], 0)] : []);
   const [activate, setActivate] = useState(true);
+  const [autoDispatch, setAutoDispatch] = useState(false);
+  const [maxConcurrent, setMaxConcurrent] = useState("4");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const formRef = useRef<HTMLFormElement>(null);
   const submittingRef = useRef(false);
   const mountedRef = useRef(true);
-  const valid = Boolean(title.trim() && steps.length && steps.every((step) => step.taskId && step.title.trim() && step.prompt.trim()));
+  const maxConcurrentValue = Number(maxConcurrent);
+  const maxConcurrentValid = maxConcurrent.trim() !== "" && Number.isInteger(maxConcurrentValue) && maxConcurrentValue >= 1 && maxConcurrentValue <= 32;
+  const valid = Boolean(title.trim() && steps.length && steps.every((step) => step.taskId && step.title.trim() && step.prompt.trim()) && maxConcurrentValid);
 
   useEffect(() => { submittingRef.current = submitting; }, [submitting]);
   useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
@@ -55,6 +59,7 @@ export function WorkflowComposer({ tasks, onClose, onCreated }: {
       try {
         const payload = {
           title: title.trim(), description: description.trim(), created_by: "user",
+          auto_dispatch: autoDispatch, max_concurrent_runs: maxConcurrentValue,
           steps: steps.map((step, index) => {
             const task = eligible.find((item) => item.task_id === step.taskId)!;
             return { key: `step-${index + 1}`, title: step.title.trim(), project_id: task.project_id,
@@ -87,7 +92,8 @@ export function WorkflowComposer({ tasks, onClose, onCreated }: {
             {task && <p className="mt-3 text-xs text-muted-foreground">{task.project_id} · task {task.task_id} · budget {task.budget.max_minutes ? `${task.budget.max_minutes} min` : "default timeout"}</p>}
           </section>;
         })}<Button type="button" variant="outline" disabled={submitting || steps.length >= eligible.length} onClick={() => { const used = new Set(steps.map((step) => step.taskId)); const next = eligible.find((task) => !used.has(task.task_id)); if (next) setSteps((current) => [...current, newStep(next, current.length)]); }}><Plus /> Add step</Button></fieldset>
-        <label className="flex items-center gap-3 rounded-xl border p-4 text-sm"><input type="checkbox" checked={activate} onChange={(event) => setActivate(event.target.checked)} /><span><strong>Activate after creation</strong><span className="block text-xs text-muted-foreground">Root steps become ready, but no runs start until you explicitly dispatch.</span></span></label>
+        <label className="flex items-center gap-3 rounded-xl border p-4 text-sm"><input type="checkbox" checked={activate} onChange={(event) => setActivate(event.target.checked)} /><span><strong>Activate after creation</strong><span className="block text-xs text-muted-foreground">{autoDispatch ? "Root steps become ready and the background supervisor may start them." : "Root steps become ready, but no runs start until you explicitly dispatch."}</span></span></label>
+        <section className="grid gap-4 rounded-xl border p-4 md:grid-cols-[1fr_180px]"><label className="flex items-center gap-3 text-sm"><input type="checkbox" checked={autoDispatch} onChange={(event) => setAutoDispatch(event.target.checked)} /><span><strong>Automatic dispatch</strong><span className="block text-xs text-muted-foreground">Once activated, the Agora supervisor reconciles and starts ready steps every few seconds. Drafts remain idle. This consumes agent quota.</span></span></label><label className="space-y-2 text-sm font-medium"><span>Max parallel runs</span><input className="field" type="number" min={1} max={32} step={1} value={maxConcurrent} onChange={(event) => setMaxConcurrent(event.target.value)} aria-invalid={!maxConcurrentValid} aria-describedby="workflow-max-concurrent-hint" required /><span id="workflow-max-concurrent-hint" className={`block text-xs ${maxConcurrentValid ? "text-muted-foreground" : "text-destructive"}`}>{maxConcurrentValid ? "Applies to manual and automatic dispatch." : "Enter a whole number from 1 to 32."}</span></label></section>
         {error && <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive" role="alert">{error}</div>}
         <Button type="submit" size="lg" className="w-full" disabled={!valid || submitting}><GitBranchPlus /> {submitting ? "Creating…" : activate ? "Create and activate" : "Create draft"}</Button>
       </>}

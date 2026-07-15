@@ -10,7 +10,9 @@ def initialize_workflow_schema(db: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS workflows (
             workflow_id TEXT PRIMARY KEY, title TEXT NOT NULL, description TEXT NOT NULL,
             state TEXT NOT NULL, metadata TEXT NOT NULL DEFAULT '{}', version INTEGER NOT NULL,
-            created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+            auto_dispatch INTEGER NOT NULL DEFAULT 0,
+            max_concurrent_runs INTEGER NOT NULL DEFAULT 4
         );
         CREATE INDEX IF NOT EXISTS idx_workflows_state_created ON workflows(state, created_at DESC);
         CREATE TABLE IF NOT EXISTS workflow_steps (
@@ -35,3 +37,8 @@ def initialize_workflow_schema(db: sqlite3.Connection) -> None:
     for name in ("run_id", "dispatch_token", "dispatch_error"):
         if name not in columns:
             db.execute(f"ALTER TABLE workflow_steps ADD COLUMN {name} TEXT")
+    workflow_columns = {row[1] for row in db.execute("PRAGMA table_info(workflows)")}
+    if "auto_dispatch" not in workflow_columns:
+        db.execute("ALTER TABLE workflows ADD COLUMN auto_dispatch INTEGER NOT NULL DEFAULT 0")
+    if "max_concurrent_runs" not in workflow_columns:
+        db.execute("ALTER TABLE workflows ADD COLUMN max_concurrent_runs INTEGER NOT NULL DEFAULT 4")

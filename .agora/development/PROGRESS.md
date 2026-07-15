@@ -338,3 +338,23 @@ No implementation commit may be created until:
 - [x] Added Composer-local unmount guards for every post-await callback/state update; focused Claude re-review: `APPROVE`.
 - [x] Final changed-file ESLint and production build passed; 14 pages generated.
 - [x] Commit the reviewed Phase 7d increment locally (the commit containing this snapshot).
+
+## 2026-07-15 — Opt-in Workflow Supervision (Phase 8a, active)
+
+- [x] Added opt-in `auto_dispatch` and bounded per-workflow `max_concurrent_runs` contracts with SQLite migration support.
+- [x] Enforced the concurrency policy in the authoritative orchestrator for both manual and automatic dispatch.
+- [x] Added a lifecycle-managed supervisor that isolates and audits per-workflow scheduling failures.
+- [x] Made supervisor lifecycle primitives restart- and event-loop-safe for cached FastAPI dependencies.
+- [x] Added Composer controls and Workflow Operations policy visibility; manual dispatch remains the default.
+- [x] Added deterministic opt-in, manual exclusion, concurrency-cap, and interval-bound tests.
+- [x] Related backend regression suite after review fixes: 57 passed, 1 dependency deprecation warning.
+- [x] Full backend baseline: 248 passed, 12 skipped, 34 Windows/CP932 and shell compatibility failures; the one lifecycle-related failure was fixed and included in the passing related suite.
+- [x] Changed-file frontend ESLint passed using the repository-installed toolchain.
+- [x] Frontend production build/static generation passed; 14 pages generated.
+- [x] Claude backend review pass 1: `CHANGES_REQUESTED` (Python 3.10 timeout compatibility, audit failure isolation, lifecycle/isolation coverage).
+- [x] Fixed both supervisor failure modes and added real tick/shutdown plus dispatch/audit isolation tests.
+- [x] Claude backend final re-review: `APPROVE`; compatibility, lifecycle, persistence, cap semantics, and isolation verified.
+- [x] Claude frontend review pass 1: `APPROVE` with non-blocking validation, accessibility, and activation-copy observations.
+- [x] Added string-backed integer validation, accessible inline guidance, and explicit active-only automatic-dispatch copy.
+- [x] Claude frontend final re-review: `APPROVE`; UX and backend contract consistency verified.
+- [x] Commit the reviewed Phase 8a increment locally (the commit containing this snapshot).
