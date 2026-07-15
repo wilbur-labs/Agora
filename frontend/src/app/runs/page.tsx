@@ -110,6 +110,7 @@ export default function RunsPage() {
     mountedRef.current = true;
     const timeout = window.setTimeout(() => { void loadRuns(true); void loadTasks(); }, 0);
     const query = new URLSearchParams(window.location.search);
+    setSelectedId(query.get("run") || "");
     setProjectFilter(query.get("project") || "all");
     const requestedState = query.get("state");
     const requestedAdapter = query.get("adapter");

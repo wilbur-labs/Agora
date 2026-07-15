@@ -300,3 +300,20 @@ No implementation commit may be created until:
 - [x] Claude terminal/API re-review: `APPROVE`; retry, audit, cleanup-only dispatch, migration, timeout, and blocker semantics verified.
 - [x] Final post-review related backend regression suite: 69 passed, 1 dependency deprecation warning.
 - [x] Commit the reviewed Phase 7b increment locally (the commit containing this snapshot).
+
+## 2026-07-15 — Workflow Operations UI (Phase 7c, active)
+
+- [x] Added typed frontend workflow contracts and list/get/activate/dispatch clients.
+- [x] Added a Delivery Control Plane Workflow navigation entry and `/workflows` route.
+- [x] Added workflow list selection, active read polling, state summaries, and explicit refresh.
+- [x] Added dependency-depth DAG lanes with project, adapter, task, run, state, and blocker context.
+- [x] Added explicit activate, dispatch/reconcile, and failed-workflow cleanup controls; read polling never mutates workflow state.
+- [x] Added workflow-to-run deep links and Run Center `run` query selection.
+- [x] Changed-file frontend ESLint passed.
+- [x] Frontend production build/static generation passed; 14 pages generated including `/workflows`.
+- [x] Claude review pass 1: `CHANGES_REQUESTED` (poll/action stale responses, cross-selection overwrite, 409 resync, adapter type, selection semantics, malformed DAG warning).
+- [x] Added request-id and version guards, target-workflow action checks, action-time selection locking, and conflict resync.
+- [x] Matched backend adapter strings, added `aria-pressed`, narrowed the live region, reconciled missing selections, and surfaced unresolved DAG data.
+- [x] Post-fix changed-file ESLint and production build passed; 14 pages generated.
+- [x] Claude final re-review: `APPROVE`; lifecycle guards, selection integrity, conflict recovery, types, DAG fallback, and accessibility verified.
+- [x] Commit the reviewed Phase 7c increment locally (the commit containing this snapshot).
