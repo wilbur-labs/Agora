@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from dataclasses import replace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -15,6 +16,8 @@ from agora.execution.store import ExecutionStore, RunConflictError, RunValidatio
 from agora.projects import ProjectRegistry
 from agora.tasks.models import AppendEventRequest, CreateTaskRequest, TaskState
 from agora.tasks.store import TaskStore
+from agora.attention.store import AttentionStore
+from agora.attention.models import RespondAttentionRequest
 
 
 def _config(tmp_path, command: list[str]) -> dict:
@@ -146,6 +149,10 @@ def test_adapter_keeps_prompt_as_one_argv_item_and_validates_template():
             task_id="task", adapter="codex", prompt="x" * 16_001,
             expected_task_version=1,
         )
+    with pytest.raises(ValueError, match="app_server_command"):
+        build_adapter_registry({"execution": {"adapters": {
+            "codex": {"bridge_mode": "codex_app_server", "app_server_command": "codex app-server"}
+        }}})
 
 
 def test_workspace_must_be_under_an_explicit_allowed_root(tmp_path):
@@ -168,6 +175,122 @@ def test_dispatcher_exposes_only_bridge_correlation_environment(tmp_path):
 
     assert result.state == RunState.SUCCEEDED
     assert result.stdout_tail.splitlines() == [task.task_id, queued.run_id, "alpha"]
+
+
+def test_codex_app_server_full_approval_round_trip(tmp_path):
+    script = r'''
+import json, sys
+def read(): return json.loads(sys.stdin.readline())
+def send(value): print(json.dumps(value), flush=True)
+msg = read(); assert msg["method"] == "initialize"; send({"id": msg["id"], "result": {}})
+assert read()["method"] == "initialized"
+msg = read(); assert msg["method"] == "thread/start"; send({"id": msg["id"], "result": {"thread": {"id": "thread-test"}}})
+msg = read(); assert msg["method"] == "turn/start"
+# Exercise a legal server request arriving before the turn/start response.
+send({"id": 77, "method": "item/commandExecution/requestApproval", "params": {"threadId": "thread-test", "turnId": "turn-test", "itemId": "item-test", "startedAtMs": 1, "command": "git push", "reason": "test"}})
+response = read(); assert response == {"id": 77, "result": {"decision": "accept"}}
+# Withhold turn/start until the interleaved approval is answered.
+send({"id": msg["id"], "result": {"turn": {"id": "turn-test"}}})
+send({"method": "turn/completed", "params": {"threadId": "thread-test", "turn": {"id": "turn-test", "status": "completed"}}})
+'''
+    tasks, store, dispatcher = _system(tmp_path, [sys.executable, "-c", "print('unused')"])
+    task = _planned_task(tasks)
+    dispatcher.adapters["codex"] = replace(
+        dispatcher.adapters["codex"], bridge_mode="codex_app_server",
+        app_server_command=(sys.executable, "-u", "-c", script),
+    )
+    queued = dispatcher.queue(_request(task.task_id))
+    assert queued.command[:2] == [sys.executable, "-u"]
+
+    async def scenario():
+        execution = asyncio.create_task(dispatcher.execute(queued.run_id))
+        attention = AttentionStore(tasks)
+        item = None
+        for _ in range(100):
+            open_items = attention.list(run_id=queued.run_id)
+            if open_items:
+                item = open_items[0]
+                break
+            await asyncio.sleep(0.02)
+        assert item is not None
+        await asyncio.to_thread(attention.respond, item.item_id, RespondAttentionRequest(
+            action="approve", response="ship it", expected_version=item.version,
+        ))
+        return await asyncio.wait_for(execution, timeout=10), item.item_id
+
+    result, item_id = asyncio.run(scenario())
+    assert result.state == RunState.SUCCEEDED
+    with tasks._connect() as db:
+        delivery = db.execute(
+            "SELECT delivery_state FROM attention_bridge_events WHERE item_id = ?", (item_id,),
+        ).fetchone()
+    assert delivery["delivery_state"] == "delivered"
+
+
+@pytest.mark.parametrize("mode", ["invalid_json", "timeout"])
+def test_codex_app_server_failure_and_timeout_are_durable(tmp_path, mode):
+    if mode == "invalid_json":
+        script = "import sys; sys.stdin.readline(); print('not-json', flush=True)"
+        timeout = 5
+    else:
+        script = r'''
+import json, sys, time
+def read(): return json.loads(sys.stdin.readline())
+def send(value): print(json.dumps(value), flush=True)
+msg=read(); send({"id": msg["id"], "result": {}}); read()
+msg=read(); send({"id": msg["id"], "result": {"thread": {"id": "thread"}}})
+msg=read(); send({"id": msg["id"], "result": {"turn": {"id": "turn"}}})
+time.sleep(30)
+'''
+        timeout = 1
+    tasks, _, dispatcher = _system(tmp_path, [sys.executable, "-c", "print('unused')"])
+    task = _planned_task(tasks)
+    dispatcher.adapters["codex"] = replace(
+        dispatcher.adapters["codex"], bridge_mode="codex_app_server",
+        app_server_command=(sys.executable, "-u", "-c", script),
+    )
+    queued = dispatcher.queue(_request(task.task_id, timeout=timeout))
+    result = asyncio.run(dispatcher.execute(queued.run_id))
+    assert result.state == (RunState.FAILED if mode == "invalid_json" else RunState.TIMED_OUT)
+    assert result.pid is None
+    assert ("invalid JSON" in result.error_message if mode == "invalid_json" else "timeout" in result.error_message)
+
+
+def test_codex_app_server_cancellation_stops_process(tmp_path):
+    script = r'''
+import json, sys, time
+def read(): return json.loads(sys.stdin.readline())
+def send(value): print(json.dumps(value), flush=True)
+msg=read(); send({"id": msg["id"], "result": {}}); read()
+msg=read(); send({"id": msg["id"], "result": {"thread": {"id": "thread"}}})
+msg=read(); send({"id": msg["id"], "result": {"turn": {"id": "turn"}}})
+time.sleep(30)
+'''
+    tasks, _, dispatcher = _system(tmp_path, [sys.executable, "-c", "print('unused')"])
+    task = _planned_task(tasks)
+    dispatcher.adapters["codex"] = replace(
+        dispatcher.adapters["codex"], bridge_mode="codex_app_server",
+        app_server_command=(sys.executable, "-u", "-c", script),
+    )
+    queued = dispatcher.queue(_request(task.task_id, timeout=30))
+
+    async def scenario():
+        execution = asyncio.create_task(dispatcher.execute(queued.run_id))
+        for _ in range(100):
+            current = dispatcher.store.require(queued.run_id)
+            if current.pid is not None:
+                break
+            await asyncio.sleep(0.02)
+        assert current.pid is not None
+        cancelled = await dispatcher.cancel(
+            queued.run_id, CancelRunRequest(expected_version=current.version, reason="user stop"),
+        )
+        result = await asyncio.wait_for(execution, timeout=10)
+        return cancelled, result
+
+    cancelled, result = asyncio.run(scenario())
+    assert cancelled.state == RunState.CANCELLED
+    assert result.state == RunState.CANCELLED and result.pid is None
 
 
 def test_workspace_confinement_is_rechecked_before_process_start(tmp_path):

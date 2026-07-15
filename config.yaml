@@ -113,6 +113,8 @@ execution:
       enabled: true
       command: [codex, exec, --skip-git-repo-check, --sandbox, workspace-write, --ephemeral, "{prompt}"]
       workspace_key: codex
+      bridge_mode: codex_app_server
+      app_server_command: [codex, app-server, --listen, "stdio://"]
     claude:
       enabled: true
       command: [claude, -p, "{prompt}", --output-format, text, --permission-mode, auto, --no-session-persistence]

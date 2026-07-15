@@ -9,6 +9,9 @@ from typing import Any
 
 from agora.projects import ProjectRegistry
 from agora.tasks.store import TaskNotFoundError, TaskStore
+from agora.attention.store import AttentionStore
+from agora.attention.bridges.codex_app_server import CodexAppServerError, CodexAppServerRunner
+from agora.attention.bridges.codex_broker import CodexApprovalBroker
 
 from .adapters import ExecutionAdapter
 from .models import CancelRunRequest, CreateRunRequest, ExecutionRun, RunState, OUTPUT_TAIL_LIMIT
@@ -149,6 +152,10 @@ class ExecutionDispatcher:
                     run_id, RunState.FAILED, expected_version=running.version, exit_code=None,
                     stdout_tail="", stderr_tail="", error_message="workspace changed before process start",
                 )
+            if adapter.bridge_mode == "codex_app_server":
+                return await self._execute_codex_app_server(
+                    running, adapter, workspace,
+                )
             try:
                 proc = await asyncio.create_subprocess_exec(
                     *command,
@@ -223,6 +230,66 @@ class ExecutionDispatcher:
                 )
             finally:
                 self._active.pop(run_id, None)
+
+    async def _execute_codex_app_server(
+        self, running: ExecutionRun, adapter: ExecutionAdapter, workspace: Path,
+    ) -> ExecutionRun:
+        attention = AttentionStore(self.store.tasks)
+        broker = CodexApprovalBroker(attention, task_id=running.task_id, run_id=running.run_id)
+        runner = CodexAppServerRunner(broker)
+        attached = running
+
+        async def on_process(proc: asyncio.subprocess.Process) -> None:
+            nonlocal attached
+            self._active[running.run_id] = proc
+            try:
+                attached = self.store.attach_pid(
+                    running.run_id, expected_version=attached.version, pid=proc.pid,
+                )
+            except RunConflictError:
+                await self._stop(proc)
+                raise
+
+        env = {
+            **os.environ,
+            "AGORA_TASK_ID": running.task_id,
+            "AGORA_RUN_ID": running.run_id,
+            "AGORA_PROJECT_ID": running.project_id,
+        }
+        out = b""
+        err = b""
+        timed_out = False
+        failure: str | None = None
+        try:
+            result = await runner.run(
+                command=adapter.app_server_command, prompt=running.prompt, cwd=workspace,
+                timeout_seconds=running.timeout_seconds, env=env, on_process=on_process,
+            )
+            out, err = result.stdout, result.stderr
+            timed_out = result.timed_out
+            failure = (
+                f"timeout after {running.timeout_seconds}s" if timed_out
+                else (redact_text(f"app-server error: {result.error}") if result.error else None)
+            )
+        except (CodexAppServerError, RunConflictError, FileNotFoundError, OSError) as exc:
+            failure = redact_text(f"app-server error: {type(exc).__name__}: {exc}")
+        finally:
+            self._active.pop(running.run_id, None)
+
+        current = self.store.require(running.run_id)
+        safe_out = redact_text(out.decode("utf-8", errors="replace"))[-OUTPUT_TAIL_LIMIT:]
+        safe_err = redact_text(err.decode("utf-8", errors="replace"))[-OUTPUT_TAIL_LIMIT:]
+        if current.state == RunState.CANCELLED:
+            return self.store.record_cancelled_output(
+                running.run_id, expected_version=current.version, stdout_tail=safe_out,
+                stderr_tail=safe_err, exit_code=None,
+            )
+        target = RunState.TIMED_OUT if timed_out else (RunState.SUCCEEDED if failure is None else RunState.FAILED)
+        return self.store.finish(
+            running.run_id, target, expected_version=current.version,
+            exit_code=0 if target == RunState.SUCCEEDED else None,
+            stdout_tail=safe_out, stderr_tail=safe_err, error_message=failure,
+        )
 
     async def cancel(self, run_id: str, request: CancelRunRequest) -> ExecutionRun:
         cancelled = await asyncio.to_thread(self.store.cancel, run_id, request)

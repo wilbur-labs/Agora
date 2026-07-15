@@ -229,6 +229,17 @@ class AttentionStore:
                             {"item_id": row["item_id"], "error": "delivery interrupted before acknowledgement"}, now)
             return len(rows)
 
+    def delivery_failure_for_run(self, run_id: str, vendor: BridgeVendor) -> str | None:
+        with closing(self._connect()) as db:
+            row = db.execute(
+                """SELECT delivery_error FROM attention_bridge_events
+                   WHERE run_id = ? AND vendor = ? AND delivery_mode = 'bidirectional'
+                     AND delivery_state = 'failed'
+                   ORDER BY received_at DESC LIMIT 1""",
+                (run_id, vendor.value),
+            ).fetchone()
+        return row["delivery_error"] if row else None
+
     def get(self, item_id: str) -> AttentionItem | None:
         self.expire_overdue()
         with closing(self._connect()) as db:

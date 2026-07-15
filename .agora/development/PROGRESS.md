@@ -140,7 +140,7 @@ No implementation commit may be created until:
 - Last reviewed commit: `1ccc37b feat: provision isolated agent worktrees`.
 - Branch: `feat/control-plane-phase1`.
 - Committed-platform estimate: 70%.
-- Working-tree estimate: 70%.
+- Working-tree estimate including uncommitted Phase 6d: 74%.
 - Phase 6 state: implementation, review gate, and local commit complete.
 - Source of truth: this section must be updated whenever Phase 6 scope, tests, review state, or commit state changes.
 
@@ -221,3 +221,22 @@ No implementation commit may be created until:
 - [x] Claude review pass 2: `APPROVE`; no remaining high/medium findings.
 - [x] Committed the reviewed protocol foundation locally (the commit containing this snapshot).
 - [ ] Next increment: app-server process supervision and real stdin/stdout handshake integration.
+
+## 2026-07-15 — Codex App-Server Execution Integration (Phase 6d, active)
+
+- [x] Added configurable `codex_app_server` execution-adapter mode with audited app-server argv.
+- [x] Added version-matched initialize, thread/start, and turn/start JSONL handshake.
+- [x] Connected stable approval server requests to `CodexApprovalBroker` and returned human decisions on original JSON-RPC ids.
+- [x] Preserved dispatcher concurrency, workspace confinement, PID attachment, timeout, cancellation, and shutdown behavior.
+- [x] Added bounded protocol stdout/stderr capture and existing persistence-boundary redaction.
+- [x] Captured server requests that race ahead of request responses during handshake.
+- [x] Enabled app-server mode in the default Agora project configuration; `bridge_mode: cli` remains the fallback.
+- [x] Added deterministic process-level tests for success, approval round-trip, invalid JSON, timeout, and cancellation.
+- [x] Full related backend regression suite: 64 passed, 1 dependency deprecation warning.
+- [ ] Optional authenticated live smoke test against the installed Codex app-server.
+- [x] Claude runner review pass 1: `CHANGES_REQUESTED` (handshake approval deadlock, callback cleanup coupling, completion identity).
+- [x] Fixed all high/medium runner findings and strengthened the early-request process test.
+- [x] Final post-fix related regression suite: 64 passed, 1 dependency deprecation warning.
+- [x] Claude post-fix runner review: `APPROVE`; early approval delivery, identity checks, cancellation, and cleanup verified.
+- [x] Claude dispatcher/config review: `APPROVE`; CLI fallback, audit command, state races, and documentation verified.
+- [x] Commit the reviewed Phase 6d increment locally (the commit containing this snapshot).

@@ -11,6 +11,8 @@ class ExecutionAdapter:
     name: str
     command_template: tuple[str, ...]
     workspace_key: str
+    bridge_mode: str = "cli"
+    app_server_command: tuple[str, ...] = ("codex", "app-server", "--listen", "stdio://")
 
     def build_command(self, prompt: str) -> list[str]:
         """Expand only the dedicated argv element; never invoke a shell."""
@@ -18,7 +20,7 @@ class ExecutionAdapter:
 
     def stored_command(self) -> list[str]:
         """Return audit-safe argv without expanding user prompt content."""
-        return list(self.command_template)
+        return list(self.app_server_command if self.bridge_mode == "codex_app_server" else self.command_template)
 
     def workspace(self, workspaces: dict[str, Path]) -> Path:
         if self.workspace_key not in workspaces:
@@ -60,9 +62,22 @@ def build_adapter_registry(config: dict[str, Any]) -> dict[str, ExecutionAdapter
             raise ValueError(f"execution.adapters.{name}.command must be a non-empty string list")
         if command.count("{prompt}") != 1:
             raise ValueError(f"execution adapter {name} command must contain exactly one {{prompt}} element")
+        app_server_command = values.get(
+            "app_server_command", ["codex", "app-server", "--listen", "stdio://"]
+        )
+        if not isinstance(app_server_command, list) or not app_server_command or any(
+            not isinstance(part, str) or not part for part in app_server_command
+        ):
+            raise ValueError(f"execution.adapters.{name}.app_server_command must be a non-empty string list")
         registry[name] = ExecutionAdapter(
             name=name,
             command_template=tuple(command),
             workspace_key=str(values.get("workspace_key", defaults["workspace_key"])),
+            bridge_mode=str(values.get("bridge_mode", "cli")),
+            app_server_command=tuple(app_server_command),
         )
+        if registry[name].bridge_mode not in {"cli", "codex_app_server"}:
+            raise ValueError(f"execution adapter {name} has unsupported bridge_mode")
+        if registry[name].bridge_mode == "codex_app_server" and name != "codex":
+            raise ValueError("codex_app_server bridge_mode is supported only for codex")
     return registry
