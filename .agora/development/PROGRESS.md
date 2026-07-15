@@ -259,3 +259,22 @@ No implementation commit may be created until:
 - [x] Reran changed-file ESLint and production build after both UI improvements; 13 pages generated.
 - [x] Final focused Claude re-review: `APPROVE`; capability failure isolation and disabled-adapter reconciliation verified with no high/medium issues.
 - [x] Commit the reviewed Phase 6e increment locally (the commit containing this snapshot).
+
+## 2026-07-15 — Cross-Project Workflow DAG Foundation (Phase 7a, active)
+
+- [x] Estimated complete-platform progress at 77% before Phase 7a.
+- [x] Kiro produced a bounded Phase 7a DAG persistence/API specification (2.22 credits).
+- [x] Kept workflow lifecycle independent from referenced task lifecycle so shared tasks are not cancelled implicitly.
+- [x] Added bounded workflow/step contracts, cycle detection, cross-project references, and optional task integrity checks.
+- [x] Added transactional SQLite workflow, step, and append-only event persistence.
+- [x] Added optimistic workflow/step versions, atomic root readiness, dependency promotion, failure closure, completion, and cancellation.
+- [x] Added create/list/get/activate/step-transition/cancel/event REST endpoints.
+- [x] Added deterministic linear, cyclic, cross-project, stale-version, failure, cancellation, 50-way fan-out, completion, and API tests.
+- [x] Initial related backend regression suite: 61 passed, 1 dependency deprecation warning.
+- [x] Claude review pass 1: `CHANGES_REQUESTED` (individual-step cancellation deadlock, fragile terminal derivation, unbounded metadata).
+- [x] Removed individual step cancellation, made terminal derivation explicit, bounded metadata to 64 KiB, and added persistence-boundary redaction.
+- [x] Documented workflow-wide `ready_count` semantics and added cancellation/redaction regression coverage.
+- [x] Post-fix related backend regression suite: 63 passed, 1 dependency deprecation warning.
+- [x] Claude final re-review: `APPROVE`; cancellation, terminal derivation, bounds, redaction, and regression coverage verified.
+- [x] Recorded low-review rationale: metadata size validation is conservative; `created_by` remains an exact bounded audit identity rather than sanitized free text.
+- [x] Commit the reviewed Phase 7a increment locally (the commit containing this snapshot).
