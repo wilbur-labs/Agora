@@ -98,6 +98,20 @@ class WorkflowStep(BaseModel):
     version: int
     created_at: str
     updated_at: str
+    run_id: str | None = None
+    dispatch_token: str | None = None
+    dispatch_error: str | None = None
+
+
+class WorkflowDispatchBlocker(BaseModel):
+    step_id: str
+    reason: str
+
+
+class WorkflowDispatchResult(BaseModel):
+    workflow_id: str
+    dispatched_run_ids: list[str]
+    blockers: list[WorkflowDispatchBlocker]
 
 
 class WorkflowManifest(BaseModel):

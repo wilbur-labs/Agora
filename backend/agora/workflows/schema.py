@@ -19,6 +19,7 @@ def initialize_workflow_schema(db: sqlite3.Connection) -> None:
             task_id TEXT REFERENCES tasks(task_id), adapter TEXT NOT NULL, prompt TEXT NOT NULL,
             depends_on TEXT NOT NULL DEFAULT '[]', state TEXT NOT NULL, version INTEGER NOT NULL,
             created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+            run_id TEXT, dispatch_token TEXT, dispatch_error TEXT,
             UNIQUE(workflow_id, step_key)
         );
         CREATE INDEX IF NOT EXISTS idx_workflow_steps_workflow_state ON workflow_steps(workflow_id, state);
@@ -30,3 +31,7 @@ def initialize_workflow_schema(db: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_workflow_events_workflow ON workflow_events(workflow_id, created_at, event_id);
         """
     )
+    columns = {row[1] for row in db.execute("PRAGMA table_info(workflow_steps)")}
+    for name in ("run_id", "dispatch_token", "dispatch_error"):
+        if name not in columns:
+            db.execute(f"ALTER TABLE workflow_steps ADD COLUMN {name} TEXT")

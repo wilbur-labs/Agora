@@ -7,9 +7,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from agora.projects import ProjectRegistry
 from agora.tasks.router import get_project_registry, get_task_store
+from agora.execution.router import get_execution_dispatcher
 
 from .models import (CreateWorkflowRequest, TransitionWorkflowStepRequest, WorkflowActionRequest,
-                     WorkflowEvent, WorkflowManifest, WorkflowState, WorkflowSummary)
+                     WorkflowDispatchResult, WorkflowEvent, WorkflowManifest, WorkflowState, WorkflowSummary)
+from .orchestrator import WorkflowOrchestrator
 from .store import WorkflowConflictError, WorkflowNotFoundError, WorkflowStore, WorkflowValidationError
 
 router = APIRouter(prefix="/workflows", tags=["workflows"])
@@ -17,6 +19,11 @@ router = APIRouter(prefix="/workflows", tags=["workflows"])
 
 @lru_cache(maxsize=1)
 def get_workflow_store() -> WorkflowStore: return WorkflowStore(get_task_store())
+
+
+@lru_cache(maxsize=1)
+def get_workflow_orchestrator() -> WorkflowOrchestrator:
+    return WorkflowOrchestrator(get_workflow_store(), get_execution_dispatcher())
 
 
 @router.post("", response_model=WorkflowManifest, status_code=status.HTTP_201_CREATED)
@@ -68,3 +75,13 @@ def transition_step(workflow_id: str, step_id: str, request: TransitionWorkflowS
 def workflow_events(workflow_id: str, store: WorkflowStore = Depends(get_workflow_store)):
     try: return store.events(workflow_id)
     except WorkflowNotFoundError: raise HTTPException(404, "Workflow not found") from None
+
+
+@router.post("/{workflow_id}/dispatch", response_model=WorkflowDispatchResult)
+async def dispatch_workflow(
+    workflow_id: str,
+    orchestrator: WorkflowOrchestrator = Depends(get_workflow_orchestrator),
+):
+    try: return await orchestrator.dispatch(workflow_id)
+    except WorkflowNotFoundError: raise HTTPException(404, "Workflow not found") from None
+    except WorkflowConflictError as exc: raise HTTPException(409, str(exc)) from None

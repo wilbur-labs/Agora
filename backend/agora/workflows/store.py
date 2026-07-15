@@ -49,7 +49,10 @@ class WorkflowStore:
             )
             for step in request.steps:
                 db.execute(
-                    """INSERT INTO workflow_steps VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)""",
+                    """INSERT INTO workflow_steps (
+                        step_id, workflow_id, step_key, title, project_id, task_id, adapter, prompt,
+                        depends_on, state, version, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)""",
                     (step_ids[step.key], workflow_id, step.key, redact_text(step.title), step.project_id,
                      step.task_id, step.adapter, redact_text(step.prompt),
                      self._json([step_ids[key] for key in step.depends_on]),
@@ -161,6 +164,88 @@ class WorkflowStore:
                         {"reason": redact_text(request.reason) if request.reason else None}, now)
         return self.require(workflow_id)
 
+    def claim_dispatch(self, workflow_id: str, step_id: str, *, expected_version: int, token: str) -> WorkflowStep:
+        now = utc_now()
+        with self.tasks._transaction() as db:
+            workflow = db.execute("SELECT state FROM workflows WHERE workflow_id=?", (workflow_id,)).fetchone()
+            if not workflow: raise WorkflowNotFoundError(workflow_id)
+            if workflow["state"] != WorkflowState.ACTIVE.value: raise WorkflowConflictError("Workflow is not active")
+            cursor = db.execute(
+                """UPDATE workflow_steps SET state='running', dispatch_token=?, dispatch_error=NULL,
+                   version=version+1, updated_at=?
+                   WHERE workflow_id=? AND step_id=? AND state='ready' AND version=? AND run_id IS NULL""",
+                (token, now, workflow_id, step_id, expected_version),
+            )
+            if cursor.rowcount != 1: raise WorkflowConflictError("Workflow step is no longer dispatchable")
+            db.execute("UPDATE workflows SET version=version+1, updated_at=? WHERE workflow_id=?", (now, workflow_id))
+            self._event(db, workflow_id, "workflow.step_claimed", "scheduler", {"step_id": step_id}, now)
+        return next(step for step in self.require(workflow_id).steps if step.step_id == step_id)
+
+    def bind_run(self, workflow_id: str, step_id: str, *, token: str, run_id: str) -> WorkflowStep:
+        now = utc_now()
+        with self.tasks._transaction() as db:
+            cursor = db.execute(
+                """UPDATE workflow_steps SET run_id=?, dispatch_token=NULL, version=version+1, updated_at=?
+                   WHERE workflow_id=? AND step_id=? AND state='running' AND dispatch_token=? AND run_id IS NULL""",
+                (run_id, now, workflow_id, step_id, token),
+            )
+            if cursor.rowcount != 1: raise WorkflowConflictError("Workflow dispatch claim was lost")
+            db.execute("UPDATE workflows SET version=version+1, updated_at=? WHERE workflow_id=?", (now, workflow_id))
+            self._event(db, workflow_id, "workflow.run_bound", "scheduler", {"step_id": step_id, "run_id": run_id}, now)
+        return next(step for step in self.require(workflow_id).steps if step.step_id == step_id)
+
+    def release_dispatch(self, workflow_id: str, step_id: str, *, token: str, error: str) -> WorkflowStep:
+        now, safe_error = utc_now(), redact_text(error)[:1000]
+        with self.tasks._transaction() as db:
+            cursor = db.execute(
+                """UPDATE workflow_steps SET state='ready', dispatch_token=NULL, dispatch_error=?,
+                   version=version+1, updated_at=?
+                   WHERE workflow_id=? AND step_id=? AND state='running' AND dispatch_token=? AND run_id IS NULL""",
+                (safe_error, now, workflow_id, step_id, token),
+            )
+            if cursor.rowcount != 1: raise WorkflowConflictError("Workflow dispatch claim was lost")
+            db.execute("UPDATE workflows SET version=version+1, updated_at=? WHERE workflow_id=?", (now, workflow_id))
+            self._event(db, workflow_id, "workflow.dispatch_blocked", "scheduler",
+                        {"step_id": step_id, "reason": safe_error}, now)
+        return next(step for step in self.require(workflow_id).steps if step.step_id == step_id)
+
+    def record_blocker(self, workflow_id: str, step_id: str, *, expected_version: int, error: str) -> WorkflowStep:
+        now, safe_error = utc_now(), redact_text(error)[:1000]
+        with self.tasks._transaction() as db:
+            cursor = db.execute(
+                """UPDATE workflow_steps SET dispatch_error=?, version=version+1, updated_at=?
+                   WHERE workflow_id=? AND step_id=? AND state='ready' AND version=?
+                     AND COALESCE(dispatch_error, '') != ?""",
+                (safe_error, now, workflow_id, step_id, expected_version, safe_error),
+            )
+            if cursor.rowcount:
+                db.execute("UPDATE workflows SET version=version+1, updated_at=? WHERE workflow_id=?", (now, workflow_id))
+                self._event(db, workflow_id, "workflow.dispatch_blocked", "scheduler",
+                            {"step_id": step_id, "reason": safe_error}, now)
+        return next(step for step in self.require(workflow_id).steps if step.step_id == step_id)
+
+    def record_binding_error(self, workflow_id: str, step_id: str, *, token: str, error: str) -> WorkflowStep:
+        now, safe_error = utc_now(), redact_text(error)[:1000]
+        with self.tasks._transaction() as db:
+            cursor = db.execute(
+                """UPDATE workflow_steps SET dispatch_error=?, version=version+1, updated_at=?
+                   WHERE workflow_id=? AND step_id=? AND state='running' AND dispatch_token=? AND run_id IS NULL""",
+                (safe_error, now, workflow_id, step_id, token),
+            )
+            if cursor.rowcount:
+                db.execute("UPDATE workflows SET version=version+1, updated_at=? WHERE workflow_id=?", (now, workflow_id))
+                self._event(db, workflow_id, "workflow.run_binding_failed", "scheduler",
+                            {"step_id": step_id, "reason": safe_error}, now)
+        return next(step for step in self.require(workflow_id).steps if step.step_id == step_id)
+
+    def record_scheduler_error(self, workflow_id: str, step_id: str, *, error: str) -> None:
+        now, safe_error = utc_now(), redact_text(error)[:1000]
+        with self.tasks._transaction() as db:
+            if not db.execute("SELECT 1 FROM workflows WHERE workflow_id=?", (workflow_id,)).fetchone():
+                raise WorkflowNotFoundError(workflow_id)
+            self._event(db, workflow_id, "workflow.scheduler_error", "scheduler",
+                        {"step_id": step_id, "reason": safe_error}, now)
+
     def events(self, workflow_id: str) -> list[WorkflowEvent]:
         self.require(workflow_id)
         with closing(self.tasks._connect()) as db:
@@ -196,7 +281,8 @@ class WorkflowStore:
         return WorkflowManifest(workflow_id=row["workflow_id"], title=row["title"], description=row["description"],
             state=row["state"], steps=[WorkflowStep(step_id=s["step_id"], workflow_id=s["workflow_id"], key=s["step_key"],
                 title=s["title"], project_id=s["project_id"], task_id=s["task_id"], adapter=s["adapter"], prompt=s["prompt"],
-                depends_on=json.loads(s["depends_on"]), state=s["state"], version=s["version"], created_at=s["created_at"], updated_at=s["updated_at"]) for s in steps],
+                depends_on=json.loads(s["depends_on"]), state=s["state"], version=s["version"], created_at=s["created_at"], updated_at=s["updated_at"],
+                run_id=s["run_id"], dispatch_token=s["dispatch_token"], dispatch_error=s["dispatch_error"]) for s in steps],
             metadata=json.loads(row["metadata"]), version=row["version"], created_by=row["created_by"], created_at=row["created_at"], updated_at=row["updated_at"])
 
     @staticmethod

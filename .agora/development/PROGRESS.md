@@ -278,3 +278,25 @@ No implementation commit may be created until:
 - [x] Claude final re-review: `APPROVE`; cancellation, terminal derivation, bounds, redaction, and regression coverage verified.
 - [x] Recorded low-review rationale: metadata size validation is conservative; `created_by` remains an exact bounded audit identity rather than sanitized free text.
 - [x] Commit the reviewed Phase 7a increment locally (the commit containing this snapshot).
+
+## 2026-07-15 — Workflow Execution Dispatch (Phase 7b, active)
+
+- [x] Added durable per-step run binding, dispatch claims, bounded blockers, and schema migration for Phase 7a databases.
+- [x] Added explicit workflow dispatch/reconciliation service and REST endpoint.
+- [x] Atomically claims ready steps before queueing to prevent duplicate runs under concurrent dispatch calls.
+- [x] Added recovery for crashes before and after execution-run creation using persisted workflow claim IDs.
+- [x] Reconciles run success into dependency promotion and queues newly ready cross-project steps.
+- [x] Maps non-success terminal runs to workflow failure and cancels active sibling runs.
+- [x] Leaves missing-task, unready-task, unavailable-adapter, and workspace failures as retryable ready-step blockers.
+- [x] Applies task time budgets with the existing 7,200-second execution cap.
+- [x] Deterministic tests cover cross-project dependencies, fan-out, duplicate concurrent dispatch, blockers, recovery, and sibling cancellation.
+- [x] Related backend regression suite: 69 passed, 1 dependency deprecation warning.
+- [x] Claude full review attempt timed out without a verdict; split the review by risk domain.
+- [x] Claude concurrency review: `CHANGES_REQUESTED` (stale recovery could race queue/bind; binding failure was under-audited).
+- [x] Added per-workflow single-node serialization, retained recoverable claims, audited binding errors, and verified blocker event deduplication.
+- [x] Claude concurrency re-review: `APPROVE`; claim recovery and blocker deduplication verified.
+- [x] Claude terminal/API review: `CHANGES_REQUESTED` (one sibling cancellation conflict could strand later active runs with no cleanup retry).
+- [x] Added independent cancellation retries, audited cleanup failures, and failed-workflow cleanup-only dispatch; targeted recovery/cancellation tests pass.
+- [x] Claude terminal/API re-review: `APPROVE`; retry, audit, cleanup-only dispatch, migration, timeout, and blocker semantics verified.
+- [x] Final post-review related backend regression suite: 69 passed, 1 dependency deprecation warning.
+- [x] Commit the reviewed Phase 7b increment locally (the commit containing this snapshot).
