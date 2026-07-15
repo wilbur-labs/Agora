@@ -2,12 +2,14 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { GitBranch, Play, RefreshCw, RotateCw, X } from "lucide-react";
+import { GitBranch, Play, Plus, RefreshCw, RotateCw, X } from "lucide-react";
 import { DeliveryShell } from "@/components/delivery-shell";
+import { WorkflowComposer } from "@/components/workflow-composer";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { usePoll } from "@/hooks/use-poll";
 import { ApiError } from "@/lib/control-plane";
+import { listTasks, type TaskManifest } from "@/lib/control-plane";
 import { cn } from "@/lib/utils";
 import {
   activateWorkflow, dispatchWorkflow, getWorkflow, listWorkflows,
@@ -25,6 +27,8 @@ export default function WorkflowsPage() {
   const [acting, setActing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dispatchResult, setDispatchResult] = useState<WorkflowDispatchResult | null>(null);
+  const [tasks, setTasks] = useState<TaskManifest[]>([]);
+  const [showComposer, setShowComposer] = useState(false);
   const mounted = useRef(true);
   const listAbort = useRef<AbortController | null>(null);
   const detailAbort = useRef<AbortController | null>(null);
@@ -80,7 +84,7 @@ export default function WorkflowsPage() {
       <header className="border-b bg-background/85 px-5 py-5 backdrop-blur md:px-8">
         <div className="mx-auto flex max-w-[1600px] flex-wrap items-center justify-between gap-4">
           <div><p className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">Cross-project orchestration</p><h1 className="mt-1 text-2xl font-bold">Workflow Operations</h1></div>
-          <Button variant="outline" size="lg" onClick={() => void refreshAll()} disabled={loading || acting}><RefreshCw className={cn("size-4", loading && "animate-spin")} /> Refresh</Button>
+          <div className="flex gap-2"><Button variant="outline" size="lg" onClick={() => void refreshAll()} disabled={loading || acting}><RefreshCw className={cn("size-4", loading && "animate-spin")} /> Refresh</Button><Button size="lg" onClick={async () => { try { const loaded = await listTasks(); if (!mounted.current) return; setTasks(loaded); setShowComposer(true); } catch (err) { if (mounted.current) setError((err as Error).message); } }}><Plus /> New workflow</Button></div>
         </div>
       </header>
       <div className="mx-auto grid max-w-[1600px] gap-5 p-5 md:p-8 xl:grid-cols-[340px_minmax(0,1fr)]">
@@ -111,6 +115,7 @@ export default function WorkflowsPage() {
           </>}
         </section>
       </div>
+      {showComposer && <WorkflowComposer tasks={tasks} onClose={() => setShowComposer(false)} onCreated={(workflow, activationError) => { selectedRef.current = workflow.workflow_id; setSelectedId(workflow.workflow_id); setDetail(workflow); setDispatchResult(null); setShowComposer(false); if (activationError) setError(activationError); void loadList(false); }} />}
     </DeliveryShell>
   );
 }

@@ -27,6 +27,16 @@ export interface WorkflowDispatchResult {
   blockers: Array<{ step_id: string; reason: string }>;
 }
 
+export interface CreateWorkflowInput {
+  title: string;
+  description?: string;
+  steps: Array<{
+    key: string; title: string; project_id: string; task_id: string;
+    adapter: string; prompt: string; depends_on: string[];
+  }>;
+  created_by?: string;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${getApiBase()}${path}`, {
     ...init, headers: { "Content-Type": "application/json", ...init?.headers },
@@ -42,6 +52,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export function listWorkflows(signal?: AbortSignal): Promise<WorkflowSummary[]> {
   return request("/api/workflows?limit=200", { signal });
+}
+
+export function createWorkflow(input: CreateWorkflowInput): Promise<WorkflowManifest> {
+  return request("/api/workflows", { method: "POST", body: JSON.stringify(input) });
 }
 
 export function getWorkflow(workflowId: string, signal?: AbortSignal): Promise<WorkflowManifest> {

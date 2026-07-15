@@ -78,6 +78,11 @@ def test_cycle_task_integrity_and_versions(tmp_path):
         store.activate(workflow.workflow_id, WorkflowActionRequest(expected_version=9))
     with pytest.raises(ValueError, match="64 KiB"):
         CreateWorkflowRequest(title="Too large", steps=_request().steps, metadata={"blob": "x" * (64 * 1024)})
+    duplicate = _request().model_dump(mode="json")
+    duplicate["steps"][1]["task_id"] = "task_same"
+    duplicate["steps"][2]["task_id"] = "task_same"
+    with pytest.raises(ValueError, match="only one workflow step"):
+        CreateWorkflowRequest.model_validate(duplicate)
 
 
 def test_failure_and_cancel_do_not_mutate_referenced_tasks(tmp_path):

@@ -317,3 +317,24 @@ No implementation commit may be created until:
 - [x] Post-fix changed-file ESLint and production build passed; 14 pages generated.
 - [x] Claude final re-review: `APPROVE`; lifecycle guards, selection integrity, conflict recovery, types, DAG fallback, and accessibility verified.
 - [x] Commit the reviewed Phase 7c increment locally (the commit containing this snapshot).
+
+## 2026-07-15 — Workflow Composer (Phase 7d, active)
+
+- [x] Added typed workflow-create client contracts.
+- [x] Added an accessible modal composer using existing planned/running tasks as authoritative project references.
+- [x] Added multi-step task, agent, title, prompt, and dependency editing.
+- [x] Constrained dependencies to earlier rows so the client cannot construct cycles; backend validation remains authoritative.
+- [x] Removing a step clears dependent references and payload keys are regenerated deterministically at submit time.
+- [x] Added draft versus create-and-activate choice with explicit no-auto-dispatch disclosure.
+- [x] Changed-file frontend ESLint passed.
+- [x] Frontend production build/static generation passed; 14 pages generated.
+- [x] Claude review pass 1: `CHANGES_REQUESTED` (activation partial success, duplicate task assignment, submit re-entry, unmount guard, Escape propagation, dependency fallback).
+- [x] Preserved and opened created drafts after activation failure so retry never duplicates the workflow.
+- [x] Enforced one-task-per-step in both Composer choices and the authoritative backend workflow model.
+- [x] Added synchronous submit guard, mounted checks, modal Escape containment, and defensive dependency lookup.
+- [x] Post-fix workflow backend tests: 11 passed, 1 dependency deprecation warning.
+- [x] Post-fix changed-file ESLint and production build passed; 14 pages generated.
+- [x] Claude review pass 2: `APPROVE`; partial-success recovery, task uniqueness, submit guard, modal behavior, and dependency safety verified.
+- [x] Added Composer-local unmount guards for every post-await callback/state update; focused Claude re-review: `APPROVE`.
+- [x] Final changed-file ESLint and production build passed; 14 pages generated.
+- [x] Commit the reviewed Phase 7d increment locally (the commit containing this snapshot).

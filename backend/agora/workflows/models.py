@@ -54,6 +54,9 @@ class CreateWorkflowRequest(BaseModel):
         keys = [step.key for step in self.steps]
         if len(keys) != len(set(keys)):
             raise ValueError("workflow step keys must be unique")
+        task_ids = [step.task_id for step in self.steps if step.task_id is not None]
+        if len(task_ids) != len(set(task_ids)):
+            raise ValueError("a task_id may appear in only one workflow step")
         known = set(keys)
         for step in self.steps:
             if step.key in step.depends_on:
