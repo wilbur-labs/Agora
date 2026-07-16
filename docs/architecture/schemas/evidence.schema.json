@@ -1,0 +1,254 @@
+{
+  "$defs": {
+    "ArtifactLocation": {
+      "additionalProperties": false,
+      "properties": {
+        "commit_sha": {
+          "title": "Commit Sha",
+          "type": "string"
+        },
+        "path": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "ref": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "title": "Ref",
+          "type": "string"
+        },
+        "repository_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Repository Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repository_id",
+        "ref",
+        "commit_sha",
+        "path"
+      ],
+      "title": "ArtifactLocation",
+      "type": "object"
+    },
+    "ArtifactVersionRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Artifact Id",
+          "type": "string"
+        },
+        "kind": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Kind",
+          "type": "string"
+        },
+        "location": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactLocation"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "sha256": {
+          "title": "Sha256",
+          "type": "string"
+        },
+        "version": {
+          "minimum": 1,
+          "title": "Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "version",
+        "sha256",
+        "kind"
+      ],
+      "title": "ArtifactVersionRef",
+      "type": "object"
+    },
+    "EvidenceStatus": {
+      "enum": [
+        "passed",
+        "failed_product",
+        "failed_external",
+        "missing",
+        "stale"
+      ],
+      "title": "EvidenceStatus",
+      "type": "string"
+    },
+    "ProducerRef": {
+      "additionalProperties": false,
+      "properties": {
+        "run_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Run Id",
+          "type": "string"
+        },
+        "runtime": {
+          "$ref": "#/$defs/RuntimeName"
+        },
+        "stage_key": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Stage Key",
+          "type": "string"
+        }
+      },
+      "required": [
+        "runtime",
+        "run_id",
+        "stage_key"
+      ],
+      "title": "ProducerRef",
+      "type": "object"
+    },
+    "RuntimeName": {
+      "enum": [
+        "agora",
+        "codex",
+        "claude",
+        "kiro"
+      ],
+      "title": "RuntimeName",
+      "type": "string"
+    }
+  },
+  "$id": "https://agora.local/schemas/v1/evidence.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "artifact_versions": {
+      "items": {
+        "$ref": "#/$defs/ArtifactVersionRef"
+      },
+      "maxItems": 100,
+      "title": "Artifact Versions",
+      "type": "array"
+    },
+    "commit_sha": {
+      "title": "Commit Sha",
+      "type": "string"
+    },
+    "details": {
+      "additionalProperties": true,
+      "title": "Details",
+      "type": "object"
+    },
+    "evidence_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Evidence Id",
+      "type": "string"
+    },
+    "kind": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Kind",
+      "type": "string"
+    },
+    "observed_at": {
+      "format": "date-time",
+      "title": "Observed At",
+      "type": "string"
+    },
+    "producer": {
+      "$ref": "#/$defs/ProducerRef"
+    },
+    "project_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Project Id",
+      "type": "string"
+    },
+    "ref": {
+      "maxLength": 20000,
+      "minLength": 1,
+      "title": "Ref",
+      "type": "string"
+    },
+    "repository_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Repository Id",
+      "type": "string"
+    },
+    "requirement_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Requirement Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "default": "1.0",
+      "pattern": "^1\\.[0-9]+$",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "stage_key": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Stage Key",
+      "type": "string"
+    },
+    "status": {
+      "$ref": "#/$defs/EvidenceStatus"
+    },
+    "summary": {
+      "maxLength": 10000,
+      "minLength": 1,
+      "title": "Summary",
+      "type": "string"
+    },
+    "task_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Task Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "evidence_id",
+    "project_id",
+    "task_id",
+    "stage_key",
+    "producer",
+    "repository_id",
+    "ref",
+    "commit_sha",
+    "requirement_id",
+    "kind",
+    "status",
+    "summary",
+    "observed_at"
+  ],
+  "title": "Evidence",
+  "type": "object"
+}

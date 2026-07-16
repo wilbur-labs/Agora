@@ -1,0 +1,85 @@
+{
+  "identity": {
+    "project_id": "deal-analysis",
+    "repository_id": "deal-analysis-repository",
+    "canonical_ref": "refs/heads/main",
+    "commit_sha": "586ffcd9ae49b9602e1b899da88418c6b2daa22d",
+    "native_state_sha256": "56b0ddd7dbeccd53c207027f4bb7c421abb0e5dd57e44d7b8b5f62a1676caf7e",
+    "reconciliation_rule_version": "aidlc-1.0",
+    "methodology": "kiro-aidlc"
+  },
+  "methodology": "kiro-aidlc",
+  "declared_native_stage": "CONSTRUCTION - Build and Test Complete",
+  "verified_native_stage": "reconciliation_required",
+  "reconciliation_status": "reconciliation_required",
+  "conflicts": [
+    {
+      "code": "state_stale",
+      "severity": "blocker",
+      "detail": "Requirements changed after the native state was updated.",
+      "source_refs": [
+        "aidlc-docs/aidlc-state.md",
+        "aidlc-docs/inception/requirements/requirements.md"
+      ]
+    },
+    {
+      "code": "audit_stale",
+      "severity": "blocker",
+      "detail": "Requirements changed after the latest approval audit.",
+      "source_refs": [
+        "aidlc-docs/audit.md"
+      ]
+    },
+    {
+      "code": "internal_contradiction",
+      "severity": "blocker",
+      "detail": "Frontend verification is incomplete while overall build and test is declared complete.",
+      "source_refs": [
+        "aidlc-docs/aidlc-state.md"
+      ]
+    },
+    {
+      "code": "required_evidence_missing",
+      "severity": "blocker",
+      "detail": "Mandatory AI-DLC build and test artifacts are missing.",
+      "source_refs": []
+    },
+    {
+      "code": "approval_missing_or_stale",
+      "severity": "blocker",
+      "detail": "No final Build and Test approval exists for the active artifact versions.",
+      "source_refs": [
+        "aidlc-docs/audit.md"
+      ]
+    },
+    {
+      "code": "branch_divergence",
+      "severity": "warning",
+      "detail": "Other refs contain different native states.",
+      "source_refs": [
+        "refs/remotes/origin/Unit2_frontend"
+      ]
+    },
+    {
+      "code": "policy_reassessment_required",
+      "severity": "warning",
+      "detail": "Security policy must be reassessed for later authentication requirements.",
+      "source_refs": []
+    },
+    {
+      "code": "location_stale",
+      "severity": "warning",
+      "detail": "The native file contains an old absolute workspace path.",
+      "source_refs": [
+        "aidlc-docs/aidlc-state.md"
+      ]
+    }
+  ],
+  "expected_blockers": [
+    "approval_missing_or_stale",
+    "audit_stale",
+    "internal_contradiction",
+    "required_evidence_missing",
+    "state_stale"
+  ]
+}

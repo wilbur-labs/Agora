@@ -1,0 +1,307 @@
+{
+  "$defs": {
+    "ArtifactLocation": {
+      "additionalProperties": false,
+      "properties": {
+        "commit_sha": {
+          "title": "Commit Sha",
+          "type": "string"
+        },
+        "path": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "ref": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "title": "Ref",
+          "type": "string"
+        },
+        "repository_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Repository Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repository_id",
+        "ref",
+        "commit_sha",
+        "path"
+      ],
+      "title": "ArtifactLocation",
+      "type": "object"
+    },
+    "ArtifactVersionRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Artifact Id",
+          "type": "string"
+        },
+        "kind": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Kind",
+          "type": "string"
+        },
+        "location": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactLocation"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "sha256": {
+          "title": "Sha256",
+          "type": "string"
+        },
+        "version": {
+          "minimum": 1,
+          "title": "Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "version",
+        "sha256",
+        "kind"
+      ],
+      "title": "ArtifactVersionRef",
+      "type": "object"
+    },
+    "GateDecision": {
+      "enum": [
+        "pass",
+        "block"
+      ],
+      "title": "GateDecision",
+      "type": "string"
+    },
+    "GateRecommendation": {
+      "additionalProperties": false,
+      "properties": {
+        "decision": {
+          "$ref": "#/$defs/GateDecision"
+        },
+        "reasons": {
+          "items": {
+            "$ref": "#/$defs/NativeConflictCode"
+          },
+          "maxItems": 100,
+          "title": "Reasons",
+          "type": "array"
+        }
+      },
+      "required": [
+        "decision"
+      ],
+      "title": "GateRecommendation",
+      "type": "object"
+    },
+    "NativeConflict": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/NativeConflictCode"
+        },
+        "detail": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "title": "Detail",
+          "type": "string"
+        },
+        "severity": {
+          "$ref": "#/$defs/RequirementSeverity"
+        },
+        "source_refs": {
+          "items": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 100,
+          "title": "Source Refs",
+          "type": "array"
+        }
+      },
+      "required": [
+        "code",
+        "severity",
+        "detail"
+      ],
+      "title": "NativeConflict",
+      "type": "object"
+    },
+    "NativeConflictCode": {
+      "enum": [
+        "state_stale",
+        "audit_stale",
+        "internal_contradiction",
+        "required_evidence_missing",
+        "approval_missing_or_stale",
+        "branch_divergence",
+        "policy_reassessment_required",
+        "location_stale"
+      ],
+      "title": "NativeConflictCode",
+      "type": "string"
+    },
+    "ReconciliationStatus": {
+      "enum": [
+        "verified",
+        "conflicted",
+        "reconciliation_required"
+      ],
+      "title": "ReconciliationStatus",
+      "type": "string"
+    },
+    "RequirementSeverity": {
+      "enum": [
+        "blocker",
+        "warning"
+      ],
+      "title": "RequirementSeverity",
+      "type": "string"
+    }
+  },
+  "$id": "https://agora.local/schemas/v1/native-state-snapshot.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "approval_ids": {
+      "items": {
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+        "type": "string"
+      },
+      "maxItems": 1000,
+      "title": "Approval Ids",
+      "type": "array"
+    },
+    "artifacts": {
+      "items": {
+        "$ref": "#/$defs/ArtifactVersionRef"
+      },
+      "maxItems": 1000,
+      "title": "Artifacts",
+      "type": "array"
+    },
+    "canonical_ref": {
+      "maxLength": 20000,
+      "minLength": 1,
+      "title": "Canonical Ref",
+      "type": "string"
+    },
+    "commit_sha": {
+      "title": "Commit Sha",
+      "type": "string"
+    },
+    "conflicts": {
+      "items": {
+        "$ref": "#/$defs/NativeConflict"
+      },
+      "maxItems": 1000,
+      "title": "Conflicts",
+      "type": "array"
+    },
+    "content_sha256": {
+      "title": "Content Sha256",
+      "type": "string"
+    },
+    "declared_native_stage": {
+      "maxLength": 20000,
+      "minLength": 1,
+      "title": "Declared Native Stage",
+      "type": "string"
+    },
+    "gate_recommendation": {
+      "$ref": "#/$defs/GateRecommendation"
+    },
+    "methodology": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Methodology",
+      "type": "string"
+    },
+    "native_state_sha256": {
+      "title": "Native State Sha256",
+      "type": "string"
+    },
+    "project_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Project Id",
+      "type": "string"
+    },
+    "reconciliation_rule_version": {
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$",
+      "title": "Reconciliation Rule Version",
+      "type": "string"
+    },
+    "reconciliation_status": {
+      "$ref": "#/$defs/ReconciliationStatus"
+    },
+    "repository_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Repository Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "default": "1.0",
+      "pattern": "^1\\.[0-9]+$",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "snapshot_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Snapshot Id",
+      "type": "string"
+    },
+    "verified_native_stage": {
+      "maxLength": 20000,
+      "minLength": 1,
+      "title": "Verified Native Stage",
+      "type": "string"
+    }
+  },
+  "required": [
+    "content_sha256",
+    "snapshot_id",
+    "project_id",
+    "repository_id",
+    "canonical_ref",
+    "commit_sha",
+    "native_state_sha256",
+    "reconciliation_rule_version",
+    "methodology",
+    "declared_native_stage",
+    "verified_native_stage",
+    "reconciliation_status",
+    "gate_recommendation"
+  ],
+  "title": "NativeStateSnapshot",
+  "type": "object"
+}

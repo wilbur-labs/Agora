@@ -1,6 +1,22 @@
 # Agora Control Plane Development Progress
 
-Branch: `feat/control-plane-phase1`
+Current branch: `main`
+
+Current recovery baseline:
+
+- Last released commit: `fce21ad docs: add Ubuntu Docker acceptance`.
+- Active program: Agora Protocol & Domain Freeze.
+- Consensus source: Codex, Claude Code, and Kiro CLI accepted C1-C16 on
+  2026-07-16 with no blocking objections.
+- User-owned unrelated worktree change:
+  `frontend/pnpm-workspace.yaml`. Preserve it and exclude it from Agora
+  implementation commits unless the user explicitly assigns it.
+- Review gate remains mandatory: tests, independent Claude review, fixes,
+  rerun, then commit.
+- Current next safe action: implement and verify the v1 protocol models,
+  checked-in JSON Schemas, deterministic Gate evaluation, Approval
+  invalidation, M2 publication rules, Runner isolation, and real-history
+  regression fixtures.
 
 ## 2026-07-13
 
@@ -393,3 +409,81 @@ No implementation commit may be created until:
 - [x] Claude targeted clean-build-order re-review: `APPROVE`.
 - [ ] Actual Docker build and runtime acceptance remain pending on the user's Ubuntu Docker host.
 - [x] Commit the reviewed Ubuntu Docker acceptance follow-up locally (the commit containing this snapshot).
+
+## 2026-07-16 — Agora Protocol & Domain Freeze
+
+### Scope
+
+- [x] Recovered the final architecture and C1-C16 three-runtime consensus.
+- [x] Confirmed `main` is at `fce21ad` and matches `origin/main`.
+- [x] Identified and protected the pre-existing
+  `frontend/pnpm-workspace.yaml` change.
+- [x] Added the repository development/resume contract in `AGENTS.md`.
+- [x] Added the normative v1 freeze document in
+  `docs/architecture/protocol-domain-freeze-v1.md`.
+- [x] Add executable Context Pack, Handoff Pack, NativeStateSnapshot,
+  Artifact, Evidence, Approval, Run protocol, Gate, and Runner contracts.
+- [x] Generate and check in deterministic JSON Schemas.
+- [x] Add Task/Stage/Gate transition guards.
+- [x] Add deterministic Gate evaluation and next-safe-action derivation.
+- [x] Add Approval invalidation and downstream Stage/Gate stale propagation.
+- [x] Add M2 publication rules and Runner isolation/recovery validation.
+- [x] Add workflow-polish and deal_analysis regression fixtures.
+- [x] Run focused and full relevant backend verification.
+- [x] Obtain Kiro CLI protocol/AI-DLC review and independent Claude Code review;
+  address all actionable
+  findings.
+- [x] Commit the reviewed freeze increment locally (the commit containing this
+  snapshot).
+
+### Recovery note
+
+No product database migration or frontend navigation change is part of this
+increment. If interrupted, resume from the first unchecked item above after
+reconciling Git status.
+
+### Verification and review log
+
+- Focused protocol suite before external review: 18 passed.
+- Schema export check, Python compile, and `git diff --check`: passed.
+- Backend non-integration run: 293 passed, 18 deselected, 7 static-frontend
+  route failures because `frontend/out` was not present.
+- Comparable backend run excluding `tests/test_web_ui.py`: 256 passed,
+  18 deselected.
+- Kiro CLI review pass 1: `CHANGES_REQUESTED`.
+- Kiro findings being addressed: bounded Evidence details; explicit Gate stale
+  outputs; repository/ref/commit-scoped Evidence; methodology-scoped snapshot
+  identity; canonical snapshot ordering; explicit Windows-only Runner schema;
+  recovery marker/Attention plan; bounded repair decision.
+- Claude Code review pass 1 did not return a verdict because the external API
+  connection was refused. Retry after the Kiro fixes and automated rerun.
+- Kiro CLI review pass 2: `APPROVE`; no remaining high/medium protocol or
+  AI-DLC findings.
+- Claude Code smoke in safe mode: passed.
+- Claude Code core review: `CHANGES_REQUESTED`.
+- Claude findings being addressed: reject Windows drive/UNC paths in every
+  repository-relative path contract; require Approval and bound Artifacts to
+  share a commit; stale Approval on Artifact deletion or commit change; ignore
+  unrelated Evidence kinds; reject credential-reference traversal.
+- Focused protocol suite after both review fixes: 33 passed.
+- Final comparable backend suite excluding static-export-dependent
+  `tests/test_web_ui.py`: 271 passed, 18 deselected, 3 existing dependency/
+  Windows event-loop cleanup warnings.
+- Final Schema export check, Python compile, and `git diff --check`: passed.
+- Claude Code targeted re-review: `APPROVE`; no high/medium findings.
+- Kiro CLI targeted security/AI-DLC re-review: `APPROVE`; no high/medium
+  findings.
+- A timed-out Claude review process was detected and terminated; no lingering
+  Claude/Kiro review process or `.gitconfig.lock` remained before commit.
+
+### Next safe action
+
+Start the Control Plane v2 persistence increment with a migration-safe
+Artifact/Evidence/Approval/Gate registry:
+
+1. define SQLite tables and append-only events without rewriting existing 0.5
+   Task/Run data;
+2. persist canonical Artifact versions and active Evidence scope;
+3. persist Approval invalidation plans atomically with Gate stale and Stage
+   reopen events;
+4. add restart/idempotency tests before exposing new API routes.

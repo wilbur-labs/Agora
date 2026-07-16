@@ -1,0 +1,113 @@
+{
+  "$id": "https://agora.local/schemas/v1/runner-isolation-contract.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "allowed_workspace_roots": {
+      "items": {
+        "maxLength": 4000,
+        "minLength": 3,
+        "type": "string"
+      },
+      "maxItems": 50,
+      "minItems": 1,
+      "title": "Allowed Workspace Roots",
+      "type": "array"
+    },
+    "cache_dir": {
+      "maxLength": 4000,
+      "minLength": 3,
+      "title": "Cache Dir",
+      "type": "string"
+    },
+    "config_dir": {
+      "maxLength": 4000,
+      "minLength": 3,
+      "title": "Config Dir",
+      "type": "string"
+    },
+    "credential_refs": {
+      "items": {
+        "maxLength": 1000,
+        "minLength": 14,
+        "pattern": "^credential://[A-Za-z0-9][A-Za-z0-9_./:-]*$",
+        "type": "string"
+      },
+      "maxItems": 50,
+      "title": "Credential Refs",
+      "type": "array"
+    },
+    "home_dir": {
+      "maxLength": 4000,
+      "minLength": 3,
+      "title": "Home Dir",
+      "type": "string"
+    },
+    "platform": {
+      "const": "windows",
+      "default": "windows",
+      "title": "Platform",
+      "type": "string"
+    },
+    "recovery_marker": {
+      "maxLength": 4000,
+      "minLength": 3,
+      "title": "Recovery Marker",
+      "type": "string"
+    },
+    "run_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Run Id",
+      "type": "string"
+    },
+    "run_root": {
+      "maxLength": 4000,
+      "minLength": 3,
+      "title": "Run Root",
+      "type": "string"
+    },
+    "schema_version": {
+      "default": "1.0",
+      "pattern": "^1\\.[0-9]+$",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "serialized_global_operations": {
+      "items": {
+        "maxLength": 20000,
+        "minLength": 1,
+        "type": "string"
+      },
+      "maxItems": 50,
+      "title": "Serialized Global Operations",
+      "type": "array"
+    },
+    "temp_dir": {
+      "maxLength": 4000,
+      "minLength": 3,
+      "title": "Temp Dir",
+      "type": "string"
+    },
+    "workspace": {
+      "maxLength": 4000,
+      "minLength": 3,
+      "title": "Workspace",
+      "type": "string"
+    }
+  },
+  "required": [
+    "run_id",
+    "run_root",
+    "workspace",
+    "allowed_workspace_roots",
+    "home_dir",
+    "temp_dir",
+    "cache_dir",
+    "config_dir",
+    "recovery_marker"
+  ],
+  "title": "RunnerIsolationContract",
+  "type": "object"
+}

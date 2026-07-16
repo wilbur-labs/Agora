@@ -1,0 +1,96 @@
+{
+  "requirements": [
+    {
+      "schema_version": "1.0",
+      "requirement_id": "proxy-authentication",
+      "title": "Runtime can authenticate through the configured network path",
+      "repository_id": "workflow-polish-repository",
+      "ref": "refs/heads/main",
+      "commit_sha": "1111111111111111111111111111111111111111",
+      "evidence_kind": "runtime-authentication",
+      "severity": "blocker",
+      "priority": 10,
+      "failure_action": "Correct proxy credential inheritance and rerun the authenticated runtime check."
+    },
+    {
+      "schema_version": "1.0",
+      "requirement_id": "aidlc-quality-gates",
+      "title": "Real AI-DLC construction gates are verified",
+      "repository_id": "workflow-polish-repository",
+      "ref": "refs/heads/main",
+      "commit_sha": "1111111111111111111111111111111111111111",
+      "evidence_kind": "aidlc-quality-gate",
+      "severity": "blocker",
+      "priority": 20,
+      "failure_action": "Run and record the required AI-DLC construction quality gates."
+    },
+    {
+      "schema_version": "1.0",
+      "requirement_id": "launcher-mechanics",
+      "title": "The nested launcher reaches the runtime process",
+      "repository_id": "workflow-polish-repository",
+      "ref": "refs/heads/main",
+      "commit_sha": "1111111111111111111111111111111111111111",
+      "evidence_kind": "launcher-smoke",
+      "severity": "blocker",
+      "priority": 30,
+      "failure_action": "Repair the launcher chain before testing product semantics."
+    }
+  ],
+  "evidence": [
+    {
+      "schema_version": "1.0",
+      "evidence_id": "evidence-launcher",
+      "project_id": "workflow-polish",
+      "task_id": "task-verification",
+      "stage_key": "verification",
+      "producer": {
+        "runtime": "codex",
+        "run_id": "run-launcher-check",
+        "stage_key": "verification"
+      },
+      "repository_id": "workflow-polish-repository",
+      "ref": "refs/heads/main",
+      "commit_sha": "1111111111111111111111111111111111111111",
+      "requirement_id": "launcher-mechanics",
+      "kind": "launcher-smoke",
+      "status": "passed",
+      "artifact_versions": [],
+      "summary": "PowerShell to Git Bash to Codex process launch completed.",
+      "observed_at": "2026-07-16T06:00:00+00:00",
+      "details": {}
+    },
+    {
+      "schema_version": "1.0",
+      "evidence_id": "evidence-proxy",
+      "project_id": "workflow-polish",
+      "task_id": "task-verification",
+      "stage_key": "verification",
+      "producer": {
+        "runtime": "codex",
+        "run_id": "run-launcher-check",
+        "stage_key": "verification"
+      },
+      "repository_id": "workflow-polish-repository",
+      "ref": "refs/heads/main",
+      "commit_sha": "1111111111111111111111111111111111111111",
+      "requirement_id": "proxy-authentication",
+      "kind": "runtime-authentication",
+      "status": "failed_external",
+      "artifact_versions": [],
+      "summary": "Provider authentication failed with HTTP CONNECT 407.",
+      "observed_at": "2026-07-16T06:00:01+00:00",
+      "details": {
+        "external_error": "HTTP CONNECT 407"
+      }
+    }
+  ],
+  "expected": {
+    "decision": "block",
+    "blocker_requirement_ids": [
+      "proxy-authentication",
+      "aidlc-quality-gates"
+    ],
+    "next_safe_action": "Correct proxy credential inheritance and rerun the authenticated runtime check."
+  }
+}

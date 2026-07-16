@@ -1,0 +1,890 @@
+{
+  "$defs": {
+    "Artifact": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Artifact Id",
+          "type": "string"
+        },
+        "content": {
+          "anyOf": [
+            {
+              "maxLength": 2000000,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Content"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "kind": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Kind",
+          "type": "string"
+        },
+        "location": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactLocation"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "media_type": {
+          "default": "text/plain",
+          "maxLength": 255,
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "producer": {
+          "$ref": "#/$defs/ProducerRef"
+        },
+        "project_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Project Id",
+          "type": "string"
+        },
+        "schema_version": {
+          "default": "1.0",
+          "pattern": "^1\\.[0-9]+$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "sha256": {
+          "title": "Sha256",
+          "type": "string"
+        },
+        "stage_key": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Stage Key",
+          "type": "string"
+        },
+        "storage": {
+          "$ref": "#/$defs/ArtifactStorage"
+        },
+        "task_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Task Id",
+          "type": "string"
+        },
+        "version": {
+          "minimum": 1,
+          "title": "Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "project_id",
+        "task_id",
+        "stage_key",
+        "producer",
+        "kind",
+        "storage",
+        "version",
+        "sha256",
+        "created_at"
+      ],
+      "title": "Artifact",
+      "type": "object"
+    },
+    "ArtifactLocation": {
+      "additionalProperties": false,
+      "properties": {
+        "commit_sha": {
+          "title": "Commit Sha",
+          "type": "string"
+        },
+        "path": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "ref": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "title": "Ref",
+          "type": "string"
+        },
+        "repository_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Repository Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repository_id",
+        "ref",
+        "commit_sha",
+        "path"
+      ],
+      "title": "ArtifactLocation",
+      "type": "object"
+    },
+    "ArtifactStorage": {
+      "enum": [
+        "managed",
+        "referenced"
+      ],
+      "title": "ArtifactStorage",
+      "type": "string"
+    },
+    "ArtifactVersionRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Artifact Id",
+          "type": "string"
+        },
+        "kind": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Kind",
+          "type": "string"
+        },
+        "location": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactLocation"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "sha256": {
+          "title": "Sha256",
+          "type": "string"
+        },
+        "version": {
+          "minimum": 1,
+          "title": "Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "version",
+        "sha256",
+        "kind"
+      ],
+      "title": "ArtifactVersionRef",
+      "type": "object"
+    },
+    "Evidence": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_versions": {
+          "items": {
+            "$ref": "#/$defs/ArtifactVersionRef"
+          },
+          "maxItems": 100,
+          "title": "Artifact Versions",
+          "type": "array"
+        },
+        "commit_sha": {
+          "title": "Commit Sha",
+          "type": "string"
+        },
+        "details": {
+          "additionalProperties": true,
+          "title": "Details",
+          "type": "object"
+        },
+        "evidence_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Evidence Id",
+          "type": "string"
+        },
+        "kind": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Kind",
+          "type": "string"
+        },
+        "observed_at": {
+          "format": "date-time",
+          "title": "Observed At",
+          "type": "string"
+        },
+        "producer": {
+          "$ref": "#/$defs/ProducerRef"
+        },
+        "project_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Project Id",
+          "type": "string"
+        },
+        "ref": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "title": "Ref",
+          "type": "string"
+        },
+        "repository_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Repository Id",
+          "type": "string"
+        },
+        "requirement_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Requirement Id",
+          "type": "string"
+        },
+        "schema_version": {
+          "default": "1.0",
+          "pattern": "^1\\.[0-9]+$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "stage_key": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Stage Key",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/EvidenceStatus"
+        },
+        "summary": {
+          "maxLength": 10000,
+          "minLength": 1,
+          "title": "Summary",
+          "type": "string"
+        },
+        "task_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Task Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "evidence_id",
+        "project_id",
+        "task_id",
+        "stage_key",
+        "producer",
+        "repository_id",
+        "ref",
+        "commit_sha",
+        "requirement_id",
+        "kind",
+        "status",
+        "summary",
+        "observed_at"
+      ],
+      "title": "Evidence",
+      "type": "object"
+    },
+    "EvidenceStatus": {
+      "enum": [
+        "passed",
+        "failed_product",
+        "failed_external",
+        "missing",
+        "stale"
+      ],
+      "title": "EvidenceStatus",
+      "type": "string"
+    },
+    "GateDecision": {
+      "enum": [
+        "pass",
+        "block"
+      ],
+      "title": "GateDecision",
+      "type": "string"
+    },
+    "GateRecommendation": {
+      "additionalProperties": false,
+      "properties": {
+        "decision": {
+          "$ref": "#/$defs/GateDecision"
+        },
+        "reasons": {
+          "items": {
+            "$ref": "#/$defs/NativeConflictCode"
+          },
+          "maxItems": 100,
+          "title": "Reasons",
+          "type": "array"
+        }
+      },
+      "required": [
+        "decision"
+      ],
+      "title": "GateRecommendation",
+      "type": "object"
+    },
+    "MemoryCandidate": {
+      "additionalProperties": false,
+      "properties": {
+        "candidate_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Candidate Id",
+          "type": "string"
+        },
+        "content": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "title": "Content",
+          "type": "string"
+        },
+        "kind": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Kind",
+          "type": "string"
+        },
+        "source_refs": {
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+            "type": "string"
+          },
+          "maxItems": 100,
+          "minItems": 1,
+          "title": "Source Refs",
+          "type": "array"
+        },
+        "title": {
+          "maxLength": 300,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "candidate_id",
+        "kind",
+        "title",
+        "content",
+        "source_refs"
+      ],
+      "title": "MemoryCandidate",
+      "type": "object"
+    },
+    "NativeConflict": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/NativeConflictCode"
+        },
+        "detail": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "title": "Detail",
+          "type": "string"
+        },
+        "severity": {
+          "$ref": "#/$defs/RequirementSeverity"
+        },
+        "source_refs": {
+          "items": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 100,
+          "title": "Source Refs",
+          "type": "array"
+        }
+      },
+      "required": [
+        "code",
+        "severity",
+        "detail"
+      ],
+      "title": "NativeConflict",
+      "type": "object"
+    },
+    "NativeConflictCode": {
+      "enum": [
+        "state_stale",
+        "audit_stale",
+        "internal_contradiction",
+        "required_evidence_missing",
+        "approval_missing_or_stale",
+        "branch_divergence",
+        "policy_reassessment_required",
+        "location_stale"
+      ],
+      "title": "NativeConflictCode",
+      "type": "string"
+    },
+    "NativeStateSnapshot": {
+      "additionalProperties": false,
+      "properties": {
+        "approval_ids": {
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+            "type": "string"
+          },
+          "maxItems": 1000,
+          "title": "Approval Ids",
+          "type": "array"
+        },
+        "artifacts": {
+          "items": {
+            "$ref": "#/$defs/ArtifactVersionRef"
+          },
+          "maxItems": 1000,
+          "title": "Artifacts",
+          "type": "array"
+        },
+        "canonical_ref": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "title": "Canonical Ref",
+          "type": "string"
+        },
+        "commit_sha": {
+          "title": "Commit Sha",
+          "type": "string"
+        },
+        "conflicts": {
+          "items": {
+            "$ref": "#/$defs/NativeConflict"
+          },
+          "maxItems": 1000,
+          "title": "Conflicts",
+          "type": "array"
+        },
+        "content_sha256": {
+          "title": "Content Sha256",
+          "type": "string"
+        },
+        "declared_native_stage": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "title": "Declared Native Stage",
+          "type": "string"
+        },
+        "gate_recommendation": {
+          "$ref": "#/$defs/GateRecommendation"
+        },
+        "methodology": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Methodology",
+          "type": "string"
+        },
+        "native_state_sha256": {
+          "title": "Native State Sha256",
+          "type": "string"
+        },
+        "project_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Project Id",
+          "type": "string"
+        },
+        "reconciliation_rule_version": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$",
+          "title": "Reconciliation Rule Version",
+          "type": "string"
+        },
+        "reconciliation_status": {
+          "$ref": "#/$defs/ReconciliationStatus"
+        },
+        "repository_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Repository Id",
+          "type": "string"
+        },
+        "schema_version": {
+          "default": "1.0",
+          "pattern": "^1\\.[0-9]+$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "snapshot_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Snapshot Id",
+          "type": "string"
+        },
+        "verified_native_stage": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "title": "Verified Native Stage",
+          "type": "string"
+        }
+      },
+      "required": [
+        "content_sha256",
+        "snapshot_id",
+        "project_id",
+        "repository_id",
+        "canonical_ref",
+        "commit_sha",
+        "native_state_sha256",
+        "reconciliation_rule_version",
+        "methodology",
+        "declared_native_stage",
+        "verified_native_stage",
+        "reconciliation_status",
+        "gate_recommendation"
+      ],
+      "title": "NativeStateSnapshot",
+      "type": "object"
+    },
+    "ProducerRef": {
+      "additionalProperties": false,
+      "properties": {
+        "run_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Run Id",
+          "type": "string"
+        },
+        "runtime": {
+          "$ref": "#/$defs/RuntimeName"
+        },
+        "stage_key": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Stage Key",
+          "type": "string"
+        }
+      },
+      "required": [
+        "runtime",
+        "run_id",
+        "stage_key"
+      ],
+      "title": "ProducerRef",
+      "type": "object"
+    },
+    "ReconciliationStatus": {
+      "enum": [
+        "verified",
+        "conflicted",
+        "reconciliation_required"
+      ],
+      "title": "ReconciliationStatus",
+      "type": "string"
+    },
+    "RequiredOutput": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Kind",
+          "type": "string"
+        },
+        "output_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Output Id",
+          "type": "string"
+        },
+        "required": {
+          "default": true,
+          "title": "Required",
+          "type": "boolean"
+        },
+        "schema_uri": {
+          "anyOf": [
+            {
+              "maxLength": 2000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Schema Uri"
+        }
+      },
+      "required": [
+        "output_id",
+        "kind"
+      ],
+      "title": "RequiredOutput",
+      "type": "object"
+    },
+    "RequirementSeverity": {
+      "enum": [
+        "blocker",
+        "warning"
+      ],
+      "title": "RequirementSeverity",
+      "type": "string"
+    },
+    "RuntimeName": {
+      "enum": [
+        "agora",
+        "codex",
+        "claude",
+        "kiro"
+      ],
+      "title": "RuntimeName",
+      "type": "string"
+    },
+    "StageResult": {
+      "enum": [
+        "succeeded",
+        "blocked",
+        "failed",
+        "cancelled"
+      ],
+      "title": "StageResult",
+      "type": "string"
+    },
+    "UnresolvedQuestion": {
+      "additionalProperties": false,
+      "properties": {
+        "blocking": {
+          "default": true,
+          "title": "Blocking",
+          "type": "boolean"
+        },
+        "question": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "title": "Question",
+          "type": "string"
+        },
+        "question_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Question Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "question_id",
+        "question"
+      ],
+      "title": "UnresolvedQuestion",
+      "type": "object"
+    }
+  },
+  "$id": "https://agora.local/schemas/v1/handoff-pack.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "blocker_requirement_ids": {
+      "items": {
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+        "type": "string"
+      },
+      "maxItems": 100,
+      "title": "Blocker Requirement Ids",
+      "type": "array"
+    },
+    "content_sha256": {
+      "title": "Content Sha256",
+      "type": "string"
+    },
+    "evidence": {
+      "items": {
+        "$ref": "#/$defs/Evidence"
+      },
+      "maxItems": 500,
+      "title": "Evidence",
+      "type": "array"
+    },
+    "forbidden_constraints": {
+      "items": {
+        "maxLength": 20000,
+        "minLength": 1,
+        "type": "string"
+      },
+      "maxItems": 100,
+      "title": "Forbidden Constraints",
+      "type": "array"
+    },
+    "input_artifacts": {
+      "items": {
+        "$ref": "#/$defs/ArtifactVersionRef"
+      },
+      "maxItems": 200,
+      "title": "Input Artifacts",
+      "type": "array"
+    },
+    "memory_candidates": {
+      "items": {
+        "$ref": "#/$defs/MemoryCandidate"
+      },
+      "maxItems": 100,
+      "title": "Memory Candidates",
+      "type": "array"
+    },
+    "native_state_snapshot": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/NativeStateSnapshot"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "output_artifacts": {
+      "items": {
+        "$ref": "#/$defs/Artifact"
+      },
+      "maxItems": 200,
+      "title": "Output Artifacts",
+      "type": "array"
+    },
+    "pack_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Pack Id",
+      "type": "string"
+    },
+    "producer": {
+      "$ref": "#/$defs/ProducerRef"
+    },
+    "project_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Project Id",
+      "type": "string"
+    },
+    "required_outputs": {
+      "items": {
+        "$ref": "#/$defs/RequiredOutput"
+      },
+      "maxItems": 100,
+      "title": "Required Outputs",
+      "type": "array"
+    },
+    "run_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Run Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "default": "1.0",
+      "pattern": "^1\\.[0-9]+$",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "stage_key": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Stage Key",
+      "type": "string"
+    },
+    "stage_result": {
+      "$ref": "#/$defs/StageResult"
+    },
+    "suggested_next_action": {
+      "anyOf": [
+        {
+          "maxLength": 20000,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Suggested Next Action"
+    },
+    "task_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Task Id",
+      "type": "string"
+    },
+    "unresolved_questions": {
+      "items": {
+        "$ref": "#/$defs/UnresolvedQuestion"
+      },
+      "maxItems": 100,
+      "title": "Unresolved Questions",
+      "type": "array"
+    }
+  },
+  "required": [
+    "content_sha256",
+    "pack_id",
+    "project_id",
+    "task_id",
+    "stage_key",
+    "run_id",
+    "producer",
+    "stage_result"
+  ],
+  "title": "HandoffPack",
+  "type": "object"
+}
