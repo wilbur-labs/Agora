@@ -22,7 +22,7 @@ def _read_profile(name: str) -> dict:
     p = PROFILES_DIR / f"{name}.yaml"
     if not p.exists():
         raise HTTPException(404, f"Agent '{name}' not found")
-    return yaml.safe_load(p.read_text()) or {}
+    return yaml.safe_load(p.read_text(encoding="utf-8")) or {}
 
 
 @router.get("/agents")
@@ -35,7 +35,7 @@ async def list_agents():
 async def available_agents():
     agents = []
     for p in sorted(PROFILES_DIR.glob("*.yaml")):
-        data = yaml.safe_load(p.read_text()) or {}
+        data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
         name = data.get("name", p.stem)
         if name in _UTILITY:
             continue
@@ -69,7 +69,7 @@ async def update_agent(name: str, req: AgentUpdateRequest):
     if req.perspective is not None:
         data["perspective"] = req.perspective
     p = PROFILES_DIR / f"{name}.yaml"
-    p.write_text(yaml.dump(data, allow_unicode=True, default_flow_style=False))
+    p.write_text(yaml.dump(data, allow_unicode=True, default_flow_style=False), encoding="utf-8")
     reset_council()
     return {"status": "updated", "name": name}
 
@@ -86,7 +86,7 @@ async def create_agent(req: AgentCreateRequest):
     if p.exists():
         raise HTTPException(409, f"Agent '{req.name}' already exists")
     data = {"name": req.name, "role": req.role, "perspective": req.perspective}
-    p.write_text(yaml.dump(data, allow_unicode=True, default_flow_style=False))
+    p.write_text(yaml.dump(data, allow_unicode=True, default_flow_style=False), encoding="utf-8")
     return {"status": "created", "name": req.name}
 
 

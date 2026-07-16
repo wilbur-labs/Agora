@@ -40,7 +40,7 @@ async def get_memory():
 async def get_profile():
     from agora.api._state import USER_PROFILE_PATH
     if USER_PROFILE_PATH and USER_PROFILE_PATH.exists():
-        data = yaml.safe_load(USER_PROFILE_PATH.read_text()) or {}
+        data = yaml.safe_load(USER_PROFILE_PATH.read_text(encoding="utf-8")) or {}
         return {"profile": data}
     return {"profile": {}}
 

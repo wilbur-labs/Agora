@@ -31,6 +31,15 @@ class TestConfig:
             os.unlink(path)
             reset_config()
 
+    def test_loads_utf8_yaml(self, tmp_path):
+        path = tmp_path / "config.yaml"
+        path.write_text('display_name: "交付控制面 🚦"\n', encoding="utf-8")
+        reset_config()
+        try:
+            assert get_config(path)["display_name"] == "交付控制面 🚦"
+        finally:
+            reset_config()
+
     def test_reset_config(self):
         reset_config()
         cfg1 = get_config()

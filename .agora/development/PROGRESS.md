@@ -358,3 +358,24 @@ No implementation commit may be created until:
 - [x] Added string-backed integer validation, accessible inline guidance, and explicit active-only automatic-dispatch copy.
 - [x] Claude frontend final re-review: `APPROVE`; UX and backend contract consistency verified.
 - [x] Commit the reviewed Phase 8a increment locally (the commit containing this snapshot).
+
+## 2026-07-15 — Agora 0.5 Release Closure (Phase 8b, active)
+
+- [x] Standardized Agora-owned configuration, profile, agent, skill, memory, and file-tool text I/O on explicit UTF-8.
+- [x] Corrected cross-platform test assumptions for native paths, shell commands, Python 3.13 event loops, and network-test classification.
+- [x] Full non-integration backend suite on Windows: 281 passed, 18 deselected, 3 dependency/runtime cleanup warnings.
+- [x] Python package compile check passed.
+- [x] Full frontend ESLint passed with zero errors (12 pre-existing non-blocking warnings after cleanup).
+- [x] Frontend production build and TypeScript validation passed; 14 pages generated.
+- [x] Authenticated Codex smoke: `AGORA_CODEX_OK` using Codex CLI 0.144.1.
+- [x] Authenticated Kiro smoke: `AGORA_KIRO_OK` using Kiro CLI 2.12.2 (0.05 credits).
+- [x] Claude CLI 2.1.210 reached the provider session limit; retry after the reported 20:40 JST reset window. This is an external account availability result, not an Agora failure.
+- [x] Docker acceptance unavailable because Docker CLI is not installed on this machine; local uv/Next acceptance is complete.
+- [x] Prepared the 0.5.0 changelog, synchronized backend/frontend/uv-lock versions, and added release operations documentation.
+- [x] Updated English, Chinese, and Japanese project summaries and roadmaps with the Delivery Control Plane capabilities.
+- [x] Claude final release review pass 1: `CHANGES_REQUESTED` (locale-decoded file reads and an artifact-panel reopen regression).
+- [x] Fixed UTF-8 read paths for tools, artifact previews, and configuration; synchronized API/health versions; preserved explicit artifact-panel close behavior.
+- [x] Added UTF-8 round-trip, artifact preview, configuration, and API-version regression coverage.
+- [x] Reran the targeted backend suite (101 passed), full non-integration suite (281 passed), compile check, full ESLint, and production build.
+- [x] Claude targeted release re-review: `APPROVE`; both blockers resolved with no remaining high/medium findings.
+- [x] Commit the reviewed Phase 8b release closure locally (the commit containing this snapshot).

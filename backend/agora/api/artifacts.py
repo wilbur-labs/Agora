@@ -62,7 +62,7 @@ async def get_artifact(path: str, download: bool = False):
         raise HTTPException(413, "File too large for preview")
 
     try:
-        content = p.read_text(errors="replace")
+        content = p.read_text(encoding="utf-8", errors="replace")
         return PlainTextResponse(content)
     except Exception:
         return FileResponse(str(p), filename=p.name)

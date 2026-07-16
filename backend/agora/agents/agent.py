@@ -18,7 +18,7 @@ class Agent:
         self.model_name = model_name
 
         path = PROFILES_DIR / profile
-        data = yaml.safe_load(path.read_text())
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
         self.role: str = data.get("role", name)
         self.perspective: str = data.get("perspective", "")
 

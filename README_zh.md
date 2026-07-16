@@ -20,6 +20,7 @@
 - ⚙️ **完全可定制** — 用 YAML 定义你自己的智能体、提示词和模型。
 - 🔌 **模型无关** — OpenAI、Azure OpenAI、Claude CLI、Gemini CLI、Kiro CLI 及 OpenAI 兼容 API。
 - 🐳 **自托管** — Docker 一键部署，数据完全掌控。
+- 🚦 **交付控制平面** — 为 Codex、Claude Code 和 Kiro CLI 统一管理要件、项目、隔离工作区、运行、人工介入和跨项目工作流 DAG。
 
 ## Agora 与其他工具对比
 
@@ -155,6 +156,9 @@ make test-all
 - [x] 多模型后端
 - [x] Web UI
 - [x] 人机协作确认
+- [x] 多项目 AI 交付控制平面
+- [x] 跨项目工作流 DAG 与可选自动调度
+- [x] Codex、Claude Code 与 Kiro CLI 执行路由
 - [ ] MCP 服务器扩展
 - [ ] 技能市场
 

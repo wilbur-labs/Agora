@@ -23,11 +23,11 @@ class MemoryStore:
         p = self._path(target)
         if not p.exists():
             return []
-        text = p.read_text().strip()
+        text = p.read_text(encoding="utf-8").strip()
         return [e.strip() for e in text.split("§") if e.strip()] if text else []
 
     def _write(self, target: str, entries: list[str]):
-        self._path(target).write_text(SEP.join(entries) + "\n" if entries else "")
+        self._path(target).write_text(SEP.join(entries) + "\n" if entries else "", encoding="utf-8")
 
     def _limit(self, target: str) -> int:
         return self.memory_limit if target == "memory" else self.user_limit

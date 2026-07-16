@@ -40,7 +40,7 @@ def _load_user_profile() -> str:
     USER_PROFILE_PATH = _get_data_dir() / "user_profile.yaml"
     if not USER_PROFILE_PATH.exists():
         return ""
-    data = yaml.safe_load(USER_PROFILE_PATH.read_text()) or {}
+    data = yaml.safe_load(USER_PROFILE_PATH.read_text(encoding="utf-8")) or {}
     return "\n".join(f"{k}: {v}" for k, v in data.items() if v)
 
 
@@ -48,9 +48,9 @@ def save_user_profile(key: str, value: str):
     path = _get_data_dir() / "user_profile.yaml"
     data = {}
     if path.exists():
-        data = yaml.safe_load(path.read_text()) or {}
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     data[key] = value
-    path.write_text(yaml.dump(data, allow_unicode=True, default_flow_style=False))
+    path.write_text(yaml.dump(data, allow_unicode=True, default_flow_style=False), encoding="utf-8")
 
 
 def _init_shared() -> dict:

@@ -64,7 +64,7 @@ class SkillStore:
                 continue
             for f in sorted(d.glob("*.yaml")):
                 try:
-                    skills.append(Skill.from_yaml(f.read_text(), source=f))
+                    skills.append(Skill.from_yaml(f.read_text(encoding="utf-8"), source=f))
                 except Exception:
                     continue
         return skills
@@ -155,13 +155,13 @@ class SkillStore:
         # If skill already exists, merge counts
         if path.exists():
             try:
-                existing = Skill.from_yaml(path.read_text(), source=path)
+                existing = Skill.from_yaml(path.read_text(encoding="utf-8"), source=path)
                 skill.success_count += existing.success_count
                 skill.fail_count += existing.fail_count
             except Exception:
                 pass
 
-        path.write_text(skill.to_yaml())
+        path.write_text(skill.to_yaml(), encoding="utf-8")
         self._skills = None
         return path
 
@@ -173,7 +173,7 @@ class SkillStore:
                     skill.success_count += 1
                 else:
                     skill.fail_count += 1
-                skill.source_file.write_text(skill.to_yaml())
+                skill.source_file.write_text(skill.to_yaml(), encoding="utf-8")
                 return
 
     def get_injection_text(self, query: str) -> str:

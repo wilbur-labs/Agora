@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from agora import __version__
 from agora.api.chat import router as chat_router
 from agora.api.agents import router as agents_router
 from agora.api.sessions import router as sessions_router
@@ -32,7 +33,7 @@ async def lifespan(_: FastAPI):
         await get_execution_dispatcher().shutdown()
 
 
-app = FastAPI(title="Agora", version="0.1.0", description="Multi-perspective AI council", lifespan=lifespan)
+app = FastAPI(title="Agora", version=__version__, description="Multi-perspective AI council", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 app.include_router(chat_router, prefix="/api")
 app.include_router(agents_router, prefix="/api")
@@ -52,7 +53,7 @@ _frontend_out = Path(__file__).resolve().parent.parent.parent.parent / "frontend
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "0.1.0"}
+    return {"status": "ok", "version": __version__}
 
 
 if _frontend_out.is_dir():

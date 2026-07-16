@@ -26,6 +26,26 @@ async def test_read_file_success():
 
 
 @pytest.mark.asyncio
+async def test_utf8_file_tools_round_trip(tmp_path):
+    path = tmp_path / "多语言.txt"
+    original = "Agora 交付控制面 — 日本語 🚦"
+
+    written = await WriteFile().execute(path=str(path), content=original)
+    assert written.success is True
+    assert path.read_bytes() == original.encode("utf-8")
+
+    read = await ReadFile().execute(path=str(path))
+    assert read.success is True
+    assert read.output == original
+
+    patched = await PatchFile().execute(
+        path=str(path), old_str="日本語", new_str="中文",
+    )
+    assert patched.success is True
+    assert path.read_text(encoding="utf-8") == "Agora 交付控制面 — 中文 🚦"
+
+
+@pytest.mark.asyncio
 async def test_read_file_not_found():
     r = await ReadFile().execute(path="/nonexistent_file_xyz_123")
     assert r.success is False
@@ -161,20 +181,24 @@ async def test_shell_failure():
 
 @pytest.mark.asyncio
 async def test_shell_cwd():
-    r = await Shell().execute(command="pwd", cwd="/tmp")
-    assert r.success is True
-    assert "/tmp" in r.output
+    import sys
+    import tempfile
+    with tempfile.TemporaryDirectory() as cwd:
+        r = await Shell().execute(command=f'"{sys.executable}" -c "import os; print(os.getcwd())"', cwd=cwd)
+        assert r.success is True
+        assert os.path.normcase(os.path.realpath(cwd)) == os.path.normcase(os.path.realpath(r.output.strip()))
 
 
 @pytest.mark.asyncio
 async def test_shell_timeout():
+    import sys
     shell = Shell()
     # Monkey-patch timeout for test
     import agora.tools.shell as mod
     old = mod._TIMEOUT
     mod._TIMEOUT = 1
     try:
-        r = await shell.execute(command="sleep 10")
+        r = await shell.execute(command=f'"{sys.executable}" -c "import time; time.sleep(10)"')
         assert r.success is False
         assert "timed out" in r.error.lower()
     finally:

@@ -3,6 +3,7 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
+from agora import __version__
 from agora.api.app import app
 
 client = TestClient(app)
@@ -15,6 +16,8 @@ class TestFrontend:
         r = client.get("/health")
         assert r.status_code == 200
         assert r.json()["status"] == "ok"
+        assert r.json()["version"] == __version__
+        assert app.version == __version__
 
     def test_index_page(self):
         r = client.get("/")

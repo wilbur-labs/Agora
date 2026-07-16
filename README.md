@@ -16,6 +16,7 @@ Open-source AI system where multiple agents debate your problem from different p
 - ⚙️ **Customizable** — Define your own agents, prompts, and models in YAML.
 - 🔌 **Model agnostic** — OpenAI, Azure OpenAI, Claude CLI, Gemini CLI, Kiro CLI, and OpenAI-compatible APIs.
 - 🐳 **Self-hosted** — Run it with Docker and keep control of your data.
+- 🚦 **Delivery control plane** — Requirements, projects, isolated workspaces, runs, attention requests, and cross-project workflow DAGs for Codex, Claude Code, and Kiro CLI.
 
 ## Agora vs. other tools
 
@@ -209,6 +210,9 @@ make test-all
 - [x] Multiple model backends
 - [x] Web UI
 - [x] Human-in-the-loop confirmation
+- [x] Multi-project delivery control plane
+- [x] Cross-project workflow DAGs and opt-in supervision
+- [x] Codex, Claude Code, and Kiro CLI execution routing
 - [ ] MCP server extensions
 - [ ] Skill marketplace
 

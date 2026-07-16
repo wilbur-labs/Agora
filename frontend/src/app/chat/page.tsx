@@ -33,12 +33,18 @@ function exportMarkdown(messages: ChatMessage[]) {
 export default function ChatPage() {
   const { messages, streaming, pendingRoute, sessionId, artifacts, send, confirmRoute, confirmTool, stop, reset, feedback, executeItems, selectSession } = useChat();
   const bottomRef = useRef<HTMLDivElement>(null);
+  const previousArtifactCount = useRef(artifacts.length);
   const [shareUrl, setShareUrl] = useState<string | null>(null);
   const [artifactsOpen, setArtifactsOpen] = useState(false);
 
-  // Auto-open artifacts panel when first artifact is created
+  // Auto-open when a new artifact arrives, while preserving an explicit close.
   useEffect(() => {
-    if (artifacts.length > 0 && !artifactsOpen) setArtifactsOpen(true);
+    const hasNewArtifact = artifacts.length > previousArtifactCount.current;
+    previousArtifactCount.current = artifacts.length;
+    if (hasNewArtifact) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setArtifactsOpen(true);
+    }
   }, [artifacts.length]);
   const [autoApproveOn, setAutoApproveOn] = useState(false);
 

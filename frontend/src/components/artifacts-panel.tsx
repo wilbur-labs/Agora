@@ -127,17 +127,23 @@ export function ArtifactsPanel({ artifacts: artifactPaths, open, onClose }: Arti
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
+    // Clear stale API state when the authoritative artifact list becomes empty.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (artifactPaths.length === 0) { setItems([]); return; }
     fetchArtifacts().then(setItems).catch(() => {});
   }, [artifactPaths]);
 
   useEffect(() => {
     if (artifactPaths.length > 0 && !selected) {
+      // Select the first newly available artifact exactly once.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setSelected(artifactPaths[artifactPaths.length - 1]);
     }
   }, [artifactPaths, selected]);
 
   useEffect(() => {
+    // Reset the preview when the selection is cleared.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (!selected) { setContent(""); return; }
     setLoading(true);
     fetchArtifactContent(selected).then(setContent).catch(() => setContent("(failed to load)")).finally(() => setLoading(false));

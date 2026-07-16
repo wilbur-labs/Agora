@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
@@ -22,7 +23,6 @@ export default function SkillsPage() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    setLoading(true);
     fetch(`${API}/api/skills`).then((r) => r.json()).then((d) => setSkills(d.skills)).catch((e) => setError(e.message)).finally(() => setLoading(false));
   }, []);
 
@@ -35,7 +35,7 @@ export default function SkillsPage() {
       <aside className="w-72 min-w-72 border-r border-border bg-sidebar flex flex-col h-full">
         <div className="p-5 pb-2">
           <div className="flex items-center gap-2.5">
-            <a href="/" className="text-2xl">🏛</a>
+            <Link href="/" className="text-2xl">🏛</Link>
             <h1 className="text-lg font-bold">Skills</h1>
           </div>
           <input

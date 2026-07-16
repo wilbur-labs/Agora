@@ -2,6 +2,23 @@
 
 All notable changes to Agora are documented here. This project follows [Semantic Versioning](https://semver.org/).
 
+## [0.5.0] — 2026-07-15
+
+### Added
+- Delivery Control Plane for requirements, tasks, project portfolios, isolated workspaces, runs, and human-attention requests.
+- Cross-project workflow DAGs with optimistic concurrency, durable events, dependency promotion, failure cleanup, and crash-safe run binding.
+- Opt-in workflow supervision with a per-workflow parallel-run limit; manual dispatch remains the default.
+- Execution adapters for Codex, Claude Code, and Kiro CLI, including truthful capability discovery and capture-only versus bidirectional approval semantics.
+- Codex app-server approval bridge, external bridge ingress, Run Center, Workflow Operations, and an accessible workflow composer.
+- Research artifact lifecycle and shared skill/memory foundations for multi-tool operation.
+
+### Changed
+- Standardized Agora-owned YAML, memory, skill, and file-tool text I/O on UTF-8 for Windows, Linux, and macOS consistency.
+- Moved local Python setup and commands to the reproducible `uv` workflow.
+
+### Security
+- Added workspace-root confinement, redaction at persistence boundaries, bounded metadata/output, idempotent bridge receipts, and audit events for lifecycle failures.
+
 ## [0.4.2] — 2026-04-22
 
 ### Fixed

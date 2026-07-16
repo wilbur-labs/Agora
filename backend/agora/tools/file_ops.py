@@ -36,7 +36,7 @@ class ReadFile(Tool):
             return ToolResult(False, "", f"File not found: {path}")
         if not p.is_file():
             return ToolResult(False, "", f"Not a file: {path}")
-        text = p.read_text(errors="replace")
+        text = p.read_text(encoding="utf-8", errors="replace")
         if len(text) > _MAX_READ:
             text = text[:_MAX_READ] + f"\n... [truncated, {len(text)} chars total]"
         return ToolResult(True, text)
@@ -60,7 +60,7 @@ class WriteFile(Tool):
     async def execute(self, *, path: str, content: str, **_) -> ToolResult:
         p = _resolve(path, self._workspace)
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(content)
+        p.write_text(content, encoding="utf-8")
         from agora.api.artifacts import track_artifact
         track_artifact(str(p))
         return ToolResult(True, f"Wrote {len(content)} chars to {p}")
@@ -86,13 +86,13 @@ class PatchFile(Tool):
         p = _resolve(path, self._workspace)
         if not p.is_file():
             return ToolResult(False, "", f"File not found: {path}")
-        text = p.read_text()
+        text = p.read_text(encoding="utf-8")
         count = text.count(old_str)
         if count == 0:
             return ToolResult(False, "", "old_str not found in file")
         if count > 1:
             return ToolResult(False, "", f"old_str matches {count} times, must be unique")
-        p.write_text(text.replace(old_str, new_str, 1))
+        p.write_text(text.replace(old_str, new_str, 1), encoding="utf-8")
         from agora.api.artifacts import track_artifact
         track_artifact(str(p))
         return ToolResult(True, f"Patched {p}")

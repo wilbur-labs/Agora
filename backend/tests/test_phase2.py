@@ -2,6 +2,7 @@
 import asyncio
 import tempfile
 import os
+from pathlib import Path
 
 import pytest
 
@@ -12,7 +13,7 @@ from agora.skills.store import SkillStore
 from agora.tools.registry import ToolRegistry
 from agora.tools.web import WebSearch, WebFetch
 from agora.tools.file_ops import WriteFile, ReadFile, PatchFile, ListDir, _resolve
-from agora.api.artifacts import track_artifact, get_artifacts, clear_artifacts
+from agora.api.artifacts import clear_artifacts, get_artifact, get_artifacts, track_artifact
 from tests.conftest import MockProvider
 
 
@@ -84,11 +85,11 @@ class TestParseRouteWithAgents:
 class TestWorkspaceResolve:
     def test_relative_with_workspace(self):
         p = _resolve("test.py", "/home/user/workspace")
-        assert str(p) == "/home/user/workspace/test.py"
+        assert p == Path("/home/user/workspace/test.py")
 
     def test_absolute_ignores_workspace(self):
         p = _resolve("/tmp/test.py", "/home/user/workspace")
-        assert str(p) == "/tmp/test.py"
+        assert p == Path("/tmp/test.py")
 
     def test_no_workspace(self):
         p = _resolve("test.py", "")
@@ -96,7 +97,7 @@ class TestWorkspaceResolve:
 
     def test_nested_relative(self):
         p = _resolve("src/main.py", "/workspace")
-        assert str(p) == "/workspace/src/main.py"
+        assert p == Path("/workspace/src/main.py")
 
 
 # ── File ops with workspace ──
@@ -155,6 +156,15 @@ class TestFileOpsWorkspace:
 # ── Artifacts tracking ──
 
 class TestArtifacts:
+    @pytest.mark.asyncio
+    async def test_utf8_preview(self, tmp_path):
+        path = tmp_path / "结果.txt"
+        content = "跨项目工作流 — 日本語 🚦"
+        path.write_text(content, encoding="utf-8")
+
+        response = await get_artifact(str(path))
+        assert response.body.decode("utf-8") == content
+
     def test_track_and_list(self):
         clear_artifacts()
         track_artifact("/tmp/test1.py")
@@ -176,6 +186,7 @@ class TestArtifacts:
 
 # ── Web tools ──
 
+@pytest.mark.integration
 class TestWebTools:
     @pytest.mark.asyncio
     async def test_web_search_returns_results(self):

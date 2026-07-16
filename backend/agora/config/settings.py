@@ -14,7 +14,7 @@ _backend = Path(__file__).resolve().parent.parent.parent       # /home/user/Agor
 for _dir in [_root, _backend, Path.cwd()]:
     _env_path = _dir / ".env"
     if _env_path.exists():
-        for line in _env_path.read_text().splitlines():
+        for line in _env_path.read_text(encoding="utf-8").splitlines():
             line = line.strip()
             if line and not line.startswith("#") and "=" in line:
                 k, _, v = line.partition("=")
@@ -50,7 +50,7 @@ def get_config(path: str | Path | None = None) -> dict:
             p = _root / "config.yaml"
     if _config is not None and _config_path == p:
         return _config
-    with open(p) as f:
+    with p.open(encoding="utf-8") as f:
         _config = _resolve_env(yaml.safe_load(f) or {})
     _config_path = p
     return _config

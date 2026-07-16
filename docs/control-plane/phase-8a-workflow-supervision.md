@@ -1,6 +1,6 @@
 # Phase 8a — Opt-in Workflow Supervision
 
-Status: implementation active.
+Status: implemented.
 
 Workflows can now opt into background dispatch with `auto_dispatch`. The default remains manual, preserving explicit operator control for existing and newly created workflows unless the composer enables automation.
 

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Separator } from "@/components/ui/separator";
@@ -157,7 +158,7 @@ export default function AgentsPage() {
       <aside className="w-64 min-w-64 border-r border-border bg-sidebar flex flex-col h-full">
         <div className="p-5 pb-2">
           <div className="flex items-center gap-2.5">
-            <a href="/" className="text-2xl">🏛</a>
+            <Link href="/" className="text-2xl">🏛</Link>
             <h1 className="text-lg font-bold">Agents</h1>
           </div>
         </div>

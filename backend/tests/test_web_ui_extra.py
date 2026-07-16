@@ -124,10 +124,10 @@ class TestSandboxConfig:
 # === Chat API helper function ===
 
 class TestChatHelpers:
-    def test_agent_events_generator(self):
+    @pytest.mark.asyncio
+    async def test_agent_events_generator(self):
         """Test _agent_events helper converts tuples to SSE dicts."""
         from agora.api.chat import _agent_events
-        import asyncio
 
         async def mock_stream():
             yield ("scout", "Researcher", "hello ")
@@ -140,16 +140,16 @@ class TestChatHelpers:
                 events.append(e)
             return events
 
-        events = asyncio.get_event_loop().run_until_complete(collect())
+        events = await collect()
         assert len(events) == 3
         assert events[0]["event"] == "token"
         assert json.loads(events[0]["data"])["content"] == "hello "
         assert events[2]["event"] == "agent_done"
 
-    def test_agent_events_executor_tool(self):
+    @pytest.mark.asyncio
+    async def test_agent_events_executor_tool(self):
         """Test executor tool events are properly mapped."""
         from agora.api.chat import _agent_events
-        import asyncio
 
         async def mock_stream():
             yield ("executor", "tool_call", "write_file(path='/tmp/t.txt')")
@@ -163,7 +163,7 @@ class TestChatHelpers:
                 events.append(e)
             return events
 
-        events = asyncio.get_event_loop().run_until_complete(collect())
+        events = await collect()
         assert events[0]["event"] == "tool_call"
         assert events[1]["event"] == "tool_result"
         assert events[2]["event"] == "token"

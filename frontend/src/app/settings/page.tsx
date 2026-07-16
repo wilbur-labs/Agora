@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Separator } from "@/components/ui/separator";
@@ -19,7 +20,6 @@ export default function SettingsPage() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    setLoading(true);
     Promise.all([
       fetch(`${API}/api/memory`).then((r) => r.json()).then((d) => setMemory(d.memory || "(empty)")),
       fetch(`${API}/api/profile`).then((r) => r.json()).then((d) => setProfile(d.profile || {})),
@@ -46,7 +46,7 @@ export default function SettingsPage() {
   return (
     <div className="min-h-screen p-8 max-w-2xl mx-auto space-y-8">
       <div className="flex items-center gap-3">
-        <a href="/" className="text-2xl">🏛</a>
+        <Link href="/" className="text-2xl">🏛</Link>
         <h1 className="text-2xl font-bold">Settings</h1>
       </div>
 
