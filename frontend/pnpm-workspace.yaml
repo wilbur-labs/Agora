@@ -1,3 +1,1 @@
-ignoredBuiltDependencies:
-  - sharp
-  - unrs-resolver
+dangerouslyAllowAllBuilds: true

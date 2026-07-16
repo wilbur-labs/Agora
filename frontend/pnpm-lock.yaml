@@ -3,6 +3,10 @@ lockfileVersion: '9.0'
 settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
+  onlyBuiltDependencies:
+    - msw
+    - sharp
+    - unrs-resolver
 
 importers:
 
