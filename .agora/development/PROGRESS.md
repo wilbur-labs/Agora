@@ -487,3 +487,74 @@ Artifact/Evidence/Approval/Gate registry:
 3. persist Approval invalidation plans atomically with Gate stale and Stage
    reopen events;
 4. add restart/idempotency tests before exposing new API routes.
+
+## 2026-07-16 — Control Plane v2 persistence
+
+### Scope
+
+- [x] Added an additive SQLite registry for Stages, Gates, Gate requirements,
+  active Evidence, immutable Artifact versions, immutable Approvals, audit
+  events, and replayable operation receipts.
+- [x] Preserved all existing Task, Run, Requirement, Attention, and Workflow
+  tables and rows; the legacy-schema regression verifies their SQL and data are
+  unchanged.
+- [x] Bound Artifact, Evidence, and Approval registration to an existing Task,
+  project, and configured Stage/Gate.
+- [x] Enforced Evidence-to-Gate Task isolation in both the store and a composite
+  SQLite foreign key.
+- [x] Made Stage plus Gate configuration atomic and restart-idempotent.
+- [x] Persisted legal Gate evaluation transitions through `evaluating`, with
+  optimistic versions and append-only audit events.
+- [x] Made Approval stale, Gate stale, Stage reopen/reconciliation propagation,
+  Task events, and operation receipts one atomic transaction.
+- [x] Added legal invalidation paths for pending, blocked, needs-review,
+  running, reconciliation-required, completed, and failed Stages.
+- [x] Added migration, rollback, restart replay, conflicting replay,
+  concurrency, cross-task, cross-project, and invalid operation-key tests.
+- [x] Documented the persistence boundary and deferred API/capacity work in
+  `docs/architecture/control-plane-v2-persistence.md`.
+- [x] Obtained independent Kiro CLI and Claude Code reviews, fixed all blocking
+  findings, and received `APPROVE` from both re-reviews.
+- [x] Commit the reviewed persistence increment locally (the commit containing
+  this snapshot).
+
+### Verification and review log
+
+- Focused registry suite before review fixes: 10 passed.
+- Kiro CLI review pass 1: `CHANGES_REQUESTED` for defensive row-count checks,
+  Stage invalidation policy/tests, and adversarial replay coverage.
+- Claude Code review pass 1: `CHANGES_REQUESTED` for cross-task Evidence
+  activation, Gate state-machine divergence, and non-atomic Stage/Gate
+  configuration.
+- Fixed the Evidence isolation vulnerability at both application and database
+  layers.
+- Made Gate evaluation follow
+  `pending|blocked|stale -> evaluating -> passed|blocked`.
+- Folded Stage creation and Gate configuration into one transaction.
+- Added version/status guards to Approval, Gate, and Stage invalidation writes.
+- Expanded downstream invalidation to legal frozen Stage transition paths.
+- Added rollback, cross-task, cross-project, operation-key, and state-path
+  regressions.
+- Final registry plus frozen-protocol suite: 49 passed.
+- Final comparable backend suite excluding static-export-dependent
+  `tests/test_web_ui.py`: 287 passed, 18 deselected, 3 existing dependency/
+  Windows event-loop cleanup warnings.
+- Protocol Schema export check, Python compile, and whitespace diff check:
+  passed.
+- Kiro CLI targeted re-review: `APPROVE`; no blocking high/medium findings.
+- Claude Code targeted re-review: `APPROVE`; no high correctness findings.
+- Claude noted that a repository/ref-wide invalidation can hold SQLite's writer
+  lock as affected Task count grows. The architecture document now requires a
+  load-tested operational bound or resumable atomic batching protocol before
+  large shared-repository deployment.
+- Completed/timeout-returned Claude child processes were terminated; no
+  lingering Claude/Kiro process or `.gitconfig.lock` remained before commit.
+
+### Next safe action
+
+Expose the reviewed registry through a bounded Control Plane API increment:
+
+1. define authorization and project/task scope checks at the route boundary;
+2. add create/read/evaluate/invalidate request limits and conflict mappings;
+3. offload synchronous SQLite work from the FastAPI event loop;
+4. add API acceptance tests without changing the frozen persistence semantics.
