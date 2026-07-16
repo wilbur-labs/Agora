@@ -45,6 +45,8 @@ cp .env.example .env  # 编辑 .env，添加你的 API key
 docker compose up -d
 ```
 
+Ubuntu Docker 发布验收步骤见 [Agora 0.5 运维与验收](docs/control-plane/release-0.5-operations.md#ubuntu-docker-acceptance)。
+
 ### 本地开发
 
 ```bash

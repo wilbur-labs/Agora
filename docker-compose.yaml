@@ -8,11 +8,18 @@ services:
       - .env
     volumes:
       - ./config.yaml:/app/config.yaml:ro
-      - ./skills:/app/skills
+      - ./skills:/app/backend/skills
       - ./data:/app/backend/data
+      - ./.agora:/app/.agora
       - ./agora-workspace:/root/agora-workspace
       - /var/run/docker.sock:/var/run/docker.sock
     command: ["uvicorn", "agora.api.app:app", "--host", "0.0.0.0", "--port", "8000"]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
     restart: unless-stopped
 
   agora-cli:
@@ -21,8 +28,10 @@ services:
       - .env
     volumes:
       - ./config.yaml:/app/config.yaml:ro
-      - ./skills:/app/skills
+      - ./skills:/app/backend/skills
       - ./data:/app/backend/data
+      - ./.agora:/app/.agora
+      - ./agora-workspace:/root/agora-workspace
     command: ["python", "-m", "agora"]
     stdin_open: true
     tty: true

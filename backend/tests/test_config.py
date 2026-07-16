@@ -1,8 +1,10 @@
 """Tests for config loading and model registry."""
 import os
 import tempfile
+from pathlib import Path
 
 import pytest
+import yaml
 
 from agora.config.settings import get_config, reset_config
 from agora.models.registry import ModelRegistry, reset_registry
@@ -47,6 +49,27 @@ class TestConfig:
         cfg2 = get_config()
         # Should reload (not same object)
         assert cfg1 is not cfg2
+
+    def test_docker_release_layout(self):
+        root = Path(__file__).resolve().parents[2]
+        compose = yaml.safe_load((root / "docker-compose.yaml").read_text(encoding="utf-8"))
+        api = compose["services"]["agora-api"]
+        cli = compose["services"]["agora-cli"]
+
+        expected = {
+            "./skills:/app/backend/skills",
+            "./data:/app/backend/data",
+            "./.agora:/app/.agora",
+            "./agora-workspace:/root/agora-workspace",
+        }
+        assert expected <= set(api["volumes"])
+        assert expected <= set(cli["volumes"])
+        assert api["healthcheck"]["test"][-1] == "http://127.0.0.1:8000/health"
+
+        dockerfile = (root / "Dockerfile").read_text(encoding="utf-8")
+        assert "COPY skill[s]/" not in dockerfile
+        assert "/app/backend/skills/learned" in dockerfile
+        assert dockerfile.index("COPY backend/ backend/") < dockerfile.index("RUN pip install")
 
 
 class TestModelRegistry:

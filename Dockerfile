@@ -13,16 +13,18 @@ ENV PYTHONIOENCODING=utf-8
 
 WORKDIR /app
 
-COPY backend/pyproject.toml backend/
+COPY backend/ backend/
 RUN pip install --no-cache-dir -e backend/
 
 RUN apt-get update && apt-get install -y --no-install-recommends curl procps && rm -rf /var/lib/apt/lists/*
 
-COPY backend/ backend/
 COPY --from=frontend-build /app/frontend/out frontend/out
 COPY config.yaml .
-RUN mkdir -p skills/public skills/learned skills/custom
-COPY skill[s]/ skills/
+RUN mkdir -p \
+    /app/backend/skills/public \
+    /app/backend/skills/learned \
+    /app/backend/skills/custom \
+    /app/.agora
 
 WORKDIR /app/backend
 

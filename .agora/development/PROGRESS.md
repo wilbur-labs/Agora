@@ -379,3 +379,17 @@ No implementation commit may be created until:
 - [x] Reran the targeted backend suite (101 passed), full non-integration suite (281 passed), compile check, full ESLint, and production build.
 - [x] Claude targeted release re-review: `APPROVE`; both blockers resolved with no remaining high/medium findings.
 - [x] Commit the reviewed Phase 8b release closure locally (the commit containing this snapshot).
+
+## 2026-07-16 — Ubuntu Docker Acceptance Follow-up
+
+- [x] Removed the clean-build dependency on an untracked top-level `skills/` directory.
+- [x] Copied backend sources before the Hatchling editable install so a clean image build sees the package.
+- [x] Corrected Compose skills mounts and persisted both SQLite `data/` and project `.agora/` state.
+- [x] Added an API container health check and matched CLI/API durable mounts.
+- [x] Added a complete Ubuntu build, health, UI/API, persistence, evidence, and cleanup acceptance procedure.
+- [x] Documented that the Docker socket mount is host-privileged and that native CLI adapters are not installed in the stock image.
+- [x] Compose YAML parsing, release-layout contract tests (9 passed), and `git diff --check` passed locally.
+- [x] Claude Docker/acceptance review: `APPROVE`; no high/medium release blockers.
+- [x] Claude targeted clean-build-order re-review: `APPROVE`.
+- [ ] Actual Docker build and runtime acceptance remain pending on the user's Ubuntu Docker host.
+- [x] Commit the reviewed Ubuntu Docker acceptance follow-up locally (the commit containing this snapshot).

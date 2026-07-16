@@ -53,10 +53,97 @@ kiro-cli chat --no-interactive --trust-tools= "Reply with exactly AGORA_KIRO_OK"
 
 An account quota/session-limit response is an external availability result, not a successful adapter smoke test. Retry it after the provider reset window or with the intended account.
 
+## Ubuntu Docker acceptance
+
+Use Ubuntu 22.04 or 24.04 with Docker Engine 24+ and Docker Compose v2. Run this acceptance from a clean clone of the intended release commit or tag.
+
+### 1. Verify prerequisites and prepare durable directories
+
+```bash
+docker version
+docker compose version
+git rev-parse --short HEAD
+
+cp .env.example .env
+# Add only the provider credentials needed for authenticated functional tests.
+mkdir -p data .agora agora-workspace skills/public skills/learned skills/custom
+docker compose config --quiet
+```
+
+The infrastructure smoke below does not call a paid model, so blank provider values are acceptable. Do not commit `.env`.
+
+### 2. Build from scratch and start the API
+
+```bash
+docker compose down --remove-orphans
+docker compose build --no-cache agora-api
+docker compose up -d agora-api
+
+timeout 120 sh -c 'until curl -fsS http://127.0.0.1:8000/health >/dev/null; do sleep 2; done'
+docker compose ps
+docker compose logs --no-color --tail=200 agora-api
+```
+
+Pass criteria: the image builds without a missing-path error, `agora-api` is `running (healthy)`, and the recent logs contain no traceback or restart loop.
+
+### 3. Verify health, release version, UI, and control-plane API
+
+```bash
+curl -fsS http://127.0.0.1:8000/health | tee /tmp/agora-health.json
+grep -q '"status":"ok"' /tmp/agora-health.json
+grep -q '"version":"0.5.0"' /tmp/agora-health.json
+
+curl -fsS http://127.0.0.1:8000/openapi.json | grep -q '"version":"0.5.0"'
+curl -fsS http://127.0.0.1:8000/ | grep -qi '<!doctype html'
+curl -fsS http://127.0.0.1:8000/api/execution-adapters | tee /tmp/agora-adapters.json
+curl -fsS 'http://127.0.0.1:8000/api/tasks?limit=1' >/dev/null
+curl -fsS 'http://127.0.0.1:8000/api/workflows?limit=1' >/dev/null
+```
+
+Pass criteria: every command exits with status 0, health and OpenAPI report `0.5.0`, the root serves the exported web UI, and the control-plane read endpoints return JSON.
+
+### 4. Verify state survives container recreation
+
+```bash
+TASK_ID="$(curl -fsS -X POST http://127.0.0.1:8000/api/tasks \
+    -H 'Content-Type: application/json' \
+    -d '{"project_id":"agora","title":"Ubuntu Docker persistence acceptance"}' \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["task_id"])')"
+
+test -n "$TASK_ID"
+test -s data/agora.db
+test -f .agora/projects.yaml
+
+docker compose down
+docker compose up -d agora-api
+timeout 120 sh -c 'until curl -fsS http://127.0.0.1:8000/health >/dev/null; do sleep 2; done'
+
+curl -fsS "http://127.0.0.1:8000/api/tasks/$TASK_ID" \
+  | python3 -c 'import json,sys; data=json.load(sys.stdin); assert data["title"] == "Ubuntu Docker persistence acceptance"'
+```
+
+Pass criteria: the task remains readable after `docker compose down` recreates the container, proving the SQLite `data/` and project `.agora/` bind mounts are effective.
+
+### 5. Optional authenticated adapter acceptance
+
+The stock image validates the API, UI, persistence, workflow scheduler, and Docker sandbox boundary. It does not install host-native `codex`, `claude`, or `kiro-cli` binaries. Test those adapters on the Ubuntu host, or build an approved derived image that installs the required CLI and mounts its authentication deliberately. Do not report adapter acceptance merely because `/api/execution-adapters` lists configured commands.
+
+### 6. Capture evidence and clean up
+
+Save the following with the release evidence: Ubuntu version, Docker and Compose versions, commit/tag, build result, `docker compose ps`, health JSON, relevant logs, persistence task id, and any authenticated adapter result.
+
+```bash
+docker compose logs --no-color agora-api > agora-0.5-docker.log
+docker compose down
+```
+
+Use `docker compose down -v` only if named-volume data may be discarded. The bind-mounted `data/`, `.agora/`, `skills/`, and `agora-workspace/` directories are intentionally retained unless removed manually.
+
 ## Operational boundaries
 
 - Automatic dispatch affects only active workflows that explicitly opted in.
 - Claude Code and Kiro CLI currently use capture-only approval handling; Agora records the request but does not claim a bidirectional protocol that their installed CLI does not expose.
 - Codex app-server supports the implemented bidirectional approval bridge; keep CLI fallback enabled for resilience.
+- The default Compose file mounts `/var/run/docker.sock` for Docker sandbox execution. Treat that container as host-privileged and run it only on a dedicated, trusted machine; remove the mount when sandbox execution is not required.
 - Agora does not merge or push repositories automatically. Treat external publication as a separate reviewed action.
 - The supervisor scans up to 500 active workflows per interval; larger installations should add pagination before production scale-out.

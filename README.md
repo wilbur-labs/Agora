@@ -56,6 +56,8 @@ cp .env.example .env  # edit .env and add your API key
 docker compose up -d
 ```
 
+For the Ubuntu Docker release checklist, see [Agora 0.5 Operations and Acceptance](docs/control-plane/release-0.5-operations.md#ubuntu-docker-acceptance).
+
 ### Local
 
 ```bash

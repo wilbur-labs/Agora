@@ -16,6 +16,9 @@ All notable changes to Agora are documented here. This project follows [Semantic
 - Standardized Agora-owned YAML, memory, skill, and file-tool text I/O on UTF-8 for Windows, Linux, and macOS consistency.
 - Moved local Python setup and commands to the reproducible `uv` workflow.
 
+### Fixed
+- Made the Docker image build without an untracked `skills/` source directory, corrected skills and control-plane persistence mounts, and added an API health check plus Ubuntu acceptance procedure.
+
 ### Security
 - Added workspace-root confinement, redaction at persistence boundaries, bounded metadata/output, idempotent bridge receipts, and audit events for lifecycle failures.
 

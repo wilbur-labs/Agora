@@ -45,6 +45,8 @@ cp .env.example .env  # .envを編集し、APIキーを追加
 docker compose up -d
 ```
 
+Ubuntu Docker のリリース検証手順は [Agora 0.5 Operations and Acceptance](docs/control-plane/release-0.5-operations.md#ubuntu-docker-acceptance) を参照してください。
+
 ### ローカル開発
 
 ```bash
