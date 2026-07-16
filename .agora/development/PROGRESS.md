@@ -558,3 +558,23 @@ Expose the reviewed registry through a bounded Control Plane API increment:
 2. add create/read/evaluate/invalidate request limits and conflict mappings;
 3. offload synchronous SQLite work from the FastAPI event loop;
 4. add API acceptance tests without changing the frozen persistence semantics.
+
+### Program-level progress calibration
+
+- Default progress metric from this point forward: the agreed 11-stage Agora
+  Control Plane transformation, not the legacy Agora 0.5 feature completion.
+- Completed transformation stages: 2 of 11:
+  1. protocol, domain model, and state-machine freeze;
+  2. Control Plane persistence and Registry.
+- Milestone-count completion: approximately 18%.
+- Work-weighted completion: approximately 20% to 25%, because the first two
+  stages are architecture-heavy foundations.
+- The current persistence increment itself is 100% complete, but the overall
+  transformation is not user-visible or near completion yet.
+- Existing 0.5 Runner, Workflow, Attention, and UI capabilities do not count as
+  completed transformation stages until they are integrated with the new
+  protocol, Registry, Context/Handoff, and orchestration contracts.
+- Remaining ordered program work: bounded Control Plane API; Runner/Agent
+  Adapter integration; Context/Handoff and layered memory runtime; AI-DLC and
+  Skills integration; Claude/Kiro/Codex orchestration; integrated console UI;
+  M2/M3 legacy-data migration; Docker and end-to-end acceptance.
