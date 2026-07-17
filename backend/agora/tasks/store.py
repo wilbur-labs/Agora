@@ -93,12 +93,14 @@ class TaskStore:
             from agora.attention.schema import initialize_attention_schema
             from agora.workflows.schema import initialize_workflow_schema
             from agora.control_plane.schema import initialize_control_plane_schema
+            from agora.orchestration.schema import initialize_orchestration_schema
 
             initialize_requirement_schema(db)
             initialize_execution_schema(db)
             initialize_attention_schema(db)
             initialize_workflow_schema(db)
             initialize_control_plane_schema(db)
+            initialize_orchestration_schema(db)
             db.commit()
 
     @contextmanager

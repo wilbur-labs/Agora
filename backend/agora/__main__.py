@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import shlex
+import sys
 import unicodedata
 
 from prompt_toolkit import PromptSession
@@ -454,6 +455,10 @@ async def main():
 
 
 def cli_main():
+    if len(sys.argv) > 1 and sys.argv[1] == "task":
+        from agora.orchestration.cli import main as task_main
+
+        raise SystemExit(task_main(sys.argv[2:]))
     asyncio.run(main())
 
 

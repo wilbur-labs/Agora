@@ -578,3 +578,71 @@ Expose the reviewed registry through a bounded Control Plane API increment:
   Adapter integration; Context/Handoff and layered memory runtime; AI-DLC and
   Skills integration; Claude/Kiro/Codex orchestration; integrated console UI;
   M2/M3 legacy-data migration; Docker and end-to-end acceptance.
+
+## 2026-07-17 — AI-DLC foundation orchestration
+
+### Scope
+
+- [x] Added a provisional, version-pinned Codex -> Claude -> Kiro planning and
+  review method under the authoritative Task entry point.
+- [x] Added append-only Plan, Stage, Run, and usage-ledger persistence with
+  semantic-result and explicit human-approval gates.
+- [x] Added read-only, bounded native runtime adapters and CLI task operations.
+- [x] Added restart recovery that refuses duplicate dispatch for live or
+  uninspectable runtime processes.
+- [x] Replaced the POSIX-only `os.kill(pid, 0)` assumption on Windows with a
+  non-destructive `OpenProcess`/`GetExitCodeProcess` inspection.
+- [x] Added Windows-safe recovery regressions; the previously self-terminating
+  focused suite now completes normally.
+- [x] Run the complete required verification set.
+- [x] Obtain Kiro methodology/reconciliation review and independent Claude
+  implementation review; fix all actionable findings.
+- [x] Commit only after both review gates approve (the commit containing this
+  snapshot).
+
+### Verification and review log
+
+- Focused orchestration suite after the Windows process-inspection fix:
+  10 passed.
+- Related orchestration, Task control-plane, and project suite: 18 passed,
+  1 existing Starlette/httpx deprecation warning.
+- Full backend suite excluding static-export-dependent `test_web_ui.py`:
+  297 passed, 18 deselected, 3 existing dependency/Windows event-loop cleanup
+  warnings.
+- Protocol Schema export check, Python compile, `git diff --check`, and the
+  `agora task --help` CLI smoke: passed.
+- Kiro review pass 1: `APPROVE`; no high/medium methodology, state-ownership,
+  reconciliation, or Windows process-inspection findings.
+- Claude review pass 1: `CHANGES_REQUESTED` for incomplete semantic-text
+  redaction and timeout success depending implicitly on a non-zero exit code.
+- Fixed the persistence boundary for semantic summaries, findings, blockers,
+  and audit payloads; timeout is now a separate persisted dimension and an
+  unconditional failure condition.
+- Also rejected duplicate claims before process spawn, stopped children on PID
+  attachment failure, failed closed when no PID was persisted, mapped missing
+  Tasks to bounded CLI errors, and validated budgets before Task creation.
+- Expanded focused regressions from 10 to 19 tests; post-fix related suite:
+  27 passed, 1 existing Starlette/httpx deprecation warning.
+- Kiro targeted re-review: `APPROVE`; no high/medium findings. It identified a
+  non-blocking interruption-audit gap, which was fixed with an atomic,
+  redacted `orchestration.run_interrupted` Task event and regressions.
+- Claude targeted re-review: `APPROVE`; both original medium findings and all
+  actionable low findings were confirmed fixed.
+- Final narrow Kiro and Claude audit-event re-reviews: `APPROVE`; no actionable
+  findings.
+- Final post-review focused orchestration suite: 19 passed.
+- Final post-review backend suite excluding `test_web_ui.py`: 306 passed,
+  18 deselected, 3 existing dependency/Windows event-loop cleanup warnings.
+- Final Protocol Schema export check, Python compile, `git diff --check`, and
+  `agora task --help` smoke: passed.
+- Review subprocesses completed. One unrelated Claude process that predates
+  this development session remains user-owned; no Kiro process or
+  `.gitconfig.lock` remains.
+
+### Recovery note and next safe action
+
+The pre-existing `frontend/pnpm-workspace.yaml` change remains user-owned and
+must not be staged. The review gate is complete. The next safe action after the
+commit containing this snapshot is to return to the ordered bounded Control
+Plane API increment before claiming the provisional planning loop as a
+completed transformation stage.
