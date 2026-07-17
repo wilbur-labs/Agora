@@ -96,7 +96,7 @@ export default function PortfolioPage() {
             </div>
             <div className="flex flex-wrap gap-2">
               {attention.map((task) => (
-                <a key={task.task_id} href={`/tasks?task=${task.task_id}`} className="rounded-lg border bg-background px-3 py-2 text-sm hover:bg-accent">
+                <a key={task.task_id} href={`/requirements?task=${task.task_id}`} className="rounded-lg border bg-background px-3 py-2 text-sm hover:bg-accent">
                   <span className="font-medium">{task.title}</span>
                   <span className="ml-2 text-xs text-muted-foreground">{task.project_id} · {task.state}</span>
                 </a>
@@ -166,7 +166,7 @@ function TaskCard({ task, onTransition, onConflict }: { task: TaskManifest; onTr
             Define <ArrowRight className="size-3" />
           </button>
         ) : (
-          <a href={`/tasks?task=${task.task_id}`} className="text-xs font-medium hover:underline">Open</a>
+          <a href={`/requirements?task=${task.task_id}`} className="text-xs font-medium hover:underline">Open</a>
         )}
       </div>
       {error && <p className="mt-2 text-xs text-destructive">{error}</p>}

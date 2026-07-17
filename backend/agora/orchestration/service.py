@@ -117,10 +117,10 @@ class TaskOrchestrationService:
         return self.store.status(task_id)
 
     async def run_next(self, task_id: str) -> OrchestrationRun:
-        task = await asyncio.to_thread(self.tasks.get, task_id)
+        task = self.tasks.get(task_id)
         if task is None:
             raise OrchestrationConflictError("Task not found")
-        status = await asyncio.to_thread(self.store.status, task_id)
+        status = self.store.status(task_id)
         if status.plan.state != PlanState.ACTIVE:
             raise OrchestrationConflictError(f"Plan is {status.plan.state.value}, not active")
         stage = next(
@@ -132,19 +132,16 @@ class TaskOrchestrationService:
         runtime = self.runtimes.get(stage.adapter)
         if runtime is None:
             raise OrchestrationConflictError(f"Runtime is unavailable: {stage.adapter}")
-        project = await asyncio.to_thread(self.projects.get, task.project_id)
+        project = self.projects.get(task.project_id)
         prompt = self._build_prompt(task, status, stage.stage_key)
         digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
         operation_key = f"{status.plan.plan_id}:{stage.stage_key}:{stage.attempt_count + 1}"
-        run = await asyncio.to_thread(
-            self.store.claim_current_stage,
-            task_id,
-            prompt_sha256=digest,
-            operation_key=operation_key,
+        run = self.store.claim_current_stage(
+            task_id, prompt_sha256=digest, operation_key=operation_key,
         )
 
         async def attach_pid(pid: int) -> None:
-            await asyncio.to_thread(self.store.attach_pid, run.run_id, pid)
+            self.store.attach_pid(run.run_id, pid)
 
         try:
             result = await self.runner.run(
@@ -153,15 +150,9 @@ class TaskOrchestrationService:
                 timeout_seconds=self.timeout_seconds, on_process=attach_pid,
             )
         except RuntimeInterrupted as exc:
-            return await asyncio.to_thread(
-                self.store.mark_interrupted, run.run_id, reason=str(exc),
-            )
+            return self.store.mark_interrupted(run.run_id, reason=str(exc))
         except asyncio.CancelledError:  # pragma: no cover - defensive outer cancellation boundary
-            await asyncio.to_thread(
-                self.store.mark_interrupted,
-                run.run_id,
-                reason="Orchestration task was cancelled",
-            )
+            self.store.mark_interrupted(run.run_id, reason="Orchestration task was cancelled")
             raise
         except Exception as exc:
             result = None
@@ -180,20 +171,15 @@ class TaskOrchestrationService:
             exit_code = result.exit_code
             semantic = self._parse_semantic(output) if exit_code == 0 else None
         token_used = self._estimate_tokens(prompt, output)
-        return await asyncio.to_thread(
-            self.store.finish_run,
-            run.run_id,
-            exit_code=exit_code,
-            timed_out=bool(result and result.timed_out),
-            output=output,
-            error_message=failure,
-            semantic=semantic,
-            token_used=token_used,
+        return self.store.finish_run(
+            run.run_id, exit_code=exit_code,
+            timed_out=bool(result and result.timed_out), output=output,
+            error_message=failure, semantic=semantic, token_used=token_used,
         )
 
     async def run_until_blocked(self, task_id: str) -> TaskOrchestrationStatus:
         while True:
-            status = await asyncio.to_thread(self.store.status, task_id)
+            status = self.store.status(task_id)
             if status.plan.state != PlanState.ACTIVE:
                 return status
             await self.run_next(task_id)

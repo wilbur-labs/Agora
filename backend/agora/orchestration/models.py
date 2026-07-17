@@ -5,8 +5,6 @@ from enum import Enum
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from agora.tasks.models import TaskRisk
-
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -166,26 +164,3 @@ class TaskOrchestrationStatus(StrictModel):
     cost_used_usd: float | None
     cost_measurement: Measurement
     next_safe_action: str
-
-
-class CreateOrchestratedTaskRequest(StrictModel):
-    project_id: str = Field(
-        min_length=1,
-        max_length=128,
-        pattern=r"^[A-Za-z0-9_-]+$",
-    )
-    title: str = Field(min_length=1, max_length=300)
-    description: str = Field(default="", max_length=20_000)
-    risk: TaskRisk = TaskRisk.MEDIUM
-    total_token_budget: int = Field(default=30_000, ge=3_000, le=10_000_000)
-    total_cost_budget_usd: float | None = Field(default=None, ge=0, le=1_000_000)
-
-
-class AttachOrchestrationRequest(StrictModel):
-    total_token_budget: int = Field(default=30_000, ge=3_000, le=10_000_000)
-    total_cost_budget_usd: float | None = Field(default=None, ge=0, le=1_000_000)
-
-
-class ApprovalRequest(StrictModel):
-    reason: str = Field(min_length=1, max_length=4_000)
-    actor: str = Field(default="user", min_length=1, max_length=128)

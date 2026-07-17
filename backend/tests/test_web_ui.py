@@ -39,10 +39,6 @@ class TestFrontend:
         r = client.get("/chat")
         assert r.status_code == 200
 
-    def test_task_workbench_page(self):
-        r = client.get("/tasks")
-        assert r.status_code == 200
-
     def test_shared_page(self):
         r = client.get("/shared")
         assert r.status_code == 200
