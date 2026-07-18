@@ -2,21 +2,100 @@
 
 Current branch: `main`
 
-Current recovery baseline:
+Current recovery baseline (2026-07-18):
 
-- Last released commit: `fce21ad docs: add Ubuntu Docker acceptance`.
-- Active program: Agora Protocol & Domain Freeze.
-- Consensus source: Codex, Claude Code, and Kiro CLI accepted C1-C16 on
-  2026-07-16 with no blocking objections.
-- User-owned unrelated worktree change:
-  `frontend/pnpm-workspace.yaml`. Preserve it and exclude it from Agora
-  implementation commits unless the user explicitly assigns it.
-- Review gate remains mandatory: tests, independent Claude review, fixes,
-  rerun, then commit.
-- Current next safe action: implement and verify the v1 protocol models,
-  checked-in JSON Schemas, deterministic Gate evaluation, Approval
-  invalidation, M2 publication rules, Runner isolation, and real-history
-  regression fixtures.
+- Local `main` and `origin/main` are synchronized at
+  `2750dfe fix: recover Windows native orchestration` before the documentation
+  changes recorded below.
+- Active program: the ordered Agora Control Plane transformation. The first two
+  stages (protocol/domain freeze and Control Plane v2 persistence/Registry) are
+  complete; work-weighted program completion remains approximately 20% to 25%.
+  The historical 11-stage label and milestone-count estimate below predate the
+  current grouped stage correspondence and must be normalized before they are
+  used as a current count.
+- Latest product requirements are now captured in
+  `docs/requirements/latest-transformation-requirements.md`. This is the
+  durable repository source derived from the external `最新的需求.txt`; the
+  external transcript is provenance only and is not required for recovery.
+- The corrected product goal is a unified, durable Task orchestration entry
+  point for Codex, Claude Code, and Kiro with truthful Token/cost accounting,
+  resumable workflow state, and non-bypassable quality Gates. UI is optional
+  until the CLI-first orchestration path is proven.
+- The reviewed `agora-aidlc-foundation@0.1` loop is provisional. It does not
+  replace the missing authoritative AI-DLC graph and is not counted as a
+  completed transformation stage.
+- The authoritative AI-DLC diagram/source is still missing. Do not infer or
+  invent it from chat history, Council screenshots, or the provisional method.
+- The originating development worktree recorded
+  `frontend/pnpm-workspace.yaml` as a user-owned unrelated change. The current
+  synchronized worktree was clean before this documentation increment, but the
+  ownership constraint remains: do not stage unrelated edits to that file.
+- `backend/data/agora.db` is absent on this machine. The legacy
+  `data/agora.db` contains only the `sessions` table, so no current Task/Run
+  state can be recovered from it.
+- Latest Windows runtime recovery review gate: Kiro `APPROVE`, Claude Code
+  `APPROVE`; focused suite 39 passed; comparable backend suite 317 passed and
+  18 deselected; Schema export, compile, diff check, and CLI smoke passed.
+- Review gates remain mandatory for subsequent implementation increments.
+- Current next safe product action: define one concrete Task contract (roles,
+  workflow, Context/Handoff expectations, acceptance criteria, required
+  Artifacts/Evidence/Gates), then run and reconcile a CLI-first three-runtime
+  vertical slice before any Task Workbench UI work.
+
+## 2026-07-18 — Latest transformation requirements recovery
+
+- [x] Recovered and fully read the user-provided external
+  `C:\Users\wuche\Downloads\最新的需求.txt`.
+- [x] Removed transient chat/tool output and captured the effective product
+  requirements in `docs/requirements/latest-transformation-requirements.md`.
+- [x] Recorded the corrected priority: unified Task orchestration, three-runtime
+  role/risk/budget routing, truthful Token/cost ledger, durable recovery, and
+  mandatory quality Gates; UI is a later optional projection.
+- [x] Reconciled requirements against the current provisional orchestration
+  implementation at `2750dfe` and separated covered capabilities from gaps.
+- [x] Confirmed the authoritative full AI-DLC diagram/source is still absent;
+  `agora-aidlc-foundation@0.1` remains explicitly provisional.
+- [x] Confirmed the premature Task Workbench demo remains reverted. No UI or
+  implementation scope was added in this documentation recovery.
+- [x] Confirmed `backend/data/agora.db` is absent; the legacy root database has
+  no Task/Run tables and was not modified.
+- [x] Kiro CLI documentation review: `APPROVE`; no high/medium findings. The
+  current baseline no longer repeats the inherited ambiguous 11-stage count,
+  and this documentation-only increment requires diff/consistency checks rather
+  than code, Schema, or frontend execution.
+- [x] Claude Code documentation review: `APPROVE`; no high/medium findings.
+  Corrected the inherited milestone-count wording and stale Task Workbench
+  revert hash, and verified with SQLite that `data/agora.db` contains only the
+  `sessions` table.
+- [x] Review and commit this documentation-only recovery increment (the commit
+  containing this snapshot).
+
+### Transformation-stage correspondence
+
+- Completed stage 1, protocol/domain freeze: retained unchanged as the
+  authority for Context/Handoff, Artifact/Evidence/Approval, Gate, and Run
+  semantics.
+- Completed stage 2, persistence/Registry: retained unchanged as the
+  authoritative storage foundation.
+- Bounded Control Plane API: must include the unified Task
+  status/progress/result projection and command boundary required by the new
+  requirements.
+- Runner/Agent Adapter and three-runtime orchestration stages: must implement
+  explainable role/risk/capability/budget routing and real usage adapters where
+  available.
+- Context/Handoff and AI-DLC integration stages: must replace the provisional
+  loop only after the authoritative method source is recovered and versioned.
+- Integrated console UI: reinterpreted as an optional Task Workbench projection
+  after CLI-first end-to-end proof, not as the next implementation action.
+
+### Resume instruction
+
+On the next session, strictly execute `AGENTS.md`, read this file and
+`docs/requirements/latest-transformation-requirements.md`, inspect Git status,
+and preserve the documentation changes if they remain uncommitted. Do not start
+UI work. The next implementation decision must be based on a concrete Task
+contract and the actual SQLite Task/Run state if a current
+`backend/data/agora.db` becomes available.
 
 ## 2026-07-13
 
@@ -561,12 +640,13 @@ Expose the reviewed registry through a bounded Control Plane API increment:
 
 ### Program-level progress calibration
 
-- Default progress metric from this point forward: the agreed 11-stage Agora
-  Control Plane transformation, not the legacy Agora 0.5 feature completion.
-- Completed transformation stages: 2 of 11:
+- Default progress metric from this point forward: the ordered Agora Control
+  Plane transformation, not the legacy Agora 0.5 feature completion.
+- Completed transformation stages: 2:
   1. protocol, domain model, and state-machine freeze;
   2. Control Plane persistence and Registry.
-- Milestone-count completion: approximately 18%.
+- Milestone-count completion is deferred until the grouped remaining-stage
+  inventory is normalized; use the work-weighted estimate below meanwhile.
 - Work-weighted completion: approximately 20% to 25%, because the first two
   stages are architecture-heavy foundations.
 - The current persistence increment itself is 100% complete, but the overall
@@ -651,7 +731,7 @@ completed transformation stage.
 
 ### Scope and recovery findings
 
-- [x] Reverted the premature Task Workbench UI demo in `6f0f7f0`; UI remains
+- [x] Reverted the premature Task Workbench UI demo in `740329a`; UI remains
   deferred until the orchestration path is operationally proven.
 - [x] Reproduced the original Codex failure as a Windows launcher failure:
   native CLI names resolve to PowerShell/CMD wrappers that cannot be passed
