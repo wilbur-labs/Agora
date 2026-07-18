@@ -13,6 +13,7 @@ from agora.projects import ProjectRegistry
 from agora.tasks.models import TaskRisk
 from agora.tasks.store import TaskNotFoundError, TaskStore
 
+from .contracts import load_task_contract
 from .models import Measurement, PlanState
 from .runtime import ReadOnlyCliRunner, build_runtime_registry
 from .service import TaskOrchestrationService
@@ -47,8 +48,9 @@ def parser() -> argparse.ArgumentParser:
     commands = root.add_subparsers(dest="command", required=True)
 
     start = commands.add_parser("start", help="Create a Task and attach the provisional method")
-    start.add_argument("title")
+    start.add_argument("title", nargs="?")
     start.add_argument("--description", default="")
+    start.add_argument("--contract", type=Path)
     start.add_argument("--project")
     start.add_argument("--risk", choices=[item.value for item in TaskRisk], default="medium")
     start.add_argument("--tokens", type=int, default=30_000)
@@ -88,14 +90,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     service = build_service()
     try:
         if args.command == "start":
+            contract = load_task_contract(args.contract) if args.contract else None
+            if contract and args.title:
+                raise ValueError("Provide either a title or --contract, not both")
+            if contract and args.description:
+                raise ValueError("--description cannot be combined with --contract")
+            if not contract and not args.title:
+                raise ValueError("A title or --contract is required")
             project_id = args.project or service.projects.current_project_id()
             task = service.create(
                 project_id=project_id,
-                title=args.title,
-                description=args.description,
+                title=contract.title if contract else args.title,
+                description=contract.goal if contract else args.description,
                 total_token_budget=args.tokens,
                 total_cost_budget_usd=args.cost_usd,
                 risk=TaskRisk(args.risk),
+                contract=contract,
             )
             print(task.task_id)
             if args.run:

@@ -4,10 +4,16 @@ import asyncio
 import json
 import os
 import sys
+from pathlib import Path
 
 import pytest
 
 from agora.orchestration.methodology import FOUNDATION_METHODOLOGY, methodology_sha256
+from agora.orchestration.contracts import (
+    TaskContract,
+    contract_sha256,
+    load_task_contract,
+)
 from agora.orchestration.models import Measurement, PlanState, RunState, StageState
 from agora.orchestration.processes import ProcessState, inspect_process
 from agora.orchestration.runtime import (
@@ -34,6 +40,13 @@ from agora.tasks.store import TaskStore
 PASS = (
     '{"status":"pass","summary":"stage passed","findings":[], '
     '"recommended_next_action":"continue"}'
+)
+
+CONTRACT_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "docs"
+    / "examples"
+    / "bounded-control-plane-api-task-contract.json"
 )
 
 
@@ -100,6 +113,151 @@ def test_foundation_method_is_stable_and_explicitly_provisional():
     assert methodology_sha256(FOUNDATION_METHODOLOGY) == methodology_sha256(
         FOUNDATION_METHODOLOGY.model_copy(deep=True)
     )
+
+
+def test_concrete_task_contract_is_strict_bounded_and_method_aligned(tmp_path):
+    contract = load_task_contract(CONTRACT_PATH)
+    assert contract.schema_version == "1.0"
+    assert contract.contract_id == "bounded_control_plane_api_vertical_slice"
+    assert [stage.stage_key for stage in contract.workflow] == [
+        "solution_design",
+        "correctness_review",
+        "methodology_review",
+    ]
+    assert len(contract_sha256(contract)) == 64
+
+    payload = contract.model_dump(mode="json")
+    payload["workflow"][0]["gate_requirements"][0]["requirement_id"] = "unknown"
+    with pytest.raises(ValueError, match="exactly reference required evidence"):
+        TaskContract.model_validate(payload)
+
+    oversized = tmp_path / "oversized.json"
+    oversized.write_text("x" * (64 * 1024 + 1), encoding="utf-8")
+    with pytest.raises(ValueError, match="exceeds 64 KiB"):
+        load_task_contract(oversized)
+
+
+@pytest.mark.asyncio
+async def test_contract_is_persisted_hashed_and_supplied_to_every_runtime(tmp_path):
+    tasks, service, runner, _ = _system(tmp_path)
+    contract = load_task_contract(CONTRACT_PATH)
+    task = service.create(
+        project_id="alpha",
+        title=contract.title,
+        description=contract.goal,
+        total_token_budget=30_000,
+        total_cost_budget_usd=12,
+        contract=contract,
+    )
+
+    persisted = tasks.get(task.task_id)
+    assert persisted.metadata["task_contract_id"] == contract.contract_id
+    assert persisted.metadata["task_contract_schema_version"] == "1.0"
+    assert persisted.metadata["task_contract_sha256"] == contract_sha256(contract)
+    assert persisted.acceptance == contract.acceptance_criteria
+
+    await service.run_next(task.task_id)
+    assert '"contract_id":"bounded_control_plane_api_vertical_slice"' in runner.prompts[-1]
+    assert "Do not start Task Workbench" in runner.prompts[-1]
+
+
+def test_contract_must_match_pinned_methodology_order_and_runtime(tmp_path):
+    _, service, _, _ = _system(tmp_path)
+    contract = load_task_contract(CONTRACT_PATH)
+    payload = contract.model_dump(mode="json")
+    payload["workflow"] = list(reversed(payload["workflow"]))
+    reordered = TaskContract.model_validate(payload)
+
+    with pytest.raises(OrchestrationValidationError, match="stage order"):
+        service.create(
+            project_id="alpha",
+            title=reordered.title,
+            description=reordered.goal,
+            total_token_budget=30_000,
+            total_cost_budget_usd=12,
+            contract=reordered,
+        )
+
+    payload = contract.model_dump(mode="json")
+    payload["roles"][0]["runtime"] = "claude"
+    wrong_runtime = TaskContract.model_validate(payload)
+    with pytest.raises(OrchestrationValidationError, match="runtime does not match"):
+        service.create(
+            project_id="alpha",
+            title=wrong_runtime.title,
+            description=wrong_runtime.goal,
+            total_token_budget=30_000,
+            total_cost_budget_usd=12,
+            contract=wrong_runtime,
+        )
+
+    payload = contract.model_dump(mode="json")
+    payload["roles"][0]["role_id"] = "renamed_planner"
+    payload["workflow"][0]["role_id"] = "renamed_planner"
+    for role in payload["roles"]:
+        role["independent_from"] = [
+            "renamed_planner" if item == "engineering_planner" else item
+            for item in role["independent_from"]
+        ]
+    wrong_role = TaskContract.model_validate(payload)
+    with pytest.raises(OrchestrationValidationError, match="role does not match"):
+        service.create(
+            project_id="alpha",
+            title=wrong_role.title,
+            description=wrong_role.goal,
+            total_token_budget=30_000,
+            total_cost_budget_usd=12,
+            contract=wrong_role,
+        )
+
+
+@pytest.mark.asyncio
+async def test_contract_and_large_prior_results_fit_the_bounded_prompt(tmp_path):
+    large_pass = json.dumps({
+        "status": "pass",
+        "summary": "s" * 4_000,
+        "findings": ["f" * 1_000 for _ in range(20)],
+        "recommended_next_action": "continue",
+    })
+    tasks, service, runner, _ = _system(
+        tmp_path,
+        [RuntimeResult(0, large_pass, "") for _ in range(3)],
+        tokens=300_000,
+    )
+    contract = load_task_contract(CONTRACT_PATH)
+    task = service.create(
+        project_id="alpha",
+        title=contract.title,
+        description=contract.goal,
+        total_token_budget=300_000,
+        total_cost_budget_usd=12,
+        contract=contract,
+    )
+
+    await service.run_next(task.task_id)
+    await service.run_next(task.task_id)
+    await service.run_next(task.task_id)
+
+    assert len(runner.prompts[-1]) <= 16_000
+    assert "solution_design" in runner.prompts[-1]
+    assert "correctness_review" in runner.prompts[-1]
+
+
+def test_cli_starts_from_a_concrete_contract(tmp_path, monkeypatch, capsys):
+    tasks, service, _, _ = _system(tmp_path)
+    monkeypatch.setattr(orchestration_cli, "build_service", lambda: service)
+
+    assert orchestration_cli.main([
+        "start", "--contract", str(CONTRACT_PATH), "--tokens", "30000",
+    ]) == 0
+
+    created = next(
+        task for task in tasks.list()
+        if task.metadata.get("task_contract_id")
+        == "bounded_control_plane_api_vertical_slice"
+    )
+    assert created.metadata["task_contract_id"] == "bounded_control_plane_api_vertical_slice"
+    assert "Next safe action" in capsys.readouterr().out
 
 
 def test_runtime_defaults_are_read_only_and_bounded():

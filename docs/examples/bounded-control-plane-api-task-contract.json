@@ -1,0 +1,190 @@
+{
+  "schema_version": "1.0",
+  "contract_id": "bounded_control_plane_api_vertical_slice",
+  "title": "Define the bounded Control Plane API vertical slice",
+  "goal": "Produce a review-ready implementation contract for exposing the reviewed Control Plane v2 Registry through authorization-aware, project/task-scoped, bounded asynchronous API routes without changing frozen persistence semantics or starting UI work.",
+  "roles": [
+    {
+      "role_id": "engineering_planner",
+      "runtime": "codex",
+      "responsibilities": [
+        "Map the frozen Registry operations to bounded API commands and projections",
+        "Define authorization, scope, validation, conflict, and event-loop boundaries",
+        "Specify acceptance and regression tests without modifying repository files"
+      ],
+      "independent_from": []
+    },
+    {
+      "role_id": "independent_reviewer",
+      "runtime": "claude",
+      "responsibilities": [
+        "Review correctness, security, concurrency, rollback, and regression coverage",
+        "Reject any route that bypasses project/task scope or frozen Registry invariants"
+      ],
+      "independent_from": [
+        "engineering_planner"
+      ]
+    },
+    {
+      "role_id": "methodology_steward",
+      "runtime": "kiro",
+      "responsibilities": [
+        "Review protocol, AI-DLC, reconciliation, evidence, approval, and Gate boundaries",
+        "Verify that the next action is safe, bounded, and does not invent the missing authoritative AI-DLC graph"
+      ],
+      "independent_from": [
+        "engineering_planner"
+      ]
+    }
+  ],
+  "workflow": [
+    {
+      "stage_key": "solution_design",
+      "title": "Bounded API solution design",
+      "role_id": "engineering_planner",
+      "objective": "Define the smallest implementation increment that exposes Registry create/read/evaluate/invalidate operations with explicit authorization and scope checks, request bounds, deterministic error mappings, async SQLite offload, and acceptance tests.",
+      "completion_conditions": [
+        "Every proposed route names its authorization and project/task scope boundary",
+        "Mutation limits, optimistic conflicts, idempotency, and bounded error mappings are explicit",
+        "Synchronous SQLite operations are kept off the FastAPI event loop",
+        "Tests cover success, cross-scope refusal, invalid input, conflict, and rollback behavior",
+        "Frozen protocol and Registry persistence semantics remain unchanged"
+      ],
+      "context_expectations": [
+        "Use AGENTS.md and the checked-in architecture, schema, executable protocol, and PROGRESS sources as authority",
+        "Inspect current Registry, route, authorization, and test code rather than relying on prior transcripts",
+        "Treat the provisional methodology as a planning loop, not the authoritative AI-DLC graph"
+      ],
+      "handoff_expectations": [
+        "Return a concrete affected-file and route plan with risks and verification commands",
+        "Identify unknowns and blockers instead of inventing policy or evidence",
+        "Recommend exactly one bounded next safe implementation action"
+      ],
+      "required_artifacts": [
+        {
+          "artifact_id": "bounded_api_design",
+          "kind": "design",
+          "description": "A repository-grounded API design covering routes, command boundaries, data flow, limits, errors, and tests"
+        }
+      ],
+      "required_evidence": [
+        {
+          "requirement_id": "solution_design_complete",
+          "kind": "contract_review",
+          "description": "Evidence that the design covers scope, bounds, asynchronous persistence, conflicts, rollback, and regression tests"
+        }
+      ],
+      "gate_requirements": [
+        {
+          "requirement_id": "solution_design_complete",
+          "severity": "blocker",
+          "priority": 10,
+          "failure_action": "Block and revise the solution design before independent review"
+        }
+      ]
+    },
+    {
+      "stage_key": "correctness_review",
+      "title": "Independent correctness and safety review",
+      "role_id": "independent_reviewer",
+      "objective": "Independently test the proposed design against repository behavior, security and scope isolation, SQLite transaction and event-loop safety, error truthfulness, and regression coverage.",
+      "completion_conditions": [
+        "Authorization and project/task isolation cannot be bypassed",
+        "Mutation atomicity, idempotency, conflict behavior, and rollback are reviewable",
+        "API work cannot change frozen Registry semantics or treat exit/process success as semantic success",
+        "High and medium findings are absent or explicitly block the Task"
+      ],
+      "context_expectations": [
+        "Receive the Task contract and verified solution-design semantic result, not a full transcript",
+        "Inspect relevant executable code and tests independently",
+        "Treat missing implementation evidence as missing rather than passed"
+      ],
+      "handoff_expectations": [
+        "Return severity-ranked findings tied to concrete repository areas",
+        "State whether the design is implementable without weakening frozen invariants",
+        "Provide a bounded fix action for every blocker"
+      ],
+      "required_artifacts": [
+        {
+          "artifact_id": "correctness_review",
+          "kind": "review",
+          "description": "An independent correctness, security, concurrency, and regression review of the design"
+        }
+      ],
+      "required_evidence": [
+        {
+          "requirement_id": "correctness_review_passed",
+          "kind": "independent_review",
+          "description": "Evidence that no unresolved high or medium correctness and safety findings remain"
+        }
+      ],
+      "gate_requirements": [
+        {
+          "requirement_id": "correctness_review_passed",
+          "severity": "blocker",
+          "priority": 20,
+          "failure_action": "Block and return the design for bounded correction"
+        }
+      ]
+    },
+    {
+      "stage_key": "methodology_review",
+      "title": "Protocol and methodology boundary review",
+      "role_id": "methodology_steward",
+      "objective": "Verify that the design respects Agora-only state ownership, Context/Handoff boundaries, formal Artifact/Evidence/Approval/Gate separation, deterministic reconciliation, recovery safety, and the explicit deferral of UI and the missing authoritative AI-DLC graph.",
+      "completion_conditions": [
+        "Agora remains the only writer of cross-runtime Task, Stage, and Gate state",
+        "Native runtime output remains an assertion until deterministic reconciliation",
+        "Artifacts, Evidence, Approvals, policy, state, and memory remain separate",
+        "No provisional workflow claim is presented as the authoritative AI-DLC graph",
+        "The implementation next action is bounded and recovery-safe"
+      ],
+      "context_expectations": [
+        "Receive the Task contract plus verified prior-stage semantic results",
+        "Use the protocol/domain freeze and executable models as normative authority",
+        "Do not infer methodology facts from screenshots, external notes, or chat history"
+      ],
+      "handoff_expectations": [
+        "Return explicit protocol or methodology blockers and their requirement identities",
+        "Separate missing authority from implementation defects",
+        "Recommend implementation only if the bounded design preserves all mandatory boundaries"
+      ],
+      "required_artifacts": [
+        {
+          "artifact_id": "methodology_review",
+          "kind": "review",
+          "description": "An independent protocol, methodology, reconciliation, and quality-Gate boundary review"
+        }
+      ],
+      "required_evidence": [
+        {
+          "requirement_id": "methodology_review_passed",
+          "kind": "methodology_review",
+          "description": "Evidence that no unresolved high or medium protocol or methodology boundary findings remain"
+        }
+      ],
+      "gate_requirements": [
+        {
+          "requirement_id": "methodology_review_passed",
+          "severity": "blocker",
+          "priority": 30,
+          "failure_action": "Block and revise the design without inventing missing methodology authority"
+        }
+      ]
+    }
+  ],
+  "acceptance_criteria": [
+    "The Codex design produces a schema-valid semantic result grounded in current repository code",
+    "Claude independently reports no unresolved high or medium correctness or safety finding",
+    "Kiro independently reports no unresolved high or medium protocol, AI-DLC, reconciliation, or quality-Gate finding",
+    "The plan explicitly covers authorization, project/task scope, request bounds, conflict mapping, async SQLite offload, and acceptance tests",
+    "A human explicitly approves the reviewed plan before implementation begins"
+  ],
+  "forbidden_constraints": [
+    "Do not modify repository files during this planning and review loop",
+    "Do not start Task Workbench or other UI work",
+    "Do not change frozen protocol or Registry persistence semantics",
+    "Do not invent or rename the missing authoritative AI-DLC graph",
+    "Do not treat process exit code zero as semantic or Gate success"
+  ]
+}

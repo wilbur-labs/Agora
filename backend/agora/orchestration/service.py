@@ -13,6 +13,7 @@ from agora.projects import ProjectRegistry
 from agora.tasks.models import CreateTaskRequest, TaskBudget, TaskManifest, TaskRisk
 from agora.tasks.store import TaskStore
 
+from .contracts import TaskContract, canonical_contract_json, contract_sha256
 from .methodology import FOUNDATION_METHODOLOGY, MethodologyDefinition
 from .models import (
     Measurement,
@@ -25,7 +26,14 @@ from .models import (
 )
 from .processes import ProcessState, inspect_process
 from .runtime import ReadOnlyCliRunner, RuntimeCommand, RuntimeInterrupted
-from .store import OrchestrationConflictError, OrchestrationStore
+from .store import (
+    OrchestrationConflictError,
+    OrchestrationStore,
+    OrchestrationValidationError,
+)
+
+
+PRIOR_RESULTS_CONTEXT_LIMIT = 4_000
 
 
 class TaskOrchestrationService:
@@ -59,6 +67,7 @@ class TaskOrchestrationService:
         total_cost_budget_usd: float | None,
         risk: TaskRisk = TaskRisk.MEDIUM,
         actor: str = "user",
+        contract: TaskContract | None = None,
     ) -> TaskManifest:
         self.projects.get(project_id)
         self._assert_runtimes_available()
@@ -67,6 +76,31 @@ class TaskOrchestrationService:
             total_token_budget=total_token_budget,
             total_cost_budget_usd=total_cost_budget_usd,
         )
+        if contract:
+            self._validate_contract_alignment(contract)
+        contract_payload = contract.model_dump(mode="json") if contract else None
+        acceptance = (
+            contract.acceptance_criteria
+            if contract
+            else [
+                "Codex engineering plan has a valid semantic result",
+                "Claude independent review passes",
+                "Kiro methodology review passes",
+                "A human explicitly approves the reviewed plan",
+            ]
+        )
+        metadata = {
+            "methodology": f"{self.methodology.methodology_id}@{self.methodology.version}",
+            "methodology_provisional": self.methodology.provisional,
+        }
+        if contract:
+            canonical_contract_json(contract)
+            metadata.update({
+                "task_contract": contract_payload,
+                "task_contract_id": contract.contract_id,
+                "task_contract_schema_version": contract.schema_version,
+                "task_contract_sha256": contract_sha256(contract),
+            })
         task = self.tasks.create(CreateTaskRequest(
             project_id=project_id,
             title=title,
@@ -75,19 +109,9 @@ class TaskOrchestrationService:
             risk=risk,
             primary_agent="agora",
             reviewers=["claude", "kiro"],
-            acceptance=[
-                "Codex engineering plan has a valid semantic result",
-                "Claude independent review passes",
-                "Kiro methodology review passes",
-                "A human explicitly approves the reviewed plan",
-            ],
+            acceptance=acceptance,
             budget=TaskBudget(max_cost_usd=total_cost_budget_usd),
-            metadata={
-                "methodology": (
-                    f"{self.methodology.methodology_id}@{self.methodology.version}"
-                ),
-                "methodology_provisional": self.methodology.provisional,
-            },
+            metadata=metadata,
             created_by=actor,
         ))
         self.store.create_plan(
@@ -229,11 +253,26 @@ class TaskOrchestrationService:
             prior_results.append({
                 "stage_key": run.stage_key,
                 "adapter": run.adapter,
-                "summary": run.semantic_summary,
-                "findings": run.findings,
-                "output_excerpt": run.output[-4000:],
+                "summary": self._truncate(run.semantic_summary or "", 300),
+                "findings": [self._truncate(item, 150) for item in run.findings[:3]],
+                "output_excerpt": self._truncate(run.output[-300:], 300),
             })
         context = json.dumps(prior_results, ensure_ascii=False, separators=(",", ":"))
+        if len(context) > PRIOR_RESULTS_CONTEXT_LIMIT:
+            raise OrchestrationConflictError(
+                "Verified prior-stage context exceeds the bounded prompt allocation"
+            )
+        contract_payload = task.metadata.get("task_contract")
+        if contract_payload is None:
+            contract_context = "(no concrete Task contract supplied)"
+            task_description = task.description or "(none)"
+            acceptance_context = json.dumps(task.acceptance, ensure_ascii=False)
+        else:
+            contract_context = canonical_contract_json(
+                TaskContract.model_validate(contract_payload),
+            )
+            task_description = "(defined by the concrete Task contract below)"
+            acceptance_context = "(defined by the concrete Task contract below)"
         prompt = f"""You are the {definition.role} in an Agora task orchestration run.
 
 This is a READ-ONLY planning and review stage. Do not modify files, create commits,
@@ -242,8 +281,10 @@ change native AI-DLC state, or claim that the product has been delivered.
 Task ID: {task.task_id}
 Project ID: {task.project_id}
 Task title: {task.title}
-Task description: {task.description or '(none)'}
-Acceptance expectations: {json.dumps(task.acceptance, ensure_ascii=False)}
+Task description: {task_description}
+Acceptance expectations: {acceptance_context}
+Concrete Task contract (versioned, canonical JSON):
+{contract_context}
 Methodology: {self.methodology.methodology_id}@{self.methodology.version} (provisional)
 Stage: {definition.stage_key}
 Objective: {definition.objective}
@@ -292,3 +333,30 @@ or unreviewable assumptions must be explicit. Process success alone is not seman
         missing = [stage.adapter for stage in self.methodology.stages if stage.adapter not in self.runtimes]
         if missing:
             raise OrchestrationConflictError(f"Required runtimes are unavailable: {sorted(set(missing))}")
+
+    def _validate_contract_alignment(self, contract: TaskContract) -> None:
+        definitions = {stage.stage_key: stage for stage in self.methodology.stages}
+        supplied_keys = [stage.stage_key for stage in contract.workflow]
+        expected_keys = [stage.stage_key for stage in self.methodology.stages]
+        if supplied_keys != expected_keys:
+            raise OrchestrationValidationError(
+                "Task contract workflow must match the pinned methodology stage order"
+            )
+        roles = {role.role_id: role for role in contract.roles}
+        for stage in contract.workflow:
+            if stage.role_id != definitions[stage.stage_key].role:
+                raise OrchestrationValidationError(
+                    f"Task contract stage {stage.stage_key} role does not match "
+                    "the pinned methodology"
+                )
+            if roles[stage.role_id].runtime != definitions[stage.stage_key].adapter:
+                raise OrchestrationValidationError(
+                    f"Task contract stage {stage.stage_key} runtime does not match "
+                    "the pinned methodology"
+                )
+
+    @staticmethod
+    def _truncate(value: str, limit: int) -> str:
+        if len(value) <= limit:
+            return value
+        return value[: limit - 1] + "…"

@@ -30,17 +30,17 @@ Current recovery baseline (2026-07-18):
   `frontend/pnpm-workspace.yaml` as a user-owned unrelated change. The current
   synchronized worktree was clean before this documentation increment, but the
   ownership constraint remains: do not stage unrelated edits to that file.
-- `backend/data/agora.db` is absent on this machine. The legacy
-  `data/agora.db` contains only the `sessions` table, so no current Task/Run
-  state can be recovered from it.
+- `backend/data/agora.db` now contains the real contract vertical-slice Task
+  `task_ea9c19f4794c447c8fe77aaf8a3b15d1` and its blocked Codex Run. The legacy
+  `data/agora.db` still contains only the `sessions` table.
 - Latest Windows runtime recovery review gate: Kiro `APPROVE`, Claude Code
   `APPROVE`; focused suite 39 passed; comparable backend suite 317 passed and
   18 deselected; Schema export, compile, diff check, and CLI smoke passed.
 - Review gates remain mandatory for subsequent implementation increments.
-- Current next safe product action: define one concrete Task contract (roles,
-  workflow, Context/Handoff expectations, acceptance criteria, required
-  Artifacts/Evidence/Gates), then run and reconcile a CLI-first three-runtime
-  vertical slice before any Task Workbench UI work.
+- Current next safe product action: obtain a human-approved inbound
+  authorization policy and narrow or authorize repository-wide invalidation
+  before explicitly retrying the blocked solution-design Stage. Do not start
+  Task Workbench UI.
 
 ## 2026-07-18 — Latest transformation requirements recovery
 
@@ -96,6 +96,75 @@ and preserve the documentation changes if they remain uncommitted. Do not start
 UI work. The next implementation decision must be based on a concrete Task
 contract and the actual SQLite Task/Run state if a current
 `backend/data/agora.db` becomes available.
+
+## 2026-07-18 — Concrete Task contract vertical slice (active)
+
+### Scope
+
+- [x] Added a strict, versioned concrete Task contract model with bounded roles,
+  ordered workflow, Context/Handoff expectations, acceptance criteria, and
+  required Artifact/Evidence/Gate templates.
+- [x] Added the first checked-in contract at
+  `docs/examples/bounded-control-plane-api-task-contract.json` for the bounded
+  Control Plane API planning and review slice.
+- [x] Added `agora task start --contract PATH`; the legacy title-based start
+  remains supported.
+- [x] Persisted canonical contract content, identity, schema version, and
+  SHA-256 with the authoritative Task and supplied the bounded contract to each
+  runtime prompt.
+- [x] Failed closed when contract stage order or runtime assignment diverges
+  from the pinned provisional methodology.
+- [x] Added contract parsing, size, semantic-reference, alignment,
+  persistence, prompt, and CLI regression coverage.
+- [x] Ran a real CLI-first Task through the Agora entry point; no native CLI
+  files or state were modified.
+- [x] Kiro methodology/reconciliation review: `APPROVE`; no high/medium
+  findings.
+- [x] Claude Code correctness/safety review: `APPROVE`; no high/medium
+  findings. Its two actionable low observations were fixed and await targeted
+  confirmation before commit.
+- [x] Kiro targeted review-fix confirmation: `APPROVE`; no high/medium findings.
+- [x] Claude Code targeted review-fix confirmation: `APPROVE`; no high/medium
+  findings.
+- [x] Commit the reviewed concrete Task-contract increment locally (the commit
+  containing this snapshot).
+
+### Verification and vertical-slice result
+
+- Focused orchestration suite after review fixes: 35 passed.
+- Comparable non-integration backend suite excluding `tests/test_web_ui.py`:
+  320 passed, 18 deselected, with 2 existing Windows sandbox failures caused by
+  tests that write literal `/tmp` paths.
+- Protocol Schema export check, Python compile, and `git diff --check`: passed.
+- Kiro review: `APPROVE`; its low observations were cosmetic CRLF warnings,
+  harmless duplicate canonical serialization, and the honestly deferred
+  instantiation of formal Artifact/Evidence/Gate records.
+- Claude review: `APPROVE`; it identified a low worst-case prompt-allocation
+  mismatch and a low role-label alignment gap. Contract prompts now reserve a
+  fixed bounded allocation for compact verified prior results, avoid duplicating
+  contract goal/acceptance content, reduce the contract allocation to 8,000
+  UTF-8 bytes, and require exact pinned methodology role plus runtime alignment.
+  Added worst-case prompt and both alignment-branch regressions.
+- Real Task: `task_ea9c19f4794c447c8fe77aaf8a3b15d1`; Plan
+  `plan_cf698b72d0c548ff99b763fef8e6c75b`.
+- Codex solution-design Run exited zero and returned a schema-valid semantic
+  `blocked` result, proving that process success did not advance the Stage.
+- Usage was reserved at 13,500 Tokens and settled at an estimated 4,172;
+  monetary cost remains `unavailable`, never zero. Claude and Kiro remained
+  pending and were not incorrectly dispatched.
+- The blocking missing authority is an approved inbound principal, permission,
+  and project-membership policy. The design also requires a deliberate choice
+  to authorize repository-wide invalidation or defer it from the task-scoped
+  API, and must never accept a caller-supplied Stage dependency graph.
+
+### Recovery note and next safe action
+
+Preserve `backend/data/agora.db`; it is ignored runtime state containing the
+blocked Task and append-only usage ledger. Finish the code-review gate for this
+contract increment. After commit, obtain the user's authorization-policy and
+invalidation-scope decision, revise the concrete contract if necessary, then
+use explicit `agora task retry` rather than creating or dispatching a duplicate
+Run. UI remains deferred.
 
 ## 2026-07-13
 

@@ -27,6 +27,7 @@ code zero and returns a schema-valid semantic result.
 
 ```powershell
 agora task start "Describe the delivery goal" --tokens 30000 --cost-usd 20 --run
+agora task start --contract docs/examples/bounded-control-plane-api-task-contract.json --run
 agora task status TASK_ID
 agora task next TASK_ID
 agora task run TASK_ID
@@ -39,6 +40,16 @@ agora task approve TASK_ID --reason "Reviewed all three results"
 can bind the method to an existing Task. `status --json` exposes plans, stages,
 runs, blockers, usage ledger entries, and the next safe action for a future UI
 or TUI without duplicating business rules.
+
+`start --contract PATH` loads a strict UTF-8 JSON Task contract containing the
+roles, ordered workflow, Context/Handoff expectations, acceptance criteria, and
+required Artifact/Evidence/Gate templates. The contract must align exactly with
+the pinned provisional methodology stage order and runtime assignments. Agora
+persists its canonical content, identity, schema version, and SHA-256 with the
+Task and supplies that bounded contract to every runtime stage. The checked-in
+`docs/examples/bounded-control-plane-api-task-contract.json` is the first
+concrete contract; it defines planning and review for the next bounded API
+increment and does not claim that the planned formal outputs already exist.
 
 ## Budget and accounting boundary
 
