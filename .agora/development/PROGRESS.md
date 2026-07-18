@@ -646,3 +646,76 @@ must not be staged. The review gate is complete. The next safe action after the
 commit containing this snapshot is to return to the ordered bounded Control
 Plane API increment before claiming the provisional planning loop as a
 completed transformation stage.
+
+## 2026-07-17 — Windows native runtime recovery (active)
+
+### Scope and recovery findings
+
+- [x] Reverted the premature Task Workbench UI demo in `6f0f7f0`; UI remains
+  deferred until the orchestration path is operationally proven.
+- [x] Reproduced the original Codex failure as a Windows launcher failure:
+  native CLI names resolve to PowerShell/CMD wrappers that cannot be passed
+  directly to `asyncio.create_subprocess_exec` without a shell.
+- [x] Added fail-closed resolution for audited direct-executable and npm
+  Windows wrapper shapes without enabling `shell=True` or interpolating the
+  runtime prompt into a command string.
+- [x] Separated a process that never started (exact zero usage), a started
+  process with estimated usage, and an interrupted/uninspectable process with
+  unavailable usage in both the run record and append-only usage ledger.
+- [x] Added a configurable orchestration network policy; the repository default
+  is `direct` so inherited broken proxy variables are removed from native CLI
+  subprocesses.
+- [x] Made CLI status/error rendering safe on legacy Windows code pages without
+  changing the terminal byte encoding.
+- [x] Completed a real Codex smoke through the resolved npm wrapper and direct
+  network mode. The native runtime returned a valid semantic blocker because
+  the demo Task lacks roles, process, handoff contract, and success criteria;
+  this is an expected Agora Task outcome rather than a transport failure.
+- [x] Obtained the required Kiro methodology/reconciliation review using the
+  user-requested `claude-opus-4.8` model and an independent Claude Code
+  correctness/security review.
+- [x] Fixed all actionable findings and reran the complete verification set;
+  both final review gates returned `APPROVE`.
+- [x] Committed the reviewed Windows native runtime recovery locally (the
+  commit containing this snapshot).
+
+### Verification log
+
+- Initial focused orchestration/config suite: 33 passed.
+- Kiro Opus 4.8 review pass 1: `CHANGES_REQUESTED` for unbounded child-output
+  buffering and missing security-critical wrapper rejection regressions.
+- Replaced `communicate()` buffering with concurrent bounded-tail stream
+  capture and added traversal, relative target, unreadable wrapper, unavailable
+  Node, oversized-output, and real no-shell injection tests.
+- Kiro runtime re-review: `APPROVE`; both findings resolved.
+- Kiro ledger/reconciliation review: `CHANGES_REQUESTED` for treating unknown
+  interrupted usage favorably in the retry budget and for swallowing genuine
+  asyncio cancellation. Its migration concern was disproved against the
+  initial orchestration commit, where both measurement columns already exist.
+- Charged unavailable settlements at their per-run reservation in the token
+  gate and propagated cancellation after stopping/reaping the child; added
+  repeated-interruption budget and real-child cancellation regressions.
+- Kiro ledger re-review: `APPROVE`; no remaining high/medium findings.
+- Claude independent review: `APPROVE` with a non-blocking inherited-pipe drain
+  observation. The observation was nevertheless addressed by bounding
+  post-stop capture drain and rejecting prompt-at-argv-zero configurations.
+- Claude targeted re-review: `APPROVE`; no remaining high/medium findings.
+- Kiro Opus 4.8 final targeted review of the post-stop drain changes:
+  `APPROVE`; no remaining high/medium findings.
+- Final focused orchestration/config suite: 39 passed.
+- Full non-integration backend suite excluding static-export-dependent
+  `tests/test_web_ui.py`: 317 passed, 18 deselected, 3 existing dependency/
+  Windows event-loop cleanup warnings.
+- Protocol Schema export check, Python compile, `git diff --check`, and
+  `agora task --help` smoke: passed.
+- No frontend validation is required for this increment because the demo UI was
+  reverted and the only frontend worktree difference remains the user-owned
+  `frontend/pnpm-workspace.yaml` change.
+
+### Current next safe action
+
+The reviewed runtime recovery is committed locally. Preserve and exclude the
+user-owned `frontend/pnpm-workspace.yaml` change. The next safe product action
+is to write a concrete Task contract (roles, workflow, Context/Handoff
+expectations, and acceptance criteria) and run the CLI-first three-runtime loop
+before returning to UI work.

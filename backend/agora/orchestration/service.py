@@ -15,6 +15,7 @@ from agora.tasks.store import TaskStore
 
 from .methodology import FOUNDATION_METHODOLOGY, MethodologyDefinition
 from .models import (
+    Measurement,
     OrchestrationRun,
     PlanState,
     RunState,
@@ -170,11 +171,22 @@ class TaskOrchestrationService:
             output = result.stdout
             exit_code = result.exit_code
             semantic = self._parse_semantic(output) if exit_code == 0 else None
-        token_used = self._estimate_tokens(prompt, output)
+        if result is None:
+            token_used = None
+            token_measurement = Measurement.UNAVAILABLE
+        elif not result.process_started:
+            token_used = 0
+            token_measurement = Measurement.EXACT
+        else:
+            token_used = self._estimate_tokens(prompt, output)
+            token_measurement = Measurement.ESTIMATED
         return self.store.finish_run(
             run.run_id, exit_code=exit_code,
             timed_out=bool(result and result.timed_out), output=output,
-            error_message=failure, semantic=semantic, token_used=token_used,
+            error_message=failure,
+            semantic=semantic,
+            token_used=token_used,
+            token_measurement=token_measurement,
         )
 
     async def run_until_blocked(self, task_id: str) -> TaskOrchestrationStatus:

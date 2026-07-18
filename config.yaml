@@ -104,6 +104,12 @@ sandbox:
 web:
   network_mode: direct
 
+# Network policy for native CLI planning/review runtimes.
+# direct: remove inherited proxy variables; system: preserve them.
+orchestration:
+  network_mode: direct
+  timeout_seconds: 600
+
 # Opt-in workflow background reconciliation. Only workflows created with auto_dispatch run automatically.
 workflow_scheduler:
   interval_seconds: 5

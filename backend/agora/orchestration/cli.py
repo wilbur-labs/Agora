@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import sys
 from pathlib import Path
 from typing import Sequence
 
@@ -12,8 +13,8 @@ from agora.projects import ProjectRegistry
 from agora.tasks.models import TaskRisk
 from agora.tasks.store import TaskNotFoundError, TaskStore
 
-from .models import PlanState
-from .runtime import build_runtime_registry
+from .models import Measurement, PlanState
+from .runtime import ReadOnlyCliRunner, build_runtime_registry
 from .service import TaskOrchestrationService
 from .store import (
     OrchestrationConflictError,
@@ -31,6 +32,9 @@ def build_service(config: dict | None = None) -> TaskOrchestrationService:
         TaskStore(db_path),
         ProjectRegistry(cfg),
         build_runtime_registry(cfg),
+        runner=ReadOnlyCliRunner(
+            network_mode=str(orchestration.get("network_mode", "system")),
+        ),
         timeout_seconds=int(orchestration.get("timeout_seconds", 600)),
     )
 
@@ -79,6 +83,7 @@ def parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    _configure_safe_output()
     args = parser().parse_args(argv)
     service = build_service()
     try:
@@ -147,6 +152,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 2
 
 
+def _configure_safe_output() -> None:
+    """Avoid UnicodeEncodeError without changing the terminal's byte encoding."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(errors="backslashreplace")
+
+
 def _print_status(status) -> None:
     plan = status.plan
     provisional = " provisional" if plan.provisional else ""
@@ -161,10 +174,14 @@ def _print_status(status) -> None:
         )
         for blocker in stage.blockers:
             print(f"     blocker: {blocker}")
-    print(
-        f"Tokens: reserved={status.tokens_reserved} used~={status.tokens_used} "
-        f"remaining={status.tokens_remaining}"
-    )
+    if status.token_measurement == Measurement.UNAVAILABLE:
+        print(f"Tokens: reserved={status.tokens_reserved} used=unavailable remaining=unavailable")
+    else:
+        marker = "~" if status.token_measurement == Measurement.ESTIMATED else ""
+        print(
+            f"Tokens: reserved={status.tokens_reserved} used{marker}={status.tokens_used} "
+            f"remaining={status.tokens_remaining}"
+        )
     if status.cost_measurement.value == "unavailable":
         print("Cost: unavailable from the native CLI outputs (never recorded as zero)")
     else:

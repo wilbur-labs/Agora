@@ -159,8 +159,9 @@ class TaskOrchestrationStatus(StrictModel):
     runs: list[OrchestrationRun]
     usage: list[UsageLedgerEntry]
     tokens_reserved: int
-    tokens_used: int
-    tokens_remaining: int
+    tokens_used: int | None
+    token_measurement: Measurement
+    tokens_remaining: int | None
     cost_used_usd: float | None
     cost_measurement: Measurement
     next_safe_action: str

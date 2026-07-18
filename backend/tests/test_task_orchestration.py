@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sys
 
 import pytest
 
@@ -10,11 +11,15 @@ from agora.orchestration.methodology import FOUNDATION_METHODOLOGY, methodology_
 from agora.orchestration.models import Measurement, PlanState, RunState, StageState
 from agora.orchestration.processes import ProcessState, inspect_process
 from agora.orchestration.runtime import (
+    ReadOnlyCliRunner,
     RuntimeCommand,
     RuntimeInterrupted,
+    RuntimeLaunchError,
     RuntimeResult,
     build_runtime_registry,
+    resolve_runtime_command,
 )
+from agora.orchestration import runtime as orchestration_runtime
 from agora.orchestration.service import TaskOrchestrationService
 from agora.orchestration.store import (
     OrchestrationConflictError,
@@ -40,10 +45,12 @@ class FakeRunner:
 
     async def run(self, runtime, prompt, **kwargs):
         self.prompts.append(prompt)
-        await kwargs["on_process"](self.pid)
         result = self.results.pop(0)
         if isinstance(result, BaseException):
+            await kwargs["on_process"](self.pid)
             raise result
+        if result.process_started:
+            await kwargs["on_process"](self.pid)
         return result
 
 
@@ -104,6 +111,198 @@ def test_runtime_defaults_are_read_only_and_bounded():
         build_runtime_registry({
             "orchestration": {"runtimes": {"codex": {"command": ["codex"]}}}
         })
+    with pytest.raises(ValueError, match="prompt as its executable"):
+        build_runtime_registry({
+            "orchestration": {
+                "runtimes": {"codex": {"command": ["{prompt}", "--read-only"]}},
+            },
+        })
+
+
+def test_runtime_network_policy_removes_inherited_proxies_case_insensitively(monkeypatch):
+    monkeypatch.setenv("HTTP_PROXY", "http://bad-proxy")
+    monkeypatch.setenv("https_proxy", "http://bad-proxy")
+    monkeypatch.setenv("ALL_PROXY", "http://bad-proxy")
+    monkeypatch.setenv("NO_PROXY", "localhost")
+    direct = ReadOnlyCliRunner(network_mode="direct")._environment({"AGORA_TASK_ID": "task"})
+    assert not any(name.upper().endswith("PROXY") for name in direct)
+    assert direct["AGORA_TASK_ID"] == "task"
+
+    system = ReadOnlyCliRunner(network_mode="system")._environment({})
+    system_by_upper_name = {name.upper(): value for name, value in system.items()}
+    assert system_by_upper_name["HTTP_PROXY"] == "http://bad-proxy"
+    assert system_by_upper_name["HTTPS_PROXY"] == "http://bad-proxy"
+    with pytest.raises(ValueError, match="direct.*system"):
+        ReadOnlyCliRunner(network_mode="invalid")
+
+
+def test_windows_runtime_wrapper_resolution_is_explicit_and_fail_closed(tmp_path, monkeypatch):
+    target = tmp_path / "vendor.exe"
+    target.touch()
+    direct = tmp_path / "vendor.cmd"
+    direct.write_text(f'@echo off\n"{target}" %*\n', encoding="utf-8")
+    monkeypatch.setattr(orchestration_runtime.shutil, "which", lambda name: str(direct))
+    assert resolve_runtime_command(["vendor", "--version"], platform="win32") == [
+        str(target), "--version",
+    ]
+
+    node = tmp_path / "node.exe"
+    node.touch()
+    script = tmp_path / "node_modules" / "vendor" / "bin" / "vendor.js"
+    script.parent.mkdir(parents=True)
+    script.touch()
+    npm = tmp_path / "npm-vendor.cmd"
+    npm.write_text(
+        '@echo off\n"%dp0%\\node_modules\\vendor\\bin\\vendor.js" %*\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(orchestration_runtime.shutil, "which", lambda name: str(npm))
+    assert resolve_runtime_command(["npm-vendor", "arg"], platform="win32") == [
+        str(node), str(script), "arg",
+    ]
+
+    unknown = tmp_path / "unknown.cmd"
+    unknown.write_text("@echo off\necho unsafe %*\n", encoding="utf-8")
+    monkeypatch.setattr(orchestration_runtime.shutil, "which", lambda name: str(unknown))
+    with pytest.raises(RuntimeLaunchError, match="unsupported"):
+        resolve_runtime_command(["unknown", "arg"], platform="win32")
+
+
+def test_windows_runtime_wrapper_rejects_escape_and_unavailable_targets(tmp_path, monkeypatch):
+    escaped_script = tmp_path.parent / "escaped.js"
+    escaped_script.touch()
+    traversal = tmp_path / "traversal.cmd"
+    traversal.write_text('@echo off\n"%dp0%\\..\\escaped.js" %*\n', encoding="utf-8")
+    monkeypatch.setattr(orchestration_runtime.shutil, "which", lambda name: str(traversal))
+    with pytest.raises(RuntimeLaunchError, match="npm wrapper target is unavailable"):
+        resolve_runtime_command(["traversal"], platform="win32")
+
+    relative_direct = tmp_path / "relative-direct.cmd"
+    relative_direct.write_text('@echo off\n"%dp0%\\vendor.exe" %*\n', encoding="utf-8")
+    monkeypatch.setattr(
+        orchestration_runtime.shutil, "which", lambda name: str(relative_direct),
+    )
+    with pytest.raises(RuntimeLaunchError, match="Windows wrapper target is unavailable"):
+        resolve_runtime_command(["relative-direct"], platform="win32")
+
+    unreadable = tmp_path / "unreadable.cmd"
+    unreadable.mkdir()
+    monkeypatch.setattr(orchestration_runtime.shutil, "which", lambda name: str(unreadable))
+    with pytest.raises(RuntimeLaunchError, match="wrapper is unreadable"):
+        resolve_runtime_command(["unreadable"], platform="win32")
+
+
+def test_windows_npm_wrapper_requires_a_native_node_executable(tmp_path, monkeypatch):
+    script = tmp_path / "vendor.js"
+    script.touch()
+    wrapper = tmp_path / "npm-vendor.cmd"
+    wrapper.write_text('@echo off\n"%dp0%\\vendor.js" %*\n', encoding="utf-8")
+
+    def no_node(name):
+        return str(wrapper) if name == "npm-vendor" else None
+
+    monkeypatch.setattr(orchestration_runtime.shutil, "which", no_node)
+    with pytest.raises(RuntimeLaunchError, match="Node.js executable is unavailable"):
+        resolve_runtime_command(["npm-vendor"], platform="win32")
+
+
+@pytest.mark.asyncio
+async def test_runtime_output_capture_retains_only_a_bounded_tail():
+    class ChunkedReader:
+        def __init__(self, remaining: int):
+            self.remaining = remaining
+            self.largest_request = 0
+
+        async def read(self, size: int) -> bytes:
+            self.largest_request = max(self.largest_request, size)
+            count = min(size, self.remaining)
+            self.remaining -= count
+            return b"x" * count
+
+    reader = ChunkedReader(orchestration_runtime.OUTPUT_LIMIT * 10)
+    captured = await ReadOnlyCliRunner._read_tail(reader)
+    assert len(captured) == orchestration_runtime.OUTPUT_LIMIT
+    assert captured == b"x" * orchestration_runtime.OUTPUT_LIMIT
+    assert reader.largest_request == orchestration_runtime.OUTPUT_READ_SIZE
+
+
+@pytest.mark.asyncio
+async def test_post_stop_capture_drain_is_time_bounded(monkeypatch):
+    never_finishes = asyncio.create_task(asyncio.Event().wait())
+    monkeypatch.setattr(orchestration_runtime, "POST_STOP_DRAIN_TIMEOUT", 0.01)
+
+    captured = await ReadOnlyCliRunner._finish_capture(never_finishes)
+
+    assert captured is None
+    assert never_finishes.cancelled()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name != "nt", reason="Windows wrapper integration")
+async def test_runner_executes_resolved_windows_wrapper_without_prompt_shell_injection(
+    tmp_path, monkeypatch,
+):
+    script = tmp_path / "emit.py"
+    script.write_text(f"print({PASS!r})\n", encoding="utf-8")
+    wrapper = tmp_path / "fake-runtime.cmd"
+    wrapper.write_text(f'@echo off\n"{sys.executable}" %*\n', encoding="utf-8")
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ.get('PATH', '')}")
+    pids: list[int] = []
+
+    async def capture_pid(pid: int) -> None:
+        pids.append(pid)
+
+    result = await ReadOnlyCliRunner().run(
+        RuntimeCommand(
+            adapter="fake-runtime",
+            command_template=("fake-runtime", str(script), "{prompt}"),
+        ),
+        "untrusted & echo INJECTED",
+        cwd=tmp_path,
+        task_id="task_test",
+        run_id="run_test",
+        stage_key="test",
+        timeout_seconds=10,
+        on_process=capture_pid,
+    )
+    assert result.process_started is True
+    assert result.exit_code == 0
+    assert result.stdout.strip() == PASS
+    assert "INJECTED" not in result.stdout
+    assert len(pids) == 1
+
+
+@pytest.mark.asyncio
+async def test_real_runner_cancellation_stops_child_and_propagates(tmp_path):
+    script = tmp_path / "sleep.py"
+    script.write_text("import time\ntime.sleep(30)\n", encoding="utf-8")
+    attached = asyncio.Event()
+    pids: list[int] = []
+
+    async def capture_pid(pid: int) -> None:
+        pids.append(pid)
+        attached.set()
+
+    pending = asyncio.create_task(ReadOnlyCliRunner().run(
+        RuntimeCommand(
+            adapter="python",
+            command_template=(sys.executable, str(script), "{prompt}"),
+        ),
+        "cancel safely",
+        cwd=tmp_path,
+        task_id="task_cancel",
+        run_id="run_cancel",
+        stage_key="test",
+        timeout_seconds=30,
+        on_process=capture_pid,
+    ))
+    await asyncio.wait_for(attached.wait(), timeout=5)
+    pending.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await pending
+
+    assert len(pids) == 1
+    assert inspect_process(pids[0]) == ProcessState.DEAD
 
 
 def test_create_persists_method_budget_and_task_audit(tmp_path):
@@ -184,6 +383,31 @@ async def test_timeout_blocks_even_when_process_exits_zero_with_valid_semantic_r
     assert run.semantic_status.value == "pass"
     assert status.plan.state == PlanState.BLOCKED
     assert "timeout after" in status.stages[0].blockers[0]
+
+
+@pytest.mark.asyncio
+async def test_process_start_failure_settles_exact_zero_tokens(tmp_path):
+    _, service, _, task = _system(
+        tmp_path,
+        [RuntimeResult(
+            None,
+            "",
+            "process start failed: FileNotFoundError",
+            process_started=False,
+        )],
+    )
+    run = await service.run_next(task.task_id)
+    status = service.status(task.task_id)
+
+    assert run.state == RunState.FAILED
+    assert run.pid is None
+    assert run.token_used == 0
+    assert run.token_measurement == Measurement.EXACT
+    assert status.tokens_used == 0
+    assert status.token_measurement == Measurement.EXACT
+    assert status.tokens_remaining == status.plan.total_token_budget
+    assert status.usage[-1].tokens == 0
+    assert status.usage[-1].token_measurement == Measurement.EXACT
 
 
 @pytest.mark.asyncio
@@ -336,6 +560,11 @@ async def test_runtime_boundary_failures_are_reconciled(
             "orchestration.run_interrupted"
         )
     assert status.plan.state == PlanState.BLOCKED
+    assert status.runs[0].token_used is None
+    assert status.runs[0].token_measurement == Measurement.UNAVAILABLE
+    assert status.tokens_used is None
+    assert status.token_measurement == Measurement.UNAVAILABLE
+    assert status.tokens_remaining is None
 
 
 def test_cli_maps_missing_task_to_a_bounded_error(tmp_path, monkeypatch, capsys):
@@ -344,6 +573,25 @@ def test_cli_maps_missing_task_to_a_bounded_error(tmp_path, monkeypatch, capsys)
 
     assert orchestration_cli.main(["attach", "missing-task"]) == 2
     assert "error: missing-task" in capsys.readouterr().out
+
+
+def test_cli_configures_safe_output_for_windows_runtime_results(monkeypatch):
+    class FakeStream:
+        def __init__(self):
+            self.calls = []
+
+        def reconfigure(self, **kwargs):
+            self.calls.append(kwargs)
+
+    stdout = FakeStream()
+    stderr = FakeStream()
+    monkeypatch.setattr(orchestration_cli.sys, "stdout", stdout)
+    monkeypatch.setattr(orchestration_cli.sys, "stderr", stderr)
+
+    orchestration_cli._configure_safe_output()
+
+    assert stdout.calls == [{"errors": "backslashreplace"}]
+    assert stderr.calls == [{"errors": "backslashreplace"}]
 
 
 @pytest.mark.asyncio
@@ -359,3 +607,25 @@ async def test_retry_is_explicit_and_preserves_run_history(tmp_path):
     assert len(status.runs) == 2
     assert status.stages[0].attempt_count == 2
     assert len(runner.prompts) == 2
+
+
+@pytest.mark.asyncio
+async def test_unavailable_settlements_consume_reserved_budget_on_retry(tmp_path):
+    _, service, runner, task = _system(
+        tmp_path,
+        [RuntimeInterrupted("first interrupted"), RuntimeInterrupted("second interrupted")],
+        tokens=3_000,
+    )
+
+    await service.run_next(task.task_id)
+    service.retry(task.task_id, "solution_design")
+    await service.run_next(task.task_id)
+    service.retry(task.task_id, "solution_design")
+
+    with pytest.raises(OrchestrationConflictError, match="Token budget is exhausted"):
+        await service.run_next(task.task_id)
+
+    status = service.status(task.task_id)
+    assert len(status.runs) == 2
+    assert len(runner.prompts) == 2
+    assert all(run.token_measurement == Measurement.UNAVAILABLE for run in status.runs)

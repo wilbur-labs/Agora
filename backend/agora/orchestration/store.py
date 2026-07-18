@@ -232,10 +232,21 @@ class OrchestrationStore:
             if previous_incomplete:
                 raise OrchestrationConflictError("A previous methodology stage has not passed")
             settled = db.execute(
-                """SELECT COALESCE(SUM(tokens), 0) AS total
-                   FROM orchestration_usage_ledger
-                   WHERE plan_id = ? AND entry_type = ?""",
-                (plan["plan_id"], LedgerEntryType.SETTLEMENT.value),
+                """SELECT COALESCE(SUM(
+                           CASE
+                               WHEN ledger.token_measurement = ? OR ledger.tokens IS NULL
+                                   THEN runs.token_reserved
+                               ELSE ledger.tokens
+                           END
+                       ), 0) AS total
+                   FROM orchestration_usage_ledger AS ledger
+                   JOIN orchestration_runs AS runs ON runs.run_id = ledger.run_id
+                   WHERE ledger.plan_id = ? AND ledger.entry_type = ?""",
+                (
+                    Measurement.UNAVAILABLE.value,
+                    plan["plan_id"],
+                    LedgerEntryType.SETTLEMENT.value,
+                ),
             ).fetchone()["total"]
             active_reserved = db.execute(
                 """SELECT COALESCE(SUM(token_reserved), 0) AS total
@@ -320,7 +331,8 @@ class OrchestrationStore:
         output: str,
         error_message: str | None,
         semantic: SemanticResult | None,
-        token_used: int,
+        token_used: int | None,
+        token_measurement: Measurement = Measurement.ESTIMATED,
         actor: str = "orchestrator",
     ) -> OrchestrationRun:
         now = utc_now()
@@ -353,7 +365,7 @@ class OrchestrationStore:
                 blockers.append("Runtime output did not match the required semantic result schema")
             elif semantic.status.value != "pass":
                 blockers.extend(safe_findings or [safe_next_action or "Runtime requested review"])
-            if token_used > run["token_reserved"]:
+            if token_used is not None and token_used > run["token_reserved"]:
                 blockers.append(
                     f"Estimated token use {token_used} exceeded the reserved {run['token_reserved']} tokens"
                 )
@@ -374,7 +386,7 @@ class OrchestrationStore:
                     run_state.value, exit_code, int(timed_out), safe_output, safe_error,
                     semantic.status.value if semantic else None, safe_summary,
                     self._json(sanitize_data(safe_findings)), token_used,
-                    Measurement.ESTIMATED.value, Measurement.UNAVAILABLE.value, now, run_id,
+                    token_measurement.value, Measurement.UNAVAILABLE.value, now, run_id,
                 ),
             )
             db.execute(
@@ -387,7 +399,7 @@ class OrchestrationStore:
                 (
                     self._id("usage"), run["task_id"], run["plan_id"], run["stage_key"],
                     run_id, LedgerEntryType.SETTLEMENT.value, token_used,
-                    Measurement.ESTIMATED.value, Measurement.UNAVAILABLE.value,
+                    token_measurement.value, Measurement.UNAVAILABLE.value,
                     run["adapter"], now,
                 ),
             )
@@ -426,7 +438,7 @@ class OrchestrationStore:
                     "timed_out": timed_out,
                     "semantic_status": semantic.status.value if semantic else None,
                     "stage_state": stage_state.value, "token_used": token_used,
-                    "token_measurement": Measurement.ESTIMATED.value,
+                    "token_measurement": token_measurement.value,
                     "cost_measurement": Measurement.UNAVAILABLE.value,
                     "blockers": sanitize_data(blockers),
                 },
@@ -444,9 +456,29 @@ class OrchestrationStore:
             if run["state"] != RunState.RUNNING.value:
                 return self._run(run)
             db.execute(
-                """UPDATE orchestration_runs SET state = ?, error_message = ?, finished_at = ?
+                """UPDATE orchestration_runs
+                   SET state = ?, error_message = ?, token_used = NULL,
+                       token_measurement = ?, cost_used_usd = NULL,
+                       cost_measurement = ?, finished_at = ?
                    WHERE run_id = ?""",
-                (RunState.INTERRUPTED.value, safe_reason, now, run_id),
+                (
+                    RunState.INTERRUPTED.value, safe_reason,
+                    Measurement.UNAVAILABLE.value, Measurement.UNAVAILABLE.value,
+                    now, run_id,
+                ),
+            )
+            db.execute(
+                """INSERT INTO orchestration_usage_ledger (
+                       entry_id, task_id, plan_id, stage_key, run_id, entry_type,
+                       tokens, token_measurement, cost_usd, cost_measurement,
+                       adapter, created_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, NULL, ?, ?, ?)""",
+                (
+                    self._id("usage"), run["task_id"], run["plan_id"],
+                    run["stage_key"], run_id, LedgerEntryType.SETTLEMENT.value,
+                    Measurement.UNAVAILABLE.value, Measurement.UNAVAILABLE.value,
+                    run["adapter"], now,
+                ),
             )
             db.execute(
                 """UPDATE orchestration_stages SET state = ?, blockers = ?, updated_at = ?
@@ -467,6 +499,9 @@ class OrchestrationStore:
                 payload={
                     "plan_id": run["plan_id"], "run_id": run_id,
                     "stage_key": run["stage_key"], "reason": safe_reason,
+                    "token_used": None,
+                    "token_measurement": Measurement.UNAVAILABLE.value,
+                    "cost_measurement": Measurement.UNAVAILABLE.value,
                 },
                 created_at=now,
             )
@@ -542,9 +577,20 @@ class OrchestrationStore:
         runs = self.runs(plan.plan_id)
         usage = self.usage(plan.plan_id)
         reservations = sum(run.token_reserved for run in runs if run.state == RunState.RUNNING)
-        used = sum(
+        settlement_entries = [
+            item for item in usage if item.entry_type == LedgerEntryType.SETTLEMENT
+        ]
+        token_measurement = (
+            Measurement.UNAVAILABLE
+            if any(item.token_measurement == Measurement.UNAVAILABLE for item in settlement_entries)
+            else Measurement.ESTIMATED
+            if any(item.token_measurement == Measurement.ESTIMATED for item in settlement_entries)
+            else Measurement.EXACT
+        )
+        known_used = sum(
             item.tokens or 0 for item in usage if item.entry_type == LedgerEntryType.SETTLEMENT
         )
+        used = None if token_measurement == Measurement.UNAVAILABLE else known_used
         cost_entries = [
             item for item in usage
             if item.entry_type == LedgerEntryType.SETTLEMENT and item.cost_usd is not None
@@ -556,8 +602,14 @@ class OrchestrationStore:
         )
         return TaskOrchestrationStatus(
             plan=plan, stages=stages, runs=runs, usage=usage,
-            tokens_reserved=reservations, tokens_used=used,
-            tokens_remaining=max(0, plan.total_token_budget - reservations - used),
+            tokens_reserved=reservations,
+            tokens_used=used,
+            token_measurement=token_measurement,
+            tokens_remaining=(
+                None
+                if used is None
+                else max(0, plan.total_token_budget - reservations - used)
+            ),
             cost_used_usd=cost_used, cost_measurement=cost_measurement,
             next_safe_action=self._next_action(plan, stages),
         )
