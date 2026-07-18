@@ -153,11 +153,25 @@ class UsageLedgerEntry(StrictModel):
     created_at: str
 
 
+class TaskDecision(StrictModel):
+    decision_id: str
+    plan_id: str
+    task_id: str
+    decision_key: str = Field(pattern=r"^[a-z][a-z0-9_.-]*$")
+    decision_value: str = Field(min_length=1, max_length=1000)
+    rationale: str = Field(min_length=1, max_length=500)
+    decision_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    version: int = Field(ge=1)
+    actor: str = Field(min_length=1, max_length=128)
+    created_at: str
+
+
 class TaskOrchestrationStatus(StrictModel):
     plan: OrchestrationPlan
     stages: list[OrchestrationStage]
     runs: list[OrchestrationRun]
     usage: list[UsageLedgerEntry]
+    decisions: list[TaskDecision]
     tokens_reserved: int
     tokens_used: int | None
     token_measurement: Measurement

@@ -98,6 +98,22 @@ def initialize_orchestration_schema(db: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_orchestration_usage_task_created
             ON orchestration_usage_ledger(task_id, created_at, entry_id);
+
+        CREATE TABLE IF NOT EXISTS orchestration_decisions (
+            decision_id TEXT PRIMARY KEY,
+            plan_id TEXT NOT NULL REFERENCES orchestration_plans(plan_id),
+            task_id TEXT NOT NULL REFERENCES tasks(task_id),
+            decision_key TEXT NOT NULL,
+            decision_value TEXT NOT NULL,
+            rationale TEXT NOT NULL,
+            decision_sha256 TEXT NOT NULL,
+            version INTEGER NOT NULL,
+            actor TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(plan_id, decision_key, version)
+        );
+        CREATE INDEX IF NOT EXISTS idx_orchestration_decisions_plan_key_version
+            ON orchestration_decisions(plan_id, decision_key, version DESC);
         """
     )
     columns = {row[1] for row in db.execute("PRAGMA table_info(orchestration_runs)")}

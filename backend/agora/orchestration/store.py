@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import re
 import sqlite3
 import uuid
 from contextlib import closing, contextmanager
@@ -22,9 +24,13 @@ from .models import (
     RunState,
     SemanticResult,
     StageState,
+    TaskDecision,
     TaskOrchestrationStatus,
     UsageLedgerEntry,
 )
+
+
+DECISION_CONTEXT_LIMIT = 2_000
 
 
 class OrchestrationNotFoundError(LookupError):
@@ -193,6 +199,152 @@ class OrchestrationStore:
                 "SELECT * FROM orchestration_usage_ledger WHERE plan_id = ? ORDER BY rowid", (plan_id,),
             ).fetchall()
         return [self._usage(row) for row in rows]
+
+    def decisions(self, plan_id: str) -> list[TaskDecision]:
+        with closing(self._connect()) as db:
+            rows = db.execute(
+                """SELECT * FROM orchestration_decisions
+                   WHERE plan_id = ? ORDER BY decision_key, version""",
+                (plan_id,),
+            ).fetchall()
+        return [self._decision(row) for row in rows]
+
+    def latest_decisions(self, plan_id: str) -> list[TaskDecision]:
+        with closing(self._connect()) as db:
+            rows = db.execute(
+                """SELECT decision.* FROM orchestration_decisions AS decision
+                   JOIN (
+                       SELECT decision_key, MAX(version) AS version
+                       FROM orchestration_decisions WHERE plan_id = ?
+                       GROUP BY decision_key
+                   ) AS latest
+                   ON latest.decision_key = decision.decision_key
+                   AND latest.version = decision.version
+                   WHERE decision.plan_id = ?
+                   ORDER BY decision.decision_key""",
+                (plan_id, plan_id),
+            ).fetchall()
+        return [self._decision(row) for row in rows]
+
+    def record_decision(
+        self,
+        task_id: str,
+        *,
+        decision_key: str,
+        decision_value: str,
+        rationale: str,
+        actor: str = "user",
+    ) -> TaskDecision:
+        if not re.fullmatch(r"[a-z][a-z0-9_.-]*", decision_key):
+            raise OrchestrationValidationError("Invalid decision key")
+        safe_value = redact_text(decision_value.strip())
+        safe_rationale = redact_text(rationale.strip())
+        if not safe_value or len(safe_value) > 1_000:
+            raise OrchestrationValidationError("Decision value must contain 1 to 1000 characters")
+        if not safe_rationale or len(safe_rationale) > 500:
+            raise OrchestrationValidationError("Decision rationale must contain 1 to 500 characters")
+        actor = actor.strip()
+        if not actor or len(actor) > 128:
+            raise OrchestrationValidationError("Decision actor must contain 1 to 128 characters")
+        digest = hashlib.sha256(self._json({
+            "decision_key": decision_key,
+            "decision_value": safe_value,
+            "rationale": safe_rationale,
+        }).encode("utf-8")).hexdigest()
+        now = utc_now()
+        with self._transaction() as db:
+            plan = db.execute(
+                "SELECT * FROM orchestration_plans WHERE task_id = ?", (task_id,),
+            ).fetchone()
+            if not plan:
+                raise OrchestrationNotFoundError(task_id)
+            if plan["state"] != PlanState.BLOCKED.value:
+                raise OrchestrationConflictError(
+                    "Task decisions may be recorded only while the plan is blocked"
+                )
+            stage = db.execute(
+                """SELECT state FROM orchestration_stages
+                   WHERE plan_id = ? AND stage_key = ?""",
+                (plan["plan_id"], plan["current_stage_key"]),
+            ).fetchone()
+            if not stage or stage["state"] != StageState.BLOCKED.value:
+                raise OrchestrationConflictError("Current stage is not blocked")
+            latest = db.execute(
+                """SELECT * FROM orchestration_decisions
+                   WHERE plan_id = ? AND decision_key = ?
+                   ORDER BY version DESC LIMIT 1""",
+                (plan["plan_id"], decision_key),
+            ).fetchone()
+            if latest and latest["decision_sha256"] == digest:
+                return self._decision(latest)
+            version = int(latest["version"]) + 1 if latest else 1
+            latest_rows = db.execute(
+                """SELECT decision_key, decision_value, rationale, version, actor
+                   FROM orchestration_decisions AS decision
+                   WHERE plan_id = ? AND version = (
+                       SELECT MAX(version) FROM orchestration_decisions
+                       WHERE plan_id = decision.plan_id
+                       AND decision_key = decision.decision_key
+                   ) AND decision_key != ? ORDER BY decision_key""",
+                (plan["plan_id"], decision_key),
+            ).fetchall()
+            decision_context = [dict(row) for row in latest_rows]
+            decision_context.append({
+                "decision_key": decision_key,
+                "decision_value": safe_value,
+                "rationale": safe_rationale,
+                "version": version,
+                "actor": actor,
+            })
+            decision_context.sort(key=lambda item: item["decision_key"])
+            if len(self._json(decision_context)) > DECISION_CONTEXT_LIMIT:
+                raise OrchestrationValidationError(
+                    "Active Task decisions exceed the bounded prompt allocation"
+                )
+            decision_id = self._id("decision")
+            db.execute(
+                """INSERT INTO orchestration_decisions (
+                       decision_id, plan_id, task_id, decision_key, decision_value,
+                       rationale, decision_sha256, version, actor, created_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    decision_id, plan["plan_id"], task_id, decision_key, safe_value,
+                    safe_rationale, digest, version, actor, now,
+                ),
+            )
+            cursor = db.execute(
+                """UPDATE orchestration_plans
+                   SET version = version + 1, updated_at = ?
+                   WHERE plan_id = ? AND version = ?""",
+                (now, plan["plan_id"], plan["version"]),
+            )
+            if cursor.rowcount != 1:
+                raise OrchestrationConflictError("Plan changed while recording the decision")
+            self.tasks._insert_event(
+                db,
+                task_id=task_id,
+                event_type="orchestration.decision_recorded",
+                actor=actor,
+                payload={
+                    "plan_id": plan["plan_id"],
+                    "decision_id": decision_id,
+                    "decision_key": decision_key,
+                    "decision_sha256": digest,
+                    "version": version,
+                },
+                created_at=now,
+            )
+        return self.require_decision(decision_id)
+
+    def require_decision(self, decision_id: str) -> TaskDecision:
+        with closing(self._connect()) as db:
+            row = db.execute(
+                "SELECT * FROM orchestration_decisions WHERE decision_id = ?",
+                (decision_id,),
+            ).fetchone()
+        if not row:
+            raise OrchestrationNotFoundError(decision_id)
+        return self._decision(row)
 
     def claim_current_stage(
         self,
@@ -576,6 +728,7 @@ class OrchestrationStore:
         stages = self.stages(plan.plan_id)
         runs = self.runs(plan.plan_id)
         usage = self.usage(plan.plan_id)
+        decisions = self.decisions(plan.plan_id)
         reservations = sum(run.token_reserved for run in runs if run.state == RunState.RUNNING)
         settlement_entries = [
             item for item in usage if item.entry_type == LedgerEntryType.SETTLEMENT
@@ -601,7 +754,7 @@ class OrchestrationStore:
             else Measurement.ESTIMATED if cost_entries else Measurement.UNAVAILABLE
         )
         return TaskOrchestrationStatus(
-            plan=plan, stages=stages, runs=runs, usage=usage,
+            plan=plan, stages=stages, runs=runs, usage=usage, decisions=decisions,
             tokens_reserved=reservations,
             tokens_used=used,
             token_measurement=token_measurement,
@@ -697,4 +850,14 @@ class OrchestrationStore:
             tokens=row["tokens"], token_measurement=row["token_measurement"],
             cost_usd=row["cost_usd"], cost_measurement=row["cost_measurement"],
             adapter=row["adapter"], created_at=row["created_at"],
+        )
+
+    @staticmethod
+    def _decision(row: sqlite3.Row) -> TaskDecision:
+        return TaskDecision(
+            decision_id=row["decision_id"], plan_id=row["plan_id"],
+            task_id=row["task_id"], decision_key=row["decision_key"],
+            decision_value=row["decision_value"], rationale=row["rationale"],
+            decision_sha256=row["decision_sha256"], version=row["version"],
+            actor=row["actor"], created_at=row["created_at"],
         )

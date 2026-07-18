@@ -29,6 +29,7 @@ code zero and returns a schema-valid semantic result.
 agora task start "Describe the delivery goal" --tokens 30000 --cost-usd 20 --run
 agora task start --contract docs/examples/bounded-control-plane-api-task-contract.json --run
 agora task status TASK_ID
+agora task decide TASK_ID inbound_authorization_policy --value "Use control-plane-api-access-policy-v1" --reason "Human-approved API boundary"
 agora task next TASK_ID
 agora task run TASK_ID
 agora task resume TASK_ID
@@ -46,10 +47,25 @@ roles, ordered workflow, Context/Handoff expectations, acceptance criteria, and
 required Artifact/Evidence/Gate templates. The contract must align exactly with
 the pinned provisional methodology stage order and runtime assignments. Agora
 persists its canonical content, identity, schema version, and SHA-256 with the
-Task and supplies that bounded contract to every runtime stage. The checked-in
+Task and supplies a hash-bound, Stage-scoped projection to every runtime. This
+leaves bounded room for verified prior-stage results without weakening contract
+identity or sending a full transcript. The checked-in
 `docs/examples/bounded-control-plane-api-task-contract.json` is the first
 concrete contract; it defines planning and review for the next bounded API
 increment and does not claim that the planned formal outputs already exist.
+
+`decide` is available only while the Plan and current Stage are blocked. It
+records an immutable, versioned human decision, redacts secret-like content at
+the persistence boundary, updates the Plan version atomically, and appends a
+Task audit event. Repeating the same latest decision is idempotent; changing it
+adds a new version. Latest decisions are included in subsequent bounded runtime
+prompts, while full decision history remains visible in `status --json`.
+
+Runtime result extraction permits one format-only recovery: Agora may locate
+one schema-valid semantic JSON object inside prose or a fenced block. No fields
+are invented or altered, more than one valid result fails closed, and candidate
+scanning is bounded. A recovered `needs_work` or `blocked` result remains a
+semantic blocker.
 
 ## Budget and accounting boundary
 

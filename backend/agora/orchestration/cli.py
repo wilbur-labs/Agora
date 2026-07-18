@@ -62,6 +62,16 @@ def parser() -> argparse.ArgumentParser:
     attach.add_argument("--tokens", type=int, default=30_000)
     attach.add_argument("--cost-usd", type=float)
 
+    decide = commands.add_parser(
+        "decide",
+        help="Record an explicit human decision while a plan is blocked",
+    )
+    decide.add_argument("task_id")
+    decide.add_argument("decision_key")
+    decide.add_argument("--value", required=True)
+    decide.add_argument("--reason", required=True)
+    decide.add_argument("--actor", default="user")
+
     for name, help_text in (
         ("next", "Run the next safe planning/review stage"),
         ("run", "Run stages until blocked or awaiting human approval"),
@@ -120,6 +130,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                 total_token_budget=args.tokens,
                 total_cost_budget_usd=args.cost_usd,
             )
+            _print_status(service.status(args.task_id))
+            return 0
+        if args.command == "decide":
+            decision = service.decide(
+                args.task_id,
+                decision_key=args.decision_key,
+                decision_value=args.value,
+                rationale=args.reason,
+                actor=args.actor,
+            )
+            print(json.dumps(decision.model_dump(mode="json"), ensure_ascii=False, indent=2))
             _print_status(service.status(args.task_id))
             return 0
         if args.command == "next":
@@ -184,6 +205,13 @@ def _print_status(status) -> None:
         )
         for blocker in stage.blockers:
             print(f"     blocker: {blocker}")
+    if status.decisions:
+        print("Decisions:")
+        for decision in status.decisions:
+            print(
+                f"  {decision.decision_key}@{decision.version} by {decision.actor}: "
+                f"{decision.decision_value}"
+            )
     if status.token_measurement == Measurement.UNAVAILABLE:
         print(f"Tokens: reserved={status.tokens_reserved} used=unavailable remaining=unavailable")
     else:

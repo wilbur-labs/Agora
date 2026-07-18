@@ -472,6 +472,7 @@ def test_create_persists_method_budget_and_task_audit(tmp_path):
     assert [stage.token_budget for stage in status.stages] == [13_500, 9_000, 7_500]
     assert [stage.cost_budget_usd for stage in status.stages] == [5.4, 3.6, 3.0]
     assert status.next_safe_action == "Run stage solution_design with codex."
+    assert status.decisions == []
     events = tasks.events(task.task_id)
     assert events[-1].event_type == "orchestration.plan_created"
     assert events[-1].payload["provisional"] is True
@@ -524,6 +525,23 @@ async def test_invalid_or_negative_semantic_result_blocks_without_false_success(
     assert "semantic result schema" in status.stages[0].blockers[0]
     with pytest.raises(OrchestrationConflictError, match="not awaiting"):
         service.approve(task.task_id, actor="owner", reason="bypass")
+
+
+def test_semantic_parser_allows_one_format_only_wrapped_result():
+    wrapped = (
+        "Review note for {project_id}; no state change.\n```json\n"
+        + PASS
+        + "\n```"
+    )
+    parsed = TaskOrchestrationService._parse_semantic(wrapped)
+    assert parsed is not None
+    assert parsed.status.value == "pass"
+
+
+def test_semantic_parser_fails_closed_on_multiple_valid_results():
+    assert TaskOrchestrationService._parse_semantic(f"{PASS}\n{PASS}") is None
+    noisy = "\n".join('{"noise":' for _ in range(101)) + PASS
+    assert TaskOrchestrationService._parse_semantic(noisy) is None
 
 
 @pytest.mark.asyncio
@@ -611,6 +629,136 @@ async def test_needs_work_and_token_overrun_block_the_stage(tmp_path):
     overrun = await small_service.run_next(small_task.task_id)
     assert overrun.state == RunState.BLOCKED
     assert any("exceeded" in item for item in small_service.status(small_task.task_id).stages[0].blockers)
+
+
+@pytest.mark.asyncio
+async def test_human_decisions_are_versioned_idempotent_and_enter_retry_context(tmp_path):
+    blocked = (
+        '{"status":"blocked","summary":"policy missing","findings":["need policy"],'
+        '"recommended_next_action":"ask human"}'
+    )
+    tasks, service, runner, task = _system(
+        tmp_path,
+        [RuntimeResult(0, blocked, ""), RuntimeResult(0, PASS, "")],
+    )
+    await service.run_next(task.task_id)
+
+    first = service.decide(
+        task.task_id,
+        decision_key="inbound_authorization_policy",
+        decision_value="Use fail-closed Bearer authentication",
+        rationale="Approved API boundary",
+        actor="owner",
+    )
+    duplicate = service.decide(
+        task.task_id,
+        decision_key="inbound_authorization_policy",
+        decision_value="Use fail-closed Bearer authentication",
+        rationale="Approved API boundary",
+        actor="owner",
+    )
+    revised = service.decide(
+        task.task_id,
+        decision_key="inbound_authorization_policy",
+        decision_value="Use access-policy-v1 fail-closed Bearer authentication",
+        rationale="Pins the checked-in policy version",
+        actor="owner",
+    )
+
+    assert duplicate.decision_id == first.decision_id
+    assert revised.version == 2
+    assert [item.version for item in service.status(task.task_id).decisions] == [1, 2]
+    decision_events = [
+        event for event in tasks.events(task.task_id)
+        if event.event_type == "orchestration.decision_recorded"
+    ]
+    assert len(decision_events) == 2
+    assert decision_events[-1].payload["decision_sha256"] == revised.decision_sha256
+
+    service.retry(task.task_id, "solution_design")
+    await service.run_next(task.task_id)
+    retry_prompt = runner.prompts[-1]
+    assert "access-policy-v1 fail-closed Bearer authentication" in retry_prompt
+    assert '"version":2' in retry_prompt
+    assert '"version":1' not in retry_prompt
+
+
+def test_human_decisions_require_a_blocked_stage_and_bounded_active_context(tmp_path):
+    _, service, _, task = _system(tmp_path)
+    with pytest.raises(OrchestrationConflictError, match="only while the plan is blocked"):
+        service.decide(
+            task.task_id,
+            decision_key="policy",
+            decision_value="not yet allowed",
+            rationale="plan is active",
+        )
+
+    status = service.status(task.task_id)
+    run = service.store.claim_current_stage(
+        task.task_id,
+        prompt_sha256="e" * 64,
+        operation_key=f"{status.plan.plan_id}:{status.plan.current_stage_key}:decision-test",
+    )
+    service.store.mark_interrupted(run.run_id, reason="block for decision test")
+    service.decide(
+        task.task_id,
+        decision_key="large_policy_one",
+        decision_value="a" * 1_000,
+        rationale="b" * 500,
+    )
+    with pytest.raises(OrchestrationValidationError, match="prompt allocation"):
+        service.decide(
+            task.task_id,
+            decision_key="large_policy_two",
+            decision_value="c" * 1_000,
+            rationale="d" * 500,
+        )
+
+
+@pytest.mark.asyncio
+async def test_human_decision_text_is_redacted_before_persistence(tmp_path):
+    secret = "sk-abcdefghijklmnopqrst"
+    tasks, service, _, task = _system(
+        tmp_path,
+        [RuntimeResult(0, '{"status":"blocked","summary":"x","findings":["x"],'
+                          '"recommended_next_action":"ask"}', "")],
+    )
+    await service.run_next(task.task_id)
+    decision = service.decide(
+        task.task_id,
+        decision_key="credential_policy",
+        decision_value=f"access_token={secret}",
+        rationale=f"password={secret}",
+    )
+    serialized = json.dumps(decision.model_dump(mode="json"))
+    events = json.dumps([event.payload for event in tasks.events(task.task_id)])
+    assert secret not in serialized
+    assert secret not in events
+    assert "[REDACTED]" in serialized
+
+
+@pytest.mark.asyncio
+async def test_cli_records_a_human_decision_for_a_blocked_task(tmp_path, monkeypatch, capsys):
+    blocked = (
+        '{"status":"blocked","summary":"policy missing","findings":["need policy"],'
+        '"recommended_next_action":"ask human"}'
+    )
+    _, service, _, task = _system(tmp_path, [RuntimeResult(0, blocked, "")])
+    await service.run_next(task.task_id)
+    monkeypatch.setattr(orchestration_cli, "build_service", lambda: service)
+
+    assert orchestration_cli.main([
+        "decide",
+        task.task_id,
+        "invalidation_scope",
+        "--value",
+        "defer repository-wide invalidation",
+        "--reason",
+        "keep the first API slice task-scoped",
+    ]) == 0
+    output = capsys.readouterr().out
+    assert '"decision_key": "invalidation_scope"' in output
+    assert "Decisions:" in output
 
 
 def test_resume_refuses_live_pid_and_recovers_dead_run(tmp_path):

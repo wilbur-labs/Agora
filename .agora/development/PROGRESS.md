@@ -4,9 +4,9 @@ Current branch: `main`
 
 Current recovery baseline (2026-07-18):
 
-- Local `main` and `origin/main` are synchronized at
-  `2750dfe fix: recover Windows native orchestration` before the documentation
-  changes recorded below.
+- Local `main` is at `eec75da feat: add concrete task contracts`, two reviewed
+  commits ahead of `origin/main` at `2750dfe fix: recover Windows native
+  orchestration` before the active increment below.
 - Active program: the ordered Agora Control Plane transformation. The first two
   stages (protocol/domain freeze and Control Plane v2 persistence/Registry) are
   complete; work-weighted program completion remains approximately 20% to 25%.
@@ -30,17 +30,18 @@ Current recovery baseline (2026-07-18):
   `frontend/pnpm-workspace.yaml` as a user-owned unrelated change. The current
   synchronized worktree was clean before this documentation increment, but the
   ownership constraint remains: do not stage unrelated edits to that file.
-- `backend/data/agora.db` now contains the real contract vertical-slice Task
-  `task_ea9c19f4794c447c8fe77aaf8a3b15d1` and its blocked Codex Run. The legacy
-  `data/agora.db` still contains only the `sessions` table.
+- The current CLI root is the repository root, so the real vertical-slice Task
+  is in `data/agora.db`, not `backend/data/agora.db`. Additive initialization
+  preserved its 2 legacy `sessions` rows and added the Control Plane tables;
+  it now contains 1 Task, 2 decisions, and 5 Runs. The ignored backend database
+  contains no Tasks and is only a local initialization artifact.
 - Latest Windows runtime recovery review gate: Kiro `APPROVE`, Claude Code
   `APPROVE`; focused suite 39 passed; comparable backend suite 317 passed and
   18 deselected; Schema export, compile, diff check, and CLI smoke passed.
 - Review gates remain mandatory for subsequent implementation increments.
-- Current next safe product action: obtain a human-approved inbound
-  authorization policy and narrow or authorize repository-wide invalidation
-  before explicitly retrying the blocked solution-design Stage. Do not start
-  Task Workbench UI.
+- Current next safe product action: ask the user to review and explicitly
+  approve or reject the three-runtime Plan now awaiting approval. Do not begin
+  API implementation or Task Workbench UI before that human Gate.
 
 ## 2026-07-18 — Latest transformation requirements recovery
 
@@ -159,12 +160,83 @@ contract and the actual SQLite Task/Run state if a current
 
 ### Recovery note and next safe action
 
-Preserve `backend/data/agora.db`; it is ignored runtime state containing the
-blocked Task and append-only usage ledger. Finish the code-review gate for this
-contract increment. After commit, obtain the user's authorization-policy and
-invalidation-scope decision, revise the concrete contract if necessary, then
-use explicit `agora task retry` rather than creating or dispatching a duplicate
-Run. UI remains deferred.
+The original note incorrectly identified `backend/data/agora.db` as the live
+database. Reconciliation in the next increment verified that root-launched CLI
+state is in `data/agora.db`; preserve that database and use explicit retry
+rather than creating a duplicate Run. UI remains deferred.
+
+## 2026-07-18 — Explicit Task decisions and completed planning slice (active)
+
+### Scope
+
+- [x] Recorded the user's approved API boundary in
+  `docs/architecture/control-plane-api-access-policy-v1.md`: fail-closed Bearer
+  authentication with external credential references, stable principals,
+  explicit permissions, and project memberships.
+- [x] Deferred repository/ref-wide `invalidate_inventory` from the bounded
+  Task API and prohibited caller-supplied Stage dependency graphs.
+- [x] Added additive, immutable, versioned `orchestration_decisions` persistence
+  and `agora task decide` without mutating the pinned Task contract or its hash.
+- [x] Made identical latest decisions idempotent; changed decisions append a
+  new version; active decision context is bounded and secret-like text is
+  redacted before persistence.
+- [x] Exposed decision history through authoritative status and supplied only
+  the latest version per key to subsequent runtime prompts.
+- [x] Limited decisions to a blocked Plan/current Stage and updated Plan version
+  plus Task audit event atomically.
+- [x] Replaced the full contract prompt copy with a hash-bound Stage projection
+  and expanded the bounded verified-prior-result allocation.
+- [x] Added bounded format-only extraction of exactly one valid semantic JSON
+  object from prose/fences; multiple valid objects or excessive candidates fail
+  closed without semantic repair.
+- [x] Continued the existing Task through explicit decisions and retries; no
+  duplicate Task was created.
+- [x] Kiro methodology/reconciliation review: `APPROVE`; no high/medium
+  findings.
+- [x] Claude Code correctness/safety review: `APPROVE`; no high/medium
+  findings.
+- [x] Commit the reviewed explicit-Task-decision increment locally (the commit
+  containing this snapshot).
+
+### Verification and real Task result
+
+- Focused orchestration suite: 41 passed.
+- Comparable non-integration backend suite with an isolated system-Temp
+  `--basetemp`: 326 passed, 18 deselected, with only the 2 existing literal
+  `/tmp` Windows sandbox failures. Temporary test directories were removed.
+- Protocol Schema export check, isolated Python compile, and `git diff --check`:
+  passed.
+- Kiro confirmed the policy/decision/contract/state/Evidence/Approval
+  separation, additive migration, bounded Context, format-only recovery,
+  recovery semantics, and preserved human Gate; `APPROVE`.
+- Claude confirmed SQLite FK enforcement, atomic decision/audit writes,
+  concurrent idempotency, redaction, bounded parser complexity, Stage projection
+  truthfulness, CLI compatibility, and regression coverage; `APPROVE`.
+- Task `task_ea9c19f4794c447c8fe77aaf8a3b15d1` remains bound to Plan
+  `plan_cf698b72d0c548ff99b763fef8e6c75b`; its pinned contract hash did not
+  change.
+- Persisted user decisions:
+  `inbound_authorization_policy@1` and
+  `repository_invalidation_scope@1`.
+- Codex `solution_design` attempt 2: semantic `pass`.
+- Claude `correctness_review` attempt 1 returned prose plus a schema-valid
+  `needs_work` object. The old first-brace extraction encountered an earlier
+  `{project_id}` and correctly failed closed as a Schema blocker. After the
+  bounded format-only extraction and richer verified handoff fix, explicit
+  attempt 2 returned semantic `pass`.
+- Kiro `methodology_review` attempt 1: semantic `pass`.
+- Plan state: `awaiting_approval`. All three Stages passed; human approval is
+  intentionally not inferred from the user's earlier policy decisions.
+- Total usage: estimated 21,665 Tokens, 8,335 remaining; monetary cost remains
+  `unavailable`, never zero.
+
+### Recovery note and next safe action
+
+The authoritative runtime database for this Task is `data/agora.db` when Agora
+is launched from the repository root. Preserve it. The next action after the
+reviewed code commit is for the user to review the three semantic results and
+explicitly run or authorize `agora task approve`; implementation remains
+forbidden until that human Gate passes.
 
 ## 2026-07-13
 
