@@ -9,6 +9,8 @@ from collections import defaultdict, deque
 from contextlib import closing
 from typing import Any
 
+from agora.attention.schema import initialize_attention_schema
+from agora.attention.store import AttentionStore
 from agora.protocol.gates import evaluate_gate
 from agora.protocol.hashing import canonical_json_bytes, canonical_sha256
 from agora.protocol.invalidation import invalidate_approvals
@@ -53,6 +55,9 @@ class ControlPlaneValidationError(ValueError):
     pass
 
 
+PROJECTION_COLLECTION_LIMIT = 200
+
+
 class ControlPlaneStore:
     """Additive v2 persistence that leaves the 0.5 Task/Run rows intact."""
 
@@ -62,6 +67,7 @@ class ControlPlaneStore:
         self.tasks = tasks
         with closing(tasks._connect()) as db:
             initialize_control_plane_schema(db)
+            initialize_attention_schema(db)
             db.commit()
 
     def ensure_stage(
@@ -1045,6 +1051,202 @@ class ControlPlaneStore:
                 (task_id,),
             ).fetchall()
         return [self._control_event(row) for row in rows]
+
+    def projection(
+        self,
+        task_id: str,
+        *,
+        event_limit: int = 100,
+        event_offset: int = 0,
+    ) -> dict[str, Any]:
+        """Return a bounded, Task-scoped registry projection."""
+        with closing(self.tasks._connect()) as db:
+            db.execute("BEGIN")
+            try:
+                task_row = db.execute(
+                    "SELECT * FROM tasks WHERE task_id = ?",
+                    (task_id,),
+                ).fetchone()
+                if task_row is None:
+                    raise ControlPlaneNotFoundError(task_id)
+                task = self.tasks._manifest(task_row)
+                stage_rows = db.execute(
+                    """
+                    SELECT * FROM control_stages
+                    WHERE task_id = ? ORDER BY stage_key LIMIT ?
+                    """,
+                    (task_id, PROJECTION_COLLECTION_LIMIT),
+                ).fetchall()
+                gate_rows = db.execute(
+                    """
+                    SELECT * FROM control_gates
+                    WHERE task_id = ? ORDER BY gate_key LIMIT ?
+                    """,
+                    (task_id, PROJECTION_COLLECTION_LIMIT),
+                ).fetchall()
+                artifact_rows = db.execute(
+                    """
+                    SELECT payload FROM protocol_artifacts
+                    WHERE task_id = ? ORDER BY created_at, artifact_id, version
+                    LIMIT ?
+                    """,
+                    (task_id, PROJECTION_COLLECTION_LIMIT),
+                ).fetchall()
+                evidence_rows = db.execute(
+                    """
+                    SELECT payload FROM protocol_evidence
+                    WHERE task_id = ? ORDER BY observed_at, evidence_id LIMIT ?
+                    """,
+                    (task_id, PROJECTION_COLLECTION_LIMIT),
+                ).fetchall()
+                approval_rows = db.execute(
+                    """
+                    SELECT payload FROM protocol_approvals
+                    WHERE task_id = ? ORDER BY approved_at, approval_id LIMIT ?
+                    """,
+                    (task_id, PROJECTION_COLLECTION_LIMIT),
+                ).fetchall()
+                attention = AttentionStore.list_snapshot(
+                    db,
+                    task_id=task_id,
+                    limit=PROJECTION_COLLECTION_LIMIT,
+                )
+                event_page = self._event_page(db, task_id, event_limit, event_offset)
+                totals = {}
+                for name, table in (
+                    ("stages", "control_stages"),
+                    ("gates", "control_gates"),
+                    ("artifacts", "protocol_artifacts"),
+                    ("evidence", "protocol_evidence"),
+                    ("approvals", "protocol_approvals"),
+                ):
+                    totals[name] = db.execute(
+                        f"SELECT COUNT(*) AS count FROM {table} WHERE task_id = ?",
+                        (task_id,),
+                    ).fetchone()["count"]
+                totals["attention"] = db.execute(
+                    "SELECT COUNT(*) AS count FROM attention_items WHERE task_id = ?",
+                    (task_id,),
+                ).fetchone()["count"]
+                gates = [self._gate_record(db, row) for row in gate_rows]
+                return {
+                    "task": task.model_dump(mode="json"),
+                    "budget": task.budget.model_dump(mode="json"),
+                    "stages": [self._stage(row) for row in stage_rows],
+                    "gates": gates,
+                    "artifacts": [
+                        Artifact.model_validate_json(row["payload"])
+                        for row in artifact_rows
+                    ],
+                    "evidence": [
+                        Evidence.model_validate_json(row["payload"])
+                        for row in evidence_rows
+                    ],
+                    "approvals": [
+                        Approval.model_validate_json(row["payload"])
+                        for row in approval_rows
+                    ],
+                    "attention": attention,
+                    "next_safe_action": self._next_safe_action(gates),
+                    **event_page,
+                    "collection_totals": totals,
+                    "collection_pages": {
+                        name: {
+                            "limit": PROJECTION_COLLECTION_LIMIT,
+                            "offset": 0,
+                            "total": total,
+                        }
+                        for name, total in totals.items()
+                    },
+                }
+            finally:
+                db.rollback()
+
+    def event_page(
+        self,
+        task_id: str,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        if self.tasks.get(task_id) is None:
+            raise ControlPlaneNotFoundError(task_id)
+        with closing(self.tasks._connect()) as db:
+            return self._event_page(db, task_id, limit, offset)
+
+    def _event_page(
+        self,
+        db: sqlite3.Connection,
+        task_id: str,
+        limit: int,
+        offset: int,
+    ) -> dict[str, Any]:
+        rows = db.execute(
+            """
+            SELECT * FROM control_events WHERE task_id = ?
+            ORDER BY created_at, event_id LIMIT ? OFFSET ?
+            """,
+            (task_id, limit, offset),
+        ).fetchall()
+        total = db.execute(
+            "SELECT COUNT(*) AS count FROM control_events WHERE task_id = ?",
+            (task_id,),
+        ).fetchone()["count"]
+        return {
+            "events": [self._control_event(row) for row in rows],
+            "event_page": {"limit": limit, "offset": offset, "total": total},
+        }
+
+    @staticmethod
+    def _next_safe_action(gates: list[GateRecord]) -> dict[str, str | None]:
+        if not gates:
+            return {
+                "value": None,
+                "source_gate_key": None,
+                "unavailable_reason": "No Control Plane Gate is configured.",
+            }
+        candidates: list[tuple[int, str, str, str]] = []
+        for gate in gates:
+            evaluation = gate.last_evaluation
+            if gate.status != GateStatus.BLOCKED or evaluation is None:
+                continue
+            value = evaluation.next_safe_action
+            if value is None:
+                continue
+            blocker_ids = set(evaluation.blocker_requirement_ids)
+            priority, requirement_id = min(
+                (
+                    (requirement.priority, requirement.requirement_id)
+                    for requirement in gate.requirements
+                    if requirement.requirement_id in blocker_ids
+                ),
+                default=(10_001, ""),
+            )
+            candidates.append((priority, requirement_id, gate.gate_key, value))
+        if candidates:
+            _, _, gate_key, value = min(candidates)
+            return {
+                "value": value,
+                "source_gate_key": gate_key,
+                "unavailable_reason": None,
+            }
+        if any(gate.status != GateStatus.PASSED for gate in gates):
+            return {
+                "value": None,
+                "source_gate_key": None,
+                "unavailable_reason": (
+                    "No current blocked Gate evaluation has produced a "
+                    "next-safe-action."
+                ),
+            }
+        return {
+            "value": None,
+            "source_gate_key": None,
+            "unavailable_reason": (
+                "All configured Gates are passed; no subsequent authoritative "
+                "Stage is configured."
+            ),
+        }
 
     def _ensure_stage_row(
         self,

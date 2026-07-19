@@ -256,6 +256,32 @@ class AttentionStore:
              run_id: str | None = None, state: AttentionState | None = None,
              kind: AttentionKind | None = None, limit: int = 100, offset: int = 0) -> list[AttentionItem]:
         self.expire_overdue()
+        with closing(self._connect()) as db:
+            return self.list_snapshot(
+                db,
+                project_id=project_id,
+                task_id=task_id,
+                run_id=run_id,
+                state=state,
+                kind=kind,
+                limit=limit,
+                offset=offset,
+            )
+
+    @classmethod
+    def list_snapshot(
+        cls,
+        db: sqlite3.Connection,
+        *,
+        project_id: str | None = None,
+        task_id: str | None = None,
+        run_id: str | None = None,
+        state: AttentionState | None = None,
+        kind: AttentionKind | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[AttentionItem]:
+        """List Attention from a caller-owned read snapshot without mutation."""
         clauses, values = [], []
         for column, value in (("project_id", project_id), ("task_id", task_id), ("run_id", run_id)):
             if value is not None:
@@ -267,12 +293,11 @@ class AttentionStore:
             clauses.append("kind = ?"); values.append(kind.value)
         where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
         urgency_order = "CASE urgency WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'normal' THEN 2 ELSE 3 END"
-        with closing(self._connect()) as db:
-            rows = db.execute(
-                f"SELECT * FROM attention_items{where} ORDER BY CASE state WHEN 'open' THEN 0 ELSE 1 END, {urgency_order}, created_at DESC LIMIT ? OFFSET ?",
-                (*values, limit, offset),
-            ).fetchall()
-        return [self._item(row) for row in rows]
+        rows = db.execute(
+            f"SELECT * FROM attention_items{where} ORDER BY CASE state WHEN 'open' THEN 0 ELSE 1 END, {urgency_order}, created_at DESC LIMIT ? OFFSET ?",
+            (*values, limit, offset),
+        ).fetchall()
+        return [cls._item(row) for row in rows]
 
     def open_count(self, *, project_id: str | None = None) -> int:
         self.expire_overdue()

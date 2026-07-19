@@ -21,6 +21,7 @@ from agora.workspaces.router import router as workspaces_router
 from agora.attention.router import router as attention_router
 from agora.workflows.router import router as workflows_router
 from agora.workflows.router import get_workflow_supervisor
+from agora.control_plane.router import router as control_plane_router
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
@@ -46,6 +47,7 @@ app.include_router(execution_router, prefix="/api")
 app.include_router(workspaces_router, prefix="/api")
 app.include_router(attention_router, prefix="/api")
 app.include_router(workflows_router, prefix="/api")
+app.include_router(control_plane_router, prefix="/api")
 
 # Serve Next.js static export (frontend/out/) if available
 _frontend_out = Path(__file__).resolve().parent.parent.parent.parent / "frontend" / "out"

@@ -4,7 +4,7 @@ Current branch: `main`
 
 Current recovery baseline (2026-07-18):
 
-- Local `main` is at `eec75da feat: add concrete task contracts`, two reviewed
+- Local `main` is at `92fc3f3 feat: add explicit task decisions`, three reviewed
   commits ahead of `origin/main` at `2750dfe fix: recover Windows native
   orchestration` before the active increment below.
 - Active program: the ordered Agora Control Plane transformation. The first two
@@ -39,9 +39,12 @@ Current recovery baseline (2026-07-18):
   `APPROVE`; focused suite 39 passed; comparable backend suite 317 passed and
   18 deselected; Schema export, compile, diff check, and CLI smoke passed.
 - Review gates remain mandatory for subsequent implementation increments.
-- Current next safe product action: ask the user to review and explicitly
-  approve or reject the three-runtime Plan now awaiting approval. Do not begin
-  API implementation or Task Workbench UI before that human Gate.
+- The user explicitly approved Plan `plan_cf698b72d0c548ff99b763fef8e6c75b`;
+  the authoritative Plan is now `ready_for_implementation` and its approval
+  event is recorded in `data/agora.db`.
+- Current next safe product action after the reviewed API commit is a bounded
+  Runner/Agent Adapter integration increment that connects execution to the
+  frozen Control Plane contracts. Do not begin Task Workbench UI work.
 
 ## 2026-07-18 — Latest transformation requirements recovery
 
@@ -237,6 +240,73 @@ is launched from the repository root. Preserve it. The next action after the
 reviewed code commit is for the user to review the three semantic results and
 explicitly run or authorize `agora task approve`; implementation remains
 forbidden until that human Gate passes.
+
+## 2026-07-18 — Bounded Control Plane API (active)
+
+### Scope
+
+- [x] Recorded the user's explicit human approval of the three-runtime Plan;
+  implementation began only after it reached `ready_for_implementation`.
+- [x] Added fail-closed Bearer authentication backed only by external secret
+  references, stable principals, explicit permissions, and project membership.
+- [x] Added Task-scoped Gate configuration, Artifact/Evidence/Approval
+  registration, active-Evidence selection, Gate evaluation, bounded projection,
+  paginated events, and scoped entity reads under `/api/control-plane/`.
+- [x] Bound audit actors and Approval identity to the authenticated principal;
+  rejected project/Task payload mismatches and returned non-enumerating 404s.
+- [x] Kept `invalidate_inventory` outside the HTTP boundary and did not accept a
+  caller-supplied Stage dependency graph.
+- [x] Offloaded all synchronous SQLite work from FastAPI's event loop and
+  sanitized conflict, validation, unavailable, and unexpected error responses.
+- [x] Added explicit collection bounds/totals and strict bounded request models.
+- [x] Added API acceptance coverage for fail-closed auth, external secret
+  resolution, permissions, project isolation, audited Gate flow, bounded reads,
+  and scope spoofing.
+- [x] Obtained Kiro methodology/boundary review and independent Claude Code
+  correctness/security review; fixed all actionable findings before commit.
+- [x] Commit the reviewed bounded Control Plane API increment locally (the
+  commit containing this snapshot).
+
+### Verification and review log
+
+- Focused Control Plane API, Registry, and Attention suite after review fixes:
+  39 passed.
+- Full non-integration backend suite excluding static-export-dependent
+  `tests/test_web_ui.py`: 339 passed, 18 deselected, with only existing
+  Starlette/httpx, pytest-cache, and Windows event-loop cleanup warnings.
+- A first repository-local basetemp run passed 333 tests and produced one false
+  failure because its nominal non-Git fixture inherited the parent repository;
+  the isolated system-Temp rerun passed, as did the final full suite.
+- Protocol Schema export check, isolated Python compile, and `git diff --check`:
+  passed.
+- Kiro initial review: `APPROVE`; no high/medium methodology or boundary
+  findings. Its actionable low observations on ambiguous credential mappings,
+  actor-path coverage, malformed configuration, and lock translation were
+  addressed with fail-closed validation and regressions.
+- Claude Code initial review: `CHANGES_REQUESTED`; no high findings and two
+  medium read-path findings. The projection no longer expires Attention under
+  read permission and now returns Task, registry collections, Attention,
+  events, totals, and collection windows from one explicit SQLite read
+  snapshot.
+- Claude low observations were also addressed: every bounded collection now
+  reports its limit/offset/total, and cross-Gate next-safe-action selection uses
+  global blocker priority plus deterministic requirement/Gate tie-breaking.
+- The suggested configure-Gate CAS was verified as non-actionable because Gate
+  configuration is create-once and immutable: identical replay is idempotent,
+  while any changed Stage or requirements fail with a conflict.
+- Kiro final targeted re-review: `APPROVE`; no high/medium findings remain.
+- Claude Code final targeted re-review: `APPROVE`; both medium findings and all
+  actionable low findings are resolved with dedicated adversarial coverage.
+- Five generated repository-local pytest basetemp directories remain excluded
+  and untracked because their sandbox-created ACLs deny deletion even after an
+  escalated cleanup attempt; no implementation file depends on them.
+
+### Next safe action
+
+After the reviewed commit, begin the smallest Runner/Agent Adapter integration
+that binds execution to the frozen Run dimensions and Context/Handoff boundary
+without changing protocol semantics. UI and repository-wide invalidation
+remain deferred.
 
 ## 2026-07-13
 
