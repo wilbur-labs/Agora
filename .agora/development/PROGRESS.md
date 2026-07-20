@@ -4,17 +4,19 @@ Current branch: `main`
 
 Current recovery baseline (2026-07-20):
 
-- Local `main` is at `068c27f feat: settle sealed protocol runs through gates`,
-  six reviewed commits ahead of `origin/main` at `2750dfe fix: recover Windows
-  native orchestration` before the active increment below.
+- Local `main` includes `f3f5c14 feat: wire formal protocol orchestration` and
+  the reviewed unified Task projection commit containing this snapshot, eight
+  reviewed commits ahead of `origin/main` at `2750dfe fix: recover Windows
+  native orchestration`.
 - Active program: the ordered Agora Control Plane transformation. The first two
   stages (protocol/domain freeze and Control Plane v2 persistence/Registry) are
   complete; the bounded API, concrete Task contract, and Runner/Agent Adapter
-  are also reviewed foundations. The sealed Run/Gate settlement boundary is
-  reviewed, and its explicit CLI orchestration wiring is the active increment.
-  Work-weighted program completion is approximately 38% to 40% including the
-  active working tree; this remains an engineering estimate until the
-  authoritative Stage inventory and unified projection are available.
+  are also reviewed foundations. The sealed Run/Gate settlement boundary and
+  explicit CLI orchestration wiring and read-only unified Task projection are
+  reviewed. Work-weighted program completion is approximately 41% to 43%; this
+  remains an
+  engineering estimate until frozen Task-state persistence and the grouped
+  Stage inventory are complete.
   The historical 11-stage label and milestone-count estimate below predate the
   current grouped stage correspondence and must be normalized before they are
   used as a current count.
@@ -47,9 +49,9 @@ Current recovery baseline (2026-07-20):
 - The user explicitly approved Plan `plan_cf698b72d0c548ff99b763fef8e6c75b`;
   the authoritative Plan is now `ready_for_implementation` and its approval
   event is recorded in `data/agora.db`.
-- The active increment below wires pinned Task contracts and the existing
-  native Runner into sealed Context/Handoff and Gate settlement through an
-  explicit `--protocol-v1` CLI path. Do not begin Task Workbench UI work.
+- The latest increment exposes one CLI-first, read-only projection over
+  authoritative formal state and the compatibility usage ledger through
+  `task status --protocol-v1`. Do not begin Task Workbench UI work.
 
 ## 2026-07-18 — Latest transformation requirements recovery
 
@@ -538,6 +540,71 @@ that reports authoritative formal Stage/Gate/Attention state alongside the
 existing operational usage ledger without introducing a second state writer.
 Dynamic routing, exact provider usage, the full AI-DLC graph, and UI remain
 later bounded increments.
+
+## 2026-07-20 - Read-only unified Task projection
+
+### Scope
+
+- [x] Added `agora task status TASK_ID --protocol-v1` with text and JSON output;
+  legacy status remains unchanged without the flag.
+- [x] Added one versioned projection containing Task/Plan state, formal and
+  compatibility Stage state, Gate evaluations, current and historical Runs,
+  elapsed/wait state, Artifact references, Evidence, Approvals, Attention,
+  decisions, usage, human actions, and merged audit history.
+- [x] Read every contributing table through one SQLite connection and one
+  rollback-only snapshot; the projection never expires Attention or writes
+  state/events.
+- [x] Kept process, transport, Schema, semantic, Gate, and compatibility state
+  distinct; formal progress counts only authoritative completed Stages.
+- [x] Exposed only the Gate-derived `next_safe_action`; the legacy orchestration
+  hint is separately labeled non-authoritative.
+- [x] Added truthful SQL-aggregate budget reporting for allocation, active
+  reservation, settlement, measurement, and remaining capacity. Missing cost
+  in any settled Run makes aggregate cost unavailable rather than zero.
+- [x] Bounded history pages and current inventories, omitted Artifact bodies and
+  Run output/prompts, bounded failure/finding text, and replaced audit payloads
+  above 16 KiB with a hash/byte-count summary.
+- [x] Added completion, protocol-failure, single-snapshot/no-write, pagination,
+  audit-bound, recovery-wait, budget, and CLI compatibility regressions.
+- [x] Run the complete verification set and Schema consistency check.
+- [x] Obtain Kiro protocol/methodology review and independent Claude Code
+  correctness/safety review; fix all actionable findings.
+- [x] Commit only after both review gates approve (the commit containing this
+  snapshot).
+
+### Current verification log
+
+- Unified projection plus orchestration, Control Plane API, and protocol
+  settlement related suite: 79 passed with the existing Starlette/httpx warning.
+- Full non-integration backend suite excluding static-export-dependent
+  `tests/test_web_ui.py`: 394 passed, 18 deselected, with only the existing
+  Starlette/httpx and Windows Proactor cleanup warnings.
+- Self-audit removed an initially unbounded internal compatibility-status read;
+  budget totals now use SQL aggregates while histories remain paginated.
+- Protocol Schema export, isolated Python compile, `task status --help` CLI
+  smoke, and `git diff --check`: passed before independent review.
+- Kiro CLI protocol/methodology review: `APPROVE`; no high or medium findings.
+  It confirmed the single rollback-only snapshot, Agora-only authority,
+  authoritative Stage progress, separate result dimensions, Gate-derived next
+  action, truthful budget aggregation, bounded payloads, recovery wait states,
+  legacy CLI compatibility, and the CLI-first HTTP/UI deferral boundary.
+- Claude Code independent correctness/safety review: `APPROVE`; no high or
+  medium findings. Its two non-blocking observations were that text output has
+  no direct regression test and human actions intentionally reflect the bounded
+  200-item Attention window; both branches were inspected as correct and the
+  bound is documented.
+- Final post-review full backend suite: 394 passed, 18 deselected. Protocol
+  Schema export, isolated compile, CLI help smoke, and `git diff --check` also
+  passed after both approvals.
+- No frontend or shared HTTP API contract changed; frontend validation is not
+  required for this increment.
+
+### Next safe action
+
+After this reviewed commit, define the smallest frozen Task-state persistence
+increment without inferring state from the compatibility manifest or projection.
+Keep the authenticated HTTP surface as a later bounded reuse of this read model;
+UI stays deferred.
 
 ## 2026-07-13
 

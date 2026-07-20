@@ -968,11 +968,68 @@ class OrchestrationStore:
         return self._run(row)
 
     def status(self, task_id: str) -> TaskOrchestrationStatus:
-        plan = self.require_plan(task_id)
-        stages = self.stages(plan.plan_id)
-        runs = self.runs(plan.plan_id)
-        usage = self.usage(plan.plan_id)
-        decisions = self.decisions(plan.plan_id)
+        with closing(self._connect()) as db:
+            db.execute("BEGIN")
+            try:
+                return self._status_snapshot(db, task_id)
+            finally:
+                db.rollback()
+
+    def _status_snapshot(
+        self,
+        db: sqlite3.Connection,
+        task_id: str,
+    ) -> TaskOrchestrationStatus:
+        """Read the compatibility projection from one caller-owned snapshot."""
+
+        plan_row = db.execute(
+            "SELECT * FROM orchestration_plans WHERE task_id = ?",
+            (task_id,),
+        ).fetchone()
+        if plan_row is None:
+            raise OrchestrationNotFoundError(task_id)
+        plan = self._plan(plan_row)
+        stages = [
+            self._stage(row)
+            for row in db.execute(
+                "SELECT * FROM orchestration_stages WHERE plan_id = ? ORDER BY sequence",
+                (plan.plan_id,),
+            ).fetchall()
+        ]
+        runs = [
+            self._run(row)
+            for row in db.execute(
+                "SELECT * FROM orchestration_runs WHERE plan_id = ? ORDER BY rowid",
+                (plan.plan_id,),
+            ).fetchall()
+        ]
+        usage = [
+            self._usage(row)
+            for row in db.execute(
+                """SELECT * FROM orchestration_usage_ledger
+                   WHERE plan_id = ? ORDER BY rowid""",
+                (plan.plan_id,),
+            ).fetchall()
+        ]
+        decisions = [
+            self._decision(row)
+            for row in db.execute(
+                """SELECT * FROM orchestration_decisions
+                   WHERE plan_id = ? ORDER BY decision_key, version""",
+                (plan.plan_id,),
+            ).fetchall()
+        ]
+        return self._status_from_records(plan, stages, runs, usage, decisions)
+
+    @classmethod
+    def _status_from_records(
+        cls,
+        plan: OrchestrationPlan,
+        stages: list[OrchestrationStage],
+        runs: list[OrchestrationRun],
+        usage: list[UsageLedgerEntry],
+        decisions: list[TaskDecision],
+    ) -> TaskOrchestrationStatus:
         reservations = sum(run.token_reserved for run in runs if run.state == RunState.RUNNING)
         settlement_entries = [
             item for item in usage if item.entry_type == LedgerEntryType.SETTLEMENT
@@ -1008,7 +1065,7 @@ class OrchestrationStore:
                 else max(0, plan.total_token_budget - reservations - used)
             ),
             cost_used_usd=cost_used, cost_measurement=cost_measurement,
-            next_safe_action=self._next_action(plan, stages),
+            next_safe_action=cls._next_action(plan, stages),
         )
 
     @staticmethod

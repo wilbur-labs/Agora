@@ -98,6 +98,13 @@ def parser() -> argparse.ArgumentParser:
             )
         if name == "status":
             command.add_argument("--json", action="store_true", dest="as_json")
+            command.add_argument(
+                "--protocol-v1",
+                action="store_true",
+                help="Show the unified formal Task projection",
+            )
+            command.add_argument("--limit", type=int, default=100)
+            command.add_argument("--offset", type=int, default=0)
 
     retry = commands.add_parser("retry", help="Retry a blocked stage when budget remains")
     retry.add_argument("task_id")
@@ -186,9 +193,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             _print_status(status)
             return 0 if status.plan.state == PlanState.AWAITING_APPROVAL else 2
         if args.command == "status":
-            status = service.status(args.task_id)
+            status = (
+                service.unified_status(
+                    args.task_id,
+                    history_limit=args.limit,
+                    history_offset=args.offset,
+                )
+                if args.protocol_v1
+                else service.status(args.task_id)
+            )
             if args.as_json:
                 print(json.dumps(status.model_dump(mode="json"), ensure_ascii=False, indent=2))
+            elif args.protocol_v1:
+                _print_unified_status(status)
             else:
                 _print_status(status)
             return 0
@@ -264,3 +281,77 @@ def _print_status(status) -> None:
     else:
         print(f"Cost: {status.cost_used_usd} USD ({status.cost_measurement.value})")
     print(f"Next safe action: {status.next_safe_action}")
+
+
+def _print_unified_status(status) -> None:
+    print(
+        f"Task: {status.task.title} [{status.task_state.value}] "
+        f"source={status.task_state_source}"
+    )
+    print(
+        f"Plan: {status.plan.methodology_id}@{status.plan.methodology_version} "
+        f"[{status.plan.state.value}]"
+    )
+    progress = status.progress
+    print(
+        f"Progress: {progress.completed_stages}/{progress.total_stages} formal Stages "
+        f"completed; current={progress.current_stage_key or 'none'}"
+    )
+    for stage in status.stages:
+        authoritative = (
+            stage.authoritative_stage.status.value
+            if stage.authoritative_stage is not None
+            else "unconfigured"
+        )
+        gate = stage.gate.status.value if stage.gate is not None else "unconfigured"
+        marker = "*" if stage.current else " "
+        print(
+            f"{marker} {stage.stage_key:<22} formal={authoritative:<23} "
+            f"gate={gate:<10} runtime={stage.runtime or 'unassigned'}"
+        )
+    if status.runs:
+        print("Runs:")
+        for run in status.runs:
+            semantic = (
+                run.semantic_result.value
+                if run.semantic_result is not None
+                else "unavailable"
+            )
+            print(
+                f"  {run.run_id} {run.runtime or 'unknown'} "
+                f"state={run.operational_state.value if run.operational_state else 'formal-only'} "
+                f"semantic={semantic} wait={run.wait_state.value} "
+                f"elapsed={run.elapsed_seconds:.3f}s"
+            )
+    if status.required_human_actions:
+        print("Required human actions:")
+        for action in status.required_human_actions:
+            print(f"  {action.kind}: {action.title} ({action.source_id})")
+    budget = status.budget
+    if budget.token_measurement == Measurement.UNAVAILABLE:
+        token_settled = "unavailable"
+        token_remaining = "unavailable"
+    else:
+        token_settled = str(budget.token_settled)
+        token_remaining = str(budget.token_remaining)
+    print(
+        f"Tokens: allocated={budget.token_allocated} reserved={budget.token_reserved} "
+        f"settled={token_settled} remaining={token_remaining}"
+    )
+    if budget.cost_measurement == Measurement.UNAVAILABLE:
+        print("Cost: unavailable (never recorded as zero)")
+    else:
+        print(
+            f"Cost: allocated={budget.cost_allocated_usd} "
+            f"reserved={budget.cost_reserved_usd} settled={budget.cost_settled_usd} "
+            f"remaining={budget.cost_remaining_usd}"
+        )
+    next_action = status.next_safe_action
+    if next_action.value is not None:
+        print(
+            f"Next safe action: {next_action.value} "
+            f"(Gate {next_action.source_gate_key})"
+        )
+    else:
+        print(f"Next safe action: unavailable ({next_action.unavailable_reason})")
+    print(f"Compatibility hint (non-authoritative): {status.compatibility_next_action}")

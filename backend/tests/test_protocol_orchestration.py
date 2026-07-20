@@ -19,7 +19,7 @@ from agora.projects import ProjectRegistry
 from agora.protocol.hashing import seal_model_payload
 from agora.protocol.models import ContextPack, HandoffPack
 from agora.protocol.state_machines import GateStatus, StageStatus
-from agora.tasks.models import utc_now
+from agora.tasks.models import AppendEventRequest, utc_now
 from agora.tasks.store import TaskStore
 
 
@@ -263,6 +263,171 @@ async def test_protocol_v1_runs_all_stages_through_authoritative_gates(tmp_path)
 
 
 @pytest.mark.asyncio
+async def test_unified_projection_reports_formal_progress_usage_and_human_action(
+    tmp_path,
+):
+    _, service, _, task = _system(tmp_path)
+    await service.run_until_blocked(task.task_id, protocol_v1=True)
+
+    projection = service.unified_status(task.task_id)
+
+    assert projection.schema_version == "1.0"
+    assert projection.task.task_id == task.task_id
+    assert projection.task_state_source == "task_manifest"
+    assert projection.progress.total_stages == 3
+    assert projection.progress.completed_stages == 3
+    assert projection.progress.remaining_stage_keys == []
+    assert all(
+        stage.authoritative_stage.status == StageStatus.COMPLETED
+        for stage in projection.stages
+    )
+    assert all(stage.gate.status == GateStatus.PASSED for stage in projection.stages)
+    assert len(projection.runs) == 3
+    assert all(run.semantic_source == "protocol" for run in projection.runs)
+    assert all(run.semantic_result.value == "succeeded" for run in projection.runs)
+    assert all(run.wait_state.value == "settled" for run in projection.runs)
+    assert projection.collection_totals["artifacts"] == 3
+    assert projection.collection_totals["evidence"] == 3
+    assert "content" not in projection.artifacts[0].model_dump(mode="json")
+    assert projection.budget.token_allocated == 30_000
+    assert projection.budget.token_settled is not None
+    assert projection.budget.token_measurement == Measurement.ESTIMATED
+    assert projection.budget.cost_settled_usd is None
+    assert projection.budget.cost_measurement == Measurement.UNAVAILABLE
+    assert [item.kind for item in projection.required_human_actions] == [
+        "plan_approval"
+    ]
+    assert projection.next_safe_action.value is None
+    assert "Gate" in projection.next_safe_action.unavailable_reason
+    assert {item.source for item in projection.audit_events} == {
+        "task",
+        "control_plane",
+    }
+
+
+@pytest.mark.asyncio
+async def test_unified_projection_keeps_exit_zero_protocol_failure_blocked(tmp_path):
+    _, service, _, task = _system(tmp_path, invalid_outputs=1)
+    await service.run_next(task.task_id, protocol_v1=True)
+
+    projection = service.unified_status(task.task_id)
+
+    run = projection.runs[0]
+    stage = projection.stages[0]
+    assert run.process_exit_code == 0
+    assert run.process_status.value == "exited"
+    assert run.schema_status.value == "protocol_failed"
+    assert run.semantic_result.value == "blocked"
+    assert stage.authoritative_stage.status == StageStatus.BLOCKED
+    assert projection.progress.completed_stages == 0
+    assert projection.attention[0].state.value == "open"
+    assert projection.required_human_actions[0].kind == "attention"
+    assert projection.next_safe_action.value is None
+    assert "Resolve blockers" in projection.compatibility_next_action
+
+
+@pytest.mark.asyncio
+async def test_unified_projection_is_one_snapshot_and_pages_histories(
+    tmp_path,
+    monkeypatch,
+):
+    tasks, service, _, task = _system(tmp_path)
+    await service.run_until_blocked(task.task_id, protocol_v1=True)
+    original_connect = tasks._connect
+    connection_count = 0
+
+    with original_connect() as db:
+        events_before = db.execute(
+            """SELECT
+                   (SELECT COUNT(*) FROM task_events WHERE task_id = ?) +
+                   (SELECT COUNT(*) FROM control_events WHERE task_id = ?)""",
+            (task.task_id, task.task_id),
+        ).fetchone()[0]
+
+    def counted_connect():
+        nonlocal connection_count
+        connection_count += 1
+        return original_connect()
+
+    monkeypatch.setattr(tasks, "_connect", counted_connect)
+    projection = service.unified_status(
+        task.task_id,
+        history_limit=1,
+        history_offset=1,
+    )
+
+    assert connection_count == 1
+    assert len(projection.stages) == 3
+    assert len(projection.runs) == 1
+    assert len(projection.artifacts) == 1
+    assert len(projection.evidence) == 1
+    assert len(projection.usage) == 1
+    assert len(projection.audit_events) == 1
+    assert projection.collection_pages["runs"].limit == 1
+    assert projection.collection_pages["runs"].offset == 1
+    assert projection.collection_pages["runs"].total == 3
+    assert projection.collection_pages["stages"].offset == 0
+    with original_connect() as db:
+        events_after = db.execute(
+            """SELECT
+                   (SELECT COUNT(*) FROM task_events WHERE task_id = ?) +
+                   (SELECT COUNT(*) FROM control_events WHERE task_id = ?)""",
+            (task.task_id, task.task_id),
+        ).fetchone()[0]
+    assert events_after == events_before
+
+
+def test_unified_projection_bounds_oversized_audit_payloads(tmp_path):
+    tasks, service, _, task = _system(tmp_path)
+    tasks.append_event(
+        task.task_id,
+        AppendEventRequest(
+            event_type="projection.large_event",
+            payload={"body": "x" * 20_000},
+            actor="test",
+        ),
+    )
+
+    projection = service.unified_status(task.task_id, history_limit=200)
+    event = next(
+        item
+        for item in projection.audit_events
+        if item.event_type == "projection.large_event"
+    )
+
+    assert event.payload_truncated is True
+    assert event.payload["projection_truncated"] is True
+    assert event.payload["payload_sha256"] == event.payload_sha256
+    assert event.payload["original_utf8_bytes"] > 16_384
+    assert projection.budget.cost_settled_usd == 0
+    assert projection.budget.cost_measurement == Measurement.EXACT
+    assert projection.budget.cost_remaining_usd == 12
+
+
+@pytest.mark.asyncio
+async def test_cli_exposes_unified_projection_without_changing_legacy_status(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    _, service, _, task = _system(tmp_path)
+    await service.run_next(task.task_id, protocol_v1=True)
+    monkeypatch.setattr(orchestration_cli, "build_service", lambda: service)
+
+    assert orchestration_cli.main(
+        ["status", task.task_id, "--protocol-v1", "--json", "--limit", "1"]
+    ) == 0
+    unified = json.loads(capsys.readouterr().out)
+    assert unified["schema_version"] == "1.0"
+    assert unified["collection_pages"]["runs"]["limit"] == 1
+
+    assert orchestration_cli.main(["status", task.task_id, "--json"]) == 0
+    legacy = json.loads(capsys.readouterr().out)
+    assert "schema_version" not in legacy
+    assert "plan" in legacy
+
+
+@pytest.mark.asyncio
 async def test_exit_zero_invalid_handoff_blocks_and_creates_protocol_attention(tmp_path):
     _, service, _, task = _system(tmp_path, invalid_outputs=1)
 
@@ -415,6 +580,9 @@ async def test_resume_projects_already_settled_protocol_run_without_redispatch(
     assert status.runs[0].state == RunState.RUNNING
     protocol_run = service.control_plane.get_protocol_run(status.runs[0].run_id)
     assert protocol_run is not None and protocol_run.settled_at is not None
+    projection = service.unified_status(task.task_id)
+    assert projection.runs[0].wait_state.value == "compatibility_projection_pending"
+    assert projection.runs[0].semantic_result.value == "succeeded"
 
     monkeypatch.setattr(service.store, "finish_protocol_run", original)
     recovered = service.resume(task.task_id)

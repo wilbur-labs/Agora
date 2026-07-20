@@ -2,8 +2,22 @@
 from __future__ import annotations
 
 from enum import Enum
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from agora.attention.models import AttentionItem
+from agora.control_plane.models import GateRecord, StageRecord
+from agora.protocol.models import (
+    Approval,
+    ArtifactVersionRef,
+    Evidence,
+    ProcessStatus,
+    SchemaStatus,
+    SemanticStageResult,
+    TransportStatus,
+)
+from agora.tasks.models import TaskManifest, TaskState
 
 
 class StrictModel(BaseModel):
@@ -180,3 +194,149 @@ class TaskOrchestrationStatus(StrictModel):
     cost_used_usd: float | None
     cost_measurement: Measurement
     next_safe_action: str
+
+
+class ProjectionPage(StrictModel):
+    limit: int = Field(ge=1, le=200)
+    offset: int = Field(ge=0)
+    total: int = Field(ge=0)
+
+
+class RunWaitState(str, Enum):
+    SETTLED = "settled"
+    OPERATIONAL_RUNTIME_PENDING = "operational_runtime_pending"
+    PROTOCOL_START_PENDING = "protocol_start_pending"
+    RUNTIME_OR_SETTLEMENT_PENDING = "runtime_or_settlement_pending"
+    COMPATIBILITY_PROJECTION_PENDING = "compatibility_projection_pending"
+
+
+class UnifiedTaskProgress(StrictModel):
+    total_stages: int = Field(ge=0)
+    completed_stages: int = Field(ge=0)
+    current_stage_key: str | None
+    completed_stage_keys: list[str]
+    remaining_stage_keys: list[str]
+
+
+class UnifiedStageProjection(StrictModel):
+    stage_key: str
+    sequence: int | None = Field(default=None, ge=1)
+    title: str | None = None
+    runtime: str | None = None
+    current: bool
+    operational_state: StageState | None = None
+    authoritative_stage: StageRecord | None = None
+    gate: GateRecord | None = None
+    attempt_count: int = Field(default=0, ge=0)
+    latest_run_id: str | None = None
+    semantic_summary: str | None = None
+    blockers: list[str] = Field(default_factory=list, max_length=100)
+
+
+class UnifiedRunProjection(StrictModel):
+    run_id: str
+    stage_key: str
+    runtime: str | None = None
+    attempt: int | None = Field(default=None, ge=1)
+    operational_state: RunState | None = None
+    wait_state: RunWaitState
+    process_status: ProcessStatus | None = None
+    transport_status: TransportStatus | None = None
+    schema_status: SchemaStatus | None = None
+    semantic_result: SemanticStageResult | SemanticStatus | None = None
+    semantic_source: Literal["protocol", "compatibility", "unavailable"]
+    process_exit_code: int | None = None
+    timed_out: bool = False
+    semantic_summary: str | None = None
+    findings: list[str] = Field(default_factory=list, max_length=100)
+    failure: str | None = None
+    context_pack_id: str | None = None
+    context_sha256: str | None = None
+    handoff_pack_id: str | None = None
+    handoff_sha256: str | None = None
+    adapter_error_code: str | None = None
+    attention_required: bool = False
+    attention_item_id: str | None = None
+    token_reserved: int | None = Field(default=None, ge=0)
+    token_settled: int | None = Field(default=None, ge=0)
+    token_measurement: Measurement | None = None
+    cost_reserved_usd: float | None = Field(default=None, ge=0)
+    cost_settled_usd: float | None = Field(default=None, ge=0)
+    cost_measurement: Measurement | None = None
+    started_at: str
+    finished_at: str | None = None
+    elapsed_seconds: float = Field(ge=0)
+
+
+class ArtifactSummary(StrictModel):
+    version_ref: ArtifactVersionRef
+    project_id: str
+    task_id: str
+    stage_key: str
+    producer_runtime: str
+    producer_run_id: str
+    media_type: str
+    created_at: str
+
+
+class UnifiedAuditEvent(StrictModel):
+    event_id: str
+    source: Literal["task", "control_plane"]
+    event_key: str | None = None
+    event_type: str
+    actor: str
+    payload: dict[str, Any]
+    payload_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    payload_truncated: bool = False
+    created_at: str
+
+
+class RequiredHumanAction(StrictModel):
+    action_id: str
+    kind: Literal["attention", "plan_approval"]
+    title: str
+    source_id: str
+
+
+class GateDerivedNextSafeAction(StrictModel):
+    value: str | None
+    source_gate_key: str | None
+    unavailable_reason: str | None
+
+
+class UnifiedBudgetProjection(StrictModel):
+    token_allocated: int = Field(ge=0)
+    token_reserved: int = Field(ge=0)
+    token_settled: int | None = Field(default=None, ge=0)
+    token_measurement: Measurement
+    token_remaining: int | None = Field(default=None, ge=0)
+    cost_allocated_usd: float | None = Field(default=None, ge=0)
+    cost_reserved_usd: float | None = Field(default=None, ge=0)
+    cost_settled_usd: float | None = Field(default=None, ge=0)
+    cost_measurement: Measurement
+    cost_remaining_usd: float | None = Field(default=None, ge=0)
+
+
+class UnifiedTaskProjection(StrictModel):
+    schema_version: Literal["1.0"] = "1.0"
+    snapshot_at: str
+    task: TaskManifest
+    task_state: TaskState
+    task_state_source: Literal["task_manifest"] = "task_manifest"
+    plan: OrchestrationPlan
+    progress: UnifiedTaskProgress
+    stages: list[UnifiedStageProjection]
+    runs: list[UnifiedRunProjection]
+    artifacts: list[ArtifactSummary]
+    evidence: list[Evidence]
+    approvals: list[Approval]
+    attention: list[AttentionItem]
+    required_human_actions: list[RequiredHumanAction]
+    decisions: list[TaskDecision]
+    usage: list[UsageLedgerEntry]
+    audit_events: list[UnifiedAuditEvent]
+    budget: UnifiedBudgetProjection
+    next_safe_action: GateDerivedNextSafeAction
+    compatibility_next_action: str
+    collection_totals: dict[str, int]
+    collection_pages: dict[str, ProjectionPage]

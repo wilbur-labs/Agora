@@ -35,6 +35,7 @@ from .models import (
     SemanticResult,
     StageState,
     TaskOrchestrationStatus,
+    UnifiedTaskProjection,
 )
 from .processes import ProcessState, inspect_process
 from .protocol_adapter import adapt_runtime_result
@@ -44,6 +45,7 @@ from .protocol_context import (
     build_protocol_run_definition,
     resolve_git_revision,
 )
+from .projection import TaskProjectionStore
 from .runtime import (
     OUTPUT_LIMIT,
     ReadOnlyCliRunner,
@@ -89,6 +91,11 @@ class TaskOrchestrationService:
         self.timeout_seconds = min(max(timeout_seconds, 1), 7200)
         self.store = OrchestrationStore(tasks)
         self.control_plane = ControlPlaneStore(tasks)
+        self.projections = TaskProjectionStore(
+            tasks,
+            self.store,
+            self.control_plane,
+        )
 
     def create(
         self,
@@ -604,6 +611,19 @@ class TaskOrchestrationService:
 
     def retry(self, task_id: str, stage_key: str):
         return self.store.retry(task_id, stage_key)
+
+    def unified_status(
+        self,
+        task_id: str,
+        *,
+        history_limit: int = 100,
+        history_offset: int = 0,
+    ) -> UnifiedTaskProjection:
+        return self.projections.get(
+            task_id,
+            history_limit=history_limit,
+            history_offset=history_offset,
+        )
 
     def retry_protocol(self, task_id: str, stage_key: str, *, actor: str = "user"):
         status = self.store.status(task_id)
