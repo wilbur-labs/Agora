@@ -90,15 +90,15 @@ The item records affected counts and up to 200 stable identifiers per category;
 larger impact sets are explicitly marked truncated while the authoritative
 invalidation receipt remains complete.
 
-## Deferred integration
+## Subsequent integration
 
-This increment intentionally does not expose Run start/settlement over HTTP,
-does not replace the provisional native-runtime dispatcher, and does not map
-the legacy Task state to the frozen Task state machine. The next integration
-must generate a Context Pack from a pinned concrete Task/Stage contract, invoke
-the existing fail-closed Agent Adapter, and call this reviewed boundary. The
-unified Task projection, layered memory publication, full AI-DLC graph, and UI
-remain later work.
+This boundary increment intentionally did not expose Run start/settlement over
+HTTP, replace the provisional native-runtime dispatcher, or map the legacy Task
+state to the frozen Task state machine. The subsequent explicit CLI integration
+is documented in `formal-protocol-orchestration-v1.md`: it now generates a
+Context Pack from a pinned concrete Task/Stage contract, invokes the fail-closed
+Agent Adapter, and calls this reviewed boundary. The unified Task projection,
+layered memory publication, full AI-DLC graph, and UI remain later work.
 
 Infrastructure launch, timeout, interruption, and transport failures currently
 settle the Stage without automatically creating human Attention. Retry versus

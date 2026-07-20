@@ -29,6 +29,7 @@ class RunState(str, Enum):
     PASSED = "passed"
     BLOCKED = "blocked"
     FAILED = "failed"
+    CANCELLED = "cancelled"
     INTERRUPTED = "interrupted"
 
 

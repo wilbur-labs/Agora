@@ -4,14 +4,16 @@ Current branch: `main`
 
 Current recovery baseline (2026-07-20):
 
-- Local `main` is at `ce10565 feat: add fail-closed agent adapter`, five
-  reviewed commits ahead of `origin/main` at `2750dfe fix: recover Windows
+- Local `main` is at `068c27f feat: settle sealed protocol runs through gates`,
+  six reviewed commits ahead of `origin/main` at `2750dfe fix: recover Windows
   native orchestration` before the active increment below.
 - Active program: the ordered Agora Control Plane transformation. The first two
   stages (protocol/domain freeze and Control Plane v2 persistence/Registry) are
   complete; the bounded API, concrete Task contract, and Runner/Agent Adapter
-  are also reviewed foundations. Work-weighted program completion is currently
-  approximately 28% to 30%; this remains an engineering estimate until the
+  are also reviewed foundations. The sealed Run/Gate settlement boundary is
+  reviewed, and its explicit CLI orchestration wiring is the active increment.
+  Work-weighted program completion is approximately 38% to 40% including the
+  active working tree; this remains an engineering estimate until the
   authoritative Stage inventory and unified projection are available.
   The historical 11-stage label and milestone-count estimate below predate the
   current grouped stage correspondence and must be normalized before they are
@@ -45,8 +47,9 @@ Current recovery baseline (2026-07-20):
 - The user explicitly approved Plan `plan_cf698b72d0c548ff99b763fef8e6c75b`;
   the authoritative Plan is now `ready_for_implementation` and its approval
   event is recorded in `data/agora.db`.
-- The active increment below adds the sealed Context/Handoff Run ledger and
-  Gate-driven Stage settlement boundary. Do not begin Task Workbench UI work.
+- The active increment below wires pinned Task contracts and the existing
+  native Runner into sealed Context/Handoff and Gate settlement through an
+  explicit `--protocol-v1` CLI path. Do not begin Task Workbench UI work.
 
 ## 2026-07-18 — Latest transformation requirements recovery
 
@@ -444,11 +447,97 @@ remains deferred.
 
 ### Next safe action
 
-Finish the mandatory verification and independent review gates. After the
-reviewed commit, stop before the next implementation increment and present the
-user with a current-state project architecture diagram that distinguishes
-implemented, connected-but-provisional, and missing components. Continue only
-after that architecture handoff. UI remains deferred.
+The mandatory verification and independent review gates are complete for this
+commit. The requested current-state architecture diagram was delivered before
+the next increment. Continue with the formal orchestration wiring below; UI
+remains deferred.
+
+## 2026-07-20 - Formal protocol orchestration wiring (active)
+
+### Scope
+
+- [x] Added an explicit `--protocol-v1` path for `task start --run`, `next`,
+  `run`, and `retry`; legacy Tasks keep their existing behavior unless the
+  formal path is selected.
+- [x] Added a bounded Context builder that verifies the pinned Task contract,
+  resolves a clean Git ref/commit, maps Stage requirements and exact Gate
+  Evidence bindings, carries formal prior Artifact references, and seals the
+  result with the frozen Context Pack model.
+- [x] Made required output Artifact identities unique per Task/Run so reusable
+  contract templates cannot collide in the global immutable Registry.
+- [x] Connected the existing read-only Runner to the fail-closed Agent Adapter,
+  rejected configured Gate Evidence scope/kind spoofing before Registry writes,
+  and called the reviewed atomic Control Plane settlement boundary.
+- [x] Kept the provisional 0.5 Plan/Run tables only as dispatch, Token ledger,
+  and compatibility status projection; they advance only after an authoritative
+  completed Stage receipt and never parse the legacy semantic JSON in this path.
+- [x] Added replay-safe retry preparation, including staling a passed Gate when
+  a semantically blocked/failed Stage is retried.
+- [x] Added recovery for start rejection, a disappeared process, and the crash
+  window after authoritative settlement but before compatibility projection;
+  resume never redispatches or duplicates usage settlement.
+- [x] Preserved cancellation as a distinct formal and operational result.
+- [x] Added CLI, clean-revision, three-Stage success, exit-zero protocol
+  failure, Evidence spoofing, cancellation, retry, and crash-recovery tests.
+- [x] Run the complete verification set and Schema consistency check.
+- [x] Obtain Kiro protocol/methodology review and independent Claude Code
+  correctness/safety review; fix all actionable findings.
+- [x] Commit only after both review gates approve (the commit containing this
+  snapshot).
+
+### Current verification log
+
+- Focused orchestration, Agent Adapter, and protocol settlement regressions:
+  90 passed before independent review.
+- New formal orchestration suite: 9 passed.
+- Full non-integration backend suite excluding static-export-dependent
+  `tests/test_web_ui.py`: 388 passed, 18 deselected, with only the existing
+  Starlette/httpx and Windows event-loop cleanup warnings. The first sandboxed
+  run produced only the two known literal `\tmp` failures; an escalated run
+  without an isolated basetemp encountered the pre-existing denied-ACL pytest
+  temp root. The final run used a fresh explicit system-Temp basetemp and passed.
+- Resume audit found and fixed a pre-review partial-start recovery gap: when the
+  operational reservation committed but formal Run start failed, the Control
+  Plane Stage correctly remained `ready` while the compatibility Stage blocked;
+  `retry --protocol-v1` now accepts that split state and repairs the compatibility
+  projection without attempting an invalid authoritative transition. Focused
+  orchestration, Agent Adapter, and settlement regression rerun: 49 passed.
+- Kiro review pass 1: `CHANGES_REQUESTED`; no high findings and one medium
+  immutable-Gate recovery gap. A retry after the clean repository ref/commit
+  changed could reset the operational projection before immutable Gate
+  configuration rejected the new Evidence scope. Formal retry now resolves and
+  compares the configured repository/ref/commit before either projection is
+  mutated, rejects revision rebinding with an explicit new-Task action, and has
+  a changed-revision regression. Gate configuration now also follows the
+  documented operational-reservation-first ordering. Post-fix focused suite:
+  50 passed.
+- Kiro targeted re-review: `APPROVE`; the revision comparison precedes all
+  writes, both same-revision retry branches remain recoverable, Gate setup now
+  follows operational reservation, and the changed-revision regression reaches
+  the intended no-mutation branch. Its two residual observations are low and
+  non-blocking: the durable-record reconciliation after an ambiguous start
+  exception, and intentionally carrying bounded prior-attempt Artifacts into a
+  retry Context.
+- Claude Code independent correctness/safety review: `APPROVE`; no high or
+  medium findings. It independently confirmed the transaction-gap recovery,
+  retry revision guard, exit-code/Gate separation, Evidence scoping,
+  cancellation, idempotency, redaction, and bounds. Its two low informational
+  observations concern only an unexpected exception outside the Runner's
+  normal result contract and cosmetic compatibility-projection labeling.
+- Final post-review full backend suite: 389 passed, 18 deselected, with the same
+  existing Starlette/httpx and Windows Proactor cleanup warnings.
+- Protocol Schema export check, isolated Python compile, `git diff --check`, and
+  the `agora task --help` CLI smoke: passed.
+- No frontend or shared HTTP API contract changed; frontend validation is not
+  required for this increment.
+
+### Next safe action
+
+After the reviewed commit, add the smallest read-only unified Task projection
+that reports authoritative formal Stage/Gate/Attention state alongside the
+existing operational usage ledger without introducing a second state writer.
+Dynamic routing, exact provider usage, the full AI-DLC graph, and UI remain
+later bounded increments.
 
 ## 2026-07-13
 

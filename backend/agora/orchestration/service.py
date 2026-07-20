@@ -7,11 +7,22 @@ import json
 import math
 import re
 from collections.abc import Callable
+from pathlib import Path
 
 from pydantic import ValidationError
 
+from agora.control_plane.models import ProtocolRunRecord, RunSettlementReceipt
+from agora.control_plane.store import (
+    ControlPlaneConflictError,
+    ControlPlaneNotFoundError,
+    ControlPlaneStore,
+    ControlPlaneValidationError,
+)
 from agora.projects import ProjectRegistry
-from agora.tasks.models import CreateTaskRequest, TaskBudget, TaskManifest, TaskRisk
+from agora.protocol.agent_adapter import AgentAdapterResult
+from agora.protocol.hashing import canonical_json_bytes
+from agora.protocol.state_machines import StageStatus
+from agora.tasks.models import CreateTaskRequest, TaskBudget, TaskManifest, TaskRisk, utc_now
 from agora.tasks.store import TaskStore
 
 from .contracts import TaskContract, canonical_contract_json, contract_sha256
@@ -26,7 +37,20 @@ from .models import (
     TaskOrchestrationStatus,
 )
 from .processes import ProcessState, inspect_process
-from .runtime import ReadOnlyCliRunner, RuntimeCommand, RuntimeInterrupted
+from .protocol_adapter import adapt_runtime_result
+from .protocol_context import (
+    ProtocolRunDefinition,
+    RepositoryRevision,
+    build_protocol_run_definition,
+    resolve_git_revision,
+)
+from .runtime import (
+    OUTPUT_LIMIT,
+    ReadOnlyCliRunner,
+    RuntimeCommand,
+    RuntimeInterrupted,
+    RuntimeResult,
+)
 from .store import (
     OrchestrationConflictError,
     OrchestrationStore,
@@ -47,6 +71,7 @@ class TaskOrchestrationService:
         *,
         runner: ReadOnlyCliRunner | None = None,
         process_inspector: Callable[[int], ProcessState] = inspect_process,
+        revision_resolver: Callable[[Path, str], RepositoryRevision] | None = None,
         methodology: MethodologyDefinition = FOUNDATION_METHODOLOGY,
         timeout_seconds: int = 600,
     ):
@@ -55,9 +80,15 @@ class TaskOrchestrationService:
         self.runtimes = runtimes
         self.runner = runner or ReadOnlyCliRunner()
         self.process_inspector = process_inspector
+        self.revision_resolver = revision_resolver or (
+            lambda root, repository_id: resolve_git_revision(
+                root, repository_id=repository_id
+            )
+        )
         self.methodology = methodology
         self.timeout_seconds = min(max(timeout_seconds, 1), 7200)
         self.store = OrchestrationStore(tasks)
+        self.control_plane = ControlPlaneStore(tasks)
 
     def create(
         self,
@@ -160,7 +191,14 @@ class TaskOrchestrationService:
             actor=actor,
         )
 
-    async def run_next(self, task_id: str) -> OrchestrationRun:
+    async def run_next(
+        self,
+        task_id: str,
+        *,
+        protocol_v1: bool = False,
+    ) -> OrchestrationRun:
+        if protocol_v1:
+            return await self.run_next_protocol(task_id)
         task = self.tasks.get(task_id)
         if task is None:
             raise OrchestrationConflictError("Task not found")
@@ -232,17 +270,210 @@ class TaskOrchestrationService:
             token_measurement=token_measurement,
         )
 
-    async def run_until_blocked(self, task_id: str) -> TaskOrchestrationStatus:
+    async def run_next_protocol(self, task_id: str) -> OrchestrationRun:
+        """Dispatch one explicit Context/Handoff v1 Run through the formal Gate."""
+
+        task = self.tasks.get(task_id)
+        if task is None:
+            raise OrchestrationConflictError("Task not found")
+        contract_payload = task.metadata.get("task_contract")
+        if contract_payload is None:
+            raise OrchestrationValidationError(
+                "Formal protocol orchestration requires a pinned concrete Task contract"
+            )
+        contract = TaskContract.model_validate(contract_payload)
+        if task.metadata.get("task_contract_sha256") != contract_sha256(contract):
+            raise OrchestrationValidationError(
+                "Pinned Task contract hash does not match its content"
+            )
+        status = self.store.status(task_id)
+        if status.plan.state != PlanState.ACTIVE:
+            raise OrchestrationConflictError(f"Plan is {status.plan.state.value}, not active")
+        stage = next(
+            (item for item in status.stages if item.stage_key == status.plan.current_stage_key),
+            None,
+        )
+        if stage is None or stage.state != StageState.PENDING:
+            raise OrchestrationConflictError("Current stage is not ready to run")
+        runtime = self.runtimes.get(stage.adapter)
+        if runtime is None:
+            raise OrchestrationConflictError(f"Runtime is unavailable: {stage.adapter}")
+        project = self.projects.get(task.project_id)
+        revision = self.revision_resolver(project.root, task.project_id)
+        projection = self.control_plane.projection(task_id)
+        prior = projection["artifacts"]
+        if projection["collection_totals"]["artifacts"] != len(prior):
+            raise OrchestrationConflictError(
+                "Formal Artifact history exceeds the bounded Context projection"
+            )
+        run_id = self.store.new_run_id()
+        definition = build_protocol_run_definition(
+            task=task,
+            contract=contract,
+            stage=stage,
+            run_id=run_id,
+            revision=revision,
+            prior_artifacts=prior,
+            decisions=self.store.latest_decisions(status.plan.plan_id),
+            generated_at=utc_now(),
+            timeout_seconds=self.timeout_seconds,
+            max_output_bytes=OUTPUT_LIMIT,
+        )
+        digest = hashlib.sha256(definition.prompt.encode("utf-8")).hexdigest()
+        operation_key = (
+            f"{status.plan.plan_id}:{stage.stage_key}:protocol:{stage.attempt_count + 1}"
+        )
+        run = self.store.claim_current_stage(
+            task_id,
+            prompt_sha256=digest,
+            operation_key=operation_key,
+            run_id=run_id,
+        )
+        try:
+            self.control_plane.configure_gate(
+                task_id=task_id,
+                gate_key=definition.gate_key,
+                stage_key=stage.stage_key,
+                requirements=definition.gate_requirements,
+                actor="orchestrator",
+            )
+            self.control_plane.start_protocol_run(
+                definition.context_pack,
+                gate_key=definition.gate_key,
+                actor="orchestrator",
+                operation_key=f"protocol-start:{run_id}",
+            )
+        except Exception as exc:
+            if self.control_plane.get_protocol_run(run_id) is not None:
+                pass
+            else:
+                known = isinstance(
+                    exc,
+                    (
+                        ControlPlaneConflictError,
+                        ControlPlaneNotFoundError,
+                        ControlPlaneValidationError,
+                    ),
+                )
+                detail = str(exc) if known else type(exc).__name__
+                self.store.finish_run(
+                    run_id,
+                    exit_code=None,
+                    timed_out=False,
+                    output="",
+                    error_message=f"formal protocol start failed: {detail}",
+                    semantic=None,
+                    token_used=0,
+                    token_measurement=Measurement.EXACT,
+                )
+                raise OrchestrationConflictError(
+                    f"Formal protocol Run could not start: {detail}"
+                ) from exc
+
+        async def attach_pid(pid: int) -> None:
+            self.store.attach_pid(run_id, pid)
+
+        try:
+            result = await self.runner.run(
+                runtime,
+                definition.prompt,
+                cwd=project.root,
+                task_id=task_id,
+                run_id=run_id,
+                stage_key=stage.stage_key,
+                timeout_seconds=self.timeout_seconds,
+                on_process=attach_pid,
+            )
+        except RuntimeInterrupted as exc:
+            result = RuntimeResult(
+                exit_code=None,
+                stdout="",
+                stderr=str(exc),
+                process_started=True,
+            )
+        except asyncio.CancelledError:  # pragma: no cover - defensive outer boundary
+            result = RuntimeResult(
+                exit_code=None,
+                stdout="",
+                stderr="Orchestration task was cancelled",
+                process_started=True,
+            )
+            self._settle_protocol_result(run, definition, result, cancelled=True)
+            raise
+        except Exception as exc:
+            result = RuntimeResult(
+                exit_code=None,
+                stdout="",
+                stderr=f"runtime boundary failed: {type(exc).__name__}: {exc}",
+                process_started=False,
+            )
+        return self._settle_protocol_result(run, definition, result)
+
+    def _settle_protocol_result(
+        self,
+        run: OrchestrationRun,
+        definition: ProtocolRunDefinition,
+        result: RuntimeResult,
+        *,
+        cancelled: bool = False,
+    ) -> OrchestrationRun:
+        adapted = adapt_runtime_result(
+            definition.context_pack,
+            result,
+            gate_requirements=definition.gate_requirements,
+            cancelled=cancelled,
+        )
+        receipt = self.control_plane.settle_protocol_run(
+            adapted,
+            actor="orchestrator",
+            operation_key=f"protocol-settle:{run.run_id}",
+        )
+        failure = (
+            f"timeout after {self.timeout_seconds}s"
+            if result.timed_out
+            else (result.stderr.strip() or None if result.exit_code != 0 else None)
+        )
+        if not result.process_started:
+            token_used = 0
+            token_measurement = Measurement.EXACT
+        elif result.exit_code is None:
+            token_used = None
+            token_measurement = Measurement.UNAVAILABLE
+        else:
+            token_used = self._estimate_tokens(definition.prompt, result.stdout)
+            token_measurement = Measurement.ESTIMATED
+        return self.store.finish_protocol_run(
+            run.run_id,
+            receipt=receipt,
+            adapter_result=adapted,
+            exit_code=result.exit_code,
+            timed_out=result.timed_out,
+            output=result.stdout,
+            error_message=failure,
+            token_used=token_used,
+            token_measurement=token_measurement,
+        )
+
+    async def run_until_blocked(
+        self,
+        task_id: str,
+        *,
+        protocol_v1: bool = False,
+    ) -> TaskOrchestrationStatus:
         while True:
             status = self.store.status(task_id)
             if status.plan.state != PlanState.ACTIVE:
                 return status
-            await self.run_next(task_id)
+            await self.run_next(task_id, protocol_v1=protocol_v1)
 
     def resume(self, task_id: str) -> TaskOrchestrationStatus:
         status = self.store.status(task_id)
         running = [run for run in status.runs if run.state == RunState.RUNNING]
         for run in running:
+            protocol_run = self.control_plane.get_protocol_run(run.run_id)
+            if protocol_run is not None:
+                self._resume_protocol_run(run, protocol_run)
+                continue
             process_state = (
                 self.process_inspector(run.pid) if run.pid else ProcessState.UNKNOWN
             )
@@ -257,8 +488,173 @@ class TaskOrchestrationService:
             )
         return self.store.status(task_id)
 
+    def _resume_protocol_run(
+        self,
+        run: OrchestrationRun,
+        protocol_run: ProtocolRunRecord,
+    ) -> None:
+        stage = self.control_plane.get_stage(run.task_id, run.stage_key)
+        gate = self.control_plane.get_gate(run.task_id, protocol_run.gate_key)
+        if stage is None or gate is None:
+            raise OrchestrationConflictError(
+                "Formal protocol Run is missing its authoritative Stage or Gate"
+            )
+        if protocol_run.protocol_state is None:
+            if run.pid is None:
+                result = RuntimeResult(
+                    exit_code=None,
+                    stdout="",
+                    stderr="Recovered a protocol Run whose process never attached",
+                    process_started=False,
+                )
+                token_used = 0
+                token_measurement = Measurement.EXACT
+            else:
+                process_state = self.process_inspector(run.pid)
+                if process_state != ProcessState.DEAD:
+                    raise OrchestrationConflictError(
+                        f"Run {run.run_id} process {run.pid} is {process_state.value}; "
+                        "refusing duplicate dispatch"
+                    )
+                result = RuntimeResult(
+                    exit_code=None,
+                    stdout="",
+                    stderr="Recovered a protocol Run whose process was no longer active",
+                    process_started=True,
+                )
+                token_used = None
+                token_measurement = Measurement.UNAVAILABLE
+            adapted = adapt_runtime_result(
+                protocol_run.context_pack,
+                result,
+                gate_requirements=gate.requirements,
+            )
+            receipt = self.control_plane.settle_protocol_run(
+                adapted,
+                actor="orchestrator",
+                operation_key=f"protocol-settle:{run.run_id}",
+            )
+            self.store.finish_protocol_run(
+                run.run_id,
+                receipt=receipt,
+                adapter_result=adapted,
+                exit_code=result.exit_code,
+                timed_out=result.timed_out,
+                output=result.stdout,
+                error_message=result.stderr,
+                token_used=token_used,
+                token_measurement=token_measurement,
+            )
+            return
+
+        adapted = AgentAdapterResult(
+            protocol_state=protocol_run.protocol_state,
+            handoff_pack=protocol_run.handoff_pack,
+            error_code=protocol_run.adapter_error_code,
+            attention_required=protocol_run.attention_required,
+        )
+        receipt = RunSettlementReceipt(
+            run=protocol_run,
+            stage=stage,
+            gate=gate,
+            artifact_ids=sorted(
+                item.artifact_id
+                for item in (
+                    protocol_run.handoff_pack.output_artifacts
+                    if protocol_run.handoff_pack
+                    else []
+                )
+            ),
+            evidence_ids=sorted(
+                item.evidence_id
+                for item in (
+                    protocol_run.handoff_pack.evidence
+                    if protocol_run.handoff_pack
+                    else []
+                )
+            ),
+            active_evidence_ids=gate.active_evidence_ids,
+            replayed=True,
+        )
+        output = (
+            canonical_json_bytes(protocol_run.handoff_pack).decode("utf-8")
+            if protocol_run.handoff_pack
+            else ""
+        )
+        process_status = protocol_run.protocol_state.process_status.value
+        self.store.finish_protocol_run(
+            run.run_id,
+            receipt=receipt,
+            adapter_result=adapted,
+            exit_code=protocol_run.protocol_state.process_exit_code,
+            timed_out=process_status == "timed_out",
+            output=output,
+            error_message=(
+                f"Recovered formal protocol result: {protocol_run.adapter_error_code.value}"
+                if protocol_run.adapter_error_code
+                else None
+            ),
+            token_used=(0 if process_status == "launch_failed" else None),
+            token_measurement=(
+                Measurement.EXACT
+                if process_status == "launch_failed"
+                else Measurement.UNAVAILABLE
+            ),
+        )
+
     def retry(self, task_id: str, stage_key: str):
         return self.store.retry(task_id, stage_key)
+
+    def retry_protocol(self, task_id: str, stage_key: str, *, actor: str = "user"):
+        status = self.store.status(task_id)
+        stage = next((item for item in status.stages if item.stage_key == stage_key), None)
+        if stage is None:
+            raise OrchestrationConflictError(f"Stage not found: {stage_key}")
+        if (
+            status.plan.state != PlanState.BLOCKED
+            or status.plan.current_stage_key != stage_key
+            or stage.state != StageState.BLOCKED
+        ):
+            raise OrchestrationConflictError(
+                "Formal retry requires the current blocked operational Stage"
+            )
+        control_stage = self.control_plane.get_stage(task_id, stage_key)
+        if control_stage is None:
+            raise OrchestrationConflictError(
+                f"Formal Control Plane Stage not found: {stage_key}"
+            )
+        gate = self.control_plane.get_gate(task_id, control_stage.gate_key)
+        if gate is None:
+            raise OrchestrationConflictError(
+                f"Formal Control Plane Gate not found: {control_stage.gate_key}"
+            )
+        task = self.tasks.get(task_id)
+        if task is None:
+            raise OrchestrationConflictError("Task not found")
+        project = self.projects.get(task.project_id)
+        revision = self.revision_resolver(project.root, task.project_id)
+        configured_scopes = {
+            (item.repository_id, item.ref, item.commit_sha)
+            for item in gate.requirements
+        }
+        current_scope = {
+            (revision.repository_id, revision.ref, revision.commit_sha)
+        }
+        if configured_scopes != current_scope:
+            raise OrchestrationConflictError(
+                "Formal retry cannot rebind an immutable Gate after the repository "
+                "ref or commit changed; start a new Task for the new revision"
+            )
+        if control_stage.status != StageStatus.READY:
+            self.control_plane.prepare_protocol_retry(
+                task_id=task_id,
+                stage_key=stage_key,
+                actor=actor,
+                operation_key=(
+                    f"protocol-retry:{task_id}:{stage_key}:{stage.attempt_count}"
+                ),
+            )
+        return self.store.retry(task_id, stage_key, actor=actor)
 
     def approve(self, task_id: str, *, actor: str, reason: str):
         return self.store.approve(task_id, actor=actor, reason=reason)

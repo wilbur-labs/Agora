@@ -521,3 +521,40 @@ def test_settlement_operation_replays_but_conflicting_input_fails_closed(tmp_pat
             actor="agora",
             operation_key="settle:replay",
         )
+
+
+def test_protocol_retry_reopens_stage_and_stales_a_passed_gate(tmp_path):
+    _, store, task_id = _stores(tmp_path)
+    context = _context(task_id)
+    _start(store, context)
+    settled = store.settle_protocol_run(
+        _adapt(
+            context,
+            _handoff_payload(
+                context,
+                stage_result="blocked",
+                evidence_status="passed",
+            ),
+        ),
+        actor="agora",
+        operation_key="settle:blocked-with-passed-gate",
+    )
+    assert settled.stage.status == StageStatus.BLOCKED
+    assert settled.gate.status == GateStatus.PASSED
+
+    retried = store.prepare_protocol_retry(
+        task_id=task_id,
+        stage_key="implementation",
+        actor="user",
+        operation_key="retry:run-protocol-1",
+    )
+    replay = store.prepare_protocol_retry(
+        task_id=task_id,
+        stage_key="implementation",
+        actor="user",
+        operation_key="retry:run-protocol-1",
+    )
+
+    assert retried.status == StageStatus.READY
+    assert replay == retried
+    assert store.get_gate(task_id, "implementation-gate").status == GateStatus.STALE

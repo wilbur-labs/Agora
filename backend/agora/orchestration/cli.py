@@ -9,6 +9,11 @@ from pathlib import Path
 from typing import Sequence
 
 from agora.config.settings import get_config
+from agora.control_plane.store import (
+    ControlPlaneConflictError,
+    ControlPlaneNotFoundError,
+    ControlPlaneValidationError,
+)
 from agora.projects import ProjectRegistry
 from agora.tasks.models import TaskRisk
 from agora.tasks.store import TaskNotFoundError, TaskStore
@@ -56,6 +61,11 @@ def parser() -> argparse.ArgumentParser:
     start.add_argument("--tokens", type=int, default=30_000)
     start.add_argument("--cost-usd", type=float)
     start.add_argument("--run", action="store_true", help="Run all three planning/review stages")
+    start.add_argument(
+        "--protocol-v1",
+        action="store_true",
+        help="Use sealed Context/Handoff Packs and formal Control Plane Gates",
+    )
 
     attach = commands.add_parser("attach", help="Attach the provisional method to an existing Task")
     attach.add_argument("task_id")
@@ -80,12 +90,19 @@ def parser() -> argparse.ArgumentParser:
     ):
         command = commands.add_parser(name, help=help_text)
         command.add_argument("task_id")
+        if name in {"next", "run"}:
+            command.add_argument(
+                "--protocol-v1",
+                action="store_true",
+                help="Use sealed Context/Handoff Packs and formal Control Plane Gates",
+            )
         if name == "status":
             command.add_argument("--json", action="store_true", dest="as_json")
 
     retry = commands.add_parser("retry", help="Retry a blocked stage when budget remains")
     retry.add_argument("task_id")
     retry.add_argument("stage_key")
+    retry.add_argument("--protocol-v1", action="store_true")
 
     approve = commands.add_parser("approve", help="Human approval after all three stages pass")
     approve.add_argument("task_id")
@@ -107,6 +124,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 raise ValueError("--description cannot be combined with --contract")
             if not contract and not args.title:
                 raise ValueError("A title or --contract is required")
+            if args.protocol_v1 and not args.run:
+                raise ValueError("--protocol-v1 on start requires --run")
+            if args.protocol_v1 and not contract:
+                raise ValueError("--protocol-v1 requires --contract")
             project_id = args.project or service.projects.current_project_id()
             task = service.create(
                 project_id=project_id,
@@ -119,7 +140,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             print(task.task_id)
             if args.run:
-                status = asyncio.run(service.run_until_blocked(task.task_id))
+                status = asyncio.run(
+                    service.run_until_blocked(
+                        task.task_id,
+                        protocol_v1=args.protocol_v1,
+                    )
+                )
                 _print_status(status)
                 return 0 if status.plan.state == PlanState.AWAITING_APPROVAL else 2
             _print_status(service.status(task.task_id))
@@ -144,12 +170,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             _print_status(service.status(args.task_id))
             return 0
         if args.command == "next":
-            run = asyncio.run(service.run_next(args.task_id))
+            run = asyncio.run(
+                service.run_next(args.task_id, protocol_v1=args.protocol_v1)
+            )
             print(json.dumps(run.model_dump(mode="json"), ensure_ascii=False, indent=2))
             _print_status(service.status(args.task_id))
             return 0 if run.state.value == "passed" else 2
         if args.command == "run":
-            status = asyncio.run(service.run_until_blocked(args.task_id))
+            status = asyncio.run(
+                service.run_until_blocked(
+                    args.task_id,
+                    protocol_v1=args.protocol_v1,
+                )
+            )
             _print_status(status)
             return 0 if status.plan.state == PlanState.AWAITING_APPROVAL else 2
         if args.command == "status":
@@ -163,7 +196,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             _print_status(service.resume(args.task_id))
             return 0
         if args.command == "retry":
-            service.retry(args.task_id, args.stage_key)
+            if args.protocol_v1:
+                service.retry_protocol(args.task_id, args.stage_key, actor="user")
+            else:
+                service.retry(args.task_id, args.stage_key)
             _print_status(service.status(args.task_id))
             return 0
         if args.command == "approve":
@@ -172,6 +208,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
     except (
         KeyError,
+        ControlPlaneConflictError,
+        ControlPlaneNotFoundError,
+        ControlPlaneValidationError,
         OrchestrationConflictError,
         OrchestrationNotFoundError,
         OrchestrationValidationError,

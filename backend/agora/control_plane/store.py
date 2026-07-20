@@ -588,6 +588,104 @@ class ControlPlaneStore:
             )
             return receipt
 
+    def prepare_protocol_retry(
+        self,
+        *,
+        task_id: str,
+        stage_key: str,
+        actor: str,
+        operation_key: str,
+    ) -> StageRecord:
+        """Move a settled retryable Stage back to ready without dispatching."""
+
+        self._validate_operation_key(operation_key)
+        fingerprint = canonical_sha256(
+            {
+                "action": "prepare_protocol_retry",
+                "task_id": task_id,
+                "stage_key": stage_key,
+            }
+        )
+        now = utc_now()
+        with self.tasks._transaction() as db:
+            replay = self._operation_result(db, operation_key, fingerprint)
+            if replay is not None:
+                return StageRecord.model_validate(replay["stage"])
+            task = self._task_row(db, task_id)
+            stage = db.execute(
+                """SELECT * FROM control_stages
+                   WHERE task_id = ? AND stage_key = ?""",
+                (task_id, stage_key),
+            ).fetchone()
+            if stage is None:
+                raise ControlPlaneNotFoundError(f"Stage not found: {stage_key}")
+            current = StageStatus(stage["status"])
+            if current not in {StageStatus.BLOCKED, StageStatus.FAILED}:
+                raise ControlPlaneConflictError(
+                    f"Protocol retry requires a blocked or failed Stage, current status is "
+                    f"{current.value}"
+                )
+            target = transition_stage(current, StageStatus.READY)
+            cursor = db.execute(
+                """UPDATE control_stages
+                   SET status = ?, version = version + 1, updated_at = ?
+                   WHERE task_id = ? AND stage_key = ? AND version = ?""",
+                (target.value, now, task_id, stage_key, stage["version"]),
+            )
+            if cursor.rowcount != 1:
+                raise ControlPlaneConflictError("Stage changed during protocol retry")
+            gate = self._gate_row(db, task_id, stage["gate_key"])
+            gate_status = GateStatus(gate["status"])
+            if gate_status == GateStatus.PASSED:
+                stale = transition_gate(gate_status, GateStatus.STALE)
+                cursor = db.execute(
+                    """UPDATE control_gates
+                       SET status = ?, version = version + 1, updated_at = ?
+                       WHERE task_id = ? AND gate_key = ? AND version = ?""",
+                    (
+                        stale.value,
+                        now,
+                        task_id,
+                        gate["gate_key"],
+                        gate["version"],
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise ControlPlaneConflictError(
+                        "Gate changed during protocol retry"
+                    )
+            self._event(
+                db,
+                event_key=f"{operation_key}:stage.retry_ready",
+                task_id=task_id,
+                project_id=task["project_id"],
+                event_type="stage.retry_ready",
+                actor=actor,
+                payload={
+                    "stage_key": stage_key,
+                    "gate_key": stage["gate_key"],
+                    "from": current.value,
+                    "to": target.value,
+                    "gate_staled": gate_status == GateStatus.PASSED,
+                },
+                now=now,
+            )
+            updated = self._stage(
+                db.execute(
+                    """SELECT * FROM control_stages
+                       WHERE task_id = ? AND stage_key = ?""",
+                    (task_id, stage_key),
+                ).fetchone()
+            )
+            self._complete_operation(
+                db,
+                operation_key,
+                fingerprint,
+                {"stage": updated.model_dump(mode="json")},
+                now,
+            )
+            return updated
+
     def register_artifact(
         self,
         artifact: Artifact,

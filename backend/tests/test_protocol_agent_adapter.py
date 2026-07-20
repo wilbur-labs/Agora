@@ -177,6 +177,11 @@ def test_cli_runtime_result_bridge_preserves_facts_before_handoff_validation():
         ),
     )
     interrupted = adapt_runtime_result(context, RuntimeResult(None, "", "lost"))
+    cancelled = adapt_runtime_result(
+        context,
+        RuntimeResult(None, "", "cancelled"),
+        cancelled=True,
+    )
 
     assert accepted.protocol_state.process_status.value == "exited"
     assert accepted.protocol_state.transport_status.value == "completed"
@@ -187,6 +192,9 @@ def test_cli_runtime_result_bridge_preserves_facts_before_handoff_validation():
     assert interrupted.protocol_state.process_status.value == "interrupted"
     assert interrupted.protocol_state.transport_status.value == "failed"
     assert interrupted.error_code == AdapterErrorCode.PROCESS_INTERRUPTED
+    assert cancelled.protocol_state.process_status.value == "cancelled"
+    assert cancelled.protocol_state.semantic_stage_result.value == "cancelled"
+    assert cancelled.error_code == AdapterErrorCode.PROCESS_CANCELLED
 
 
 @pytest.mark.parametrize(

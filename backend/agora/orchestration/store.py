@@ -9,7 +9,11 @@ import uuid
 from contextlib import closing, contextmanager
 from typing import Any, Iterator
 
+from agora.control_plane.models import RunSettlementReceipt
 from agora.execution.security import redact_text, sanitize_data
+from agora.protocol.agent_adapter import AgentAdapterResult
+from agora.protocol.models import SemanticStageResult
+from agora.protocol.state_machines import GateStatus, StageStatus
 from agora.tasks.models import utc_now
 from agora.tasks.store import TaskNotFoundError, TaskStore
 
@@ -51,6 +55,10 @@ class OrchestrationStore:
 
     def _connect(self) -> sqlite3.Connection:
         return self.tasks._connect()
+
+    @classmethod
+    def new_run_id(cls) -> str:
+        return cls._id("orun")
 
     @contextmanager
     def _transaction(self) -> Iterator[sqlite3.Connection]:
@@ -352,8 +360,13 @@ class OrchestrationStore:
         *,
         prompt_sha256: str,
         operation_key: str,
+        run_id: str | None = None,
         actor: str = "orchestrator",
     ) -> OrchestrationRun:
+        if run_id is not None and not re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", run_id
+        ):
+            raise OrchestrationValidationError("Run id is not a stable protocol identity")
         now = utc_now()
         with self._transaction() as db:
             plan = db.execute(
@@ -408,7 +421,7 @@ class OrchestrationStore:
             if settled + active_reserved + stage["token_budget"] > plan["total_token_budget"]:
                 raise OrchestrationConflictError("Token budget is exhausted; increase it before retrying")
 
-            run_id = self._id("orun")
+            run_id = run_id or self._id("orun")
             attempt = int(stage["attempt_count"]) + 1
             db.execute(
                 """
@@ -472,6 +485,181 @@ class OrchestrationStore:
             )
             if cursor.rowcount != 1:
                 raise OrchestrationConflictError("Run is not attachable")
+        return self.require_run(run_id)
+
+    def finish_protocol_run(
+        self,
+        run_id: str,
+        *,
+        receipt: RunSettlementReceipt,
+        adapter_result: AgentAdapterResult,
+        exit_code: int | None,
+        timed_out: bool,
+        output: str,
+        error_message: str | None,
+        token_used: int | None,
+        token_measurement: Measurement,
+        actor: str = "orchestrator",
+    ) -> OrchestrationRun:
+        """Project an authoritative protocol settlement into the 0.5 ledger.
+
+        This compatibility projection records dispatch/usage and advances the
+        provisional Plan only after the frozen Control Plane Stage completed.
+        It never parses runtime prose or makes an independent Gate decision.
+        """
+
+        if (
+            receipt.run.run_id != run_id
+            or adapter_result.protocol_state.run_id != run_id
+            or receipt.run.protocol_state != adapter_result.protocol_state
+        ):
+            raise OrchestrationValidationError(
+                "Protocol settlement does not match the operational Run"
+            )
+        now = utc_now()
+        safe_output = redact_text(output)[-64 * 1024:]
+        safe_error = redact_text(error_message) if error_message else None
+        semantic_result = adapter_result.protocol_state.semantic_stage_result
+        summary = (
+            f"Formal protocol semantic={semantic_result.value}; "
+            f"gate={receipt.gate.status.value}; stage={receipt.stage.status.value}."
+        )
+        findings = self._protocol_findings(receipt, adapter_result)
+        blockers = self._protocol_blockers(receipt, adapter_result, safe_error)
+        stage_completed = receipt.stage.status == StageStatus.COMPLETED
+        if stage_completed:
+            run_state = RunState.PASSED
+        elif receipt.stage.status == StageStatus.FAILED:
+            run_state = RunState.FAILED
+        elif receipt.stage.status == StageStatus.CANCELLED:
+            run_state = RunState.CANCELLED
+        else:
+            run_state = RunState.BLOCKED
+
+        with self._transaction() as db:
+            run = db.execute(
+                "SELECT * FROM orchestration_runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if not run:
+                raise OrchestrationNotFoundError(run_id)
+            if run["task_id"] != receipt.run.task_id or run["stage_key"] != receipt.run.stage_key:
+                raise OrchestrationValidationError(
+                    "Protocol settlement crosses the operational Task or Stage scope"
+                )
+            if run["state"] != RunState.RUNNING.value:
+                settled = db.execute(
+                    """SELECT 1 FROM orchestration_usage_ledger
+                       WHERE run_id = ? AND entry_type = ?""",
+                    (run_id, LedgerEntryType.SETTLEMENT.value),
+                ).fetchone()
+                if settled:
+                    return self._run(run)
+                raise OrchestrationConflictError(
+                    "Terminal protocol projection is missing its usage settlement"
+                )
+            stage = db.execute(
+                "SELECT * FROM orchestration_stages WHERE plan_id = ? AND stage_key = ?",
+                (run["plan_id"], run["stage_key"]),
+            ).fetchone()
+            assert stage is not None
+            if stage["state"] != StageState.RUNNING.value:
+                raise OrchestrationConflictError(
+                    "Operational Stage is not running during protocol projection"
+                )
+            db.execute(
+                """
+                UPDATE orchestration_runs
+                SET state = ?, exit_code = ?, timed_out = ?, output = ?, error_message = ?,
+                    semantic_status = ?, semantic_summary = ?, findings = ?,
+                    token_used = ?, token_measurement = ?, cost_used_usd = NULL,
+                    cost_measurement = ?, finished_at = ?
+                WHERE run_id = ?
+                """,
+                (
+                    run_state.value,
+                    exit_code,
+                    int(timed_out),
+                    safe_output,
+                    safe_error,
+                    ("pass" if stage_completed else "blocked"),
+                    summary,
+                    self._json(sanitize_data(findings)),
+                    token_used,
+                    token_measurement.value,
+                    Measurement.UNAVAILABLE.value,
+                    now,
+                    run_id,
+                ),
+            )
+            db.execute(
+                """
+                INSERT INTO orchestration_usage_ledger (
+                    entry_id, task_id, plan_id, stage_key, run_id, entry_type,
+                    tokens, token_measurement, cost_usd, cost_measurement, adapter, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)
+                """,
+                (
+                    self._id("usage"),
+                    run["task_id"],
+                    run["plan_id"],
+                    run["stage_key"],
+                    run_id,
+                    LedgerEntryType.SETTLEMENT.value,
+                    token_used,
+                    token_measurement.value,
+                    Measurement.UNAVAILABLE.value,
+                    run["adapter"],
+                    now,
+                ),
+            )
+            db.execute(
+                """UPDATE orchestration_stages
+                   SET state = ?, semantic_summary = ?, blockers = ?, updated_at = ?
+                   WHERE stage_id = ?""",
+                (
+                    (StageState.PASSED if stage_completed else StageState.BLOCKED).value,
+                    summary,
+                    self._json(sanitize_data(blockers)),
+                    now,
+                    stage["stage_id"],
+                ),
+            )
+            if stage_completed:
+                next_stage = db.execute(
+                    """SELECT stage_key FROM orchestration_stages
+                       WHERE plan_id = ? AND sequence > ? ORDER BY sequence LIMIT 1""",
+                    (run["plan_id"], stage["sequence"]),
+                ).fetchone()
+                plan_state = PlanState.ACTIVE if next_stage else PlanState.AWAITING_APPROVAL
+                next_key = next_stage["stage_key"] if next_stage else None
+            else:
+                plan_state = PlanState.BLOCKED
+                next_key = stage["stage_key"]
+            db.execute(
+                """UPDATE orchestration_plans
+                   SET state = ?, current_stage_key = ?, version = version + 1, updated_at = ?
+                   WHERE plan_id = ?""",
+                (plan_state.value, next_key, now, run["plan_id"]),
+            )
+            self.tasks._insert_event(
+                db,
+                task_id=run["task_id"],
+                event_type="orchestration.protocol_run_projected",
+                actor=actor,
+                payload={
+                    "plan_id": run["plan_id"],
+                    "run_id": run_id,
+                    "stage_key": run["stage_key"],
+                    "protocol_semantic_result": semantic_result.value,
+                    "gate_status": receipt.gate.status.value,
+                    "control_stage_status": receipt.stage.status.value,
+                    "operational_run_state": run_state.value,
+                    "token_used": token_used,
+                    "token_measurement": token_measurement.value,
+                    "cost_measurement": Measurement.UNAVAILABLE.value,
+                },
+                created_at=now,
+            )
         return self.require_run(run_id)
 
     def finish_run(
@@ -658,6 +846,62 @@ class OrchestrationStore:
                 created_at=now,
             )
         return self.require_run(run_id)
+
+    @staticmethod
+    def _protocol_findings(
+        receipt: RunSettlementReceipt,
+        adapter_result: AgentAdapterResult,
+    ) -> list[str]:
+        findings: list[str] = []
+        if adapter_result.error_code is not None:
+            findings.append(f"Protocol adapter error: {adapter_result.error_code.value}")
+        handoff = adapter_result.handoff_pack
+        if handoff is not None:
+            findings.extend(
+                f"Unresolved question {item.question_id}: {item.question}"
+                for item in handoff.unresolved_questions
+            )
+            if handoff.blocker_requirement_ids:
+                findings.append(
+                    "Handoff blocker requirements: "
+                    + ", ".join(sorted(handoff.blocker_requirement_ids))
+                )
+        evaluation = receipt.gate.last_evaluation
+        if evaluation and evaluation.blocker_requirement_ids:
+            findings.append(
+                "Formal Gate blockers: "
+                + ", ".join(sorted(evaluation.blocker_requirement_ids))
+            )
+        return findings
+
+    @staticmethod
+    def _protocol_blockers(
+        receipt: RunSettlementReceipt,
+        adapter_result: AgentAdapterResult,
+        safe_error: str | None,
+    ) -> list[str]:
+        blockers: list[str] = []
+        if safe_error:
+            blockers.append(safe_error)
+        if adapter_result.error_code is not None:
+            blockers.append(f"Protocol adapter error: {adapter_result.error_code.value}")
+        semantic = adapter_result.protocol_state.semantic_stage_result
+        if semantic != SemanticStageResult.SUCCEEDED:
+            blockers.append(f"Formal semantic result is {semantic.value}")
+        if receipt.gate.status != GateStatus.PASSED:
+            evaluation = receipt.gate.last_evaluation
+            requirement_by_id = {
+                item.requirement_id: item for item in receipt.gate.requirements
+            }
+            actions = [
+                requirement_by_id[item].failure_action
+                for item in sorted(evaluation.blocker_requirement_ids if evaluation else [])
+                if item in requirement_by_id
+            ]
+            blockers.extend(actions or [f"Formal Gate is {receipt.gate.status.value}"])
+        if receipt.stage.status != StageStatus.COMPLETED and not blockers:
+            blockers.append(f"Authoritative Stage is {receipt.stage.status.value}")
+        return list(dict.fromkeys(blockers))
 
     def retry(self, task_id: str, stage_key: str, *, actor: str = "user") -> OrchestrationPlan:
         now = utc_now()
