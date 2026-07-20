@@ -2,11 +2,11 @@
 
 Current branch: `main`
 
-Current recovery baseline (2026-07-18):
+Current recovery baseline (2026-07-20):
 
-- Local `main` is at `92fc3f3 feat: add explicit task decisions`, three reviewed
-  commits ahead of `origin/main` at `2750dfe fix: recover Windows native
-  orchestration` before the active increment below.
+- Local `main` is at `e2d3a9e feat: expose bounded control plane API`, four
+  reviewed commits ahead of `origin/main` at `2750dfe fix: recover Windows
+  native orchestration` before the active increment below.
 - Active program: the ordered Agora Control Plane transformation. The first two
   stages (protocol/domain freeze and Control Plane v2 persistence/Registry) are
   complete; work-weighted program completion remains approximately 20% to 25%.
@@ -307,6 +307,71 @@ After the reviewed commit, begin the smallest Runner/Agent Adapter integration
 that binds execution to the frozen Run dimensions and Context/Handoff boundary
 without changing protocol semantics. UI and repository-wide invalidation
 remain deferred.
+
+## 2026-07-20 – Runner/Agent Adapter boundary (active)
+
+### Scope
+
+- [x] Added a tool-neutral terminal Runner observation that keeps process and
+  transport facts separate from schema and semantic outcomes.
+- [x] Added a fail-closed Agent adapter that accepts only an exact JSON Handoff
+  Pack or one whole-document Markdown-fence removal; it never extracts JSON
+  from prose or repairs semantic content.
+- [x] Bound accepted Handoffs to the sealed Context Pack's project, Task,
+  Stage, Run, input Artifact, required-output, and forbidden-constraint values.
+- [x] Rejected cross-scope Artifact/Evidence producers and Native State project
+  mismatches before exposing a Handoff for registration.
+- [x] Added a thin bridge from the existing CLI `RuntimeResult` to the frozen
+  adapter without changing the provisional orchestration state machine.
+- [x] Added adversarial coverage for exit-zero protocol failure, semantic
+  blockers, non-zero semantic results, duplicate JSON keys, prose extraction,
+  UTF-8, size limits, hash tampering, context spoofing, timeout, cancellation,
+  interruption, launch failure, and transport failure.
+- [x] Run the complete verification set and Schema consistency check.
+- [x] Obtain Kiro protocol/methodology review and independent Claude Code
+  correctness/safety review; fix all actionable findings.
+- [x] Commit only after both review gates approve (the commit containing this
+  snapshot).
+
+### Verification and review log
+
+- Initial Agent Adapter, frozen-protocol, and provisional-orchestration suite:
+  92 passed.
+- Kiro initial review: `CHANGES_REQUESTED`; no high findings and one medium
+  fail-closed defect. A schema-valid `cancelled` Handoff from a normally exited
+  process could raise the frozen Run validator instead of returning a
+  structured protocol failure.
+- The contradiction now returns `HANDOFF_PROCESS_MISMATCH`,
+  `protocol_failed`, semantic `blocked`, and required Attention. A normally
+  exited semantic `failed` Handoff remains valid and distinct from process
+  failure. Started/no-exit Runner results now map to `interrupted`, and the
+  order-sensitive Context echo contract is explicit and tested.
+- Kiro targeted re-review: `APPROVE`; no high/medium findings. Its two low
+  hardening suggestions were addressed by narrowing the contradiction branch
+  and adding a real multi-element reorder regression.
+- Claude Code independent review: `APPROVE`; no implementation defect. Its one
+  medium regression-coverage gap was fixed with sealed, schema-valid Evidence
+  scope and Native State project-spoofing cases. Additional low-edge coverage
+  now includes missing input, non-finite JSON, both allowed fence forms, and a
+  changed required-output echo.
+- Final Kiro targeted review: `APPROVE`; no actionable findings.
+- Final Claude Code targeted review: `APPROVE`; the added spoofing cases reach
+  the intended context-mismatch branches and expose no Handoff.
+- Final Agent Adapter, frozen-protocol, and provisional-orchestration suite:
+  101 passed.
+- Full non-integration backend suite excluding static-export-dependent
+  `tests/test_web_ui.py`: 366 passed, 18 deselected, with only existing
+  Starlette/httpx, pytest-cache, and Windows event-loop cleanup warnings.
+- Protocol Schema export check, isolated Python compile, and `git diff --check`:
+  passed. No frontend files or shared API contracts changed, so frontend
+  validation was not required.
+
+### Next safe action
+
+After the reviewed commit, generate and persist a sealed Context Pack for one
+concrete orchestration Run, then consume the validated Handoff through the
+adapter without allowing it to write Task, Stage, or Gate state directly. UI
+remains deferred.
 
 ## 2026-07-13
 
