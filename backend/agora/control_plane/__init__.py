@@ -5,7 +5,9 @@ from .models import (
     ControlEvent,
     GateRecord,
     InvalidationReceipt,
+    ProtocolRunRecord,
     RegistrationReceipt,
+    RunSettlementReceipt,
     StageRecord,
 )
 from .store import (
@@ -24,6 +26,8 @@ __all__ = [
     "ControlPlaneValidationError",
     "GateRecord",
     "InvalidationReceipt",
+    "ProtocolRunRecord",
     "RegistrationReceipt",
+    "RunSettlementReceipt",
     "StageRecord",
 ]

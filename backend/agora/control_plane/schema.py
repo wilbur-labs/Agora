@@ -39,6 +39,45 @@ def initialize_control_plane_schema(db: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_control_gates_project_status
             ON control_gates(project_id, status, updated_at DESC);
 
+        CREATE TABLE IF NOT EXISTS protocol_runs (
+            run_id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            task_id TEXT NOT NULL REFERENCES tasks(task_id),
+            stage_key TEXT NOT NULL,
+            gate_key TEXT NOT NULL,
+            context_pack_id TEXT NOT NULL UNIQUE,
+            context_payload TEXT NOT NULL,
+            context_sha256 TEXT NOT NULL,
+            protocol_state_payload TEXT,
+            handoff_pack_id TEXT UNIQUE,
+            handoff_payload TEXT,
+            handoff_sha256 TEXT,
+            adapter_error_code TEXT,
+            attention_required INTEGER NOT NULL DEFAULT 0
+                CHECK (attention_required IN (0, 1)),
+            attention_item_id TEXT REFERENCES attention_items(item_id),
+            created_at TEXT NOT NULL,
+            settled_at TEXT,
+            FOREIGN KEY (task_id, stage_key)
+                REFERENCES control_stages(task_id, stage_key),
+            FOREIGN KEY (task_id, gate_key)
+                REFERENCES control_gates(task_id, gate_key),
+            CHECK (
+                (settled_at IS NULL AND protocol_state_payload IS NULL)
+                OR
+                (settled_at IS NOT NULL AND protocol_state_payload IS NOT NULL)
+            ),
+            CHECK (
+                (handoff_pack_id IS NULL AND handoff_payload IS NULL
+                    AND handoff_sha256 IS NULL)
+                OR
+                (handoff_pack_id IS NOT NULL AND handoff_payload IS NOT NULL
+                    AND handoff_sha256 IS NOT NULL)
+            )
+        );
+        CREATE INDEX IF NOT EXISTS idx_protocol_runs_task_stage_created
+            ON protocol_runs(task_id, stage_key, created_at, run_id);
+
         CREATE TABLE IF NOT EXISTS control_gate_requirements (
             task_id TEXT NOT NULL,
             gate_key TEXT NOT NULL,

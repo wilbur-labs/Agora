@@ -17,7 +17,11 @@ from agora.protocol.hashing import native_snapshot_id, seal_model_payload
 from agora.protocol.models import ContextPack, HandoffPack, NativeStateSnapshot
 
 
-def _context(*, max_output_bytes: int = 1_000_000) -> ContextPack:
+def _context(
+    *,
+    max_output_bytes: int = 1_000_000,
+    required_outputs: list[dict] | None = None,
+) -> ContextPack:
     payload = {
         "schema_version": "1.0",
         "pack_id": "context-run-adapter-1",
@@ -33,7 +37,7 @@ def _context(*, max_output_bytes: int = 1_000_000) -> ContextPack:
             "completion_conditions": ["Protocol dimensions remain independent."],
         },
         "input_artifacts": [],
-        "required_outputs": [],
+        "required_outputs": required_outputs or [],
         "forbidden_constraints": [
             "Do not infer semantic success from exit code.",
             "Do not let an Agent write authoritative Stage state.",
@@ -416,6 +420,28 @@ def test_handoff_rejects_changed_required_output_echo():
     result = adapt_agent_output(context, _observation(), _json(changed))
 
     assert result.error_code == AdapterErrorCode.HANDOFF_CONTEXT_MISMATCH
+
+
+def test_succeeded_handoff_must_produce_every_required_output():
+    context = _context(
+        required_outputs=[
+            {
+                "output_id": "required-report",
+                "kind": "report",
+                "required": True,
+            }
+        ]
+    )
+
+    result = adapt_agent_output(
+        context,
+        _observation(),
+        _json(_handoff_payload(context)),
+    )
+
+    assert result.error_code == AdapterErrorCode.HANDOFF_CONTEXT_MISMATCH
+    assert result.handoff_pack is None
+    assert result.attention_required is True
 
 
 @pytest.mark.parametrize(

@@ -64,7 +64,9 @@ For each changed binding, one transaction atomically:
 2. moves a previously `passed` Gate to `stale`;
 3. propagates the invalidation through the configured downstream Stage graph;
 4. appends control-plane and Task audit events;
-5. stores the idempotent operation receipt.
+5. creates one bounded deterministic impact-analysis Attention per affected
+   Task;
+6. stores the idempotent operation receipt.
 
 Stage propagation follows only legal frozen transitions:
 

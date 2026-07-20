@@ -4,12 +4,15 @@ Current branch: `main`
 
 Current recovery baseline (2026-07-20):
 
-- Local `main` is at `e2d3a9e feat: expose bounded control plane API`, four
+- Local `main` is at `ce10565 feat: add fail-closed agent adapter`, five
   reviewed commits ahead of `origin/main` at `2750dfe fix: recover Windows
   native orchestration` before the active increment below.
 - Active program: the ordered Agora Control Plane transformation. The first two
   stages (protocol/domain freeze and Control Plane v2 persistence/Registry) are
-  complete; work-weighted program completion remains approximately 20% to 25%.
+  complete; the bounded API, concrete Task contract, and Runner/Agent Adapter
+  are also reviewed foundations. Work-weighted program completion is currently
+  approximately 28% to 30%; this remains an engineering estimate until the
+  authoritative Stage inventory and unified projection are available.
   The historical 11-stage label and milestone-count estimate below predate the
   current grouped stage correspondence and must be normalized before they are
   used as a current count.
@@ -42,9 +45,8 @@ Current recovery baseline (2026-07-20):
 - The user explicitly approved Plan `plan_cf698b72d0c548ff99b763fef8e6c75b`;
   the authoritative Plan is now `ready_for_implementation` and its approval
   event is recorded in `data/agora.db`.
-- Current next safe product action after the reviewed API commit is a bounded
-  Runner/Agent Adapter integration increment that connects execution to the
-  frozen Control Plane contracts. Do not begin Task Workbench UI work.
+- The active increment below adds the sealed Context/Handoff Run ledger and
+  Gate-driven Stage settlement boundary. Do not begin Task Workbench UI work.
 
 ## 2026-07-18 — Latest transformation requirements recovery
 
@@ -372,6 +374,81 @@ After the reviewed commit, generate and persist a sealed Context Pack for one
 concrete orchestration Run, then consume the validated Handoff through the
 adapter without allowing it to write Task, Stage, or Gate state directly. UI
 remains deferred.
+
+## 2026-07-20 - Context/Handoff and Gate settlement boundary (active)
+
+### Scope
+
+- [x] Added an additive immutable `protocol_runs` ledger binding one sealed
+  Context Pack and at most one accepted Handoff Pack to Task, Stage, Run, and
+  Gate identity.
+- [x] Added replay-safe protocol Run start that verifies every input Artifact
+  binding and moves only the authoritative Control Plane Stage to `running`.
+- [x] Added one atomic settlement boundary for Run protocol state, accepted
+  Handoff, Artifact/Evidence registration, active-Evidence selection, formal
+  Gate evaluation, Attention creation, and Stage settlement.
+- [x] Made formal Gate passage plus semantic success the only path from a
+  running Stage to `completed`; exit code and Agent suggestion cannot advance
+  the Stage or supply `next_safe_action`.
+- [x] Preserved existing active Gate Evidence on protocol failure and created a
+  durable Attention item tied to the protocol Run through bounded context.
+- [x] Preserved multi-source active Evidence for Gate requirements not
+  re-observed by the current Handoff and replaced prior Evidence only for a
+  requirement explicitly represented in the Handoff.
+- [x] Added the frozen contract's missing deterministic impact-analysis
+  Attention to Approval invalidation, atomically with Approval/Gate/Stage
+  changes and the replay receipt.
+- [x] Added sealed-payload read verification, exact Gate Evidence scope checks,
+  transaction rollback, restart replay, operation-key conflict, missing input,
+  process-exit independence, semantic-blocker, and protocol-failure coverage.
+- [x] Run the complete verification set and Schema consistency check.
+- [x] Obtain Kiro protocol/methodology review and independent Claude Code
+  correctness/safety review; fix all actionable findings.
+- [x] Commit only after both review gates approve (the commit containing this
+  snapshot).
+
+### Verification and review log
+
+- Initial Context/Handoff settlement, Registry, and Agent Adapter suite:
+  52 passed; post-Kiro-fix suite: 55 passed.
+- Isolated Python compile and `git diff --check`: passed.
+- Kiro protocol/methodology review: `APPROVE`; no blocking findings. Its three
+  medium conformance observations identified missing invalidation Attention,
+  replacement of unrelated multi-source active Evidence, and the pre-existing
+  independent Registry Gate writer surface. The first two are fixed with
+  atomic regressions. The architecture now explicitly records that independent
+  Registry operations cannot settle a Stage and that Run settlement always
+  re-evaluates the Gate, so they cannot bypass completion.
+- Kiro low observations: schema-valid failed Handoffs no longer churn the Gate;
+  infrastructure retry/Attention policy and global operation-receipt retention
+  remain explicitly deferred orchestrator/operations concerns.
+- Claude Code independent correctness/safety review: `APPROVE`; no high or
+  blocking defects. Its medium observation is the already documented
+  repository/ref-wide invalidation write-lock bound, which remains outside the
+  API pending load testing or a semantics-preserving batching design.
+- Claude's actionable low audit-order observation is fixed by paginating
+  append-only Control Plane events in SQLite insertion order; a settlement
+  regression proves an Agent timestamp cannot place Artifact registration
+  before Context sealing. Its dead-import observation is also fixed.
+- Final Kiro targeted re-review: `APPROVE`; all five post-review invariants
+  hold and no actionable findings remain.
+- Final Claude Code targeted re-review: `APPROVE`; both prior low findings are
+  resolved, the Kiro fixes remain correct, and no new defect was introduced.
+- Final focused settlement, Registry, and Agent Adapter suite: 55 passed.
+- Full non-integration backend suite excluding static-export-dependent
+  `tests/test_web_ui.py`: 378 passed, 18 deselected, with only existing
+  Starlette/httpx, pytest-cache, and Windows event-loop cleanup warnings.
+- Protocol Schema export check, isolated Python compile, and `git diff --check`:
+  passed. No frontend or shared API contract changed, so frontend validation
+  was not required.
+
+### Next safe action
+
+Finish the mandatory verification and independent review gates. After the
+reviewed commit, stop before the next implementation increment and present the
+user with a current-state project architecture diagram that distinguishes
+implemented, connected-but-provisional, and missing components. Continue only
+after that architecture handoff. UI remains deferred.
 
 ## 2026-07-13
 

@@ -7,13 +7,17 @@ from pydantic import Field, field_validator, model_validator
 
 from agora.protocol.invalidation import ArtifactChange
 from agora.protocol.models import (
+    ContextPack,
     GateEvaluation,
     GateRequirement,
     GitCommit,
+    HandoffPack,
     NonBlank,
     ProtocolModel,
+    RunProtocolState,
     StableId,
 )
+from agora.protocol.agent_adapter import AdapterErrorCode
 from agora.protocol.state_machines import GateStatus, StageStatus
 
 
@@ -46,6 +50,32 @@ class GateRecord(ProtocolModel):
     last_evaluation: GateEvaluation | None
     created_at: str
     updated_at: str
+
+
+class ProtocolRunRecord(ProtocolModel):
+    run_id: StableId
+    project_id: StableId
+    task_id: StableId
+    stage_key: StableId
+    gate_key: StableId
+    context_pack: ContextPack
+    protocol_state: RunProtocolState | None = None
+    handoff_pack: HandoffPack | None = None
+    adapter_error_code: AdapterErrorCode | None = None
+    attention_required: bool = False
+    attention_item_id: StableId | None = None
+    created_at: str
+    settled_at: str | None = None
+
+
+class RunSettlementReceipt(ProtocolModel):
+    run: ProtocolRunRecord
+    stage: StageRecord
+    gate: GateRecord
+    artifact_ids: list[StableId]
+    evidence_ids: list[StableId]
+    active_evidence_ids: list[StableId]
+    replayed: bool = False
 
 
 class ArtifactInventory(ProtocolModel):
@@ -97,6 +127,7 @@ class InvalidationReceipt(ProtocolModel):
     stale_gate_keys: list[StableId]
     reopened_stage_keys: list[StableId]
     reconciliation_stage_keys: list[StableId]
+    attention_item_ids: list[StableId] = Field(default_factory=list)
     event_ids: list[StableId]
     replayed: bool = False
 

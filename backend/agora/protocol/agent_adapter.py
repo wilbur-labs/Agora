@@ -91,6 +91,8 @@ class AgentAdapterResult(ProtocolModel):
             raise ValueError("only schema-valid adapter results may expose a Handoff Pack")
         if schema_accepted and self.error_code is not None:
             raise ValueError("accepted Handoff Packs cannot carry adapter errors")
+        if schema_accepted and self.attention_required:
+            raise ValueError("accepted Handoff Packs cannot require protocol Attention")
         if not schema_accepted and self.error_code is None:
             raise ValueError("non-accepted adapter results require a stable error code")
         if (
@@ -359,6 +361,17 @@ def _handoff_matches_context(context: ContextPack, handoff: HandoffPack) -> bool
     ):
         return False
     producer = handoff.producer
+    if handoff.stage_result == StageResult.SUCCEEDED:
+        outputs = {
+            (artifact.artifact_id, artifact.kind)
+            for artifact in handoff.output_artifacts
+        }
+        if any(
+            required.required
+            and (required.output_id, required.kind) not in outputs
+            for required in context.required_outputs
+        ):
+            return False
     for artifact in handoff.output_artifacts:
         if (
             artifact.project_id != context.project_id

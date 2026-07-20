@@ -5,12 +5,13 @@ import json
 import re
 import sqlite3
 import uuid
-from collections import defaultdict, deque
+from collections import defaultdict
 from contextlib import closing
 from typing import Any
 
 from agora.attention.schema import initialize_attention_schema
 from agora.attention.store import AttentionStore
+from agora.protocol.agent_adapter import AgentAdapterResult
 from agora.protocol.gates import evaluate_gate
 from agora.protocol.hashing import canonical_json_bytes, canonical_sha256
 from agora.protocol.invalidation import invalidate_approvals
@@ -18,9 +19,13 @@ from agora.protocol.models import (
     Approval,
     ApprovalStatus,
     Artifact,
+    ContextPack,
     Evidence,
     GateEvaluation,
     GateRequirement,
+    HandoffPack,
+    RunProtocolState,
+    SemanticStageResult,
 )
 from agora.protocol.state_machines import (
     GateStatus,
@@ -37,7 +42,9 @@ from .models import (
     ControlEvent,
     GateRecord,
     InvalidationReceipt,
+    ProtocolRunRecord,
     RegistrationReceipt,
+    RunSettlementReceipt,
     StageRecord,
 )
 from .schema import initialize_control_plane_schema
@@ -66,8 +73,8 @@ class ControlPlaneStore:
     def __init__(self, tasks: TaskStore):
         self.tasks = tasks
         with closing(tasks._connect()) as db:
-            initialize_control_plane_schema(db)
             initialize_attention_schema(db)
+            initialize_control_plane_schema(db)
             db.commit()
 
     def ensure_stage(
@@ -210,91 +217,385 @@ class ControlPlaneStore:
             assert row is not None
             return self._gate_record(db, row)
 
+    def start_protocol_run(
+        self,
+        context_pack: ContextPack,
+        *,
+        gate_key: str,
+        actor: str,
+        operation_key: str,
+    ) -> ProtocolRunRecord:
+        """Persist one sealed Context Pack and authoritatively start its Stage."""
+
+        self._validate_operation_key(operation_key)
+        fingerprint = canonical_sha256(
+            {
+                "action": "start_protocol_run",
+                "context_pack": context_pack,
+                "gate_key": gate_key,
+            }
+        )
+        now = utc_now()
+        with self.tasks._transaction() as db:
+            replay = self._operation_result(db, operation_key, fingerprint)
+            if replay is not None:
+                return ProtocolRunRecord.model_validate(replay["run"])
+
+            task = self._task_row(db, context_pack.task_id)
+            self._assert_project(task, context_pack.project_id)
+            stage = db.execute(
+                """
+                SELECT * FROM control_stages
+                WHERE task_id = ? AND stage_key = ?
+                """,
+                (context_pack.task_id, context_pack.stage_key),
+            ).fetchone()
+            if stage is None:
+                raise ControlPlaneNotFoundError(
+                    f"Stage not found: {context_pack.stage_key}"
+                )
+            gate = self._gate_row(db, context_pack.task_id, gate_key)
+            if stage["gate_key"] != gate_key or gate["stage_key"] != context_pack.stage_key:
+                raise ControlPlaneValidationError(
+                    "Context Pack Stage does not match its configured Gate"
+                )
+            current_stage = StageStatus(stage["status"])
+            if current_stage != StageStatus.READY:
+                raise ControlPlaneConflictError(
+                    f"Protocol Run requires a ready Stage, current status is "
+                    f"{current_stage.value}"
+                )
+            self._assert_context_inputs(db, context_pack)
+            existing = db.execute(
+                """
+                SELECT run_id, context_pack_id FROM protocol_runs
+                WHERE run_id = ? OR context_pack_id = ?
+                """,
+                (context_pack.run_id, context_pack.pack_id),
+            ).fetchone()
+            if existing is not None:
+                raise ControlPlaneConflictError(
+                    "Protocol Run or Context Pack identity already exists"
+                )
+
+            db.execute(
+                """
+                INSERT INTO protocol_runs (
+                    run_id, project_id, task_id, stage_key, gate_key,
+                    context_pack_id, context_payload, context_sha256,
+                    attention_required, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+                """,
+                (
+                    context_pack.run_id,
+                    context_pack.project_id,
+                    context_pack.task_id,
+                    context_pack.stage_key,
+                    gate_key,
+                    context_pack.pack_id,
+                    self._json(context_pack),
+                    context_pack.content_sha256,
+                    now,
+                ),
+            )
+            next_stage = transition_stage(current_stage, StageStatus.RUNNING)
+            cursor = db.execute(
+                """
+                UPDATE control_stages
+                SET status = ?, version = version + 1, updated_at = ?
+                WHERE task_id = ? AND stage_key = ? AND version = ?
+                """,
+                (
+                    next_stage.value,
+                    now,
+                    context_pack.task_id,
+                    context_pack.stage_key,
+                    stage["version"],
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise ControlPlaneConflictError("Stage changed before Run start")
+            self._event(
+                db,
+                event_key=f"{operation_key}:run.context_sealed",
+                task_id=context_pack.task_id,
+                project_id=context_pack.project_id,
+                event_type="run.context_sealed",
+                actor=actor,
+                payload={
+                    "run_id": context_pack.run_id,
+                    "stage_key": context_pack.stage_key,
+                    "gate_key": gate_key,
+                    "context_pack_id": context_pack.pack_id,
+                    "context_sha256": context_pack.content_sha256,
+                },
+                now=now,
+            )
+            self._event(
+                db,
+                event_key=f"{operation_key}:stage.started",
+                task_id=context_pack.task_id,
+                project_id=context_pack.project_id,
+                event_type="stage.started",
+                actor=actor,
+                payload={
+                    "run_id": context_pack.run_id,
+                    "stage_key": context_pack.stage_key,
+                    "from": current_stage.value,
+                    "to": next_stage.value,
+                },
+                now=now,
+            )
+            run = self._protocol_run(
+                db.execute(
+                    "SELECT * FROM protocol_runs WHERE run_id = ?",
+                    (context_pack.run_id,),
+                ).fetchone()
+            )
+            self._complete_operation(
+                db,
+                operation_key,
+                fingerprint,
+                {"run": run.model_dump(mode="json")},
+                now,
+            )
+            return run
+
+    def settle_protocol_run(
+        self,
+        result: AgentAdapterResult,
+        *,
+        actor: str,
+        operation_key: str,
+    ) -> RunSettlementReceipt:
+        """Atomically persist a result, evaluate its Gate, and settle its Stage."""
+
+        self._validate_operation_key(operation_key)
+        fingerprint = canonical_sha256(
+            {"action": "settle_protocol_run", "result": result}
+        )
+        now = utc_now()
+        with self.tasks._transaction() as db:
+            replay = self._operation_result(db, operation_key, fingerprint)
+            if replay is not None:
+                return RunSettlementReceipt.model_validate(
+                    {**replay["receipt"], "replayed": True}
+                )
+
+            row = db.execute(
+                "SELECT * FROM protocol_runs WHERE run_id = ?",
+                (result.protocol_state.run_id,),
+            ).fetchone()
+            if row is None:
+                raise ControlPlaneNotFoundError(
+                    f"Protocol Run not found: {result.protocol_state.run_id}"
+                )
+            if row["settled_at"] is not None:
+                raise ControlPlaneConflictError("Protocol Run is already settled")
+            persisted_run = self._protocol_run(row)
+            context_pack = persisted_run.context_pack
+            handoff = result.handoff_pack
+            if handoff is not None:
+                self._assert_handoff_matches_context(context_pack, handoff)
+                if handoff.stage_result.value != result.protocol_state.semantic_stage_result.value:
+                    raise ControlPlaneValidationError(
+                        "Handoff semantic result does not match Run protocol state"
+                    )
+
+            stage = db.execute(
+                """
+                SELECT * FROM control_stages
+                WHERE task_id = ? AND stage_key = ?
+                """,
+                (row["task_id"], row["stage_key"]),
+            ).fetchone()
+            assert stage is not None
+            current_stage = StageStatus(stage["status"])
+            if current_stage != StageStatus.RUNNING:
+                raise ControlPlaneConflictError(
+                    f"Protocol Run settlement requires a running Stage, current status is "
+                    f"{current_stage.value}"
+                )
+
+            artifact_ids: list[str] = []
+            evidence_ids: list[str] = []
+            active_evidence_ids: list[str] = []
+            if handoff is not None:
+                for artifact in handoff.output_artifacts:
+                    self._register_artifact_tx(db, artifact, actor=actor)
+                    artifact_ids.append(artifact.artifact_id)
+                for evidence in handoff.evidence:
+                    self._register_evidence_tx(db, evidence, actor=actor)
+                    evidence_ids.append(evidence.evidence_id)
+                if result.protocol_state.semantic_stage_result in {
+                    SemanticStageResult.SUCCEEDED,
+                    SemanticStageResult.BLOCKED,
+                }:
+                    active_evidence_ids = self._activate_handoff_evidence_tx(
+                        db,
+                        task_id=row["task_id"],
+                        gate_key=row["gate_key"],
+                        evidence=handoff.evidence,
+                        actor=actor,
+                        event_key=f"{operation_key}:gate.evidence_set",
+                        now=now,
+                    )
+                    gate = self._evaluate_gate_tx(
+                        db,
+                        task_id=row["task_id"],
+                        gate_key=row["gate_key"],
+                        actor=actor,
+                        event_key_prefix=operation_key,
+                        now=now,
+                    )
+                else:
+                    gate = self._gate_record(
+                        db,
+                        self._gate_row(db, row["task_id"], row["gate_key"]),
+                    )
+            else:
+                gate = self._gate_record(
+                    db,
+                    self._gate_row(db, row["task_id"], row["gate_key"]),
+                )
+
+            target_stage = self._settled_stage_status(
+                result.protocol_state.semantic_stage_result,
+                gate.status,
+            )
+            next_stage = transition_stage(current_stage, target_stage)
+            cursor = db.execute(
+                """
+                UPDATE control_stages
+                SET status = ?, version = version + 1, updated_at = ?
+                WHERE task_id = ? AND stage_key = ? AND version = ?
+                """,
+                (
+                    next_stage.value,
+                    now,
+                    row["task_id"],
+                    row["stage_key"],
+                    stage["version"],
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise ControlPlaneConflictError("Stage changed during Run settlement")
+
+            attention_item_id = None
+            if result.attention_required:
+                attention_item_id = self._create_protocol_attention_tx(
+                    db,
+                    run_id=row["run_id"],
+                    task_id=row["task_id"],
+                    project_id=row["project_id"],
+                    stage_key=row["stage_key"],
+                    error_code=(
+                        result.error_code.value if result.error_code else None
+                    ),
+                    actor=actor,
+                    now=now,
+                )
+
+            cursor = db.execute(
+                """
+                UPDATE protocol_runs
+                SET protocol_state_payload = ?, handoff_pack_id = ?,
+                    handoff_payload = ?, handoff_sha256 = ?,
+                    adapter_error_code = ?, attention_required = ?,
+                    attention_item_id = ?, settled_at = ?
+                WHERE run_id = ? AND settled_at IS NULL
+                """,
+                (
+                    self._json(result.protocol_state),
+                    handoff.pack_id if handoff else None,
+                    self._json(handoff) if handoff else None,
+                    handoff.content_sha256 if handoff else None,
+                    result.error_code.value if result.error_code else None,
+                    int(result.attention_required),
+                    attention_item_id,
+                    now,
+                    row["run_id"],
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise ControlPlaneConflictError("Protocol Run changed during settlement")
+
+            self._event(
+                db,
+                event_key=f"{operation_key}:run.settled",
+                task_id=row["task_id"],
+                project_id=row["project_id"],
+                event_type="run.settled",
+                actor=actor,
+                payload={
+                    "run_id": row["run_id"],
+                    "stage_key": row["stage_key"],
+                    "gate_key": row["gate_key"],
+                    "semantic_stage_result": (
+                        result.protocol_state.semantic_stage_result.value
+                    ),
+                    "gate_status": gate.status.value,
+                    "handoff_pack_id": handoff.pack_id if handoff else None,
+                    "attention_required": result.attention_required,
+                },
+                now=now,
+            )
+            self._event(
+                db,
+                event_key=f"{operation_key}:stage.settled",
+                task_id=row["task_id"],
+                project_id=row["project_id"],
+                event_type="stage.settled",
+                actor=actor,
+                payload={
+                    "run_id": row["run_id"],
+                    "stage_key": row["stage_key"],
+                    "from": current_stage.value,
+                    "to": next_stage.value,
+                    "gate_status": gate.status.value,
+                },
+                now=now,
+            )
+            run = self._protocol_run(
+                db.execute(
+                    "SELECT * FROM protocol_runs WHERE run_id = ?",
+                    (row["run_id"],),
+                ).fetchone()
+            )
+            updated_stage = self._stage(
+                db.execute(
+                    """
+                    SELECT * FROM control_stages
+                    WHERE task_id = ? AND stage_key = ?
+                    """,
+                    (row["task_id"], row["stage_key"]),
+                ).fetchone()
+            )
+            receipt = RunSettlementReceipt(
+                run=run,
+                stage=updated_stage,
+                gate=gate,
+                artifact_ids=sorted(artifact_ids),
+                evidence_ids=sorted(evidence_ids),
+                active_evidence_ids=active_evidence_ids,
+            )
+            self._complete_operation(
+                db,
+                operation_key,
+                fingerprint,
+                {"receipt": receipt.model_dump(mode="json")},
+                now,
+            )
+            return receipt
+
     def register_artifact(
         self,
         artifact: Artifact,
         *,
         actor: str = "runtime",
     ) -> RegistrationReceipt:
-        payload = self._json(artifact)
-        payload_sha256 = canonical_sha256(artifact)
         with self.tasks._transaction() as db:
-            task = self._task_row(db, artifact.task_id)
-            self._assert_project(task, artifact.project_id)
-            self._assert_protocol_stage(
-                db,
-                task_id=artifact.task_id,
-                stage_key=artifact.stage_key,
-                producer_stage_key=artifact.producer.stage_key,
-            )
-            existing = db.execute(
-                """
-                SELECT payload_sha256 FROM protocol_artifacts
-                WHERE artifact_id = ? AND version = ?
-                """,
-                (artifact.artifact_id, artifact.version),
-            ).fetchone()
-            if existing:
-                if existing["payload_sha256"] != payload_sha256:
-                    raise ControlPlaneConflictError(
-                        "Artifact id/version already exists with different content"
-                    )
-                return RegistrationReceipt(
-                    entity_id=artifact.artifact_id,
-                    version=artifact.version,
-                    created=False,
-                )
-            location = artifact.location
-            db.execute(
-                """
-                INSERT INTO protocol_artifacts (
-                    artifact_id, version, project_id, task_id, stage_key, run_id,
-                    kind, storage, sha256, repository_id, ref, commit_sha, path,
-                    payload, payload_sha256, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    artifact.artifact_id,
-                    artifact.version,
-                    artifact.project_id,
-                    artifact.task_id,
-                    artifact.stage_key,
-                    artifact.producer.run_id,
-                    artifact.kind,
-                    artifact.storage.value,
-                    artifact.sha256,
-                    location.repository_id if location else None,
-                    location.ref if location else None,
-                    location.commit_sha if location else None,
-                    location.path if location else None,
-                    payload,
-                    payload_sha256,
-                    artifact.created_at.isoformat(),
-                ),
-            )
-            self._event(
-                db,
-                event_key=(
-                    f"artifact.register:{artifact.artifact_id}:{artifact.version}:"
-                    f"{payload_sha256}"
-                ),
-                task_id=artifact.task_id,
-                project_id=artifact.project_id,
-                event_type="artifact.registered",
-                actor=actor,
-                payload={
-                    "artifact_id": artifact.artifact_id,
-                    "version": artifact.version,
-                    "sha256": artifact.sha256,
-                    "kind": artifact.kind,
-                },
-                now=artifact.created_at.isoformat(),
-            )
-        return RegistrationReceipt(
-            entity_id=artifact.artifact_id,
-            version=artifact.version,
-            created=True,
-        )
+            return self._register_artifact_tx(db, artifact, actor=actor)
 
     def register_evidence(
         self,
@@ -302,70 +603,8 @@ class ControlPlaneStore:
         *,
         actor: str = "runtime",
     ) -> RegistrationReceipt:
-        payload = self._json(evidence)
-        payload_sha256 = canonical_sha256(evidence)
         with self.tasks._transaction() as db:
-            task = self._task_row(db, evidence.task_id)
-            self._assert_project(task, evidence.project_id)
-            self._assert_protocol_stage(
-                db,
-                task_id=evidence.task_id,
-                stage_key=evidence.stage_key,
-                producer_stage_key=evidence.producer.stage_key,
-            )
-            existing = db.execute(
-                "SELECT payload_sha256 FROM protocol_evidence WHERE evidence_id = ?",
-                (evidence.evidence_id,),
-            ).fetchone()
-            if existing:
-                if existing["payload_sha256"] != payload_sha256:
-                    raise ControlPlaneConflictError(
-                        "Evidence id already exists with different content"
-                    )
-                return RegistrationReceipt(
-                    entity_id=evidence.evidence_id,
-                    created=False,
-                )
-            db.execute(
-                """
-                INSERT INTO protocol_evidence (
-                    evidence_id, project_id, task_id, stage_key, run_id,
-                    repository_id, ref, commit_sha, requirement_id, kind,
-                    status, payload, payload_sha256, observed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    evidence.evidence_id,
-                    evidence.project_id,
-                    evidence.task_id,
-                    evidence.stage_key,
-                    evidence.producer.run_id,
-                    evidence.repository_id,
-                    evidence.ref,
-                    evidence.commit_sha,
-                    evidence.requirement_id,
-                    evidence.kind,
-                    evidence.status.value,
-                    payload,
-                    payload_sha256,
-                    evidence.observed_at.isoformat(),
-                ),
-            )
-            self._event(
-                db,
-                event_key=f"evidence.register:{evidence.evidence_id}:{payload_sha256}",
-                task_id=evidence.task_id,
-                project_id=evidence.project_id,
-                event_type="evidence.registered",
-                actor=actor,
-                payload={
-                    "evidence_id": evidence.evidence_id,
-                    "requirement_id": evidence.requirement_id,
-                    "status": evidence.status.value,
-                },
-                now=evidence.observed_at.isoformat(),
-            )
-        return RegistrationReceipt(entity_id=evidence.evidence_id, created=True)
+            return self._register_evidence_tx(db, evidence, actor=actor)
 
     def register_approval(
         self,
@@ -807,6 +1046,7 @@ class ControlPlaneStore:
             stale_gate_keys: list[str] = []
             reopened_stage_keys: list[str] = []
             reconciliation_stage_keys: list[str] = []
+            attention_item_ids: list[str] = []
             event_ids: list[str] = []
 
             for task_id in sorted(approvals_by_task):
@@ -982,12 +1222,31 @@ class ControlPlaneStore:
                     else:
                         reopened_stage_keys.append(qualified)
 
+                if plan.stale_approval_ids:
+                    attention_item_id, attention_event_id = (
+                        self._create_invalidation_attention_tx(
+                            db,
+                            operation_key=operation_key,
+                            task_id=task_id,
+                            project_id=task["project_id"],
+                            inventory=inventory,
+                            stale_approval_ids=plan.stale_approval_ids,
+                            stale_gate_keys=plan.stale_gate_keys,
+                            reopen_stage_keys=plan.reopen_stage_keys,
+                            actor=actor,
+                            now=now,
+                        )
+                    )
+                    attention_item_ids.append(attention_item_id)
+                    event_ids.append(attention_event_id)
+
             result = InvalidationReceipt(
                 operation_key=operation_key,
                 stale_approval_ids=sorted(stale_approval_ids),
                 stale_gate_keys=sorted(stale_gate_keys),
                 reopened_stage_keys=sorted(reopened_stage_keys),
                 reconciliation_stage_keys=sorted(reconciliation_stage_keys),
+                attention_item_ids=sorted(attention_item_ids),
                 event_ids=event_ids,
             )
             self._complete_operation(
@@ -1025,6 +1284,14 @@ class ControlPlaneStore:
                 (approval_id,),
             ).fetchone()
         return Approval.model_validate_json(row["payload"]) if row else None
+
+    def get_protocol_run(self, run_id: str) -> ProtocolRunRecord | None:
+        with closing(self.tasks._connect()) as db:
+            row = db.execute(
+                "SELECT * FROM protocol_runs WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+        return self._protocol_run(row) if row else None
 
     def get_stage(self, task_id: str, stage_key: str) -> StageRecord | None:
         with closing(self.tasks._connect()) as db:
@@ -1184,7 +1451,7 @@ class ControlPlaneStore:
         rows = db.execute(
             """
             SELECT * FROM control_events WHERE task_id = ?
-            ORDER BY created_at, event_id LIMIT ? OFFSET ?
+            ORDER BY rowid LIMIT ? OFFSET ?
             """,
             (task_id, limit, offset),
         ).fetchall()
@@ -1328,6 +1595,647 @@ class ControlPlaneStore:
         }:
             return (StageStatus.READY,)
         return ()
+
+    def _register_artifact_tx(
+        self,
+        db: sqlite3.Connection,
+        artifact: Artifact,
+        *,
+        actor: str,
+    ) -> RegistrationReceipt:
+        payload = self._json(artifact)
+        payload_sha256 = canonical_sha256(artifact)
+        task = self._task_row(db, artifact.task_id)
+        self._assert_project(task, artifact.project_id)
+        self._assert_protocol_stage(
+            db,
+            task_id=artifact.task_id,
+            stage_key=artifact.stage_key,
+            producer_stage_key=artifact.producer.stage_key,
+        )
+        existing = db.execute(
+            """
+            SELECT payload_sha256 FROM protocol_artifacts
+            WHERE artifact_id = ? AND version = ?
+            """,
+            (artifact.artifact_id, artifact.version),
+        ).fetchone()
+        if existing:
+            if existing["payload_sha256"] != payload_sha256:
+                raise ControlPlaneConflictError(
+                    "Artifact id/version already exists with different content"
+                )
+            return RegistrationReceipt(
+                entity_id=artifact.artifact_id,
+                version=artifact.version,
+                created=False,
+            )
+        location = artifact.location
+        db.execute(
+            """
+            INSERT INTO protocol_artifacts (
+                artifact_id, version, project_id, task_id, stage_key, run_id,
+                kind, storage, sha256, repository_id, ref, commit_sha, path,
+                payload, payload_sha256, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                artifact.artifact_id,
+                artifact.version,
+                artifact.project_id,
+                artifact.task_id,
+                artifact.stage_key,
+                artifact.producer.run_id,
+                artifact.kind,
+                artifact.storage.value,
+                artifact.sha256,
+                location.repository_id if location else None,
+                location.ref if location else None,
+                location.commit_sha if location else None,
+                location.path if location else None,
+                payload,
+                payload_sha256,
+                artifact.created_at.isoformat(),
+            ),
+        )
+        self._event(
+            db,
+            event_key=(
+                f"artifact.register:{artifact.artifact_id}:{artifact.version}:"
+                f"{payload_sha256}"
+            ),
+            task_id=artifact.task_id,
+            project_id=artifact.project_id,
+            event_type="artifact.registered",
+            actor=actor,
+            payload={
+                "artifact_id": artifact.artifact_id,
+                "version": artifact.version,
+                "sha256": artifact.sha256,
+                "kind": artifact.kind,
+            },
+            now=artifact.created_at.isoformat(),
+        )
+        return RegistrationReceipt(
+            entity_id=artifact.artifact_id,
+            version=artifact.version,
+            created=True,
+        )
+
+    def _register_evidence_tx(
+        self,
+        db: sqlite3.Connection,
+        evidence: Evidence,
+        *,
+        actor: str,
+    ) -> RegistrationReceipt:
+        payload = self._json(evidence)
+        payload_sha256 = canonical_sha256(evidence)
+        task = self._task_row(db, evidence.task_id)
+        self._assert_project(task, evidence.project_id)
+        self._assert_protocol_stage(
+            db,
+            task_id=evidence.task_id,
+            stage_key=evidence.stage_key,
+            producer_stage_key=evidence.producer.stage_key,
+        )
+        existing = db.execute(
+            "SELECT payload_sha256 FROM protocol_evidence WHERE evidence_id = ?",
+            (evidence.evidence_id,),
+        ).fetchone()
+        if existing:
+            if existing["payload_sha256"] != payload_sha256:
+                raise ControlPlaneConflictError(
+                    "Evidence id already exists with different content"
+                )
+            return RegistrationReceipt(entity_id=evidence.evidence_id, created=False)
+        db.execute(
+            """
+            INSERT INTO protocol_evidence (
+                evidence_id, project_id, task_id, stage_key, run_id,
+                repository_id, ref, commit_sha, requirement_id, kind,
+                status, payload, payload_sha256, observed_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                evidence.evidence_id,
+                evidence.project_id,
+                evidence.task_id,
+                evidence.stage_key,
+                evidence.producer.run_id,
+                evidence.repository_id,
+                evidence.ref,
+                evidence.commit_sha,
+                evidence.requirement_id,
+                evidence.kind,
+                evidence.status.value,
+                payload,
+                payload_sha256,
+                evidence.observed_at.isoformat(),
+            ),
+        )
+        self._event(
+            db,
+            event_key=f"evidence.register:{evidence.evidence_id}:{payload_sha256}",
+            task_id=evidence.task_id,
+            project_id=evidence.project_id,
+            event_type="evidence.registered",
+            actor=actor,
+            payload={
+                "evidence_id": evidence.evidence_id,
+                "requirement_id": evidence.requirement_id,
+                "status": evidence.status.value,
+            },
+            now=evidence.observed_at.isoformat(),
+        )
+        return RegistrationReceipt(entity_id=evidence.evidence_id, created=True)
+
+    @staticmethod
+    def _assert_context_inputs(db: sqlite3.Connection, context_pack: ContextPack) -> None:
+        for binding in context_pack.input_artifacts:
+            row = db.execute(
+                """
+                SELECT payload FROM protocol_artifacts
+                WHERE artifact_id = ? AND version = ?
+                """,
+                (binding.artifact_id, binding.version),
+            ).fetchone()
+            if row is None:
+                raise ControlPlaneValidationError(
+                    f"Context input Artifact is not registered: {binding.artifact_id}"
+                )
+            artifact = Artifact.model_validate_json(row["payload"])
+            if (
+                artifact.project_id != context_pack.project_id
+                or artifact.task_id != context_pack.task_id
+                or artifact.version_ref() != binding
+            ):
+                raise ControlPlaneValidationError(
+                    f"Context input Artifact binding does not match: {binding.artifact_id}"
+                )
+
+    @staticmethod
+    def _assert_handoff_matches_context(
+        context_pack: ContextPack,
+        handoff: HandoffPack,
+    ) -> None:
+        if (
+            handoff.project_id != context_pack.project_id
+            or handoff.task_id != context_pack.task_id
+            or handoff.stage_key != context_pack.stage_key
+            or handoff.run_id != context_pack.run_id
+            or handoff.input_artifacts != context_pack.input_artifacts
+            or handoff.required_outputs != context_pack.required_outputs
+            or handoff.forbidden_constraints != context_pack.forbidden_constraints
+        ):
+            raise ControlPlaneValidationError(
+                "Handoff Pack does not match the persisted Context Pack"
+            )
+        for artifact in handoff.output_artifacts:
+            if (
+                artifact.project_id != context_pack.project_id
+                or artifact.task_id != context_pack.task_id
+                or artifact.stage_key != context_pack.stage_key
+                or artifact.producer != handoff.producer
+            ):
+                raise ControlPlaneValidationError(
+                    "Handoff Artifact producer or scope does not match its Context"
+                )
+        for evidence in handoff.evidence:
+            if (
+                evidence.project_id != context_pack.project_id
+                or evidence.task_id != context_pack.task_id
+                or evidence.stage_key != context_pack.stage_key
+                or evidence.producer != handoff.producer
+            ):
+                raise ControlPlaneValidationError(
+                    "Handoff Evidence producer or scope does not match its Context"
+                )
+
+    def _activate_handoff_evidence_tx(
+        self,
+        db: sqlite3.Connection,
+        *,
+        task_id: str,
+        gate_key: str,
+        evidence: list[Evidence],
+        actor: str,
+        event_key: str,
+        now: str,
+    ) -> list[str]:
+        gate = self._gate_row(db, task_id, gate_key)
+        requirements = {
+            item.requirement_id: item
+            for item in self._gate_requirements(db, task_id, gate_key)
+        }
+        active_ids: list[str] = []
+        replaced_requirement_ids: set[str] = set()
+        for item in evidence:
+            requirement = requirements.get(item.requirement_id)
+            if requirement is None:
+                continue
+            if (
+                item.repository_id != requirement.repository_id
+                or item.ref != requirement.ref
+                or item.commit_sha != requirement.commit_sha
+                or item.kind != requirement.evidence_kind
+            ):
+                raise ControlPlaneValidationError(
+                    f"Evidence {item.evidence_id} does not match its Gate requirement scope"
+                )
+            active_ids.append(item.evidence_id)
+            replaced_requirement_ids.add(item.requirement_id)
+        preserved = db.execute(
+            """
+            SELECT evidence_id, requirement_id FROM control_gate_evidence
+            WHERE task_id = ? AND gate_key = ? AND active = 1
+            ORDER BY evidence_id
+            """,
+            (task_id, gate_key),
+        ).fetchall()
+        active_ids.extend(
+            item["evidence_id"]
+            for item in preserved
+            if item["requirement_id"] not in replaced_requirement_ids
+        )
+        active_ids.sort()
+
+        db.execute(
+            """
+            UPDATE control_gate_evidence
+            SET active = 0, deactivated_at = ?
+            WHERE task_id = ? AND gate_key = ? AND active = 1
+            """,
+            (now, task_id, gate_key),
+        )
+        for evidence_id in active_ids:
+            item = self._evidence_row(db, evidence_id)
+            db.execute(
+                """
+                INSERT INTO control_gate_evidence (
+                    task_id, gate_key, evidence_id, requirement_id,
+                    active, activated_at, deactivated_at
+                ) VALUES (?, ?, ?, ?, 1, ?, NULL)
+                ON CONFLICT(task_id, gate_key, evidence_id) DO UPDATE SET
+                    active = 1,
+                    requirement_id = excluded.requirement_id,
+                    activated_at = excluded.activated_at,
+                    deactivated_at = NULL
+                """,
+                (
+                    task_id,
+                    gate_key,
+                    evidence_id,
+                    item["requirement_id"],
+                    now,
+                ),
+            )
+        current = GateStatus(gate["status"])
+        if current == GateStatus.EVALUATING:
+            raise ControlPlaneConflictError(
+                "Cannot replace Evidence while the Gate is evaluating"
+            )
+        next_status = (
+            transition_gate(current, GateStatus.STALE)
+            if current == GateStatus.PASSED
+            else current
+        )
+        cursor = db.execute(
+            """
+            UPDATE control_gates
+            SET status = ?, version = version + 1,
+                last_evaluation = NULL, updated_at = ?
+            WHERE task_id = ? AND gate_key = ? AND version = ?
+            """,
+            (next_status.value, now, task_id, gate_key, gate["version"]),
+        )
+        if cursor.rowcount != 1:
+            raise ControlPlaneConflictError("Gate changed during Handoff registration")
+        self._event(
+            db,
+            event_key=event_key,
+            task_id=task_id,
+            project_id=gate["project_id"],
+            event_type="gate.evidence_set",
+            actor=actor,
+            payload={
+                "gate_key": gate_key,
+                "evidence_ids": active_ids,
+                "status": next_status.value,
+            },
+            now=now,
+        )
+        return active_ids
+
+    def _evaluate_gate_tx(
+        self,
+        db: sqlite3.Connection,
+        *,
+        task_id: str,
+        gate_key: str,
+        actor: str,
+        event_key_prefix: str,
+        now: str,
+    ) -> GateRecord:
+        gate = self._gate_row(db, task_id, gate_key)
+        requirements = self._gate_requirements(db, task_id, gate_key)
+        evidence = self._active_evidence(db, task_id, gate_key)
+        current = GateStatus(gate["status"])
+        try:
+            evaluating = transition_gate(current, GateStatus.EVALUATING)
+        except TransitionError as exc:
+            raise ControlPlaneConflictError(
+                f"Gate cannot be evaluated from {current.value}"
+            ) from exc
+        cursor = db.execute(
+            """
+            UPDATE control_gates
+            SET status = ?, version = version + 1, updated_at = ?
+            WHERE task_id = ? AND gate_key = ? AND version = ?
+            """,
+            (evaluating.value, now, task_id, gate_key, gate["version"]),
+        )
+        if cursor.rowcount != 1:
+            raise ControlPlaneConflictError("Gate changed before evaluation started")
+        self._event(
+            db,
+            event_key=f"{event_key_prefix}:gate.evaluation_started",
+            task_id=task_id,
+            project_id=gate["project_id"],
+            event_type="gate.evaluation_started",
+            actor=actor,
+            payload={
+                "gate_key": gate_key,
+                "from": current.value,
+                "to": evaluating.value,
+            },
+            now=now,
+        )
+        result = evaluate_gate(requirements, evidence)
+        final = transition_gate(
+            evaluating,
+            GateStatus.PASSED
+            if result.decision.value == "pass"
+            else GateStatus.BLOCKED,
+        )
+        cursor = db.execute(
+            """
+            UPDATE control_gates
+            SET status = ?, version = version + 1,
+                last_evaluation = ?, updated_at = ?
+            WHERE task_id = ? AND gate_key = ?
+              AND status = ? AND version = ?
+            """,
+            (
+                final.value,
+                self._json(result),
+                now,
+                task_id,
+                gate_key,
+                evaluating.value,
+                int(gate["version"]) + 1,
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise ControlPlaneConflictError("Gate changed during evaluation")
+        self._event(
+            db,
+            event_key=f"{event_key_prefix}:gate.evaluated",
+            task_id=task_id,
+            project_id=gate["project_id"],
+            event_type="gate.evaluated",
+            actor=actor,
+            payload={
+                "gate_key": gate_key,
+                "status": final.value,
+                "decision": result.decision.value,
+                "blocker_requirement_ids": result.blocker_requirement_ids,
+                "next_safe_action": result.next_safe_action,
+            },
+            now=now,
+        )
+        return self._gate_record(db, self._gate_row(db, task_id, gate_key))
+
+    @staticmethod
+    def _settled_stage_status(
+        semantic_result: SemanticStageResult,
+        gate_status: GateStatus,
+    ) -> StageStatus:
+        if semantic_result == SemanticStageResult.SUCCEEDED:
+            return (
+                StageStatus.COMPLETED
+                if gate_status == GateStatus.PASSED
+                else StageStatus.BLOCKED
+            )
+        if semantic_result == SemanticStageResult.BLOCKED:
+            return StageStatus.BLOCKED
+        if semantic_result == SemanticStageResult.FAILED:
+            return StageStatus.FAILED
+        if semantic_result == SemanticStageResult.CANCELLED:
+            return StageStatus.CANCELLED
+        raise ControlPlaneValidationError("A pending Run cannot be settled")
+
+    def _create_protocol_attention_tx(
+        self,
+        db: sqlite3.Connection,
+        *,
+        run_id: str,
+        task_id: str,
+        project_id: str,
+        stage_key: str,
+        error_code: str | None,
+        actor: str,
+        now: str,
+    ) -> str:
+        item_id = (
+            "attn_protocol_"
+            + canonical_sha256(
+                {
+                    "run_id": run_id,
+                    "stage_key": stage_key,
+                    "error_code": error_code,
+                }
+            )[:32]
+        )
+        db.execute(
+            """
+            INSERT INTO attention_items (
+                item_id, project_id, task_id, run_id, kind, state, urgency,
+                title, body, options, context, requester, version,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, NULL, 'blocker', 'open', 'high', ?, ?, '[]', ?, ?, 1, ?, ?)
+            """,
+            (
+                item_id,
+                project_id,
+                task_id,
+                "Protocol Run requires attention",
+                (
+                    "The runtime result failed the frozen Handoff protocol. "
+                    "Inspect the durable error code and retry from the sealed Context Pack."
+                ),
+                json.dumps(
+                    {
+                        "protocol_run_id": run_id,
+                        "stage_key": stage_key,
+                        "adapter_error_code": error_code,
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ),
+                actor,
+                now,
+                now,
+            ),
+        )
+        self.tasks._insert_event(
+            db,
+            task_id=task_id,
+            event_type="attention.created",
+            actor=actor,
+            payload={
+                "item_id": item_id,
+                "kind": "blocker",
+                "urgency": "high",
+                "protocol_run_id": run_id,
+            },
+            created_at=now,
+        )
+        return item_id
+
+    def _create_invalidation_attention_tx(
+        self,
+        db: sqlite3.Connection,
+        *,
+        operation_key: str,
+        task_id: str,
+        project_id: str,
+        inventory: ArtifactInventory,
+        stale_approval_ids: list[str],
+        stale_gate_keys: list[str],
+        reopen_stage_keys: list[str],
+        actor: str,
+        now: str,
+    ) -> tuple[str, str]:
+        item_id = (
+            "attn_invalidation_"
+            + canonical_sha256(
+                {"operation_key": operation_key, "task_id": task_id}
+            )[:32]
+        )
+        detail_limit = 200
+        context = {
+            "operation_key": operation_key,
+            "repository_id": inventory.repository_id,
+            "ref": inventory.ref,
+            "commit_sha": inventory.commit_sha,
+            "stale_approval_ids": sorted(stale_approval_ids)[:detail_limit],
+            "stale_gate_keys": sorted(stale_gate_keys)[:detail_limit],
+            "affected_stage_keys": sorted(reopen_stage_keys)[:detail_limit],
+            "stale_approval_count": len(stale_approval_ids),
+            "stale_gate_count": len(stale_gate_keys),
+            "affected_stage_count": len(reopen_stage_keys),
+            "details_truncated": any(
+                len(items) > detail_limit
+                for items in (stale_approval_ids, stale_gate_keys, reopen_stage_keys)
+            ),
+        }
+        db.execute(
+            """
+            INSERT INTO attention_items (
+                item_id, project_id, task_id, run_id, kind, state, urgency,
+                title, body, options, context, requester, version,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, NULL, 'blocker', 'open', 'high', ?, ?, '[]', ?, ?, 1, ?, ?)
+            """,
+            (
+                item_id,
+                project_id,
+                task_id,
+                "Approval invalidation requires impact analysis",
+                (
+                    "Repository Artifact changes made one or more Approvals stale. "
+                    "Review the affected Gates and Stages before resuming work."
+                ),
+                json.dumps(
+                    context,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ),
+                actor,
+                now,
+                now,
+            ),
+        )
+        event = self._event(
+            db,
+            event_key=f"{operation_key}:attention:{task_id}",
+            task_id=task_id,
+            project_id=project_id,
+            event_type="attention.created",
+            actor=actor,
+            payload={
+                "item_id": item_id,
+                "kind": "blocker",
+                "urgency": "high",
+                "reason": "approval_invalidated",
+            },
+            now=now,
+        )
+        return item_id, event.event_id
+
+    @staticmethod
+    def _protocol_run(row: sqlite3.Row) -> ProtocolRunRecord:
+        context_pack = ContextPack.model_validate_json(row["context_payload"])
+        if (
+            context_pack.content_sha256 != row["context_sha256"]
+            or context_pack.run_id != row["run_id"]
+            or context_pack.project_id != row["project_id"]
+            or context_pack.task_id != row["task_id"]
+            or context_pack.stage_key != row["stage_key"]
+        ):
+            raise ControlPlaneValidationError(
+                "Persisted Context Pack does not match its Run ledger binding"
+            )
+        protocol_state = (
+            RunProtocolState.model_validate_json(row["protocol_state_payload"])
+            if row["protocol_state_payload"]
+            else None
+        )
+        if protocol_state is not None and protocol_state.run_id != row["run_id"]:
+            raise ControlPlaneValidationError(
+                "Persisted Run protocol state does not match its Run ledger binding"
+            )
+        handoff_pack = (
+            HandoffPack.model_validate_json(row["handoff_payload"])
+            if row["handoff_payload"]
+            else None
+        )
+        if handoff_pack is not None and (
+            handoff_pack.content_sha256 != row["handoff_sha256"]
+            or handoff_pack.pack_id != row["handoff_pack_id"]
+            or handoff_pack.run_id != row["run_id"]
+        ):
+            raise ControlPlaneValidationError(
+                "Persisted Handoff Pack does not match its Run ledger binding"
+            )
+        return ProtocolRunRecord(
+            run_id=row["run_id"],
+            project_id=row["project_id"],
+            task_id=row["task_id"],
+            stage_key=row["stage_key"],
+            gate_key=row["gate_key"],
+            context_pack=context_pack,
+            protocol_state=protocol_state,
+            handoff_pack=handoff_pack,
+            adapter_error_code=row["adapter_error_code"],
+            attention_required=bool(row["attention_required"]),
+            attention_item_id=row["attention_item_id"],
+            created_at=row["created_at"],
+            settled_at=row["settled_at"],
+        )
 
     def _gate_record(self, db: sqlite3.Connection, row: sqlite3.Row) -> GateRecord:
         return GateRecord(

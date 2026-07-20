@@ -615,6 +615,13 @@ def test_inventory_invalidation_is_atomic_idempotent_and_restart_safe(tmp_path):
         f"{task_id}:review",
     ]
     assert receipt.reconciliation_stage_keys == [f"{task_id}:build"]
+    assert len(receipt.attention_item_ids) == 1
+    attention = store.projection(task_id)["attention"]
+    assert [item.item_id for item in attention] == receipt.attention_item_ids
+    assert attention[0].context["stale_approval_ids"] == [
+        "approval-requirements"
+    ]
+    assert attention[0].context["affected_stage_count"] == 5
     assert store.get_approval("approval-requirements").status.value == "stale"
     assert store.get_gate(task_id, "requirements-gate").status == GateStatus.STALE
     assert store.get_stage(task_id, "requirements").status == StageStatus.READY
@@ -639,6 +646,7 @@ def test_inventory_invalidation_is_atomic_idempotent_and_restart_safe(tmp_path):
     )
     assert replay.replayed is True
     assert replay.event_ids == receipt.event_ids
+    assert replay.attention_item_ids == receipt.attention_item_ids
     assert len(restarted.events(task_id)) == event_count
 
     with pytest.raises(ControlPlaneConflictError, match="different input"):
@@ -748,10 +756,13 @@ def test_inventory_invalidation_isolates_artifacts_across_projects(tmp_path):
     )
 
     assert receipt.stale_approval_ids == ["approval-alpha"]
+    assert len(receipt.attention_item_ids) == 1
     assert store.get_approval("approval-alpha").status == ApprovalStatus.STALE
     assert store.get_approval("approval-beta").status == ApprovalStatus.ACTIVE
     assert store.get_stage(alpha_task_id, "requirements").status == StageStatus.READY
     assert store.get_stage(beta.task_id, "requirements").status == StageStatus.COMPLETED
+    assert len(store.projection(alpha_task_id)["attention"]) == 1
+    assert store.projection(beta.task_id)["attention"] == []
     invalidation_events = [
         event
         for event in store.events(alpha_task_id)
