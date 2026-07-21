@@ -2,7 +2,7 @@
 
 Status: reviewed implementation baseline.
 
-This increment adds the first read-only Task status/progress/result projection
+This increment added the first read-only Task status/progress/result projection
 over the formal Control Plane and the temporary 0.5 orchestration compatibility
 ledger. It does not add a state writer, map the legacy Task enum into the frozen
 Task state machine, expose a new HTTP route, or start Task Workbench UI work.
@@ -39,11 +39,19 @@ The sources are intentionally explicit:
   runtime, attempt, reservation, settlement, and temporary compatibility data;
 - Task and Control Plane events are merged into one ordered audit history.
 
-The projection labels Task state as `task_manifest`; it does not infer or persist
-a frozen v1 Task state from partial component state. Likewise, the only
-authoritative `next_safe_action` is the Control Plane Gate-derived value. The
-old orchestration hint remains visible under `compatibility_next_action` and is
-explicitly non-authoritative.
+The initial `1.0` projection labeled Task state as `task_manifest` because no
+frozen state persistence existed. The frozen Task-state increment supersedes
+that field with the independent `control_tasks` projection and moves the unified
+JSON shape to schema version `2.0`. Missing frozen state is explicitly
+unavailable; it is never inferred from the compatibility manifest. The only
+authoritative `next_safe_action` remains the Control Plane Gate-derived value.
+The old orchestration hint remains visible under `compatibility_next_action` and
+is explicitly non-authoritative.
+
+Version `2.0` also exposes
+`task_state_lifecycle=stage_derivation_deferred`. Frozen state transitions are
+explicit in this increment; projected Stage completion does not silently derive
+Task completion until the complete grouped Stage inventory exists.
 
 Formal progress counts only Control Plane Stages in `completed` state. A passed
 process, compatibility Run, or Gate cannot increase the completed count by
@@ -91,6 +99,7 @@ unavailable rather than zero. Provider-specific exact usage remains deferred.
 ## Deferred boundaries
 
 The future authenticated HTTP projection should reuse this read model rather
-than construct another status interpretation. Frozen Task-state persistence,
-dynamic routing, exact provider usage, the authoritative full AI-DLC graph, and
-Task Workbench UI remain separate reviewed increments.
+than construct another status interpretation. Frozen Task-state persistence is
+now supplied by `control_tasks`; grouped Stage-driven lifecycle wiring, dynamic
+routing, exact provider usage, the authoritative full AI-DLC graph, and Task
+Workbench UI remain separate reviewed increments.

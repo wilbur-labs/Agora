@@ -9,6 +9,9 @@ from .models import (
     RegistrationReceipt,
     RunSettlementReceipt,
     StageRecord,
+    TaskRecord,
+    TaskTransitionCause,
+    TaskTransitionReceipt,
 )
 from .store import (
     ControlPlaneConflictError,
@@ -30,4 +33,7 @@ __all__ = [
     "RegistrationReceipt",
     "RunSettlementReceipt",
     "StageRecord",
+    "TaskRecord",
+    "TaskTransitionCause",
+    "TaskTransitionReceipt",
 ]

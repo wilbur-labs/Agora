@@ -7,6 +7,22 @@ import sqlite3
 def initialize_control_plane_schema(db: sqlite3.Connection) -> None:
     db.executescript(
         """
+        CREATE TABLE IF NOT EXISTS control_tasks (
+            task_id TEXT PRIMARY KEY REFERENCES tasks(task_id),
+            project_id TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (
+                status IN (
+                    'backlog', 'ready', 'active', 'blocked',
+                    'needs_review', 'completed', 'failed', 'cancelled'
+                )
+            ),
+            version INTEGER NOT NULL DEFAULT 1 CHECK (version >= 1),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_control_tasks_project_status
+            ON control_tasks(project_id, status, updated_at DESC);
+
         CREATE TABLE IF NOT EXISTS control_stages (
             task_id TEXT NOT NULL REFERENCES tasks(task_id),
             project_id TEXT NOT NULL,

@@ -33,7 +33,8 @@ from agora.orchestration.store import (
 )
 from agora.orchestration import cli as orchestration_cli
 from agora.projects import ProjectRegistry
-from agora.tasks.models import TaskState
+from agora.protocol.state_machines import TaskStatus
+from agora.tasks.models import CreateTaskRequest, TaskState
 from agora.tasks.store import TaskStore
 
 
@@ -474,8 +475,12 @@ def test_create_persists_method_budget_and_task_audit(tmp_path):
     assert status.next_safe_action == "Run stage solution_design with codex."
     assert status.decisions == []
     events = tasks.events(task.task_id)
-    assert events[-1].event_type == "orchestration.plan_created"
-    assert events[-1].payload["provisional"] is True
+    assert [event.event_type for event in events[-2:]] == [
+        "orchestration.plan_created",
+        "task.state_initialized",
+    ]
+    assert events[-2].payload["provisional"] is True
+    assert events[-1].payload == {"status": "backlog", "version": 1}
 
 
 def test_invalid_budget_does_not_leave_a_planless_task(tmp_path):
@@ -489,6 +494,76 @@ def test_invalid_budget_does_not_leave_a_planless_task(tmp_path):
         )
 
     assert [task.task_id for task in tasks.list()] == before
+
+
+def test_resume_recovers_task_state_initialization_after_create_interruption(
+    tmp_path,
+    monkeypatch,
+):
+    tasks, service, _, _ = _system(tmp_path)
+    before = {task.task_id for task in tasks.list()}
+    original_ensure = service.control_plane.ensure_task_state
+
+    def interrupt_initialization(*_args, **_kwargs):
+        raise RuntimeError("task-state initialization interrupted")
+
+    monkeypatch.setattr(
+        service.control_plane,
+        "ensure_task_state",
+        interrupt_initialization,
+    )
+    with pytest.raises(RuntimeError, match="initialization interrupted"):
+        service.create(
+            project_id="alpha",
+            title="Recover frozen Task initialization",
+            description="Simulate a crash after plan creation",
+            total_token_budget=30_000,
+            total_cost_budget_usd=12,
+        )
+
+    created = next(task for task in tasks.list() if task.task_id not in before)
+    assert service.status(created.task_id).plan is not None
+    assert service.control_plane.get_task_state(created.task_id) is None
+
+    monkeypatch.setattr(
+        service.control_plane,
+        "ensure_task_state",
+        original_ensure,
+    )
+    service.resume(created.task_id)
+    recovered = service.control_plane.get_task_state(created.task_id)
+    assert recovered.status == TaskStatus.BACKLOG
+    assert recovered.version == 1
+    service.resume(created.task_id)
+    assert service.control_plane.get_task_state(created.task_id) == recovered
+
+
+def test_attach_initializes_frozen_task_state_without_mapping_legacy_state(tmp_path):
+    tasks, service, _, _ = _system(tmp_path)
+    legacy = tasks.create(
+        CreateTaskRequest(
+            project_id="alpha",
+            title="Attach an existing Task",
+            kind="custom",
+        )
+    )
+    tasks.transition(
+        legacy.task_id,
+        TaskState.REQUIREMENTS,
+        actor="legacy-test",
+        expected_version=legacy.version,
+    )
+
+    service.attach(
+        legacy.task_id,
+        total_token_budget=30_000,
+        total_cost_budget_usd=12,
+    )
+
+    frozen = service.control_plane.get_task_state(legacy.task_id)
+    assert frozen.status == TaskStatus.BACKLOG
+    assert frozen.version == 1
+    assert tasks.get(legacy.task_id).state == TaskState.REQUIREMENTS
 
 
 @pytest.mark.asyncio

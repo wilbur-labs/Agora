@@ -30,9 +30,11 @@ from agora.protocol.models import (
 from agora.protocol.state_machines import (
     GateStatus,
     StageStatus,
+    TaskStatus,
     TransitionError,
     transition_gate,
     transition_stage,
+    transition_task as validate_task_transition,
 )
 from agora.tasks.models import utc_now
 from agora.tasks.store import TaskStore
@@ -46,6 +48,9 @@ from .models import (
     RegistrationReceipt,
     RunSettlementReceipt,
     StageRecord,
+    TaskRecord,
+    TaskTransitionCause,
+    TaskTransitionReceipt,
 )
 from .schema import initialize_control_plane_schema
 
@@ -76,6 +81,179 @@ class ControlPlaneStore:
             initialize_attention_schema(db)
             initialize_control_plane_schema(db)
             db.commit()
+
+    def ensure_task_state(
+        self,
+        task_id: str,
+        *,
+        actor: str = "system",
+    ) -> TaskRecord:
+        """Create the frozen Task state at backlog without reading legacy state."""
+
+        self._validate_actor(actor)
+        now = utc_now()
+        with self.tasks._transaction() as db:
+            task = self._task_row(db, task_id)
+            existing = db.execute(
+                "SELECT * FROM control_tasks WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
+            if existing is not None:
+                return self._task_record(existing)
+            db.execute(
+                """
+                INSERT INTO control_tasks (
+                    task_id, project_id, status, version, created_at, updated_at
+                ) VALUES (?, ?, ?, 1, ?, ?)
+                """,
+                (
+                    task_id,
+                    task["project_id"],
+                    TaskStatus.BACKLOG.value,
+                    now,
+                    now,
+                ),
+            )
+            self._event(
+                db,
+                event_key=f"task.state.initialize:{task_id}",
+                task_id=task_id,
+                project_id=task["project_id"],
+                event_type="task.state_initialized",
+                actor=actor,
+                payload={"status": TaskStatus.BACKLOG.value, "version": 1},
+                now=now,
+            )
+            row = db.execute(
+                "SELECT * FROM control_tasks WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
+            assert row is not None
+            return self._task_record(row)
+
+    def transition_task_state(
+        self,
+        task_id: str,
+        target: TaskStatus,
+        *,
+        expected_version: int,
+        cause: TaskTransitionCause,
+        actor: str,
+        reason: str,
+        operation_key: str,
+    ) -> TaskTransitionReceipt:
+        """Persist one explicit, optimistic, replay-safe frozen Task transition."""
+
+        self._validate_operation_key(operation_key)
+        self._validate_actor(actor)
+        reason = reason.strip()
+        if not reason or len(reason) > 4_000:
+            raise ControlPlaneValidationError(
+                "Task transition reason must contain between 1 and 4000 characters"
+            )
+        fingerprint = canonical_sha256(
+            {
+                "action": "transition_task_state",
+                "task_id": task_id,
+                "target": target.value,
+                "expected_version": expected_version,
+                "cause": cause.value,
+                "actor": actor,
+                "reason": reason,
+            }
+        )
+        now = utc_now()
+        with self.tasks._transaction() as db:
+            replay = self._operation_result(db, operation_key, fingerprint)
+            if replay is not None:
+                receipt = TaskTransitionReceipt.model_validate(replay["receipt"])
+                return receipt.model_copy(update={"replayed": True})
+            row = db.execute(
+                "SELECT * FROM control_tasks WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
+            if row is None:
+                if db.execute(
+                    "SELECT 1 FROM tasks WHERE task_id = ?",
+                    (task_id,),
+                ).fetchone() is None:
+                    raise ControlPlaneNotFoundError(f"Task not found: {task_id}")
+                raise ControlPlaneConflictError(
+                    "Frozen Task state is not initialized"
+                )
+            if row["version"] != expected_version:
+                raise ControlPlaneConflictError(
+                    f"Expected Task version {expected_version}, current version is "
+                    f"{row['version']}"
+                )
+            current = TaskStatus(row["status"])
+            if (
+                current == TaskStatus.COMPLETED
+                and target == TaskStatus.ACTIVE
+                and cause not in {
+                    TaskTransitionCause.INVALIDATION,
+                    TaskTransitionCause.RECONCILIATION,
+                }
+            ):
+                raise ControlPlaneConflictError(
+                    "A completed Task may reopen only through invalidation or reconciliation"
+                )
+            try:
+                next_status = validate_task_transition(current, target)
+            except TransitionError as exc:
+                raise ControlPlaneConflictError(str(exc)) from exc
+            next_version = expected_version + 1
+            cursor = db.execute(
+                """
+                UPDATE control_tasks
+                SET status = ?, version = ?, updated_at = ?
+                WHERE task_id = ? AND status = ? AND version = ?
+                """,
+                (
+                    next_status.value,
+                    next_version,
+                    now,
+                    task_id,
+                    current.value,
+                    expected_version,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise ControlPlaneConflictError("Task changed during transition")
+            self._event(
+                db,
+                event_key=f"{operation_key}:task.state_changed",
+                task_id=task_id,
+                project_id=row["project_id"],
+                event_type="task.state_changed",
+                actor=actor,
+                payload={
+                    "from": current.value,
+                    "to": next_status.value,
+                    "cause": cause.value,
+                    "reason": reason,
+                    "version": next_version,
+                },
+                now=now,
+            )
+            updated = db.execute(
+                "SELECT * FROM control_tasks WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
+            assert updated is not None
+            receipt = TaskTransitionReceipt(
+                task=self._task_record(updated),
+                previous_status=current,
+                cause=cause,
+            )
+            self._complete_operation(
+                db,
+                operation_key,
+                fingerprint,
+                {"receipt": receipt.model_dump(mode="json")},
+                now,
+            )
+            return receipt
 
     def ensure_stage(
         self,
@@ -1367,6 +1545,14 @@ class ControlPlaneStore:
             ).fetchone()
         return Artifact.model_validate_json(row["payload"]) if row else None
 
+    def get_task_state(self, task_id: str) -> TaskRecord | None:
+        with closing(self.tasks._connect()) as db:
+            row = db.execute(
+                "SELECT * FROM control_tasks WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
+        return self._task_record(row) if row else None
+
     def get_evidence(self, evidence_id: str) -> Evidence | None:
         with closing(self.tasks._connect()) as db:
             row = db.execute(
@@ -2367,6 +2553,17 @@ class ControlPlaneStore:
         )
 
     @staticmethod
+    def _task_record(row: sqlite3.Row) -> TaskRecord:
+        return TaskRecord(
+            task_id=row["task_id"],
+            project_id=row["project_id"],
+            status=TaskStatus(row["status"]),
+            version=row["version"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+    @staticmethod
     def _stage(row: sqlite3.Row) -> StageRecord:
         return StageRecord(
             task_id=row["task_id"],
@@ -2588,3 +2785,10 @@ class ControlPlaneStore:
     def _validate_operation_key(cls, value: str) -> None:
         if not cls._OPERATION_KEY.fullmatch(value):
             raise ControlPlaneValidationError("Invalid operation_key")
+
+    @staticmethod
+    def _validate_actor(value: str) -> None:
+        if not value.strip() or len(value) > 128:
+            raise ControlPlaneValidationError(
+                "actor must contain between 1 and 128 characters"
+            )

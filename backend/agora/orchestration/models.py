@@ -17,7 +17,8 @@ from agora.protocol.models import (
     SemanticStageResult,
     TransportStatus,
 )
-from agora.tasks.models import TaskManifest, TaskState
+from agora.protocol.state_machines import TaskStatus
+from agora.tasks.models import TaskManifest
 
 
 class StrictModel(BaseModel):
@@ -318,11 +319,16 @@ class UnifiedBudgetProjection(StrictModel):
 
 
 class UnifiedTaskProjection(StrictModel):
-    schema_version: Literal["1.0"] = "1.0"
+    schema_version: Literal["2.0"] = "2.0"
     snapshot_at: str
     task: TaskManifest
-    task_state: TaskState
-    task_state_source: Literal["task_manifest"] = "task_manifest"
+    task_state: TaskStatus | None
+    task_state_source: Literal["control_plane"] = "control_plane"
+    task_state_version: int | None = Field(default=None, ge=1)
+    task_state_unavailable_reason: str | None = None
+    task_state_lifecycle: Literal["stage_derivation_deferred"] = (
+        "stage_derivation_deferred"
+    )
     plan: OrchestrationPlan
     progress: UnifiedTaskProgress
     stages: list[UnifiedStageProjection]

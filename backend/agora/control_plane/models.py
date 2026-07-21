@@ -1,6 +1,7 @@
 """Internal records returned by Control Plane v2 persistence."""
 from __future__ import annotations
 
+from enum import Enum
 from typing import Annotated, Any
 
 from pydantic import Field, field_validator, model_validator
@@ -18,7 +19,30 @@ from agora.protocol.models import (
     StableId,
 )
 from agora.protocol.agent_adapter import AdapterErrorCode
-from agora.protocol.state_machines import GateStatus, StageStatus
+from agora.protocol.state_machines import GateStatus, StageStatus, TaskStatus
+
+
+class TaskTransitionCause(str, Enum):
+    USER_ACTION = "user_action"
+    ORCHESTRATION = "orchestration"
+    RECONCILIATION = "reconciliation"
+    INVALIDATION = "invalidation"
+
+
+class TaskRecord(ProtocolModel):
+    task_id: StableId
+    project_id: StableId
+    status: TaskStatus
+    version: int = Field(ge=1)
+    created_at: str
+    updated_at: str
+
+
+class TaskTransitionReceipt(ProtocolModel):
+    task: TaskRecord
+    previous_status: TaskStatus
+    cause: TaskTransitionCause
+    replayed: bool = False
 
 
 class RegistrationReceipt(ProtocolModel):

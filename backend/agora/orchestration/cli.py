@@ -284,10 +284,16 @@ def _print_status(status) -> None:
 
 
 def _print_unified_status(status) -> None:
-    print(
-        f"Task: {status.task.title} [{status.task_state.value}] "
-        f"source={status.task_state_source}"
+    task_state = (
+        status.task_state.value if status.task_state is not None else "unavailable"
     )
+    print(
+        f"Task: {status.task.title} [{task_state}] "
+        f"source={status.task_state_source} legacy={status.task.state.value} "
+        f"lifecycle={status.task_state_lifecycle}"
+    )
+    if status.task_state_unavailable_reason is not None:
+        print(f"  Task state unavailable: {status.task_state_unavailable_reason}")
     print(
         f"Plan: {status.plan.methodology_id}@{status.plan.methodology_version} "
         f"[{status.plan.state.value}]"

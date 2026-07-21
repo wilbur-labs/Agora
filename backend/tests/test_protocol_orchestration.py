@@ -18,8 +18,8 @@ from agora.orchestration.store import OrchestrationConflictError
 from agora.projects import ProjectRegistry
 from agora.protocol.hashing import seal_model_payload
 from agora.protocol.models import ContextPack, HandoffPack
-from agora.protocol.state_machines import GateStatus, StageStatus
-from agora.tasks.models import AppendEventRequest, utc_now
+from agora.protocol.state_machines import GateStatus, StageStatus, TaskStatus
+from agora.tasks.models import AppendEventRequest, TaskState, utc_now
 from agora.tasks.store import TaskStore
 
 
@@ -266,14 +266,25 @@ async def test_protocol_v1_runs_all_stages_through_authoritative_gates(tmp_path)
 async def test_unified_projection_reports_formal_progress_usage_and_human_action(
     tmp_path,
 ):
-    _, service, _, task = _system(tmp_path)
+    tasks, service, _, task = _system(tmp_path)
+    tasks.transition(
+        task.task_id,
+        TaskState.REQUIREMENTS,
+        actor="legacy-test",
+        expected_version=task.version,
+    )
     await service.run_until_blocked(task.task_id, protocol_v1=True)
 
     projection = service.unified_status(task.task_id)
 
-    assert projection.schema_version == "1.0"
+    assert projection.schema_version == "2.0"
     assert projection.task.task_id == task.task_id
-    assert projection.task_state_source == "task_manifest"
+    assert projection.task.state == TaskState.REQUIREMENTS
+    assert projection.task_state_source == "control_plane"
+    assert projection.task_state == TaskStatus.BACKLOG
+    assert projection.task_state_version == 1
+    assert projection.task_state_unavailable_reason is None
+    assert projection.task_state_lifecycle == "stage_derivation_deferred"
     assert projection.progress.total_stages == 3
     assert projection.progress.completed_stages == 3
     assert projection.progress.remaining_stage_keys == []
@@ -418,8 +429,18 @@ async def test_cli_exposes_unified_projection_without_changing_legacy_status(
         ["status", task.task_id, "--protocol-v1", "--json", "--limit", "1"]
     ) == 0
     unified = json.loads(capsys.readouterr().out)
-    assert unified["schema_version"] == "1.0"
+    assert unified["schema_version"] == "2.0"
+    assert unified["task_state"] == "backlog"
+    assert unified["task_state_source"] == "control_plane"
+    assert unified["task_state_version"] == 1
     assert unified["collection_pages"]["runs"]["limit"] == 1
+
+    assert orchestration_cli.main(
+        ["status", task.task_id, "--protocol-v1"]
+    ) == 0
+    text_status = capsys.readouterr().out
+    assert "[backlog] source=control_plane legacy=backlog" in text_status
+    assert "lifecycle=stage_derivation_deferred" in text_status
 
     assert orchestration_cli.main(["status", task.task_id, "--json"]) == 0
     legacy = json.loads(capsys.readouterr().out)

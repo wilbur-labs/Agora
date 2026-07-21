@@ -102,6 +102,10 @@ class TaskProjectionStore:
         if task_row is None:
             raise OrchestrationNotFoundError(task_id)
         task = self.tasks._manifest(task_row)
+        control_task_row = db.execute(
+            "SELECT * FROM control_tasks WHERE task_id = ?",
+            (task_id,),
+        ).fetchone()
         plan_row = db.execute(
             "SELECT * FROM orchestration_plans WHERE task_id = ?",
             (task_id,),
@@ -293,7 +297,22 @@ class TaskProjectionStore:
         return UnifiedTaskProjection(
             snapshot_at=snapshot_at,
             task=task,
-            task_state=task.state,
+            task_state=(
+                self.control_plane._task_record(control_task_row).status
+                if control_task_row is not None
+                else None
+            ),
+            task_state_version=(
+                control_task_row["version"] if control_task_row is not None else None
+            ),
+            task_state_unavailable_reason=(
+                None
+                if control_task_row is not None
+                else (
+                    "Frozen Task state has not been initialized; run task resume "
+                    "to perform explicit recovery."
+                )
+            ),
             plan=plan,
             progress=progress,
             stages=stages,

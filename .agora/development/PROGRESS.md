@@ -2,21 +2,18 @@
 
 Current branch: `main`
 
-Current recovery baseline (2026-07-20):
+Current recovery baseline (2026-07-21):
 
-- Local `main` includes `f3f5c14 feat: wire formal protocol orchestration` and
-  the reviewed unified Task projection commit containing this snapshot, eight
-  reviewed commits ahead of `origin/main` at `2750dfe fix: recover Windows
-  native orchestration`.
+- Local `main` and `origin/main` are synchronized through the reviewed frozen
+  Task-state persistence commit containing this snapshot.
 - Active program: the ordered Agora Control Plane transformation. The first two
   stages (protocol/domain freeze and Control Plane v2 persistence/Registry) are
   complete; the bounded API, concrete Task contract, and Runner/Agent Adapter
   are also reviewed foundations. The sealed Run/Gate settlement boundary and
   explicit CLI orchestration wiring and read-only unified Task projection are
-  reviewed. Work-weighted program completion is approximately 41% to 43%; this
-  remains an
-  engineering estimate until frozen Task-state persistence and the grouped
-  Stage inventory are complete.
+  reviewed. Frozen Task-state persistence is the latest reviewed increment.
+  Work-weighted program completion is approximately 43% to 45%; this remains an
+  engineering estimate until the grouped Stage inventory is complete.
   The historical 11-stage label and milestone-count estimate below predate the
   current grouped stage correspondence and must be normalized before they are
   used as a current count.
@@ -49,9 +46,9 @@ Current recovery baseline (2026-07-20):
 - The user explicitly approved Plan `plan_cf698b72d0c548ff99b763fef8e6c75b`;
   the authoritative Plan is now `ready_for_implementation` and its approval
   event is recorded in `data/agora.db`.
-- The latest increment exposes one CLI-first, read-only projection over
-  authoritative formal state and the compatibility usage ledger through
-  `task status --protocol-v1`. Do not begin Task Workbench UI work.
+- The active increment adds a separate `control_tasks` state projection and
+  never maps the 0.5 manifest enum into the frozen state machine. Do not begin
+  Task Workbench UI work.
 
 ## 2026-07-18 — Latest transformation requirements recovery
 
@@ -605,6 +602,80 @@ After this reviewed commit, define the smallest frozen Task-state persistence
 increment without inferring state from the compatibility manifest or projection.
 Keep the authenticated HTTP surface as a later bounded reuse of this read model;
 UI stays deferred.
+
+## 2026-07-21 - Frozen Task-state persistence
+
+### Scope
+
+- [x] Added additive `control_tasks` persistence for the eight frozen Task
+  states while leaving the 0.5 `tasks.state` column and transitions unchanged.
+- [x] Initialized new unified-orchestration Tasks explicitly at `backlog` without
+  reading or mapping legacy state; existing Tasks remain explicitly unavailable
+  until initialized rather than receiving a guessed state.
+- [x] Added optimistic, operation-key-idempotent frozen transitions with bounded
+  actor/reason, explicit cause, mirrored Task/Control Plane audit events, and one
+  atomic SQLite commit.
+- [x] Enforced the frozen transition graph and required invalidation or
+  reconciliation to reopen `completed -> active`.
+- [x] Added a Control Plane state reader and updated the unified projection to
+  read frozen state in its existing rollback-only snapshot. The unified JSON
+  shape is version `2.0` because `task_state` changed from compatibility to
+  authoritative semantics; the legacy manifest remains separately visible.
+- [x] Added explicit initialization, non-inference, idempotency, stale-version,
+  invalid-transition, completed-reopen, bounds, concurrency, rollback, service,
+  projection, and CLI compatibility coverage.
+- [x] Run the complete backend verification set and Schema consistency checks.
+- [x] Obtain Kiro protocol/methodology review and independent Claude Code
+  correctness/safety review; fix all actionable findings.
+- [x] Commit and push only after both review gates approve (the commit containing
+  this snapshot).
+
+### Current verification log
+
+- Frozen Task state, Control Plane registry, and formal orchestration suite:
+  37 passed before independent review.
+- Initial full-suite self-audit exposed five additive fields accidentally added
+  to the existing authenticated Control Plane HTTP response and one obsolete
+  last-event assertion. The HTTP fields were removed to preserve the deferred
+  boundary, and the audit test now verifies both plan creation and explicit
+  Task-state initialization.
+- Full non-integration backend suite after those corrections: 400 passed,
+  18 deselected, with only the existing Starlette/httpx and Windows Proactor
+  cleanup warnings.
+- Kiro protocol/methodology review pass 1: `CHANGES_REQUESTED`; no high findings
+  and three medium findings. It requested an explicit deferred-lifecycle signal,
+  a production recovery path for interruption between Plan and frozen-state
+  initialization, and additional operation-key/not-found/bounds/separation
+  adversarial coverage.
+- Added `task_state_lifecycle=stage_derivation_deferred` to JSON and text output;
+  `task resume` now idempotently initializes a missing frozen state without
+  making status reads mutate; attach also initializes explicitly.
+- Added invalid/global-cross-Task operation-key, missing Task, maximum actor and
+  reason, post-transition legacy separation, interrupted-create recovery, and
+  idempotent repeated-resume regressions.
+- Post-Kiro-fix full non-integration backend suite: 403 passed, 18 deselected,
+  with only the existing Starlette/httpx and Windows Proactor cleanup warnings.
+- Kiro targeted re-review: `APPROVE`; all three medium findings are resolved and
+  no high/medium findings remain. Its non-blocking low note requested direct
+  attach-path symmetry, so an attach initialization/non-mapping regression was
+  added before the independent Claude review.
+- Final full non-integration backend suite after the attach regression:
+  404 passed, 18 deselected, with only the existing Starlette/httpx and Windows
+  Proactor cleanup warnings.
+- Independent Claude Code correctness/safety review: `APPROVE`; no actionable
+  high/medium findings. It independently verified frozen/legacy separation,
+  transaction atomicity, optimistic concurrency, global operation-key
+  fail-closed behavior, projection truthfulness, and explicit resume recovery.
+- Final Protocol Schema export, isolated Python compile, `task status --help`
+  smoke, and `git diff --check`: passed after both review gates approved.
+- No HTTP or frontend contract changed; frontend validation is not required for
+  this increment.
+
+### Next safe action
+
+Add the complete grouped Stage inventory before deriving Task lifecycle
+transitions from Stage/Gate state. Do not infer lifecycle completion from the
+current partial Stage projection. HTTP and UI remain deferred.
 
 ## 2026-07-13
 

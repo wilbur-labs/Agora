@@ -160,6 +160,7 @@ class TaskOrchestrationService:
             total_cost_budget_usd=total_cost_budget_usd,
             actor=actor,
         )
+        self.control_plane.ensure_task_state(task.task_id, actor=actor)
         return task
 
     def attach(
@@ -171,12 +172,14 @@ class TaskOrchestrationService:
         actor: str = "user",
     ):
         self._assert_runtimes_available()
-        return self.store.create_plan(
+        plan = self.store.create_plan(
             task_id, self.methodology,
             total_token_budget=total_token_budget,
             total_cost_budget_usd=total_cost_budget_usd,
             actor=actor,
         )
+        self.control_plane.ensure_task_state(task_id, actor=actor)
+        return plan
 
     def status(self, task_id: str) -> TaskOrchestrationStatus:
         return self.store.status(task_id)
@@ -474,6 +477,7 @@ class TaskOrchestrationService:
             await self.run_next(task_id, protocol_v1=protocol_v1)
 
     def resume(self, task_id: str) -> TaskOrchestrationStatus:
+        self.control_plane.ensure_task_state(task_id, actor="reconciler")
         status = self.store.status(task_id)
         running = [run for run in status.runs if run.state == RunState.RUNNING]
         for run in running:
