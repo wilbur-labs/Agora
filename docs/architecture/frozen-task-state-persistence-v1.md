@@ -74,7 +74,9 @@ the missing state; ordinary status reads remain side-effect free.
 
 This increment does not infer Task state from compatibility Plan state, partial
 Stage inventory, Run exit codes, Gate counts, or the unified projection. The
-next bounded increment must persist the complete grouped Stage inventory before
-Agora can derive Task activation, blocking, review, completion, and invalidation
-transitions transactionally. HTTP and UI remain later projections of the same
-command/read model.
+grouped Stage inventory is now persisted separately and hash-bound as
+documented in `grouped-stage-inventory-v1.md`. Task lifecycle derivation remains
+deferred: the next bounded increment may derive Task activation, blocking,
+review, completion, and invalidation only from that complete inventory plus
+authoritative Stage, Gate, Attention, invalidation, and reconciliation state.
+HTTP and UI remain later projections of the same command/read model.

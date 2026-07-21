@@ -26,6 +26,7 @@ from agora.protocol.models import (
     HandoffPack,
     RunProtocolState,
     SemanticStageResult,
+    StageInventory,
 )
 from agora.protocol.state_machines import (
     GateStatus,
@@ -254,6 +255,80 @@ class ControlPlaneStore:
                 now,
             )
             return receipt
+
+    def ensure_stage_inventory(
+        self,
+        inventory: StageInventory,
+        *,
+        actor: str = "system",
+    ) -> StageInventory:
+        """Persist one immutable, hash-sealed grouped Stage inventory per Task."""
+
+        self._validate_actor(actor)
+        now = utc_now()
+        with self.tasks._transaction() as db:
+            task = self._task_row(db, inventory.task_id)
+            self._assert_project(task, inventory.project_id)
+            if db.execute(
+                "SELECT 1 FROM control_tasks WHERE task_id = ?",
+                (inventory.task_id,),
+            ).fetchone() is None:
+                raise ControlPlaneConflictError(
+                    "Frozen Task state must be initialized before its Stage inventory"
+                )
+            existing = db.execute(
+                "SELECT * FROM control_stage_inventories WHERE task_id = ?",
+                (inventory.task_id,),
+            ).fetchone()
+            if existing is not None:
+                current = self._stage_inventory(existing)
+                if current.content_sha256 != inventory.content_sha256:
+                    raise ControlPlaneConflictError(
+                        "Task already has a different immutable Stage inventory"
+                    )
+                return current
+            db.execute(
+                """
+                INSERT INTO control_stage_inventories (
+                    task_id, project_id, inventory_id, payload,
+                    content_sha256, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    inventory.task_id,
+                    inventory.project_id,
+                    inventory.inventory_id,
+                    self._json(inventory),
+                    inventory.content_sha256,
+                    now,
+                ),
+            )
+            stage_count = sum(len(group.stages) for group in inventory.groups)
+            self._event(
+                db,
+                event_key=f"stage.inventory.initialize:{inventory.task_id}",
+                task_id=inventory.task_id,
+                project_id=inventory.project_id,
+                event_type="stage.inventory_initialized",
+                actor=actor,
+                payload={
+                    "inventory_id": inventory.inventory_id,
+                    "content_sha256": inventory.content_sha256,
+                    "methodology_id": inventory.methodology_id,
+                    "methodology_version": inventory.methodology_version,
+                    "methodology_sha256": inventory.methodology_sha256,
+                    "provisional": inventory.provisional,
+                    "group_count": len(inventory.groups),
+                    "stage_count": stage_count,
+                },
+                now=now,
+            )
+            row = db.execute(
+                "SELECT * FROM control_stage_inventories WHERE task_id = ?",
+                (inventory.task_id,),
+            ).fetchone()
+            assert row is not None
+            return self._stage_inventory(row)
 
     def ensure_stage(
         self,
@@ -1553,6 +1628,23 @@ class ControlPlaneStore:
             ).fetchone()
         return self._task_record(row) if row else None
 
+    def get_stage_inventory(self, task_id: str) -> StageInventory | None:
+        with closing(self.tasks._connect()) as db:
+            return self.stage_inventory_snapshot(db, task_id)
+
+    def stage_inventory_snapshot(
+        self,
+        db: sqlite3.Connection,
+        task_id: str,
+    ) -> StageInventory | None:
+        """Read and revalidate an inventory inside a caller-owned snapshot."""
+
+        row = db.execute(
+            "SELECT * FROM control_stage_inventories WHERE task_id = ?",
+            (task_id,),
+        ).fetchone()
+        return self._stage_inventory(row) if row else None
+
     def get_evidence(self, evidence_id: str) -> Evidence | None:
         with closing(self.tasks._connect()) as db:
             row = db.execute(
@@ -1811,6 +1903,12 @@ class ControlPlaneStore:
         now: str,
     ) -> sqlite3.Row:
         task_id = task["task_id"]
+        self._assert_inventory_stage(
+            db,
+            task_id=task_id,
+            stage_key=stage_key,
+            gate_key=gate_key,
+        )
         existing = db.execute(
             "SELECT * FROM control_stages WHERE task_id = ? AND stage_key = ?",
             (task_id, stage_key),
@@ -1863,6 +1961,36 @@ class ControlPlaneStore:
         ).fetchone()
         assert row is not None
         return row
+
+    def _assert_inventory_stage(
+        self,
+        db: sqlite3.Connection,
+        *,
+        task_id: str,
+        stage_key: str,
+        gate_key: str,
+    ) -> None:
+        row = db.execute(
+            "SELECT * FROM control_stage_inventories WHERE task_id = ?",
+            (task_id,),
+        ).fetchone()
+        if row is None:
+            return
+        inventory = self._stage_inventory(row)
+        stages = {
+            stage.stage_key: stage
+            for group in inventory.groups
+            for stage in group.stages
+        }
+        stage = stages.get(stage_key)
+        if stage is None:
+            raise ControlPlaneConflictError(
+                "Stage is not part of the immutable Task Stage inventory"
+            )
+        if stage.gate_key != gate_key:
+            raise ControlPlaneConflictError(
+                "Stage inventory binds the Stage to a different gate"
+            )
 
     @staticmethod
     def _invalidation_stage_path(current: StageStatus) -> tuple[StageStatus, ...]:
@@ -2562,6 +2690,20 @@ class ControlPlaneStore:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
+
+    @staticmethod
+    def _stage_inventory(row: sqlite3.Row) -> StageInventory:
+        inventory = StageInventory.model_validate_json(row["payload"])
+        if (
+            inventory.task_id != row["task_id"]
+            or inventory.project_id != row["project_id"]
+            or inventory.inventory_id != row["inventory_id"]
+            or inventory.content_sha256 != row["content_sha256"]
+        ):
+            raise ControlPlaneValidationError(
+                "Persisted Stage inventory does not match its ledger binding"
+            )
+        return inventory
 
     @staticmethod
     def _stage(row: sqlite3.Row) -> StageRecord:

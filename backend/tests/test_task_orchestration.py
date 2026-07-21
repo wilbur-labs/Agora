@@ -156,6 +156,9 @@ async def test_contract_is_persisted_hashed_and_supplied_to_every_runtime(tmp_pa
     assert persisted.metadata["task_contract_schema_version"] == "1.0"
     assert persisted.metadata["task_contract_sha256"] == contract_sha256(contract)
     assert persisted.acceptance == contract.acceptance_criteria
+    inventory = service.control_plane.get_stage_inventory(task.task_id)
+    assert inventory.contract.contract_id == contract.contract_id
+    assert inventory.contract.sha256 == contract_sha256(contract)
 
     await service.run_next(task.task_id)
     assert '"contract_id":"bounded_control_plane_api_vertical_slice"' in runner.prompts[-1]
@@ -474,13 +477,25 @@ def test_create_persists_method_budget_and_task_audit(tmp_path):
     assert [stage.cost_budget_usd for stage in status.stages] == [5.4, 3.6, 3.0]
     assert status.next_safe_action == "Run stage solution_design with codex."
     assert status.decisions == []
+    inventory = service.control_plane.get_stage_inventory(task.task_id)
+    assert inventory is not None
+    assert inventory.plan_id == status.plan.plan_id
+    assert inventory.methodology_sha256 == status.plan.methodology_sha256
+    assert inventory.contract is None
+    assert [item.stage_key for item in inventory.groups[0].stages] == [
+        "solution_design",
+        "correctness_review",
+        "methodology_review",
+    ]
     events = tasks.events(task.task_id)
-    assert [event.event_type for event in events[-2:]] == [
+    assert [event.event_type for event in events[-3:]] == [
         "orchestration.plan_created",
         "task.state_initialized",
+        "stage.inventory_initialized",
     ]
-    assert events[-2].payload["provisional"] is True
-    assert events[-1].payload == {"status": "backlog", "version": 1}
+    assert events[-3].payload["provisional"] is True
+    assert events[-2].payload == {"status": "backlog", "version": 1}
+    assert events[-1].payload["stage_count"] == 3
 
 
 def test_invalid_budget_does_not_leave_a_planless_task(tmp_path):
@@ -524,6 +539,7 @@ def test_resume_recovers_task_state_initialization_after_create_interruption(
     created = next(task for task in tasks.list() if task.task_id not in before)
     assert service.status(created.task_id).plan is not None
     assert service.control_plane.get_task_state(created.task_id) is None
+    assert service.control_plane.get_stage_inventory(created.task_id) is None
 
     monkeypatch.setattr(
         service.control_plane,
@@ -534,8 +550,53 @@ def test_resume_recovers_task_state_initialization_after_create_interruption(
     recovered = service.control_plane.get_task_state(created.task_id)
     assert recovered.status == TaskStatus.BACKLOG
     assert recovered.version == 1
+    inventory = service.control_plane.get_stage_inventory(created.task_id)
+    assert inventory is not None
+    assert len(inventory.groups[0].stages) == 3
     service.resume(created.task_id)
     assert service.control_plane.get_task_state(created.task_id) == recovered
+    assert service.control_plane.get_stage_inventory(created.task_id) == inventory
+
+
+def test_resume_recovers_stage_inventory_after_create_interruption(
+    tmp_path,
+    monkeypatch,
+):
+    tasks, service, _, _ = _system(tmp_path)
+    before = {task.task_id for task in tasks.list()}
+    original_ensure = service.control_plane.ensure_stage_inventory
+
+    def interrupt_inventory(*_args, **_kwargs):
+        raise RuntimeError("stage-inventory initialization interrupted")
+
+    monkeypatch.setattr(
+        service.control_plane,
+        "ensure_stage_inventory",
+        interrupt_inventory,
+    )
+    with pytest.raises(RuntimeError, match="initialization interrupted"):
+        service.create(
+            project_id="alpha",
+            title="Recover Stage inventory",
+            description="Simulate a crash after frozen Task initialization",
+            total_token_budget=30_000,
+            total_cost_budget_usd=12,
+        )
+
+    created = next(task for task in tasks.list() if task.task_id not in before)
+    assert service.control_plane.get_task_state(created.task_id) is not None
+    assert service.control_plane.get_stage_inventory(created.task_id) is None
+
+    monkeypatch.setattr(
+        service.control_plane,
+        "ensure_stage_inventory",
+        original_ensure,
+    )
+    service.resume(created.task_id)
+    inventory = service.control_plane.get_stage_inventory(created.task_id)
+    assert inventory is not None
+    service.resume(created.task_id)
+    assert service.control_plane.get_stage_inventory(created.task_id) == inventory
 
 
 def test_attach_initializes_frozen_task_state_without_mapping_legacy_state(tmp_path):
@@ -563,6 +624,9 @@ def test_attach_initializes_frozen_task_state_without_mapping_legacy_state(tmp_p
     frozen = service.control_plane.get_task_state(legacy.task_id)
     assert frozen.status == TaskStatus.BACKLOG
     assert frozen.version == 1
+    inventory = service.control_plane.get_stage_inventory(legacy.task_id)
+    assert inventory is not None
+    assert inventory.contract is None
     assert tasks.get(legacy.task_id).state == TaskState.REQUIREMENTS
 
 

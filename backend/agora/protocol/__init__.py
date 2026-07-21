@@ -25,6 +25,10 @@ from .models import (
     NativeStateSnapshot,
     RunProtocolState,
     RunnerIsolationContract,
+    StageInventory,
+    StageInventoryContractBinding,
+    StageInventoryGroup,
+    StageInventoryItem,
 )
 from .state_machines import (
     GateStatus,
@@ -62,6 +66,10 @@ __all__ = [
     "RepairDecision",
     "RunProtocolState",
     "RunnerIsolationContract",
+    "StageInventory",
+    "StageInventoryContractBinding",
+    "StageInventoryGroup",
+    "StageInventoryItem",
     "CleanupFailurePlan",
     "StageStatus",
     "TaskStatus",

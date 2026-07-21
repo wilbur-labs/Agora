@@ -7,7 +7,10 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from agora.attention.models import AttentionItem
-from agora.control_plane.models import GateRecord, StageRecord
+from agora.control_plane.models import (
+    GateRecord,
+    StageRecord,
+)
 from agora.protocol.models import (
     Approval,
     ArtifactVersionRef,
@@ -15,6 +18,8 @@ from agora.protocol.models import (
     ProcessStatus,
     SchemaStatus,
     SemanticStageResult,
+    StageInventory,
+    StageInventoryItem,
     TransportStatus,
 )
 from agora.protocol.state_machines import TaskStatus
@@ -211,19 +216,37 @@ class RunWaitState(str, Enum):
     COMPATIBILITY_PROJECTION_PENDING = "compatibility_projection_pending"
 
 
-class UnifiedTaskProgress(StrictModel):
-    total_stages: int = Field(ge=0)
+class UnifiedStageGroupProgress(StrictModel):
+    group_key: str
+    sequence: int = Field(ge=1)
+    title: str
+    total_stages: int = Field(ge=1)
     completed_stages: int = Field(ge=0)
+    remaining_stage_keys: list[str]
+
+
+class UnifiedTaskProgress(StrictModel):
+    source: Literal["control_plane_stage_inventory", "unavailable"] = (
+        "control_plane_stage_inventory"
+    )
+    inventory_complete: bool
+    inventory_unavailable_reason: str | None = None
+    total_stages: int | None = Field(default=None, ge=0)
+    completed_stages: int | None = Field(default=None, ge=0)
     current_stage_key: str | None
+    current_stage_source: Literal["compatibility_plan"] | None = None
     completed_stage_keys: list[str]
     remaining_stage_keys: list[str]
+    groups: list[UnifiedStageGroupProgress]
 
 
 class UnifiedStageProjection(StrictModel):
     stage_key: str
+    group_key: str | None = None
     sequence: int | None = Field(default=None, ge=1)
     title: str | None = None
     runtime: str | None = None
+    inventory_stage: StageInventoryItem | None = None
     current: bool
     operational_state: StageState | None = None
     authoritative_stage: StageRecord | None = None
@@ -319,7 +342,7 @@ class UnifiedBudgetProjection(StrictModel):
 
 
 class UnifiedTaskProjection(StrictModel):
-    schema_version: Literal["2.0"] = "2.0"
+    schema_version: Literal["3.0"] = "3.0"
     snapshot_at: str
     task: TaskManifest
     task_state: TaskStatus | None
@@ -329,6 +352,8 @@ class UnifiedTaskProjection(StrictModel):
     task_state_lifecycle: Literal["stage_derivation_deferred"] = (
         "stage_derivation_deferred"
     )
+    stage_inventory: StageInventory | None = None
+    stage_inventory_unavailable_reason: str | None = None
     plan: OrchestrationPlan
     progress: UnifiedTaskProgress
     stages: list[UnifiedStageProjection]

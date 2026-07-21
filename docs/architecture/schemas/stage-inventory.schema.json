@@ -1,0 +1,224 @@
+{
+  "$defs": {
+    "StageInventoryContractBinding": {
+      "additionalProperties": false,
+      "properties": {
+        "contract_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Contract Id",
+          "type": "string"
+        },
+        "schema_version": {
+          "pattern": "^1\\.[0-9]+$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "sha256": {
+          "title": "Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "contract_id",
+        "schema_version",
+        "sha256"
+      ],
+      "title": "StageInventoryContractBinding",
+      "type": "object"
+    },
+    "StageInventoryGroup": {
+      "additionalProperties": false,
+      "properties": {
+        "group_key": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Group Key",
+          "type": "string"
+        },
+        "sequence": {
+          "maximum": 20,
+          "minimum": 1,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "stages": {
+          "items": {
+            "$ref": "#/$defs/StageInventoryItem"
+          },
+          "maxItems": 200,
+          "minItems": 1,
+          "title": "Stages",
+          "type": "array"
+        },
+        "title": {
+          "maxLength": 300,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "group_key",
+        "sequence",
+        "title",
+        "stages"
+      ],
+      "title": "StageInventoryGroup",
+      "type": "object"
+    },
+    "StageInventoryItem": {
+      "additionalProperties": false,
+      "properties": {
+        "gate_key": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Gate Key",
+          "type": "string"
+        },
+        "role": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Role",
+          "type": "string"
+        },
+        "runtime": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Runtime",
+          "type": "string"
+        },
+        "sequence": {
+          "maximum": 200,
+          "minimum": 1,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "stage_key": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Stage Key",
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 300,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "stage_key",
+        "gate_key",
+        "sequence",
+        "title",
+        "role",
+        "runtime"
+      ],
+      "title": "StageInventoryItem",
+      "type": "object"
+    }
+  },
+  "$id": "https://agora.local/schemas/v1/stage-inventory.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "content_sha256": {
+      "title": "Content Sha256",
+      "type": "string"
+    },
+    "contract": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StageInventoryContractBinding"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "groups": {
+      "items": {
+        "$ref": "#/$defs/StageInventoryGroup"
+      },
+      "maxItems": 20,
+      "minItems": 1,
+      "title": "Groups",
+      "type": "array"
+    },
+    "inventory_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Inventory Id",
+      "type": "string"
+    },
+    "methodology_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Methodology Id",
+      "type": "string"
+    },
+    "methodology_sha256": {
+      "title": "Methodology Sha256",
+      "type": "string"
+    },
+    "methodology_version": {
+      "pattern": "^\\d+\\.\\d+$",
+      "title": "Methodology Version",
+      "type": "string"
+    },
+    "plan_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Plan Id",
+      "type": "string"
+    },
+    "project_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Project Id",
+      "type": "string"
+    },
+    "provisional": {
+      "title": "Provisional",
+      "type": "boolean"
+    },
+    "schema_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "task_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Task Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "content_sha256",
+    "inventory_id",
+    "task_id",
+    "project_id",
+    "plan_id",
+    "methodology_id",
+    "methodology_version",
+    "methodology_sha256",
+    "provisional",
+    "groups"
+  ],
+  "title": "StageInventory",
+  "type": "object"
+}

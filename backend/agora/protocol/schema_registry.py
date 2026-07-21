@@ -15,6 +15,7 @@ from .models import (
     NativeStateSnapshot,
     RunProtocolState,
     RunnerIsolationContract,
+    StageInventory,
 )
 
 SchemaModel: TypeAlias = type[BaseModel]
@@ -29,6 +30,7 @@ SCHEMA_MODELS: dict[str, SchemaModel] = {
     "native-state-snapshot": NativeStateSnapshot,
     "run-protocol-state": RunProtocolState,
     "runner-isolation-contract": RunnerIsolationContract,
+    "stage-inventory": StageInventory,
 }
 
 

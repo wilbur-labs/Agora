@@ -39,6 +39,7 @@ the Pydantic models in `backend/agora/protocol/`:
 - `run-protocol-state.schema.json`
 - `gate-requirement.schema.json`
 - `runner-isolation-contract.schema.json`
+- `stage-inventory.schema.json`
 
 `scripts/export_protocol_schemas.py --check` fails when a checked-in schema
 does not match its executable model.

@@ -23,6 +23,17 @@ def initialize_control_plane_schema(db: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_control_tasks_project_status
             ON control_tasks(project_id, status, updated_at DESC);
 
+        CREATE TABLE IF NOT EXISTS control_stage_inventories (
+            task_id TEXT PRIMARY KEY REFERENCES tasks(task_id),
+            project_id TEXT NOT NULL,
+            inventory_id TEXT NOT NULL UNIQUE,
+            payload TEXT NOT NULL,
+            content_sha256 TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_control_stage_inventories_project
+            ON control_stage_inventories(project_id, created_at DESC);
+
         CREATE TABLE IF NOT EXISTS control_stages (
             task_id TEXT NOT NULL REFERENCES tasks(task_id),
             project_id TEXT NOT NULL,

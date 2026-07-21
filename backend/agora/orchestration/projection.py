@@ -27,6 +27,7 @@ from .models import (
     UnifiedAuditEvent,
     UnifiedBudgetProjection,
     UnifiedRunProjection,
+    UnifiedStageGroupProgress,
     UnifiedStageProjection,
     UnifiedTaskProgress,
     UnifiedTaskProjection,
@@ -106,6 +107,7 @@ class TaskProjectionStore:
             "SELECT * FROM control_tasks WHERE task_id = ?",
             (task_id,),
         ).fetchone()
+        stage_inventory = self.control_plane.stage_inventory_snapshot(db, task_id)
         plan_row = db.execute(
             "SELECT * FROM orchestration_plans WHERE task_id = ?",
             (task_id,),
@@ -144,17 +146,58 @@ class TaskProjectionStore:
         ]
         gates = [self.control_plane._gate_record(db, row) for row in gate_rows]
         stage_by_key = {item.stage_key: item for item in control_stages}
-        gate_by_stage = {item.stage_key: item for item in gates}
+        gate_by_stage = {}
+        for gate in gates:
+            if gate.stage_key in gate_by_stage:
+                raise OrchestrationConflictError(
+                    "Multiple formal Gates are bound to one inventory Stage"
+                )
+            gate_by_stage[gate.stage_key] = gate
         operational_by_key = {item.stage_key: item for item in operational_stages}
-        stage_keys = sorted(
-            set(operational_by_key) | set(stage_by_key),
-            key=lambda key: (
-                operational_by_key[key].sequence
-                if key in operational_by_key
-                else 1_000_000,
-                key,
-            ),
-        )
+        inventory_by_key = {}
+        group_by_stage = {}
+        inventory_position = {}
+        if stage_inventory is not None:
+            position = 0
+            for group in stage_inventory.groups:
+                for item in group.stages:
+                    position += 1
+                    inventory_by_key[item.stage_key] = item
+                    group_by_stage[item.stage_key] = group.group_key
+                    inventory_position[item.stage_key] = position
+            stage_keys = list(inventory_by_key)
+            inventory_keys = set(stage_keys)
+            if set(operational_by_key) != inventory_keys:
+                raise OrchestrationConflictError(
+                    "Pinned Stage inventory does not match the Plan Stage ledger"
+                )
+            if not set(stage_by_key).issubset(inventory_keys):
+                raise OrchestrationConflictError(
+                    "Formal Stage exists outside the immutable Task Stage inventory"
+                )
+            for stage_key, gate in gate_by_stage.items():
+                item = inventory_by_key.get(stage_key)
+                if item is None or item.gate_key != gate.gate_key:
+                    raise OrchestrationConflictError(
+                        "Formal Gate does not match the immutable Task Stage inventory"
+                    )
+            if (
+                plan.current_stage_key is not None
+                and plan.current_stage_key not in inventory_keys
+            ):
+                raise OrchestrationConflictError(
+                    "Current Plan Stage is outside the immutable Task Stage inventory"
+                )
+        else:
+            stage_keys = sorted(
+                set(operational_by_key) | set(stage_by_key),
+                key=lambda key: (
+                    operational_by_key[key].sequence
+                    if key in operational_by_key
+                    else 1_000_000,
+                    key,
+                ),
+            )
         if len(stage_keys) > MAX_CURRENT_RECORDS:
             raise OrchestrationConflictError(
                 "Unified Stage inventory exceeds the bounded Task projection"
@@ -166,6 +209,9 @@ class TaskProjectionStore:
                 stage_by_key.get(key),
                 gate_by_stage.get(key),
                 plan.current_stage_key,
+                inventory_by_key.get(key),
+                group_by_stage.get(key),
+                inventory_position.get(key),
             )
             for key in stage_keys
         ]
@@ -229,20 +275,56 @@ class TaskProjectionStore:
             if item.authoritative_stage is not None
             and item.authoritative_stage.status == StageStatus.COMPLETED
         ]
-        plan_stage_keys = [item.stage_key for item in operational_stages]
-        progress = UnifiedTaskProgress(
-            total_stages=len(plan_stage_keys),
-            completed_stages=len(
-                [key for key in plan_stage_keys if key in completed_stage_keys]
-            ),
-            current_stage_key=plan.current_stage_key,
-            completed_stage_keys=[
-                key for key in plan_stage_keys if key in completed_stage_keys
-            ],
-            remaining_stage_keys=[
-                key for key in plan_stage_keys if key not in completed_stage_keys
-            ],
-        )
+        if stage_inventory is not None:
+            completed = set(completed_stage_keys)
+            progress = UnifiedTaskProgress(
+                inventory_complete=True,
+                total_stages=len(stage_keys),
+                completed_stages=len([key for key in stage_keys if key in completed]),
+                current_stage_key=plan.current_stage_key,
+                current_stage_source=(
+                    "compatibility_plan" if plan.current_stage_key is not None else None
+                ),
+                completed_stage_keys=[key for key in stage_keys if key in completed],
+                remaining_stage_keys=[key for key in stage_keys if key not in completed],
+                groups=[
+                    UnifiedStageGroupProgress(
+                        group_key=group.group_key,
+                        sequence=group.sequence,
+                        title=group.title,
+                        total_stages=len(group.stages),
+                        completed_stages=len(
+                            [
+                                item
+                                for item in group.stages
+                                if item.stage_key in completed
+                            ]
+                        ),
+                        remaining_stage_keys=[
+                            item.stage_key
+                            for item in group.stages
+                            if item.stage_key not in completed
+                        ],
+                    )
+                    for group in stage_inventory.groups
+                ],
+            )
+        else:
+            progress = UnifiedTaskProgress(
+                source="unavailable",
+                inventory_complete=False,
+                inventory_unavailable_reason=(
+                    "Grouped Stage inventory has not been initialized; run task resume "
+                    "to perform explicit recovery."
+                ),
+                current_stage_key=plan.current_stage_key,
+                current_stage_source=(
+                    "compatibility_plan" if plan.current_stage_key is not None else None
+                ),
+                completed_stage_keys=[],
+                remaining_stage_keys=[],
+                groups=[],
+            )
         required_actions = self._required_human_actions(
             attention,
             plan.state,
@@ -313,6 +395,15 @@ class TaskProjectionStore:
                     "to perform explicit recovery."
                 )
             ),
+            stage_inventory=stage_inventory,
+            stage_inventory_unavailable_reason=(
+                None
+                if stage_inventory is not None
+                else (
+                    "Grouped Stage inventory has not been initialized; run task resume "
+                    "to perform explicit recovery."
+                )
+            ),
             plan=plan,
             progress=progress,
             stages=stages,
@@ -342,12 +433,29 @@ class TaskProjectionStore:
         authoritative,
         gate,
         current_stage_key,
+        inventory_stage,
+        group_key,
+        inventory_position,
     ) -> UnifiedStageProjection:
         return UnifiedStageProjection(
             stage_key=stage_key,
-            sequence=operational.sequence if operational else None,
-            title=operational.title if operational else None,
-            runtime=operational.adapter if operational else None,
+            group_key=group_key,
+            sequence=(
+                inventory_position
+                if inventory_position is not None
+                else (operational.sequence if operational else None)
+            ),
+            title=(
+                inventory_stage.title
+                if inventory_stage is not None
+                else (operational.title if operational else None)
+            ),
+            runtime=(
+                inventory_stage.runtime
+                if inventory_stage is not None
+                else (operational.adapter if operational else None)
+            ),
+            inventory_stage=inventory_stage,
             current=stage_key == current_stage_key,
             operational_state=operational.state if operational else None,
             authoritative_stage=authoritative,

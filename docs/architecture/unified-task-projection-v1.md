@@ -48,10 +48,19 @@ authoritative `next_safe_action` remains the Control Plane Gate-derived value.
 The old orchestration hint remains visible under `compatibility_next_action` and
 is explicitly non-authoritative.
 
-Version `2.0` also exposes
+Version `2.0` also exposed
 `task_state_lifecycle=stage_derivation_deferred`. Frozen state transitions are
 explicit in this increment; projected Stage completion does not silently derive
 Task completion until the complete grouped Stage inventory exists.
+
+Grouped Stage inventory schema `1.0` now supplies that complete identity and
+ordering boundary. Unified projection schema `3.0` reads the sealed inventory
+for Stage grouping, order, title, role, runtime, and total progress. It never
+uses `orchestration_stages` as the Stage inventory authority. Formal completion
+still requires a completed Control Plane Stage, and the compatibility Plan's
+current Stage is labeled as compatibility-sourced until lifecycle wiring is
+implemented. A missing inventory makes total progress explicitly unavailable
+and directs explicit `task resume` recovery.
 
 Formal progress counts only Control Plane Stages in `completed` state. A passed
 process, compatibility Run, or Gate cannot increase the completed count by
@@ -100,6 +109,7 @@ unavailable rather than zero. Provider-specific exact usage remains deferred.
 
 The future authenticated HTTP projection should reuse this read model rather
 than construct another status interpretation. Frozen Task-state persistence is
-now supplied by `control_tasks`; grouped Stage-driven lifecycle wiring, dynamic
-routing, exact provider usage, the authoritative full AI-DLC graph, and Task
-Workbench UI remain separate reviewed increments.
+supplied by `control_tasks`, and grouped Stage identity is supplied by
+`control_stage_inventories`; Stage-driven lifecycle wiring, dynamic routing,
+exact provider usage, the authoritative full AI-DLC graph, and Task Workbench UI
+remain separate reviewed increments.

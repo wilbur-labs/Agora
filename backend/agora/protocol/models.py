@@ -78,6 +78,74 @@ class HashSealedModel(ProtocolModel):
         return self
 
 
+class StageInventoryContractBinding(ProtocolModel):
+    contract_id: StableId
+    schema_version: ProtocolVersion
+    sha256: Sha256Hex
+
+
+class StageInventoryItem(ProtocolModel):
+    stage_key: StableId
+    gate_key: StableId
+    sequence: int = Field(ge=1, le=200)
+    title: Annotated[str, Field(min_length=1, max_length=300)]
+    role: Annotated[str, Field(min_length=1, max_length=128)]
+    runtime: StableId
+
+
+class StageInventoryGroup(ProtocolModel):
+    group_key: StableId
+    sequence: int = Field(ge=1, le=20)
+    title: Annotated[str, Field(min_length=1, max_length=300)]
+    stages: list[StageInventoryItem] = Field(min_length=1, max_length=200)
+
+    @model_validator(mode="after")
+    def validate_stage_order_and_identity(self):
+        sequences = [item.sequence for item in self.stages]
+        if sequences != list(range(1, len(self.stages) + 1)):
+            raise ValueError("Stage inventory sequences must be contiguous and ordered")
+        stage_keys = [item.stage_key for item in self.stages]
+        gate_keys = [item.gate_key for item in self.stages]
+        if len(stage_keys) != len(set(stage_keys)):
+            raise ValueError("Stage inventory stage keys must be unique within a group")
+        if len(gate_keys) != len(set(gate_keys)):
+            raise ValueError("Stage inventory gate keys must be unique within a group")
+        return self
+
+
+class StageInventory(HashSealedModel):
+    schema_version: Literal["1.0"] = "1.0"
+    inventory_id: StableId
+    task_id: StableId
+    project_id: StableId
+    plan_id: StableId
+    methodology_id: StableId
+    methodology_version: Annotated[str, Field(pattern=r"^\d+\.\d+$")]
+    methodology_sha256: Sha256Hex
+    provisional: bool
+    contract: StageInventoryContractBinding | None = None
+    groups: list[StageInventoryGroup] = Field(min_length=1, max_length=20)
+
+    @model_validator(mode="after")
+    def validate_complete_grouped_inventory(self):
+        sequences = [item.sequence for item in self.groups]
+        if sequences != list(range(1, len(self.groups) + 1)):
+            raise ValueError("Stage group sequences must be contiguous and ordered")
+        group_keys = [item.group_key for item in self.groups]
+        if len(group_keys) != len(set(group_keys)):
+            raise ValueError("Stage inventory group keys must be unique")
+        stages = [stage for group in self.groups for stage in group.stages]
+        if len(stages) > 200:
+            raise ValueError("Stage inventory may contain at most 200 Stages")
+        stage_keys = [item.stage_key for item in stages]
+        gate_keys = [item.gate_key for item in stages]
+        if len(stage_keys) != len(set(stage_keys)):
+            raise ValueError("Stage inventory stage keys must be unique")
+        if len(gate_keys) != len(set(gate_keys)):
+            raise ValueError("Stage inventory gate keys must be unique")
+        return self
+
+
 class RuntimeName(str, Enum):
     AGORA = "agora"
     CODEX = "codex"

@@ -11,7 +11,10 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from agora.control_plane.models import ProtocolRunRecord, RunSettlementReceipt
+from agora.control_plane.models import (
+    ProtocolRunRecord,
+    RunSettlementReceipt,
+)
 from agora.control_plane.store import (
     ControlPlaneConflictError,
     ControlPlaneNotFoundError,
@@ -20,13 +23,18 @@ from agora.control_plane.store import (
 )
 from agora.projects import ProjectRegistry
 from agora.protocol.agent_adapter import AgentAdapterResult
-from agora.protocol.hashing import canonical_json_bytes
+from agora.protocol.hashing import canonical_json_bytes, seal_model_payload
+from agora.protocol.models import StageInventory
 from agora.protocol.state_machines import StageStatus
 from agora.tasks.models import CreateTaskRequest, TaskBudget, TaskManifest, TaskRisk, utc_now
 from agora.tasks.store import TaskStore
 
 from .contracts import TaskContract, canonical_contract_json, contract_sha256
-from .methodology import FOUNDATION_METHODOLOGY, MethodologyDefinition
+from .methodology import (
+    FOUNDATION_METHODOLOGY,
+    MethodologyDefinition,
+    methodology_sha256,
+)
 from .models import (
     Measurement,
     OrchestrationRun,
@@ -161,6 +169,7 @@ class TaskOrchestrationService:
             actor=actor,
         )
         self.control_plane.ensure_task_state(task.task_id, actor=actor)
+        self._ensure_grouped_stage_inventory(task.task_id, actor=actor)
         return task
 
     def attach(
@@ -179,6 +188,7 @@ class TaskOrchestrationService:
             actor=actor,
         )
         self.control_plane.ensure_task_state(task_id, actor=actor)
+        self._ensure_grouped_stage_inventory(task_id, actor=actor)
         return plan
 
     def status(self, task_id: str) -> TaskOrchestrationStatus:
@@ -296,6 +306,7 @@ class TaskOrchestrationService:
             raise OrchestrationValidationError(
                 "Pinned Task contract hash does not match its content"
             )
+        self._ensure_grouped_stage_inventory(task_id, actor="orchestrator")
         status = self.store.status(task_id)
         if status.plan.state != PlanState.ACTIVE:
             raise OrchestrationConflictError(f"Plan is {status.plan.state.value}, not active")
@@ -478,6 +489,7 @@ class TaskOrchestrationService:
 
     def resume(self, task_id: str) -> TaskOrchestrationStatus:
         self.control_plane.ensure_task_state(task_id, actor="reconciler")
+        self._ensure_grouped_stage_inventory(task_id, actor="reconciler")
         status = self.store.status(task_id)
         running = [run for run in status.runs if run.state == RunState.RUNNING]
         for run in running:
@@ -803,10 +815,15 @@ or unreviewable assumptions must be explicit. Process success alone is not seman
         if missing:
             raise OrchestrationConflictError(f"Required runtimes are unavailable: {sorted(set(missing))}")
 
-    def _validate_contract_alignment(self, contract: TaskContract) -> None:
-        definitions = {stage.stage_key: stage for stage in self.methodology.stages}
+    def _validate_contract_alignment(
+        self,
+        contract: TaskContract,
+        methodology: MethodologyDefinition | None = None,
+    ) -> None:
+        methodology = methodology or self.methodology
+        definitions = {stage.stage_key: stage for stage in methodology.stages}
         supplied_keys = [stage.stage_key for stage in contract.workflow]
-        expected_keys = [stage.stage_key for stage in self.methodology.stages]
+        expected_keys = [stage.stage_key for stage in methodology.stages]
         if supplied_keys != expected_keys:
             raise OrchestrationValidationError(
                 "Task contract workflow must match the pinned methodology stage order"
@@ -823,6 +840,89 @@ or unreviewable assumptions must be explicit. Process success alone is not seman
                     f"Task contract stage {stage.stage_key} runtime does not match "
                     "the pinned methodology"
                 )
+
+    def _ensure_grouped_stage_inventory(
+        self,
+        task_id: str,
+        *,
+        actor: str,
+    ) -> StageInventory:
+        task = self.tasks.get(task_id)
+        if task is None:
+            raise OrchestrationConflictError("Task not found")
+        plan = self.store.require_plan(task_id)
+        methodology = self.store.methodology(plan.plan_id)
+        digest = methodology_sha256(methodology)
+        if (
+            plan.task_id != task.task_id
+            or plan.project_id != task.project_id
+            or plan.methodology_id != methodology.methodology_id
+            or plan.methodology_version != methodology.version
+            or plan.methodology_sha256 != digest
+            or plan.provisional != methodology.provisional
+        ):
+            raise OrchestrationValidationError(
+                "Pinned methodology does not match its Plan ledger binding"
+            )
+
+        contract_binding = None
+        contract_payload = task.metadata.get("task_contract")
+        if contract_payload is not None:
+            contract = TaskContract.model_validate(contract_payload)
+            contract_digest = contract_sha256(contract)
+            if (
+                task.metadata.get("task_contract_id") != contract.contract_id
+                or task.metadata.get("task_contract_schema_version")
+                != contract.schema_version
+                or task.metadata.get("task_contract_sha256") != contract_digest
+            ):
+                raise OrchestrationValidationError(
+                    "Pinned Task contract does not match its Task ledger binding"
+                )
+            self._validate_contract_alignment(contract, methodology)
+            contract_binding = {
+                "contract_id": contract.contract_id,
+                "schema_version": contract.schema_version,
+                "sha256": contract_digest,
+            }
+
+        payload = {
+            "schema_version": "1.0",
+            "inventory_id": f"inventory:{plan.plan_id}",
+            "task_id": task.task_id,
+            "project_id": task.project_id,
+            "plan_id": plan.plan_id,
+            "methodology_id": methodology.methodology_id,
+            "methodology_version": methodology.version,
+            "methodology_sha256": digest,
+            "provisional": methodology.provisional,
+            "contract": contract_binding,
+            "groups": [
+                {
+                    "group_key": plan.plan_id,
+                    "sequence": 1,
+                    "title": (
+                        f"{methodology.methodology_id}@{methodology.version} "
+                        "pinned workflow"
+                    ),
+                    "stages": [
+                        {
+                            "stage_key": stage.stage_key,
+                            "gate_key": f"gate:{stage.stage_key}",
+                            "sequence": sequence,
+                            "title": stage.title,
+                            "role": stage.role,
+                            "runtime": stage.adapter,
+                        }
+                        for sequence, stage in enumerate(methodology.stages, start=1)
+                    ],
+                }
+            ],
+        }
+        inventory = StageInventory.model_validate(
+            seal_model_payload(StageInventory, payload)
+        )
+        return self.control_plane.ensure_stage_inventory(inventory, actor=actor)
 
     @staticmethod
     def _stage_contract_context(contract: TaskContract, stage_key: str) -> str:

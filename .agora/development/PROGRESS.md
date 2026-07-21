@@ -4,16 +4,17 @@ Current branch: `main`
 
 Current recovery baseline (2026-07-21):
 
-- Local `main` and `origin/main` are synchronized through the reviewed frozen
-  Task-state persistence commit containing this snapshot.
+- Local `main` and `origin/main` are synchronized through the reviewed grouped
+  Stage-inventory commit containing this snapshot.
 - Active program: the ordered Agora Control Plane transformation. The first two
   stages (protocol/domain freeze and Control Plane v2 persistence/Registry) are
   complete; the bounded API, concrete Task contract, and Runner/Agent Adapter
   are also reviewed foundations. The sealed Run/Gate settlement boundary and
   explicit CLI orchestration wiring and read-only unified Task projection are
-  reviewed. Frozen Task-state persistence is the latest reviewed increment.
-  Work-weighted program completion is approximately 43% to 45%; this remains an
-  engineering estimate until the grouped Stage inventory is complete.
+  reviewed. Frozen Task-state persistence and the grouped Stage inventory are
+  the latest reviewed increments. The work-weighted program estimate must now
+  be recalculated against the grouped inventory before another percentage is
+  recorded.
   The historical 11-stage label and milestone-count estimate below predate the
   current grouped stage correspondence and must be normalized before they are
   used as a current count.
@@ -46,9 +47,9 @@ Current recovery baseline (2026-07-21):
 - The user explicitly approved Plan `plan_cf698b72d0c548ff99b763fef8e6c75b`;
   the authoritative Plan is now `ready_for_implementation` and its approval
   event is recorded in `data/agora.db`.
-- The active increment adds a separate `control_tasks` state projection and
-  never maps the 0.5 manifest enum into the frozen state machine. Do not begin
-  Task Workbench UI work.
+- The latest increment adds the immutable `control_stage_inventories` authority
+  without mapping compatibility Plan state into the frozen Task state machine.
+  Do not begin Task Workbench UI work.
 
 ## 2026-07-18 — Latest transformation requirements recovery
 
@@ -676,6 +677,90 @@ UI stays deferred.
 Add the complete grouped Stage inventory before deriving Task lifecycle
 transitions from Stage/Gate state. Do not infer lifecycle completion from the
 current partial Stage projection. HTTP and UI remain deferred.
+
+## 2026-07-21 - Grouped Stage inventory (complete)
+
+### Scope
+
+- [x] Added one immutable, canonical hash-sealed grouped Stage inventory per
+  frozen Task without reading Stage identity or order from compatibility rows.
+- [x] Bound the inventory to Task, project, Plan, pinned methodology identity,
+  version, SHA-256, provisional status, and the concrete Task-contract hash when
+  present.
+- [x] Grouped the current workflow by its pinned Plan and persisted its complete
+  ordered Stage/Gate/title/role/runtime definition without claiming the
+  provisional foundation is the missing authoritative AI-DLC graph.
+- [x] Required frozen Task-state initialization first; made identical inventory
+  initialization idempotent, rejected conflicting definitions, and committed
+  the sealed row plus mirrored audit events atomically.
+- [x] Restricted formal Stage/Gate creation to the immutable inventory when one
+  exists while preserving legacy Registry behavior for Tasks without one.
+- [x] Added explicit create, attach, `task next`, and idempotent `task resume`
+  initialization/recovery from the Plan's stored methodology payload and hash.
+- [x] Moved unified Stage identity, grouping, order, runtime, and total progress
+  to the Control Plane inventory in projection schema `3.0`; formal completion
+  still counts only authoritative completed Stages.
+- [x] Kept current-Stage selection explicitly compatibility-sourced and left
+  frozen Task lifecycle derivation, authenticated HTTP, and UI deferred.
+- [x] Added hash, ordering, uniqueness, scope, idempotency, conflict,
+  concurrency, rollback, tamper, Stage/Gate binding, recovery, projection, CLI,
+  and Registry regressions; the unchanged HTTP boundary remains covered by its
+  existing acceptance suite.
+- [x] Run the complete backend verification set and Schema consistency checks.
+- [x] Obtain Kiro protocol/methodology review and independent Claude Code
+  correctness/safety review; fix all actionable findings.
+- [x] Commit and push only after both review gates approve.
+
+### Current verification log
+
+- Focused frozen Task-state, grouped inventory, orchestration, Registry, and
+  authenticated HTTP API suite: 104 passed with one existing Starlette/httpx
+  deprecation warning.
+- An initial run using `D:\\tmp` never reached test bodies because the sandbox
+  denied basetemp creation; the repository-local isolated rerun succeeded.
+- Repository-local full-suite self-audit reached 410 passes and exposed five
+  known environment-only failures: two app-lifespan writes to the root database,
+  two tests using literal `/tmp`, and one non-Git fixture nested under the Git
+  checkout. No grouped-inventory test failed.
+- Pre-review isolated system-Temp non-integration backend suite excluding
+  static-export-dependent `tests/test_web_ui.py`: 415 passed, 18 deselected,
+  with only the existing Starlette/httpx and Windows Proactor warnings.
+- Added `stage-inventory.schema.json` to the deterministic protocol Schema
+  registry. Protocol Schema export check, isolated Python compile,
+  `task status --help` smoke, and `git diff --check`: passed before review.
+- Kiro protocol/methodology review: `APPROVE`; no high/medium findings. Its low
+  notes identified private snapshot-parser coupling, untested projection
+  divergence branches, and minor wording; no authority or lifecycle boundary
+  defect was found.
+- Independent Claude Code correctness/safety review: `APPROVE`; no high/medium
+  findings. It requested hardening tests for four projection divergence guards,
+  projection-path tamper detection, and the cross-group 200-Stage bound.
+- Added a public caller-owned-snapshot inventory reader, all requested
+  corruption/bound/tamper regressions, and corrected the HTTP-test wording.
+  Post-review focused protocol/inventory/orchestration suite: 108 passed.
+- Targeted Kiro and Claude review-fix confirmations: both `APPROVE`; no
+  high/medium findings. Their remaining low notes identified a duplicate-Gate
+  read-model hardening opportunity and an unavailable-source label nuance.
+- Rejected duplicate formal Gates for one inventory Stage before projection
+  dictionary construction and report `progress.source=unavailable` when no
+  inventory exists. Added both regressions; final focused suite: 109 passed.
+- Final narrow Kiro protocol/methodology confirmation: `APPROVE`; no blocking
+  findings and no high/medium issues.
+- Final narrow independent Claude Code correctness/safety confirmation:
+  `APPROVE`; no blocking findings and no high/medium issues.
+- Final post-review isolated system-Temp non-integration backend suite excluding
+  `tests/test_web_ui.py`: 422 passed, 18 deselected, with only the existing
+  Starlette/httpx and Windows Proactor warnings. Protocol Schema export check,
+  isolated Python compile, `task status --help` smoke, and staged diff check all
+  passed.
+
+### Next safe action
+
+Derive frozen Task lifecycle transitions from the complete grouped inventory
+plus authoritative Stage, Gate, Attention, invalidation, and reconciliation
+state as a separate bounded increment. Do not infer transitions from process
+exit or compatibility Plan state. Authenticated HTTP inventory fields and UI
+remain deferred.
 
 ## 2026-07-13
 

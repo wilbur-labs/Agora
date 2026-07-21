@@ -277,7 +277,7 @@ async def test_unified_projection_reports_formal_progress_usage_and_human_action
 
     projection = service.unified_status(task.task_id)
 
-    assert projection.schema_version == "2.0"
+    assert projection.schema_version == "3.0"
     assert projection.task.task_id == task.task_id
     assert projection.task.state == TaskState.REQUIREMENTS
     assert projection.task_state_source == "control_plane"
@@ -285,9 +285,16 @@ async def test_unified_projection_reports_formal_progress_usage_and_human_action
     assert projection.task_state_version == 1
     assert projection.task_state_unavailable_reason is None
     assert projection.task_state_lifecycle == "stage_derivation_deferred"
+    assert projection.stage_inventory is not None
+    assert projection.stage_inventory_unavailable_reason is None
+    assert projection.progress.source == "control_plane_stage_inventory"
+    assert projection.progress.inventory_complete is True
     assert projection.progress.total_stages == 3
     assert projection.progress.completed_stages == 3
     assert projection.progress.remaining_stage_keys == []
+    assert len(projection.progress.groups) == 1
+    assert projection.progress.groups[0].completed_stages == 3
+    assert all(stage.inventory_stage is not None for stage in projection.stages)
     assert all(
         stage.authoritative_stage.status == StageStatus.COMPLETED
         for stage in projection.stages
@@ -314,6 +321,116 @@ async def test_unified_projection_reports_formal_progress_usage_and_human_action
         "task",
         "control_plane",
     }
+
+
+def test_unified_projection_fails_explicitly_when_stage_inventory_is_interrupted(
+    tmp_path,
+):
+    tasks, service, _, task = _system(tmp_path)
+    with tasks._transaction() as db:
+        db.execute(
+            "DELETE FROM control_stage_inventories WHERE task_id = ?",
+            (task.task_id,),
+        )
+
+    projection = service.unified_status(task.task_id)
+
+    assert projection.stage_inventory is None
+    assert "task resume" in projection.stage_inventory_unavailable_reason
+    assert projection.progress.source == "unavailable"
+    assert projection.progress.inventory_complete is False
+    assert projection.progress.total_stages is None
+    assert projection.progress.completed_stages is None
+    assert projection.progress.completed_stage_keys == []
+    assert projection.progress.remaining_stage_keys == []
+    assert all(stage.inventory_stage is None for stage in projection.stages)
+
+
+@pytest.mark.parametrize(
+    ("corruption", "message"),
+    [
+        ("operational_stage_missing", "Plan Stage ledger"),
+        ("formal_stage_outside", "Formal Stage exists outside"),
+        ("formal_gate_mismatch", "Formal Gate does not match"),
+        ("duplicate_formal_gates", "Multiple formal Gates"),
+        ("current_stage_outside", "Current Plan Stage is outside"),
+    ],
+)
+def test_unified_projection_fails_closed_on_stage_inventory_divergence(
+    tmp_path,
+    corruption,
+    message,
+):
+    tasks, service, _, task = _system(tmp_path)
+    now = utc_now()
+    if corruption in {"formal_gate_mismatch", "duplicate_formal_gates"}:
+        service.control_plane.ensure_stage(
+            task_id=task.task_id,
+            stage_key="solution_design",
+            gate_key="gate:solution_design",
+        )
+    with tasks._transaction() as db:
+        plan_id = db.execute(
+            "SELECT plan_id FROM orchestration_plans WHERE task_id = ?",
+            (task.task_id,),
+        ).fetchone()["plan_id"]
+        if corruption == "operational_stage_missing":
+            db.execute(
+                "DELETE FROM orchestration_stages WHERE plan_id = ? AND stage_key = ?",
+                (plan_id, "methodology_review"),
+            )
+        elif corruption == "formal_stage_outside":
+            db.execute(
+                """
+                INSERT INTO control_stages (
+                    task_id, project_id, stage_key, gate_key, status,
+                    version, created_at, updated_at
+                ) VALUES (?, ?, 'invented', 'gate:invented', 'pending', 1, ?, ?)
+                """,
+                (task.task_id, task.project_id, now, now),
+            )
+        elif corruption == "formal_gate_mismatch":
+            db.execute(
+                """
+                INSERT INTO control_gates (
+                    task_id, project_id, gate_key, stage_key, status,
+                    version, created_at, updated_at
+                ) VALUES (?, ?, 'gate:wrong', 'solution_design', 'pending', 1, ?, ?)
+                """,
+                (task.task_id, task.project_id, now, now),
+            )
+        elif corruption == "duplicate_formal_gates":
+            for gate_key in ("gate:aaa", "gate:solution_design"):
+                db.execute(
+                    """
+                    INSERT INTO control_gates (
+                        task_id, project_id, gate_key, stage_key, status,
+                        version, created_at, updated_at
+                    ) VALUES (?, ?, ?, 'solution_design', 'pending', 1, ?, ?)
+                    """,
+                    (task.task_id, task.project_id, gate_key, now, now),
+                )
+        else:
+            db.execute(
+                "UPDATE orchestration_plans SET current_stage_key = 'invented' "
+                "WHERE plan_id = ?",
+                (plan_id,),
+            )
+
+    with pytest.raises(OrchestrationConflictError, match=message):
+        service.unified_status(task.task_id)
+
+
+def test_unified_projection_revalidates_persisted_stage_inventory_hash(tmp_path):
+    tasks, service, _, task = _system(tmp_path)
+    with tasks._transaction() as db:
+        db.execute(
+            "UPDATE control_stage_inventories SET content_sha256 = ? WHERE task_id = ?",
+            ("f" * 64, task.task_id),
+        )
+
+    with pytest.raises(ValueError, match="ledger binding"):
+        service.unified_status(task.task_id)
 
 
 @pytest.mark.asyncio
@@ -429,7 +546,9 @@ async def test_cli_exposes_unified_projection_without_changing_legacy_status(
         ["status", task.task_id, "--protocol-v1", "--json", "--limit", "1"]
     ) == 0
     unified = json.loads(capsys.readouterr().out)
-    assert unified["schema_version"] == "2.0"
+    assert unified["schema_version"] == "3.0"
+    assert unified["progress"]["source"] == "control_plane_stage_inventory"
+    assert unified["progress"]["inventory_complete"] is True
     assert unified["task_state"] == "backlog"
     assert unified["task_state_source"] == "control_plane"
     assert unified["task_state_version"] == 1

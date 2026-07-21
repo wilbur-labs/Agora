@@ -299,10 +299,17 @@ def _print_unified_status(status) -> None:
         f"[{status.plan.state.value}]"
     )
     progress = status.progress
-    print(
-        f"Progress: {progress.completed_stages}/{progress.total_stages} formal Stages "
-        f"completed; current={progress.current_stage_key or 'none'}"
-    )
+    if progress.inventory_complete:
+        print(
+            f"Progress: {progress.completed_stages}/{progress.total_stages} formal Stages "
+            f"completed; current={progress.current_stage_key or 'none'} "
+            f"current_source={progress.current_stage_source or 'unavailable'}"
+        )
+    else:
+        print(
+            "Progress: unavailable; "
+            f"{progress.inventory_unavailable_reason or 'Stage inventory is unavailable.'}"
+        )
     for stage in status.stages:
         authoritative = (
             stage.authoritative_stage.status.value
@@ -312,7 +319,8 @@ def _print_unified_status(status) -> None:
         gate = stage.gate.status.value if stage.gate is not None else "unconfigured"
         marker = "*" if stage.current else " "
         print(
-            f"{marker} {stage.stage_key:<22} formal={authoritative:<23} "
+            f"{marker} {stage.stage_key:<22} group={stage.group_key or 'unavailable'} "
+            f"formal={authoritative:<23} "
             f"gate={gate:<10} runtime={stage.runtime or 'unassigned'}"
         )
     if status.runs:
