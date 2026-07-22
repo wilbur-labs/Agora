@@ -14,6 +14,7 @@ from pydantic import ValidationError
 from agora.control_plane.models import (
     ProtocolRunRecord,
     RunSettlementReceipt,
+    TaskTransitionCause,
 )
 from agora.control_plane.store import (
     ControlPlaneConflictError,
@@ -25,7 +26,7 @@ from agora.projects import ProjectRegistry
 from agora.protocol.agent_adapter import AgentAdapterResult
 from agora.protocol.hashing import canonical_json_bytes, seal_model_payload
 from agora.protocol.models import StageInventory
-from agora.protocol.state_machines import StageStatus
+from agora.protocol.state_machines import StageStatus, TaskStatus
 from agora.tasks.models import CreateTaskRequest, TaskBudget, TaskManifest, TaskRisk, utc_now
 from agora.tasks.store import TaskStore
 
@@ -509,6 +510,11 @@ class TaskOrchestrationService:
                 run.run_id,
                 reason="Recovered a run whose process was no longer active",
             )
+        self.control_plane.reconcile_task_lifecycle(
+            task_id,
+            cause=TaskTransitionCause.RECONCILIATION,
+            actor="reconciler",
+        )
         return self.store.status(task_id)
 
     def _resume_protocol_run(
@@ -693,6 +699,23 @@ class TaskOrchestrationService:
         return self.store.retry(task_id, stage_key, actor=actor)
 
     def approve(self, task_id: str, *, actor: str, reason: str):
+        plan = self.store.require_plan(task_id)
+        if plan.state not in {
+            PlanState.AWAITING_APPROVAL,
+            PlanState.READY_FOR_IMPLEMENTATION,
+        }:
+            raise OrchestrationConflictError("Plan is not awaiting human approval")
+        task_state = self.control_plane.get_task_state(task_id)
+        if task_state is not None and task_state.status == TaskStatus.NEEDS_REVIEW:
+            self.control_plane.transition_task_state(
+                task_id,
+                TaskStatus.COMPLETED,
+                expected_version=task_state.version,
+                cause=TaskTransitionCause.USER_ACTION,
+                actor=actor,
+                reason="User explicitly approved the reviewed Task",
+                operation_key=f"task-approve:{task_id}:{task_state.version}",
+            )
         return self.store.approve(task_id, actor=actor, reason=reason)
 
     def _build_prompt(self, task: TaskManifest, status: TaskOrchestrationStatus, stage_key: str) -> str:

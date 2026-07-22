@@ -10,7 +10,7 @@ from datetime import datetime
 from agora.attention.models import AttentionState
 from agora.attention.store import AttentionStore
 from agora.control_plane.models import ProtocolRunRecord
-from agora.control_plane.store import ControlPlaneStore
+from agora.control_plane.store import ControlPlaneConflictError, ControlPlaneStore
 from agora.protocol.models import Approval, Artifact, Evidence
 from agora.protocol.state_machines import StageStatus
 from agora.tasks.models import utc_now
@@ -108,6 +108,24 @@ class TaskProjectionStore:
             (task_id,),
         ).fetchone()
         stage_inventory = self.control_plane.stage_inventory_snapshot(db, task_id)
+        task_state = (
+            self.control_plane._task_record(control_task_row)
+            if control_task_row is not None
+            else None
+        )
+        try:
+            lifecycle_decision = self.control_plane.task_lifecycle_decision_snapshot(
+                db,
+                task_id,
+            )
+        except ControlPlaneConflictError as exc:
+            raise OrchestrationConflictError(str(exc)) from exc
+        if task_state is None or lifecycle_decision is None:
+            task_state_lifecycle = "unavailable"
+        elif task_state.status == lifecycle_decision.target_status:
+            task_state_lifecycle = "control_plane_managed"
+        else:
+            task_state_lifecycle = "reconciliation_required"
         plan_row = db.execute(
             "SELECT * FROM orchestration_plans WHERE task_id = ?",
             (task_id,),
@@ -379,11 +397,7 @@ class TaskProjectionStore:
         return UnifiedTaskProjection(
             snapshot_at=snapshot_at,
             task=task,
-            task_state=(
-                self.control_plane._task_record(control_task_row).status
-                if control_task_row is not None
-                else None
-            ),
+            task_state=task_state.status if task_state is not None else None,
             task_state_version=(
                 control_task_row["version"] if control_task_row is not None else None
             ),
@@ -395,6 +409,8 @@ class TaskProjectionStore:
                     "to perform explicit recovery."
                 )
             ),
+            task_state_lifecycle=task_state_lifecycle,
+            task_lifecycle_decision=lifecycle_decision,
             stage_inventory=stage_inventory,
             stage_inventory_unavailable_reason=(
                 None

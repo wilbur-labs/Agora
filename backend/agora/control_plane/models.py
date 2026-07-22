@@ -16,6 +16,7 @@ from agora.protocol.models import (
     NonBlank,
     ProtocolModel,
     RunProtocolState,
+    Sha256Hex,
     StableId,
 )
 from agora.protocol.agent_adapter import AdapterErrorCode
@@ -27,6 +28,21 @@ class TaskTransitionCause(str, Enum):
     ORCHESTRATION = "orchestration"
     RECONCILIATION = "reconciliation"
     INVALIDATION = "invalidation"
+
+
+class TaskLifecycleReason(str, Enum):
+    INVENTORY_READY = "inventory_ready"
+    WORK_ACTIVE = "work_active"
+    STAGE_OR_GATE_BLOCKED = "stage_or_gate_blocked"
+    RECONCILIATION_REQUIRED = "reconciliation_required"
+    INVALIDATION_REQUIRED = "invalidation_required"
+    BLOCKING_ATTENTION = "blocking_attention"
+    REVIEW_REQUIRED = "review_required"
+    ALL_STAGES_PASSED = "all_stages_passed"
+    EXPLICIT_COMPLETION = "explicit_completion"
+    STAGE_FAILED = "stage_failed"
+    STAGE_CANCELLED = "stage_cancelled"
+    EXPLICIT_CANCELLATION = "explicit_cancellation"
 
 
 class TaskRecord(ProtocolModel):
@@ -43,6 +59,27 @@ class TaskTransitionReceipt(ProtocolModel):
     previous_status: TaskStatus
     cause: TaskTransitionCause
     replayed: bool = False
+
+
+class TaskLifecycleDecision(ProtocolModel):
+    target_status: TaskStatus
+    reason: TaskLifecycleReason
+    inventory_id: StableId
+    inventory_sha256: Sha256Hex
+    total_stages: int = Field(ge=1, le=200)
+    formal_stages: int = Field(ge=0, le=200)
+    completed_stages: int = Field(ge=0, le=200)
+    open_blockers: int = Field(ge=0)
+    open_questions: int = Field(ge=0)
+    open_approvals: int = Field(ge=0)
+
+
+class TaskLifecycleReceipt(ProtocolModel):
+    task: TaskRecord
+    previous_status: TaskStatus
+    decision: TaskLifecycleDecision
+    transitions: list[TaskStatus] = Field(default_factory=list, max_length=8)
+    cause: TaskTransitionCause
 
 
 class RegistrationReceipt(ProtocolModel):

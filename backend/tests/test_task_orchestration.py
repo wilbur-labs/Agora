@@ -488,14 +488,17 @@ def test_create_persists_method_budget_and_task_audit(tmp_path):
         "methodology_review",
     ]
     events = tasks.events(task.task_id)
-    assert [event.event_type for event in events[-3:]] == [
+    assert [event.event_type for event in events[-4:]] == [
         "orchestration.plan_created",
         "task.state_initialized",
         "stage.inventory_initialized",
+        "task.state_changed",
     ]
-    assert events[-3].payload["provisional"] is True
-    assert events[-2].payload == {"status": "backlog", "version": 1}
-    assert events[-1].payload["stage_count"] == 3
+    assert events[-4].payload["provisional"] is True
+    assert events[-3].payload == {"status": "backlog", "version": 1}
+    assert events[-2].payload["stage_count"] == 3
+    assert events[-1].payload["from"] == "backlog"
+    assert events[-1].payload["to"] == "ready"
 
 
 def test_invalid_budget_does_not_leave_a_planless_task(tmp_path):
@@ -548,8 +551,8 @@ def test_resume_recovers_task_state_initialization_after_create_interruption(
     )
     service.resume(created.task_id)
     recovered = service.control_plane.get_task_state(created.task_id)
-    assert recovered.status == TaskStatus.BACKLOG
-    assert recovered.version == 1
+    assert recovered.status == TaskStatus.READY
+    assert recovered.version == 2
     inventory = service.control_plane.get_stage_inventory(created.task_id)
     assert inventory is not None
     assert len(inventory.groups[0].stages) == 3
@@ -595,6 +598,9 @@ def test_resume_recovers_stage_inventory_after_create_interruption(
     service.resume(created.task_id)
     inventory = service.control_plane.get_stage_inventory(created.task_id)
     assert inventory is not None
+    assert service.control_plane.get_task_state(created.task_id).status == (
+        TaskStatus.READY
+    )
     service.resume(created.task_id)
     assert service.control_plane.get_stage_inventory(created.task_id) == inventory
 
@@ -622,8 +628,8 @@ def test_attach_initializes_frozen_task_state_without_mapping_legacy_state(tmp_p
     )
 
     frozen = service.control_plane.get_task_state(legacy.task_id)
-    assert frozen.status == TaskStatus.BACKLOG
-    assert frozen.version == 1
+    assert frozen.status == TaskStatus.READY
+    assert frozen.version == 2
     inventory = service.control_plane.get_stage_inventory(legacy.task_id)
     assert inventory is not None
     assert inventory.contract is None

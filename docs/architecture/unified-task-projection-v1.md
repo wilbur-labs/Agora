@@ -48,19 +48,26 @@ authoritative `next_safe_action` remains the Control Plane Gate-derived value.
 The old orchestration hint remains visible under `compatibility_next_action` and
 is explicitly non-authoritative.
 
-Version `2.0` also exposed
-`task_state_lifecycle=stage_derivation_deferred`. Frozen state transitions are
-explicit in this increment; projected Stage completion does not silently derive
-Task completion until the complete grouped Stage inventory exists.
+Version `2.0` also exposed the historical
+`task_state_lifecycle=stage_derivation_deferred` marker before a complete Stage
+inventory existed.
 
 Grouped Stage inventory schema `1.0` now supplies that complete identity and
-ordering boundary. Unified projection schema `3.0` reads the sealed inventory
+ordering boundary. Unified projection schema `3.0` began reading the sealed inventory
 for Stage grouping, order, title, role, runtime, and total progress. It never
 uses `orchestration_stages` as the Stage inventory authority. Formal completion
 still requires a completed Control Plane Stage, and the compatibility Plan's
-current Stage is labeled as compatibility-sourced until lifecycle wiring is
-implemented. A missing inventory makes total progress explicitly unavailable
+current Stage is labeled as compatibility-sourced until authoritative Stage
+activation/routing is implemented. A missing inventory makes total progress explicitly unavailable
 and directs explicit `task resume` recovery.
+
+Unified projection schema `4.0` adds the deterministic lifecycle decision
+defined in `task-lifecycle-derivation-v1.md`. It reports
+`control_plane_managed` when persisted Task state matches current authoritative
+inputs, `reconciliation_required` when an Attention or other external mutation
+made it stale, and `unavailable` when frozen state or inventory is missing. The
+projection recomputes this decision inside its existing read snapshot but never
+writes it; `task resume` owns repair.
 
 Formal progress counts only Control Plane Stages in `completed` state. A passed
 process, compatibility Run, or Gate cannot increase the completed count by
@@ -110,6 +117,7 @@ unavailable rather than zero. Provider-specific exact usage remains deferred.
 The future authenticated HTTP projection should reuse this read model rather
 than construct another status interpretation. Frozen Task-state persistence is
 supplied by `control_tasks`, and grouped Stage identity is supplied by
-`control_stage_inventories`; Stage-driven lifecycle wiring, dynamic routing,
-exact provider usage, the authoritative full AI-DLC graph, and Task Workbench UI
-remain separate reviewed increments.
+`control_stage_inventories`; lifecycle reconciliation is supplied by the
+Control Plane derivation boundary. Authoritative Stage activation/routing,
+exact provider usage, the authenticated HTTP lifecycle surface, the full
+AI-DLC graph, and Task Workbench UI remain separate reviewed increments.

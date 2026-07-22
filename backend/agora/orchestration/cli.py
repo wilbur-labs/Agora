@@ -294,6 +294,15 @@ def _print_unified_status(status) -> None:
     )
     if status.task_state_unavailable_reason is not None:
         print(f"  Task state unavailable: {status.task_state_unavailable_reason}")
+    if (
+        status.task_state_lifecycle == "reconciliation_required"
+        and status.task_lifecycle_decision is not None
+    ):
+        print(
+            "  Task lifecycle reconciliation required: "
+            f"target={status.task_lifecycle_decision.target_status.value} "
+            f"reason={status.task_lifecycle_decision.reason.value}"
+        )
     print(
         f"Plan: {status.plan.methodology_id}@{status.plan.methodology_version} "
         f"[{status.plan.state.value}]"

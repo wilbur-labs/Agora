@@ -260,6 +260,36 @@ async def test_protocol_v1_runs_all_stages_through_authoritative_gates(tmp_path)
         assert protocol_run is not None
         assert protocol_run.handoff_pack is not None
         assert protocol_run.settled_at is not None
+    assert service.control_plane.get_task_state(task.task_id).status == (
+        TaskStatus.NEEDS_REVIEW
+    )
+
+
+@pytest.mark.asyncio
+async def test_explicit_task_approval_completes_frozen_lifecycle_idempotently(
+    tmp_path,
+):
+    _, service, _, task = _system(tmp_path)
+    await service.run_until_blocked(task.task_id, protocol_v1=True)
+
+    approved = service.approve(
+        task.task_id,
+        actor="owner",
+        reason="Reviewed all formal results",
+    )
+    replay = service.approve(
+        task.task_id,
+        actor="owner",
+        reason="Reviewed all formal results",
+    )
+
+    assert approved.state == PlanState.READY_FOR_IMPLEMENTATION
+    assert replay == approved
+    frozen = service.control_plane.get_task_state(task.task_id)
+    assert frozen.status == TaskStatus.COMPLETED
+    assert service.unified_status(task.task_id).task_state_lifecycle == (
+        "control_plane_managed"
+    )
 
 
 @pytest.mark.asyncio
@@ -277,14 +307,16 @@ async def test_unified_projection_reports_formal_progress_usage_and_human_action
 
     projection = service.unified_status(task.task_id)
 
-    assert projection.schema_version == "3.0"
+    assert projection.schema_version == "4.0"
     assert projection.task.task_id == task.task_id
     assert projection.task.state == TaskState.REQUIREMENTS
     assert projection.task_state_source == "control_plane"
-    assert projection.task_state == TaskStatus.BACKLOG
-    assert projection.task_state_version == 1
+    assert projection.task_state == TaskStatus.NEEDS_REVIEW
+    assert projection.task_state_version == 4
     assert projection.task_state_unavailable_reason is None
-    assert projection.task_state_lifecycle == "stage_derivation_deferred"
+    assert projection.task_state_lifecycle == "control_plane_managed"
+    assert projection.task_lifecycle_decision.target_status == TaskStatus.NEEDS_REVIEW
+    assert projection.task_lifecycle_decision.reason.value == "all_stages_passed"
     assert projection.stage_inventory is not None
     assert projection.stage_inventory_unavailable_reason is None
     assert projection.progress.source == "control_plane_stage_inventory"
@@ -344,6 +376,27 @@ def test_unified_projection_fails_explicitly_when_stage_inventory_is_interrupted
     assert projection.progress.completed_stage_keys == []
     assert projection.progress.remaining_stage_keys == []
     assert all(stage.inventory_stage is None for stage in projection.stages)
+    assert projection.task_state_lifecycle == "unavailable"
+    assert projection.task_lifecycle_decision is None
+
+
+def test_unified_projection_reports_lifecycle_drift_and_resume_repairs_it(tmp_path):
+    tasks, service, _, task = _system(tmp_path)
+    with tasks._transaction() as db:
+        db.execute(
+            "UPDATE control_tasks SET status = 'backlog' WHERE task_id = ?",
+            (task.task_id,),
+        )
+
+    drifted = service.unified_status(task.task_id)
+    service.resume(task.task_id)
+    repaired = service.unified_status(task.task_id)
+
+    assert drifted.task_state == TaskStatus.BACKLOG
+    assert drifted.task_state_lifecycle == "reconciliation_required"
+    assert drifted.task_lifecycle_decision.target_status == TaskStatus.READY
+    assert repaired.task_state == TaskStatus.READY
+    assert repaired.task_state_lifecycle == "control_plane_managed"
 
 
 @pytest.mark.parametrize(
@@ -448,6 +501,8 @@ async def test_unified_projection_keeps_exit_zero_protocol_failure_blocked(tmp_p
     assert run.semantic_result.value == "blocked"
     assert stage.authoritative_stage.status == StageStatus.BLOCKED
     assert projection.progress.completed_stages == 0
+    assert projection.task_state == TaskStatus.BLOCKED
+    assert projection.task_state_lifecycle == "control_plane_managed"
     assert projection.attention[0].state.value == "open"
     assert projection.required_human_actions[0].kind == "attention"
     assert projection.next_safe_action.value is None
@@ -546,20 +601,20 @@ async def test_cli_exposes_unified_projection_without_changing_legacy_status(
         ["status", task.task_id, "--protocol-v1", "--json", "--limit", "1"]
     ) == 0
     unified = json.loads(capsys.readouterr().out)
-    assert unified["schema_version"] == "3.0"
+    assert unified["schema_version"] == "4.0"
     assert unified["progress"]["source"] == "control_plane_stage_inventory"
     assert unified["progress"]["inventory_complete"] is True
-    assert unified["task_state"] == "backlog"
+    assert unified["task_state"] == "active"
     assert unified["task_state_source"] == "control_plane"
-    assert unified["task_state_version"] == 1
+    assert unified["task_state_version"] == 3
     assert unified["collection_pages"]["runs"]["limit"] == 1
 
     assert orchestration_cli.main(
         ["status", task.task_id, "--protocol-v1"]
     ) == 0
     text_status = capsys.readouterr().out
-    assert "[backlog] source=control_plane legacy=backlog" in text_status
-    assert "lifecycle=stage_derivation_deferred" in text_status
+    assert "[active] source=control_plane legacy=backlog" in text_status
+    assert "lifecycle=control_plane_managed" in text_status
 
     assert orchestration_cli.main(["status", task.task_id, "--json"]) == 0
     legacy = json.loads(capsys.readouterr().out)

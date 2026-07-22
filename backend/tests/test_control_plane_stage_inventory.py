@@ -13,6 +13,7 @@ from agora.control_plane.store import (
 )
 from agora.protocol.hashing import seal_model_payload
 from agora.protocol.models import StageInventory
+from agora.protocol.state_machines import TaskStatus
 from agora.tasks.models import CreateTaskRequest
 from agora.tasks.store import TaskStore
 
@@ -90,6 +91,7 @@ def test_grouped_stage_inventory_is_sealed_immutable_and_idempotent(tmp_path):
         "review",
     ]
     assert store.get_stage(task.task_id, "design") is None
+    assert store.get_task_state(task.task_id).status == TaskStatus.READY
     events = [
         event
         for event in store.events(task.task_id)

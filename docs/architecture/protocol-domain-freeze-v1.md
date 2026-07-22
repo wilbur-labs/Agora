@@ -92,6 +92,10 @@ completed | failed | cancelled
 
 Completed work may reopen to `active` only through an explicit invalidation or
 reconciliation event. Runtime adapters cannot invoke Task transitions directly.
+Persisted Task lifecycle is derived from the complete hash-sealed Stage
+inventory plus authoritative Stage, Gate, Attention, invalidation, and
+reconciliation state. Passing every Stage Gate enters `needs_review`; explicit
+human approval completes the Task.
 
 ### Stage
 

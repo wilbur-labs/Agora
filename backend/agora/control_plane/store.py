@@ -49,9 +49,17 @@ from .models import (
     RegistrationReceipt,
     RunSettlementReceipt,
     StageRecord,
+    TaskLifecycleDecision,
+    TaskLifecycleReason,
+    TaskLifecycleReceipt,
     TaskRecord,
     TaskTransitionCause,
     TaskTransitionReceipt,
+)
+from .lifecycle import (
+    TaskLifecycleDerivationError,
+    derive_task_lifecycle,
+    task_transition_path,
 )
 from .schema import initialize_control_plane_schema
 
@@ -187,63 +195,40 @@ class ControlPlaneStore:
                     f"Expected Task version {expected_version}, current version is "
                     f"{row['version']}"
                 )
+            if target == TaskStatus.COMPLETED:
+                inventory_exists = db.execute(
+                    "SELECT 1 FROM control_stage_inventories WHERE task_id = ?",
+                    (task_id,),
+                ).fetchone()
+                if inventory_exists is not None:
+                    decision = self._task_lifecycle_decision_tx(
+                        db,
+                        task_id,
+                        required=True,
+                    )
+                    assert decision is not None
+                    if (
+                        cause != TaskTransitionCause.USER_ACTION
+                        or decision.target_status != TaskStatus.NEEDS_REVIEW
+                        or decision.reason != TaskLifecycleReason.ALL_STAGES_PASSED
+                    ):
+                        raise ControlPlaneConflictError(
+                            "Explicit Task completion requires every inventory "
+                            "Stage and its exact formal Gate to have passed"
+                        )
             current = TaskStatus(row["status"])
-            if (
-                current == TaskStatus.COMPLETED
-                and target == TaskStatus.ACTIVE
-                and cause not in {
-                    TaskTransitionCause.INVALIDATION,
-                    TaskTransitionCause.RECONCILIATION,
-                }
-            ):
-                raise ControlPlaneConflictError(
-                    "A completed Task may reopen only through invalidation or reconciliation"
-                )
-            try:
-                next_status = validate_task_transition(current, target)
-            except TransitionError as exc:
-                raise ControlPlaneConflictError(str(exc)) from exc
-            next_version = expected_version + 1
-            cursor = db.execute(
-                """
-                UPDATE control_tasks
-                SET status = ?, version = ?, updated_at = ?
-                WHERE task_id = ? AND status = ? AND version = ?
-                """,
-                (
-                    next_status.value,
-                    next_version,
-                    now,
-                    task_id,
-                    current.value,
-                    expected_version,
-                ),
-            )
-            if cursor.rowcount != 1:
-                raise ControlPlaneConflictError("Task changed during transition")
-            self._event(
+            updated = self._apply_task_transition_tx(
                 db,
-                event_key=f"{operation_key}:task.state_changed",
-                task_id=task_id,
-                project_id=row["project_id"],
-                event_type="task.state_changed",
+                row=row,
+                target=target,
+                cause=cause,
                 actor=actor,
-                payload={
-                    "from": current.value,
-                    "to": next_status.value,
-                    "cause": cause.value,
-                    "reason": reason,
-                    "version": next_version,
-                },
+                reason=reason,
+                event_key=f"{operation_key}:task.state_changed",
                 now=now,
             )
-            updated = db.execute(
-                "SELECT * FROM control_tasks WHERE task_id = ?",
-                (task_id,),
-            ).fetchone()
-            assert updated is not None
             receipt = TaskTransitionReceipt(
-                task=self._task_record(updated),
+                task=updated,
                 previous_status=current,
                 cause=cause,
             )
@@ -255,6 +240,48 @@ class ControlPlaneStore:
                 now,
             )
             return receipt
+
+    def reconcile_task_lifecycle(
+        self,
+        task_id: str,
+        *,
+        cause: TaskTransitionCause = TaskTransitionCause.RECONCILIATION,
+        actor: str = "reconciler",
+    ) -> TaskLifecycleReceipt:
+        """Reconcile one frozen Task from its complete authoritative snapshot."""
+
+        self._validate_actor(actor)
+        now = utc_now()
+        with self.tasks._transaction() as db:
+            row = db.execute(
+                "SELECT version FROM control_tasks WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
+            if row is None:
+                if db.execute(
+                    "SELECT 1 FROM tasks WHERE task_id = ?",
+                    (task_id,),
+                ).fetchone() is None:
+                    raise ControlPlaneNotFoundError(f"Task not found: {task_id}")
+                raise ControlPlaneConflictError("Frozen Task state is not initialized")
+            return self._reconcile_task_lifecycle_tx(
+                db,
+                task_id=task_id,
+                cause=cause,
+                actor=actor,
+                event_key_prefix=f"task.lifecycle.reconcile:{task_id}:{row['version']}",
+                now=now,
+                required=True,
+            )
+
+    def task_lifecycle_decision_snapshot(
+        self,
+        db: sqlite3.Connection,
+        task_id: str,
+    ) -> TaskLifecycleDecision | None:
+        """Read one lifecycle decision without closing the caller-owned snapshot."""
+
+        return self._task_lifecycle_decision_tx(db, task_id, required=False)
 
     def ensure_stage_inventory(
         self,
@@ -323,6 +350,15 @@ class ControlPlaneStore:
                 },
                 now=now,
             )
+            self._reconcile_task_lifecycle_tx(
+                db,
+                task_id=inventory.task_id,
+                cause=TaskTransitionCause.ORCHESTRATION,
+                actor=actor,
+                event_key_prefix=f"stage.inventory.initialize:{inventory.task_id}",
+                now=now,
+                required=True,
+            )
             row = db.execute(
                 "SELECT * FROM control_stage_inventories WHERE task_id = ?",
                 (inventory.task_id,),
@@ -350,6 +386,15 @@ class ControlPlaneStore:
                 status=status,
                 actor=actor,
                 now=now,
+            )
+            self._reconcile_task_lifecycle_tx(
+                db,
+                task_id=task_id,
+                cause=TaskTransitionCause.ORCHESTRATION,
+                actor=actor,
+                event_key_prefix=f"stage.ensure:{task_id}:{stage_key}",
+                now=now,
+                required=False,
             )
             return self._stage(row)
 
@@ -462,6 +507,15 @@ class ControlPlaneStore:
                     "requirement_ids": requirement_ids,
                 },
                 now=now,
+            )
+            self._reconcile_task_lifecycle_tx(
+                db,
+                task_id=task_id,
+                cause=TaskTransitionCause.ORCHESTRATION,
+                actor=actor,
+                event_key_prefix=f"gate.configure:{task_id}:{gate_key}",
+                now=now,
+                required=False,
             )
             row = db.execute(
                 "SELECT * FROM control_gates WHERE task_id = ? AND gate_key = ?",
@@ -598,6 +652,15 @@ class ControlPlaneStore:
                     "to": next_stage.value,
                 },
                 now=now,
+            )
+            self._reconcile_task_lifecycle_tx(
+                db,
+                task_id=context_pack.task_id,
+                cause=TaskTransitionCause.ORCHESTRATION,
+                actor=actor,
+                event_key_prefix=operation_key,
+                now=now,
+                required=False,
             )
             run = self._protocol_run(
                 db.execute(
@@ -809,6 +872,15 @@ class ControlPlaneStore:
                 },
                 now=now,
             )
+            self._reconcile_task_lifecycle_tx(
+                db,
+                task_id=row["task_id"],
+                cause=TaskTransitionCause.ORCHESTRATION,
+                actor=actor,
+                event_key_prefix=operation_key,
+                now=now,
+                required=False,
+            )
             run = self._protocol_run(
                 db.execute(
                     "SELECT * FROM protocol_runs WHERE run_id = ?",
@@ -922,6 +994,15 @@ class ControlPlaneStore:
                     "gate_staled": gate_status == GateStatus.PASSED,
                 },
                 now=now,
+            )
+            self._reconcile_task_lifecycle_tx(
+                db,
+                task_id=task_id,
+                cause=TaskTransitionCause.RECONCILIATION,
+                actor=actor,
+                event_key_prefix=operation_key,
+                now=now,
+                required=False,
             )
             updated = self._stage(
                 db.execute(
@@ -1203,6 +1284,19 @@ class ControlPlaneStore:
                 },
                 now=now,
             )
+            self._reconcile_task_lifecycle_tx(
+                db,
+                task_id=task_id,
+                cause=(
+                    TaskTransitionCause.INVALIDATION
+                    if next_status == GateStatus.STALE
+                    else TaskTransitionCause.ORCHESTRATION
+                ),
+                actor=actor,
+                event_key_prefix=operation_key,
+                now=now,
+                required=False,
+            )
             updated_gate = self._gate_record(
                 db,
                 self._gate_row(db, task_id, gate_key),
@@ -1334,6 +1428,15 @@ class ControlPlaneStore:
                     "next_safe_action": result.next_safe_action,
                 },
                 now=now,
+            )
+            self._reconcile_task_lifecycle_tx(
+                db,
+                task_id=task_id,
+                cause=TaskTransitionCause.ORCHESTRATION,
+                actor=actor,
+                event_key_prefix=operation_key,
+                now=now,
+                required=False,
             )
             updated_gate = self._gate_record(
                 db,
@@ -1590,6 +1693,16 @@ class ControlPlaneStore:
                     )
                     attention_item_ids.append(attention_item_id)
                     event_ids.append(attention_event_id)
+
+                self._reconcile_task_lifecycle_tx(
+                    db,
+                    task_id=task_id,
+                    cause=TaskTransitionCause.INVALIDATION,
+                    actor=actor,
+                    event_key_prefix=f"{operation_key}:{task_id}",
+                    now=now,
+                    required=False,
+                )
 
             result = InvalidationReceipt(
                 operation_key=operation_key,
@@ -1890,6 +2003,256 @@ class ControlPlaneStore:
                 "Stage is configured."
             ),
         }
+
+    def _apply_task_transition_tx(
+        self,
+        db: sqlite3.Connection,
+        *,
+        row: sqlite3.Row,
+        target: TaskStatus,
+        cause: TaskTransitionCause,
+        actor: str,
+        reason: str,
+        event_key: str,
+        now: str,
+        decision: TaskLifecycleDecision | None = None,
+    ) -> TaskRecord:
+        current = TaskStatus(row["status"])
+        if (
+            current == TaskStatus.COMPLETED
+            and target == TaskStatus.ACTIVE
+            and cause not in {
+                TaskTransitionCause.INVALIDATION,
+                TaskTransitionCause.RECONCILIATION,
+            }
+        ):
+            raise ControlPlaneConflictError(
+                "A completed Task may reopen only through invalidation or reconciliation"
+            )
+        try:
+            next_status = validate_task_transition(current, target)
+        except TransitionError as exc:
+            raise ControlPlaneConflictError(str(exc)) from exc
+        next_version = int(row["version"]) + 1
+        cursor = db.execute(
+            """
+            UPDATE control_tasks
+            SET status = ?, version = ?, updated_at = ?
+            WHERE task_id = ? AND status = ? AND version = ?
+            """,
+            (
+                next_status.value,
+                next_version,
+                now,
+                row["task_id"],
+                current.value,
+                row["version"],
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise ControlPlaneConflictError("Task changed during transition")
+        payload: dict[str, Any] = {
+            "from": current.value,
+            "to": next_status.value,
+            "cause": cause.value,
+            "reason": reason,
+            "version": next_version,
+        }
+        if decision is not None:
+            payload["lifecycle_decision"] = decision.model_dump(mode="json")
+        self._event(
+            db,
+            event_key=event_key,
+            task_id=row["task_id"],
+            project_id=row["project_id"],
+            event_type="task.state_changed",
+            actor=actor,
+            payload=payload,
+            now=now,
+        )
+        updated = db.execute(
+            "SELECT * FROM control_tasks WHERE task_id = ?",
+            (row["task_id"],),
+        ).fetchone()
+        assert updated is not None
+        return self._task_record(updated)
+
+    def _task_lifecycle_decision_tx(
+        self,
+        db: sqlite3.Connection,
+        task_id: str,
+        *,
+        required: bool,
+    ) -> TaskLifecycleDecision | None:
+        task_state = db.execute(
+            "SELECT * FROM control_tasks WHERE task_id = ?",
+            (task_id,),
+        ).fetchone()
+        inventory_row = db.execute(
+            "SELECT * FROM control_stage_inventories WHERE task_id = ?",
+            (task_id,),
+        ).fetchone()
+        if task_state is None or inventory_row is None:
+            if required:
+                missing = (
+                    "Frozen Task state"
+                    if task_state is None
+                    else "Grouped Stage inventory"
+                )
+                raise ControlPlaneConflictError(
+                    f"{missing} is not initialized for lifecycle reconciliation"
+                )
+            return None
+
+        inventory = self._stage_inventory(inventory_row)
+        inventory_stages = {
+            item.stage_key: item
+            for group in inventory.groups
+            for item in group.stages
+        }
+        inventory_stage_keys = list(inventory_stages)
+        stage_rows = db.execute(
+            """
+            SELECT * FROM control_stages
+            WHERE task_id = ? ORDER BY stage_key
+            LIMIT ?
+            """,
+            (task_id, PROJECTION_COLLECTION_LIMIT + 1),
+        ).fetchall()
+        gate_rows = db.execute(
+            """
+            SELECT * FROM control_gates
+            WHERE task_id = ? ORDER BY gate_key
+            LIMIT ?
+            """,
+            (task_id, PROJECTION_COLLECTION_LIMIT + 1),
+        ).fetchall()
+        if (
+            len(stage_rows) > PROJECTION_COLLECTION_LIMIT
+            or len(gate_rows) > PROJECTION_COLLECTION_LIMIT
+        ):
+            raise ControlPlaneConflictError(
+                "Task lifecycle inputs exceed the bounded Stage inventory"
+            )
+
+        stage_statuses: dict[str, StageStatus] = {}
+        for row in stage_rows:
+            inventory_stage = inventory_stages.get(row["stage_key"])
+            if inventory_stage is None:
+                raise ControlPlaneConflictError(
+                    "Formal Stage exists outside the immutable Task Stage inventory"
+                )
+            if row["gate_key"] != inventory_stage.gate_key:
+                raise ControlPlaneConflictError(
+                    "Formal Stage Gate does not match the immutable Task Stage inventory"
+                )
+            stage_statuses[row["stage_key"]] = StageStatus(row["status"])
+
+        gate_stage_keys = [row["stage_key"] for row in gate_rows]
+        if len(gate_stage_keys) != len(set(gate_stage_keys)):
+            raise ControlPlaneConflictError(
+                "Multiple formal Gates are bound to one inventory Stage"
+            )
+        gate_statuses: dict[str, GateStatus] = {}
+        for row in gate_rows:
+            if row["stage_key"] not in stage_statuses:
+                raise ControlPlaneConflictError(
+                    "Formal Gate is missing its authoritative Stage"
+                )
+            inventory_stage = inventory_stages.get(row["stage_key"])
+            if inventory_stage is None or row["gate_key"] != inventory_stage.gate_key:
+                raise ControlPlaneConflictError(
+                    "Formal Gate does not match the immutable Task Stage inventory"
+                )
+            gate_statuses[row["stage_key"]] = GateStatus(row["status"])
+
+        attention = db.execute(
+            """
+            SELECT
+                COALESCE(SUM(CASE WHEN kind = 'blocker' THEN 1 ELSE 0 END), 0)
+                    AS blockers,
+                COALESCE(SUM(CASE WHEN kind = 'question' THEN 1 ELSE 0 END), 0)
+                    AS questions,
+                COALESCE(SUM(CASE WHEN kind = 'approval' THEN 1 ELSE 0 END), 0)
+                    AS approvals
+            FROM attention_items
+            WHERE task_id = ? AND state = 'open'
+            """,
+            (task_id,),
+        ).fetchone()
+        assert attention is not None
+        try:
+            return derive_task_lifecycle(
+                current_status=TaskStatus(task_state["status"]),
+                inventory_id=inventory.inventory_id,
+                inventory_sha256=inventory.content_sha256,
+                inventory_stage_keys=inventory_stage_keys,
+                stage_statuses=stage_statuses,
+                gate_statuses=gate_statuses,
+                open_blockers=int(attention["blockers"]),
+                open_questions=int(attention["questions"]),
+                open_approvals=int(attention["approvals"]),
+            )
+        except TaskLifecycleDerivationError as exc:
+            raise ControlPlaneConflictError(str(exc)) from exc
+
+    def _reconcile_task_lifecycle_tx(
+        self,
+        db: sqlite3.Connection,
+        *,
+        task_id: str,
+        cause: TaskTransitionCause,
+        actor: str,
+        event_key_prefix: str,
+        now: str,
+        required: bool,
+    ) -> TaskLifecycleReceipt | None:
+        decision = self._task_lifecycle_decision_tx(
+            db,
+            task_id,
+            required=required,
+        )
+        if decision is None:
+            return None
+        row = db.execute(
+            "SELECT * FROM control_tasks WHERE task_id = ?",
+            (task_id,),
+        ).fetchone()
+        assert row is not None
+        previous_status = TaskStatus(row["status"])
+        try:
+            path = task_transition_path(previous_status, decision.target_status)
+        except TaskLifecycleDerivationError as exc:
+            raise ControlPlaneConflictError(str(exc)) from exc
+        updated = self._task_record(row)
+        reason = f"Derived from authoritative lifecycle inputs: {decision.reason.value}"
+        for index, target in enumerate(path):
+            current_row = db.execute(
+                "SELECT * FROM control_tasks WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
+            assert current_row is not None
+            updated = self._apply_task_transition_tx(
+                db,
+                row=current_row,
+                target=target,
+                cause=cause,
+                actor=actor,
+                reason=reason,
+                event_key=(
+                    f"{event_key_prefix}:task.lifecycle:{index}:"
+                    f"{current_row['status']}:{target.value}"
+                ),
+                now=now,
+                decision=decision,
+            )
+        return TaskLifecycleReceipt(
+            task=updated,
+            previous_status=previous_status,
+            decision=decision,
+            transitions=path,
+            cause=cause,
+        )
 
     def _ensure_stage_row(
         self,

@@ -10,6 +10,9 @@ from .models import (
     RunSettlementReceipt,
     StageRecord,
     TaskRecord,
+    TaskLifecycleDecision,
+    TaskLifecycleReason,
+    TaskLifecycleReceipt,
     TaskTransitionCause,
     TaskTransitionReceipt,
 )
@@ -34,6 +37,9 @@ __all__ = [
     "RunSettlementReceipt",
     "StageRecord",
     "TaskRecord",
+    "TaskLifecycleDecision",
+    "TaskLifecycleReason",
+    "TaskLifecycleReceipt",
     "TaskTransitionCause",
     "TaskTransitionReceipt",
 ]

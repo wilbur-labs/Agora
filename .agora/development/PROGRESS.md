@@ -2,19 +2,19 @@
 
 Current branch: `main`
 
-Current recovery baseline (2026-07-21):
+Current recovery baseline (2026-07-22):
 
-- Local `main` and `origin/main` are synchronized through the reviewed grouped
-  Stage-inventory commit containing this snapshot.
+- Local `main` and `origin/main` are synchronized through the reviewed frozen
+  Task-lifecycle derivation commit containing this snapshot.
 - Active program: the ordered Agora Control Plane transformation. The first two
   stages (protocol/domain freeze and Control Plane v2 persistence/Registry) are
   complete; the bounded API, concrete Task contract, and Runner/Agent Adapter
   are also reviewed foundations. The sealed Run/Gate settlement boundary and
   explicit CLI orchestration wiring and read-only unified Task projection are
-  reviewed. Frozen Task-state persistence and the grouped Stage inventory are
-  the latest reviewed increments. The work-weighted program estimate must now
-  be recalculated against the grouped inventory before another percentage is
-  recorded.
+  reviewed. Frozen Task-state persistence, the grouped Stage inventory, and
+  deterministic frozen Task-lifecycle derivation are the latest reviewed
+  increments. The work-weighted program estimate must now be recalculated
+  against the grouped inventory before another percentage is recorded.
   The historical 11-stage label and milestone-count estimate below predate the
   current grouped stage correspondence and must be normalized before they are
   used as a current count.
@@ -47,9 +47,10 @@ Current recovery baseline (2026-07-21):
 - The user explicitly approved Plan `plan_cf698b72d0c548ff99b763fef8e6c75b`;
   the authoritative Plan is now `ready_for_implementation` and its approval
   event is recorded in `data/agora.db`.
-- The latest increment adds the immutable `control_stage_inventories` authority
-  without mapping compatibility Plan state into the frozen Task state machine.
-  Do not begin Task Workbench UI work.
+- The latest increment derives frozen Task lifecycle only from the immutable
+  grouped inventory and authoritative Stage, Gate, Attention, invalidation,
+  and reconciliation facts. Compatibility Plan state remains outside that
+  authority. Do not begin Task Workbench UI work.
 
 ## 2026-07-18 — Latest transformation requirements recovery
 
@@ -761,6 +762,82 @@ plus authoritative Stage, Gate, Attention, invalidation, and reconciliation
 state as a separate bounded increment. Do not infer transitions from process
 exit or compatibility Plan state. Authenticated HTTP inventory fields and UI
 remain deferred.
+
+## 2026-07-22 - Frozen Task lifecycle derivation (active)
+
+### Scope
+
+- [x] Added a pure deterministic lifecycle decision over the complete sealed
+  Stage inventory, formal Stage/Gate states, and open Task Attention counts.
+- [x] Failed closed on out-of-inventory Stage/Gate rows, mismatched or duplicate
+  Gate bindings, oversized formal inputs, and completed Stages without passed
+  formal Gates.
+- [x] Reconciled Task state in the same Control Plane transaction as inventory
+  initialization, Stage/Gate setup, protocol start/settlement/retry, Gate
+  Evidence/evaluation, and invalidation propagation.
+- [x] Preserved the frozen transition graph, optimistic versions, explicit
+  causes, mirrored audit events, and the invalidation/reconciliation-only
+  `completed -> active` boundary.
+- [x] Required all inventory Stages and Gates to pass before `needs_review` and
+  retained explicit user approval as the only Task-completion action.
+- [x] Made compatibility Plan approval idempotent so interruption after the
+  authoritative Task transition can be repaired by repeating approval.
+- [x] Added explicit `task resume` lifecycle repair after process recovery;
+  Attention writes remain owned by the existing Attention store.
+- [x] Upgraded the read-only unified projection to schema `4.0` with a bounded
+  lifecycle decision and explicit managed/reconciliation-required/unavailable
+  status; reads never repair state.
+- [x] Kept compatibility Plan/Task state, process exit, Agent suggestions,
+  authenticated HTTP, and UI outside the lifecycle authority boundary.
+- [x] Run the complete backend verification set and Schema consistency checks.
+- [x] Obtained Kiro protocol/methodology review with no HIGH/MEDIUM findings;
+  final verdict: `APPROVE`.
+- [x] Obtain independent Claude Code correctness/safety review; fix all
+  actionable findings.
+- [x] Commit and push only after both review gates approve (the commit
+  containing this snapshot).
+
+### Current verification log
+
+- Initial lifecycle, frozen Task-state, grouped inventory, and formal
+  orchestration suite after migration fixes: 56 passed.
+- Expanded Registry, protocol Run, authenticated Control Plane API, Task
+  orchestration, and projection suite: 139 passed with one existing
+  Starlette/httpx deprecation warning.
+- Added Attention response/reconciliation, read-only drift reporting/resume
+  repair, lifecycle-event rollback, explicit completion, and completed-Task
+  invalidation regressions. Current focused suite: 95 passed.
+- Isolated system-Temp full non-integration backend suite excluding
+  static-export-dependent `tests/test_web_ui.py`: 441 passed, 18 deselected,
+  with only the existing Starlette/httpx and Windows Proactor warnings.
+- Protocol Schema export check, isolated Python compile, `task status --help`
+  smoke, and `git diff --check`: passed before independent review.
+- Hardened the explicit completion entry point after the full-suite run so a
+  caller cannot bypass authoritative Stage/Gate facts by manually reaching
+  `needs_review`; focused orchestration/lifecycle regression: 86 passed.
+- Kiro final staged-diff review: `APPROVE`; no HIGH/MEDIUM protocol,
+  methodology, authority, atomicity, recovery, or coverage findings.
+- Independent Claude Code correctness/safety review after the session reset:
+  `APPROVE`; no HIGH/MEDIUM findings. It verified deterministic precedence,
+  fail-closed inventory/Gate validation, transaction rollback, optimistic
+  transitions, the completed-Task reopen boundary, explicit human completion,
+  read-only projection behavior, and regression coverage. Its three LOW notes
+  were non-actionable unreachable/corruption-only hardening observations.
+- Final isolated system-Temp non-integration backend suite excluding
+  `tests/test_web_ui.py`: 442 passed, 18 deselected, with only the existing
+  Starlette/httpx and Windows Proactor cleanup warnings.
+- Final Protocol Schema export check, Python compile, `task status --help`
+  smoke, unstaged diff check, and staged diff check: passed after both review
+  gates approved.
+
+### Next safe action
+
+Add authoritative Control Plane Stage activation and routing over the sealed
+inventory as a separate bounded increment. Preserve compatibility projection
+labels until that writer is reviewed, and do not infer activation from process
+exit or compatibility Plan state. Keep authenticated HTTP lifecycle commands,
+methodology migration, the missing authoritative AI-DLC graph, and Task
+Workbench UI deferred.
 
 ## 2026-07-13
 

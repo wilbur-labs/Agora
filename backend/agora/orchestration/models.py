@@ -10,6 +10,7 @@ from agora.attention.models import AttentionItem
 from agora.control_plane.models import (
     GateRecord,
     StageRecord,
+    TaskLifecycleDecision,
 )
 from agora.protocol.models import (
     Approval,
@@ -342,16 +343,19 @@ class UnifiedBudgetProjection(StrictModel):
 
 
 class UnifiedTaskProjection(StrictModel):
-    schema_version: Literal["3.0"] = "3.0"
+    schema_version: Literal["4.0"] = "4.0"
     snapshot_at: str
     task: TaskManifest
     task_state: TaskStatus | None
     task_state_source: Literal["control_plane"] = "control_plane"
     task_state_version: int | None = Field(default=None, ge=1)
     task_state_unavailable_reason: str | None = None
-    task_state_lifecycle: Literal["stage_derivation_deferred"] = (
-        "stage_derivation_deferred"
-    )
+    task_state_lifecycle: Literal[
+        "control_plane_managed",
+        "reconciliation_required",
+        "unavailable",
+    ]
+    task_lifecycle_decision: TaskLifecycleDecision | None = None
     stage_inventory: StageInventory | None = None
     stage_inventory_unavailable_reason: str | None = None
     plan: OrchestrationPlan

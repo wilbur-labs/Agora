@@ -58,11 +58,10 @@ Control Plane HTTP projection is unchanged in this bounded increment.
 
 The unified JSON projection moves to schema version `2.0` because `task_state`
 now means frozen Control Plane state instead of 0.5 manifest state. The legacy
-manifest remains under `task`, and text output labels it as `legacy`. The
-projection also reports `task_state_lifecycle=stage_derivation_deferred`; this
-means the stored state is authoritative but is not yet automatically derived
-from the partial Stage/Gate inventory. A consumer must not interpret `backlog`
-plus completed projected Stages as final lifecycle completion.
+manifest remains under `task`, and text output labels it as `legacy`. Unified
+projection schema `4.0` now reports a bounded lifecycle decision and whether
+persisted Task state is `control_plane_managed`, requires explicit
+reconciliation, or is unavailable. The read remains side-effect free.
 
 Task creation currently commits the compatibility Task, Plan, and frozen state
 in separate transactions. If interruption occurs after Plan creation, the
@@ -70,13 +69,12 @@ projection reports the missing state and directs the user to `task resume`.
 Resume is an explicit mutating reconciliation path and idempotently initializes
 the missing state; ordinary status reads remain side-effect free.
 
-## Deferred lifecycle wiring
+## Lifecycle wiring
 
-This increment does not infer Task state from compatibility Plan state, partial
-Stage inventory, Run exit codes, Gate counts, or the unified projection. The
-grouped Stage inventory is now persisted separately and hash-bound as
-documented in `grouped-stage-inventory-v1.md`. Task lifecycle derivation remains
-deferred: the next bounded increment may derive Task activation, blocking,
-review, completion, and invalidation only from that complete inventory plus
-authoritative Stage, Gate, Attention, invalidation, and reconciliation state.
-HTTP and UI remain later projections of the same command/read model.
+The complete grouped inventory now drives deterministic Task lifecycle
+reconciliation as documented in `task-lifecycle-derivation-v1.md`. The
+derivation uses authoritative Stage, Gate, Attention, invalidation, and
+reconciliation state only; compatibility Plan state, Run exit codes, and the
+unified projection remain non-authoritative. Explicit human approval is still
+required for `needs_review -> completed`. HTTP and UI remain later projections
+of the same command/read model.

@@ -4,8 +4,8 @@ Status: reviewed implementation baseline.
 
 This increment persists the complete Stage identity and order for the
 methodology already pinned to an Agora Task. It is the authority for which
-Stages belong to that Task, but it does not yet derive frozen Task lifecycle
-transitions from Stage or Gate state.
+Stages belong to that Task and is now consumed by the separately reviewed
+frozen Task lifecycle derivation.
 
 ## Authority and grouping
 
@@ -55,30 +55,29 @@ backfilling it during status reads.
 
 ## Unified projection
 
-Unified Task projection schema `3.0` moves Stage identity, grouping, order,
+Unified Task projection schema `4.0` retains Stage identity, grouping, order,
 title, role, runtime, and total progress from compatibility interpretation to
 the sealed Control Plane inventory. Formal completion still counts only a
 `control_stages` record in `completed`; an inventory Stage with no live Stage
 record is remaining work, not completed work.
 
 The projection labels the current Stage as sourced from the compatibility Plan
-because automatic Control Plane Stage activation and frozen Task lifecycle
-derivation are deliberately deferred. If the inventory is absent, total,
-completed, and remaining progress are unavailable rather than inferred from
-compatibility rows.
+because authoritative Control Plane Stage activation/routing remains deferred.
+If the inventory is absent, total, completed, and remaining progress are
+unavailable rather than inferred from compatibility rows.
 
-## Deferred lifecycle wiring
+## Lifecycle and deferred boundaries
 
-This increment does not:
+The lifecycle reconciler now consumes the complete inventory plus authoritative
+Stage, Gate, Attention, invalidation, and reconciliation state. This inventory
+increment still does not:
 
-- transition frozen Task state from Stage or Gate state;
 - activate later Stages or derive dependency edges;
 - migrate a Task to a different methodology;
 - expose inventory commands or fields through the authenticated HTTP API;
 - recover or invent the missing authoritative AI-DLC graph;
 - start Task Workbench UI work.
 
-The next bounded increment may derive Task activation, blocking, review, and
-completion only from this complete inventory plus authoritative Stage, Gate,
-Attention, invalidation, and reconciliation state. It must preserve explicit
-causes and atomic, replay-safe transitions.
+Lifecycle precedence, explicit completion approval, atomic transitions, and
+read-only drift reporting are defined in
+`task-lifecycle-derivation-v1.md`.

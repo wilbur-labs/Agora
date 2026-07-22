@@ -946,6 +946,8 @@ class OrchestrationStore:
             ).fetchone()
             if not plan:
                 raise OrchestrationNotFoundError(task_id)
+            if plan["state"] == PlanState.READY_FOR_IMPLEMENTATION.value:
+                return self._plan(plan)
             if plan["state"] != PlanState.AWAITING_APPROVAL.value:
                 raise OrchestrationConflictError("Plan is not awaiting human approval")
             db.execute(
