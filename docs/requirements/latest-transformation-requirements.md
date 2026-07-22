@@ -202,6 +202,12 @@ current explainable-routing increment adds a bounded policy record for the
 already pinned runtime/reviewer assignments and protects unfinished reviewer
 Stage budgets; its final review state is tracked in `PROGRESS.md`.
 
+The current bounded follow-up adds a versioned Task budget-amendment receipt
+for a retry blocked only by protected review capacity. It increases the total
+envelope without reallocating Stages, reducing reviewers, or rewriting usage,
+and forces the next Run claim to derive a fresh policy. Its review state is
+tracked in `PROGRESS.md`.
+
 Still required:
 
 - the authoritative full AI-DLC method source and executable graph;
@@ -210,8 +216,8 @@ Still required:
 - consult and decide/adopt semantics under the authoritative Task;
 - dynamic runtime/model selection or substitution beyond the recorded,
   capability-checked pinned routing rationale;
-- provider/model-specific exact usage where available and protected review
-  budgets;
+- provider/model-specific exact usage where available, plus any future dynamic
+  cost/model policy beyond the fixed protected-review baseline;
 - the unified authoritative Task status/progress/result projection;
 - a real CLI-first three-runtime end-to-end Task through review, Gate,
   intervention, resume, and handoff;

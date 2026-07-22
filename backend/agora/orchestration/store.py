@@ -11,16 +11,19 @@ from contextlib import closing, contextmanager
 from typing import Any, Iterator
 
 from agora.control_plane.models import RunSettlementReceipt, StageRouteDecision
+from agora.control_plane.store import ControlPlaneConflictError, ControlPlaneStore
 from agora.execution.security import redact_text, sanitize_data
 from agora.protocol.agent_adapter import AgentAdapterResult
+from agora.protocol.hashing import canonical_sha256, seal_model_payload
 from agora.protocol.models import SemanticStageResult, StageInventory
 from agora.protocol.state_machines import GateStatus, StageStatus
-from agora.tasks.models import utc_now
+from agora.tasks.models import TaskBudget, utc_now
 from agora.tasks.store import TaskNotFoundError, TaskStore
 
 from .contracts import TaskContract, contract_sha256
 from .methodology import MethodologyDefinition, methodology_sha256
 from .models import (
+    BudgetAmendment,
     LedgerEntryType,
     Measurement,
     OrchestrationPlan,
@@ -221,6 +224,15 @@ class OrchestrationStore:
             ).fetchall()
         return [self._decision(row) for row in rows]
 
+    def budget_amendments(self, plan_id: str) -> list[BudgetAmendment]:
+        with closing(self._connect()) as db:
+            rows = db.execute(
+                """SELECT * FROM orchestration_budget_amendments
+                   WHERE plan_id = ? ORDER BY version""",
+                (plan_id,),
+            ).fetchall()
+        return [self._budget_amendment(row) for row in rows]
+
     def latest_decisions(self, plan_id: str) -> list[TaskDecision]:
         with closing(self._connect()) as db:
             rows = db.execute(
@@ -357,6 +369,415 @@ class OrchestrationStore:
         if not row:
             raise OrchestrationNotFoundError(decision_id)
         return self._decision(row)
+
+    def amend_budget(
+        self,
+        task_id: str,
+        *,
+        amended_total_token_budget: int,
+        amended_total_cost_budget_usd: float | None,
+        expected_task_version: int,
+        expected_plan_version: int,
+        operation_key: str,
+        route: StageRouteDecision | None,
+        contract: TaskContract | None,
+        actor: str,
+        reason: str,
+    ) -> BudgetAmendment:
+        """Increase one Task envelope without changing Stage allocations or history."""
+
+        operation_key = operation_key.strip()
+        actor = actor.strip()
+        safe_reason = redact_text(reason.strip())
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", operation_key):
+            raise OrchestrationValidationError(
+                "Budget amendment operation_key must be a stable identifier"
+            )
+        if not actor or len(actor) > 128:
+            raise OrchestrationValidationError(
+                "Budget amendment actor must contain 1 to 128 characters"
+            )
+        if not safe_reason or len(safe_reason) > 1_000:
+            raise OrchestrationValidationError(
+                "Budget amendment reason must contain 1 to 1000 characters"
+            )
+        if expected_task_version < 1 or expected_plan_version < 1:
+            raise OrchestrationValidationError(
+                "Budget amendment expected versions must be positive"
+            )
+        if (
+            amended_total_cost_budget_usd is not None
+            and not math.isfinite(amended_total_cost_budget_usd)
+        ):
+            raise OrchestrationValidationError(
+                "Budget amendment cost must be finite"
+            )
+
+        amendment_id = self._id("budget")
+        now = utc_now()
+        with self._transaction() as db:
+            replay_row = db.execute(
+                """SELECT * FROM orchestration_budget_amendments
+                   WHERE operation_key = ?""",
+                (operation_key,),
+            ).fetchone()
+            if replay_row is not None:
+                replay = self._budget_amendment(replay_row)
+                if not self._budget_amendment_matches_request(
+                    replay,
+                    task_id=task_id,
+                    amended_total_token_budget=amended_total_token_budget,
+                    amended_total_cost_budget_usd=amended_total_cost_budget_usd,
+                    expected_task_version=expected_task_version,
+                    expected_plan_version=expected_plan_version,
+                    route=route,
+                    contract=contract,
+                    actor=actor,
+                    reason=safe_reason,
+                ):
+                    raise OrchestrationConflictError(
+                        "Budget amendment operation_key was already used for different inputs"
+                    )
+                return replay
+
+            task_row = db.execute(
+                "SELECT * FROM tasks WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
+            plan = db.execute(
+                "SELECT * FROM orchestration_plans WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
+            inventory_row = db.execute(
+                "SELECT * FROM control_stage_inventories WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
+            if task_row is None or plan is None or inventory_row is None:
+                raise OrchestrationNotFoundError(task_id)
+            if int(task_row["version"]) != expected_task_version:
+                raise OrchestrationConflictError(
+                    f"Expected Task version {expected_task_version}, current version is "
+                    f"{task_row['version']}"
+                )
+            if int(plan["version"]) != expected_plan_version:
+                raise OrchestrationConflictError(
+                    f"Expected Plan version {expected_plan_version}, current version is "
+                    f"{plan['version']}"
+                )
+            if route is None or contract is None:
+                raise OrchestrationConflictError(
+                    "Budget amendment requires a current formal route and pinned Task contract"
+                )
+            try:
+                current_route = ControlPlaneStore(self.tasks).stage_route_snapshot(
+                    db,
+                    task_id,
+                )
+            except ControlPlaneConflictError as exc:
+                raise OrchestrationConflictError(str(exc)) from exc
+            if current_route != route or not current_route.runnable:
+                raise OrchestrationConflictError(
+                    "Budget amendment requires the exact currently runnable formal route"
+                )
+            if (
+                plan["state"] != PlanState.ACTIVE.value
+                or plan["current_stage_key"] != route.stage_key
+            ):
+                raise OrchestrationConflictError(
+                    "Budget amendment requires the active Plan at the routed Stage"
+                )
+            current_stage = db.execute(
+                """SELECT * FROM orchestration_stages
+                   WHERE plan_id = ? AND stage_key = ?""",
+                (plan["plan_id"], route.stage_key),
+            ).fetchone()
+            if current_stage is None or current_stage["state"] != StageState.PENDING.value:
+                raise OrchestrationConflictError(
+                    "Budget amendment requires the routed compatibility Stage to be pending"
+                )
+            # Operational and formal Run lifecycles are separate dimensions.
+            # Both guards execute under the same BEGIN IMMEDIATE writer lock.
+            if db.execute(
+                """SELECT 1 FROM orchestration_runs
+                   WHERE plan_id = ? AND state = ? LIMIT 1""",
+                (plan["plan_id"], RunState.RUNNING.value),
+            ).fetchone():
+                raise OrchestrationConflictError(
+                    "Budget amendment is forbidden while an operational Run is active"
+                )
+            if db.execute(
+                """SELECT 1 FROM protocol_runs
+                   WHERE task_id = ? AND settled_at IS NULL LIMIT 1""",
+                (task_id,),
+            ).fetchone():
+                raise OrchestrationConflictError(
+                    "Budget amendment is forbidden while a formal Run is unsettled"
+                )
+
+            task = self.tasks._manifest(task_row)
+            methodology = MethodologyDefinition.model_validate_json(
+                plan["methodology_payload"]
+            )
+            inventory = StageInventory.model_validate_json(inventory_row["payload"])
+            previous_tokens = int(plan["total_token_budget"])
+            previous_cost = plan["total_cost_budget_usd"]
+            task_cost = task.budget.max_cost_usd
+            if not self._same_optional_money(task_cost, previous_cost):
+                raise OrchestrationConflictError(
+                    "Task and Plan cost envelopes do not agree"
+                )
+            self.validate_plan_inputs(
+                methodology,
+                total_token_budget=amended_total_token_budget,
+                total_cost_budget_usd=amended_total_cost_budget_usd,
+            )
+            if amended_total_token_budget < previous_tokens:
+                raise OrchestrationValidationError(
+                    "Budget amendment may not reduce the Task Token envelope"
+                )
+            if previous_cost is None and amended_total_cost_budget_usd is not None:
+                raise OrchestrationValidationError(
+                    "Budget amendment may not replace an unbounded cost envelope"
+                )
+            if previous_cost is not None and amended_total_cost_budget_usd is None:
+                raise OrchestrationValidationError(
+                    "Budget amendment may not remove the configured cost envelope"
+                )
+            if (
+                previous_cost is not None
+                and amended_total_cost_budget_usd is not None
+                and amended_total_cost_budget_usd < previous_cost
+            ):
+                raise OrchestrationValidationError(
+                    "Budget amendment may not reduce the Task cost envelope"
+                )
+            token_increased = amended_total_token_budget > previous_tokens
+            cost_increased = bool(
+                previous_cost is not None
+                and amended_total_cost_budget_usd is not None
+                and amended_total_cost_budget_usd > previous_cost
+            )
+            if not token_increased and not cost_increased:
+                raise OrchestrationValidationError(
+                    "Budget amendment must increase Tokens or configured cost"
+                )
+
+            prior_policy = self._routing_policy_decision(
+                db,
+                task_id=task_id,
+                route=route,
+                contract=contract,
+                run_id=f"budget-before:{amendment_id}",
+            )
+            non_budget_failures = [
+                check
+                for check in prior_policy.checks
+                if check.constraint != "protected_budget" and not check.satisfied
+            ]
+            protected_check = next(
+                check
+                for check in prior_policy.checks
+                if check.constraint == "protected_budget"
+            )
+            if non_budget_failures:
+                raise OrchestrationConflictError(
+                    "Budget amendment cannot repair non-budget routing-policy blockers"
+                )
+            if protected_check.satisfied:
+                raise OrchestrationConflictError(
+                    "Current route already satisfies the protected budget policy"
+                )
+
+            # BEGIN IMMEDIATE owns SQLite's only writer slot throughout this
+            # transaction. These before/after hashes therefore prove that this
+            # mutation itself did not rewrite Stage allocations; no concurrent
+            # writer can enter between the two reads.
+            stage_rows = db.execute(
+                """SELECT stage_key, sequence, token_budget, cost_budget_usd
+                   FROM orchestration_stages WHERE plan_id = ? ORDER BY sequence""",
+                (plan["plan_id"],),
+            ).fetchall()
+            stage_allocations_sha256 = canonical_sha256(
+                [dict(row) for row in stage_rows]
+            )
+            next_task_version = expected_task_version + 1
+            next_plan_version = expected_plan_version + 1
+            amended_task_budget = TaskBudget(
+                max_cost_usd=amended_total_cost_budget_usd,
+                max_minutes=task.budget.max_minutes,
+            )
+            task_cursor = db.execute(
+                """UPDATE tasks SET budget = ?, version = ?, updated_at = ?
+                   WHERE task_id = ? AND version = ?""",
+                (
+                    self._json(amended_task_budget.model_dump(exclude_none=True)),
+                    next_task_version,
+                    now,
+                    task_id,
+                    expected_task_version,
+                ),
+            )
+            plan_cursor = db.execute(
+                """UPDATE orchestration_plans
+                   SET total_token_budget = ?, total_cost_budget_usd = ?,
+                       version = ?, updated_at = ?
+                   WHERE plan_id = ? AND version = ?""",
+                (
+                    amended_total_token_budget,
+                    amended_total_cost_budget_usd,
+                    next_plan_version,
+                    now,
+                    plan["plan_id"],
+                    expected_plan_version,
+                ),
+            )
+            if task_cursor.rowcount != 1 or plan_cursor.rowcount != 1:
+                raise OrchestrationConflictError(
+                    "Task or Plan changed while amending the budget"
+                )
+
+            resulting_policy = self._routing_policy_decision(
+                db,
+                task_id=task_id,
+                route=route,
+                contract=contract,
+                run_id=f"budget-after:{amendment_id}",
+            )
+            if not resulting_policy.dispatchable:
+                resulting_budget_check = next(
+                    check
+                    for check in resulting_policy.checks
+                    if check.constraint == "protected_budget"
+                )
+                raise OrchestrationValidationError(
+                    "Amended envelope still does not satisfy protected budget: "
+                    + resulting_budget_check.detail
+                )
+            if (
+                prior_policy.policy_sha256 != resulting_policy.policy_sha256
+                or prior_policy.inventory_sha256 != resulting_policy.inventory_sha256
+                or prior_policy.methodology_sha256
+                != resulting_policy.methodology_sha256
+                or prior_policy.stage_key != resulting_policy.stage_key
+                or prior_policy.role != resulting_policy.role
+                or prior_policy.pinned_runtime != resulting_policy.pinned_runtime
+                or prior_policy.task_risk != resulting_policy.task_risk
+                or prior_policy.required_capabilities
+                != resulting_policy.required_capabilities
+                or prior_policy.runtime_capabilities
+                != resulting_policy.runtime_capabilities
+                or prior_policy.required_reviewers
+                != resulting_policy.required_reviewers
+                or prior_policy.reviewer_assignments
+                != resulting_policy.reviewer_assignments
+            ):
+                raise OrchestrationConflictError(
+                    "Budget amendment changed non-budget routing-policy inputs"
+                )
+            stage_rows_after = db.execute(
+                """SELECT stage_key, sequence, token_budget, cost_budget_usd
+                   FROM orchestration_stages WHERE plan_id = ? ORDER BY sequence""",
+                (plan["plan_id"],),
+            ).fetchall()
+            if canonical_sha256([dict(row) for row in stage_rows_after]) != (
+                stage_allocations_sha256
+            ):
+                raise OrchestrationConflictError(
+                    "Budget amendment changed sealed Stage allocations"
+                )
+
+            version = int(db.execute(
+                """SELECT COALESCE(MAX(version), 0) + 1 AS version
+                   FROM orchestration_budget_amendments WHERE plan_id = ?""",
+                (plan["plan_id"],),
+            ).fetchone()["version"])
+            payload = seal_model_payload(
+                BudgetAmendment,
+                {
+                    "schema_version": "1.0",
+                    "amendment_id": amendment_id,
+                    "amendment_version": version,
+                    "operation_key": operation_key,
+                    "task_id": task_id,
+                    "project_id": task.project_id,
+                    "plan_id": plan["plan_id"],
+                    "task_version_before": expected_task_version,
+                    "task_version_after": next_task_version,
+                    "plan_version_before": expected_plan_version,
+                    "plan_version_after": next_plan_version,
+                    "inventory_id": inventory.inventory_id,
+                    "inventory_sha256": inventory.content_sha256,
+                    "methodology_id": methodology.methodology_id,
+                    "methodology_version": methodology.version,
+                    "methodology_sha256": methodology_sha256(methodology),
+                    "contract_id": contract.contract_id,
+                    "contract_schema_version": contract.schema_version,
+                    "contract_sha256": contract_sha256(contract),
+                    "stage_key": route.stage_key,
+                    "stage_allocations_sha256": stage_allocations_sha256,
+                    "previous_total_token_budget": previous_tokens,
+                    "amended_total_token_budget": amended_total_token_budget,
+                    "previous_total_cost_budget_usd": previous_cost,
+                    "amended_total_cost_budget_usd": amended_total_cost_budget_usd,
+                    "prior_policy": prior_policy,
+                    "resulting_policy": resulting_policy,
+                    "claim_requires_policy_rederivation": True,
+                    "actor": actor,
+                    "reason": safe_reason,
+                    "created_at": now,
+                },
+            )
+            amendment = BudgetAmendment.model_validate(payload)
+            db.execute(
+                """INSERT INTO orchestration_budget_amendments (
+                       amendment_id, plan_id, task_id, version, operation_key,
+                       payload, created_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    amendment_id,
+                    plan["plan_id"],
+                    task_id,
+                    version,
+                    operation_key,
+                    self._json(amendment.model_dump(mode="json")),
+                    now,
+                ),
+            )
+            self.tasks._insert_event(
+                db,
+                task_id=task_id,
+                event_type="orchestration.budget_amended",
+                actor=actor,
+                payload={
+                    "amendment_id": amendment_id,
+                    "amendment_version": version,
+                    "plan_id": plan["plan_id"],
+                    "stage_key": route.stage_key,
+                    "previous_total_token_budget": previous_tokens,
+                    "amended_total_token_budget": amended_total_token_budget,
+                    "previous_total_cost_budget_usd": previous_cost,
+                    "amended_total_cost_budget_usd": amended_total_cost_budget_usd,
+                    "prior_policy_sha256": prior_policy.content_sha256,
+                    "resulting_policy_sha256": resulting_policy.content_sha256,
+                    "stage_allocations_sha256": stage_allocations_sha256,
+                    "task_version": next_task_version,
+                    "plan_version": next_plan_version,
+                    "reason": safe_reason,
+                },
+                created_at=now,
+            )
+        return self.require_budget_amendment(amendment_id)
+
+    def require_budget_amendment(self, amendment_id: str) -> BudgetAmendment:
+        with closing(self._connect()) as db:
+            row = db.execute(
+                """SELECT * FROM orchestration_budget_amendments
+                   WHERE amendment_id = ?""",
+                (amendment_id,),
+            ).fetchone()
+        if row is None:
+            raise OrchestrationNotFoundError(amendment_id)
+        return self._budget_amendment(row)
 
     def preview_routing_policy(
         self,
@@ -1410,6 +1831,54 @@ class OrchestrationStore:
         return values
 
     @staticmethod
+    def _same_optional_money(left: float | None, right: float | None) -> bool:
+        return left == right
+
+    @classmethod
+    def _budget_amendment_matches_request(
+        cls,
+        amendment: BudgetAmendment,
+        *,
+        task_id: str,
+        amended_total_token_budget: int,
+        amended_total_cost_budget_usd: float | None,
+        expected_task_version: int,
+        expected_plan_version: int,
+        route: StageRouteDecision | None,
+        contract: TaskContract | None,
+        actor: str,
+        reason: str,
+    ) -> bool:
+        # The durable request identity intentionally uses the canonical redacted
+        # reason. Raw secrets are never part of a replay fingerprint or receipt.
+        if reason != redact_text(reason):
+            return False
+        return bool(
+            amendment.task_id == task_id
+            and amendment.amended_total_token_budget
+            == amended_total_token_budget
+            and cls._same_optional_money(
+                amendment.amended_total_cost_budget_usd,
+                amended_total_cost_budget_usd,
+            )
+            and amendment.task_version_before == expected_task_version
+            and amendment.plan_version_before == expected_plan_version
+            and route is not None
+            and amendment.project_id == route.project_id
+            and amendment.inventory_id == route.inventory_id
+            and amendment.inventory_sha256 == route.inventory_sha256
+            and amendment.stage_key == route.stage_key
+            and amendment.prior_policy.role == route.role
+            and amendment.prior_policy.pinned_runtime == route.runtime
+            and contract is not None
+            and amendment.contract_id == contract.contract_id
+            and amendment.contract_schema_version == contract.schema_version
+            and amendment.contract_sha256 == contract_sha256(contract)
+            and amendment.actor == actor
+            and amendment.reason == reason
+        )
+
+    @staticmethod
     def _id(prefix: str) -> str:
         return f"{prefix}_{uuid.uuid4().hex}"
 
@@ -1481,3 +1950,19 @@ class OrchestrationStore:
             decision_sha256=row["decision_sha256"], version=row["version"],
             actor=row["actor"], created_at=row["created_at"],
         )
+
+    @staticmethod
+    def _budget_amendment(row: sqlite3.Row) -> BudgetAmendment:
+        amendment = BudgetAmendment.model_validate_json(row["payload"])
+        if (
+            amendment.amendment_id != row["amendment_id"]
+            or amendment.plan_id != row["plan_id"]
+            or amendment.task_id != row["task_id"]
+            or amendment.amendment_version != row["version"]
+            or amendment.operation_key != row["operation_key"]
+            or amendment.created_at.isoformat() != row["created_at"]
+        ):
+            raise OrchestrationConflictError(
+                "Budget amendment row does not match its hash-sealed payload"
+            )
+        return amendment

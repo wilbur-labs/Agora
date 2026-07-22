@@ -273,6 +273,12 @@ class TaskProjectionStore:
             history_limit,
             history_offset,
         )
+        budget_amendments, budget_amendment_total = self._budget_amendments(
+            db,
+            plan.plan_id,
+            history_limit,
+            history_offset,
+        )
         usage, usage_total = self._usage(
             db,
             plan.plan_id,
@@ -368,6 +374,7 @@ class TaskProjectionStore:
             "approvals": approval_total,
             "attention": attention_total,
             "decisions": decision_total,
+            "budget_amendments": budget_amendment_total,
             "usage": usage_total,
             "audit_events": audit_total,
         }
@@ -395,6 +402,7 @@ class TaskProjectionStore:
                     "evidence",
                     "approvals",
                     "decisions",
+                    "budget_amendments",
                     "usage",
                     "audit_events",
                 )
@@ -452,6 +460,7 @@ class TaskProjectionStore:
             attention=attention,
             required_human_actions=required_actions,
             decisions=decisions,
+            budget_amendments=budget_amendments,
             usage=usage,
             audit_events=audit_events,
             budget=budget,
@@ -758,6 +767,19 @@ class TaskProjectionStore:
             (plan_id,),
         ).fetchone()["count"]
         return [self.orchestration._usage(row) for row in rows], total
+
+    def _budget_amendments(self, db, plan_id, limit, offset):
+        rows = db.execute(
+            """SELECT * FROM orchestration_budget_amendments WHERE plan_id = ?
+               ORDER BY version LIMIT ? OFFSET ?""",
+            (plan_id, limit, offset),
+        ).fetchall()
+        total = db.execute(
+            """SELECT COUNT(*) AS count FROM orchestration_budget_amendments
+               WHERE plan_id = ?""",
+            (plan_id,),
+        ).fetchone()["count"]
+        return [self.orchestration._budget_amendment(row) for row in rows], total
 
     def _audit_events(self, db, task_id, limit, offset):
         rows = db.execute(

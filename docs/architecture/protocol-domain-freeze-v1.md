@@ -119,6 +119,14 @@ required reviewer Stage. The policy is re-derived in the Run-claim transaction;
 it cannot substitute a runtime or alter the sealed methodology graph. Budget
 pressure must block before process spawn rather than remove a required review.
 
+When that protected-budget check is the only policy blocker, a versioned Task
+budget amendment may increase the total Task/Plan envelope without changing
+Stage allocations, reviewer requirements, or historical usage. The amendment
+records sealed policy snapshots before and after the increase and commits only
+when the resulting policy passes. Every subsequent Run claim still derives a
+new per-Run policy inside its own transaction; the amendment receipt is audit
+evidence, not dispatch authority.
+
 ### Gate
 
 ```text

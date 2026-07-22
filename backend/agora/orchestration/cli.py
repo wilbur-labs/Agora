@@ -82,6 +82,23 @@ def parser() -> argparse.ArgumentParser:
     decide.add_argument("--reason", required=True)
     decide.add_argument("--actor", default="user")
 
+    amend_budget = commands.add_parser(
+        "amend-budget",
+        help="Increase the Task envelope for a protected-budget retry",
+    )
+    amend_budget.add_argument("task_id")
+    amend_budget.add_argument("--tokens", type=int, required=True)
+    amend_budget.add_argument(
+        "--cost-usd",
+        type=float,
+        help="New configured cost envelope; omit to keep the current value",
+    )
+    amend_budget.add_argument("--expected-task-version", type=int, required=True)
+    amend_budget.add_argument("--expected-plan-version", type=int, required=True)
+    amend_budget.add_argument("--reason", required=True)
+    amend_budget.add_argument("--actor", default="user")
+    amend_budget.add_argument("--operation-key")
+
     for name, help_text in (
         ("next", "Run the next safe planning/review stage"),
         ("run", "Run stages until blocked or awaiting human approval"),
@@ -175,6 +192,26 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             print(json.dumps(decision.model_dump(mode="json"), ensure_ascii=False, indent=2))
             _print_status(service.status(args.task_id))
+            return 0
+        if args.command == "amend-budget":
+            amendment = service.amend_budget(
+                args.task_id,
+                amended_total_token_budget=args.tokens,
+                amended_total_cost_budget_usd=args.cost_usd,
+                expected_task_version=args.expected_task_version,
+                expected_plan_version=args.expected_plan_version,
+                reason=args.reason,
+                actor=args.actor,
+                operation_key=args.operation_key,
+            )
+            print(
+                json.dumps(
+                    amendment.model_dump(mode="json"),
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            _print_unified_status(service.unified_status(args.task_id))
             return 0
         if args.command == "next":
             run = asyncio.run(
@@ -377,6 +414,17 @@ def _print_unified_status(status) -> None:
             f"reserved={budget.cost_reserved_usd} settled={budget.cost_settled_usd} "
             f"remaining={budget.cost_remaining_usd}"
         )
+    if status.budget_amendments:
+        print("Budget amendments:")
+        for amendment in status.budget_amendments:
+            print(
+                f"  {amendment.amendment_id} v{amendment.amendment_version} "
+                f"tokens={amendment.previous_total_token_budget}->"
+                f"{amendment.amended_total_token_budget} "
+                f"cost={amendment.previous_total_cost_budget_usd}->"
+                f"{amendment.amended_total_cost_budget_usd} "
+                f"stage={amendment.stage_key}"
+            )
     next_action = status.next_safe_action
     if next_action.value is not None:
         print(

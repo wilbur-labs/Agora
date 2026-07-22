@@ -71,9 +71,10 @@ consume protected review capacity fails before process spawn and directs the
 caller to increase the Task budget or reduce scope without weakening the
 reviewer set.
 
-This increment does not add a budget-amendment command. The existing Stage
-allocator remains unchanged; the new guard makes its protected-review
-consequence explicit.
+The subsequent versioned Task budget-amendment boundary may increase the total
+Task/Plan envelope only when this protected-budget check is the sole policy
+blocker. It does not change the existing Stage allocator or reviewer set; see
+`task-budget-amendment-v1.md`.
 
 ## Persistence, Context, and recovery
 
@@ -98,6 +99,6 @@ fail closed.
 ## Deferred boundaries
 
 Dynamic runtime/model substitution, provider capability discovery, reviewer-set
-changes, policy migration, budget amendment, authenticated HTTP lifecycle
+changes, policy migration, Stage reallocation, authenticated HTTP lifecycle
 commands, parallel/DAG routing, exact provider usage, the missing authoritative
 AI-DLC graph, and Task Workbench UI remain separate reviewed increments.

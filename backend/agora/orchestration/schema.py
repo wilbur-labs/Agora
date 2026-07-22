@@ -115,6 +115,19 @@ def initialize_orchestration_schema(db: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_orchestration_decisions_plan_key_version
             ON orchestration_decisions(plan_id, decision_key, version DESC);
+
+        CREATE TABLE IF NOT EXISTS orchestration_budget_amendments (
+            amendment_id TEXT PRIMARY KEY,
+            plan_id TEXT NOT NULL REFERENCES orchestration_plans(plan_id),
+            task_id TEXT NOT NULL REFERENCES tasks(task_id),
+            version INTEGER NOT NULL,
+            operation_key TEXT NOT NULL UNIQUE,
+            payload TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(plan_id, version)
+        );
+        CREATE INDEX IF NOT EXISTS idx_orchestration_budget_amendments_plan_version
+            ON orchestration_budget_amendments(plan_id, version);
         """
     )
     columns = {row[1] for row in db.execute("PRAGMA table_info(orchestration_runs)")}

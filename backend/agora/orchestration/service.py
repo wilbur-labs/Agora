@@ -44,6 +44,7 @@ from .methodology import (
     methodology_sha256,
 )
 from .models import (
+    BudgetAmendment,
     Measurement,
     OrchestrationRun,
     PlanState,
@@ -220,6 +221,67 @@ class TaskOrchestrationService:
             decision_value=decision_value,
             rationale=rationale,
             actor=actor,
+        )
+
+    def amend_budget(
+        self,
+        task_id: str,
+        *,
+        amended_total_token_budget: int,
+        amended_total_cost_budget_usd: float | None = None,
+        expected_task_version: int,
+        expected_plan_version: int,
+        reason: str,
+        actor: str = "user",
+        operation_key: str | None = None,
+    ) -> BudgetAmendment:
+        task = self.tasks.get(task_id)
+        if task is None:
+            raise OrchestrationConflictError("Task not found")
+        plan = self.store.require_plan(task_id)
+        effective_cost_budget = (
+            plan.total_cost_budget_usd
+            if amended_total_cost_budget_usd is None
+            else amended_total_cost_budget_usd
+        )
+        contract_payload = task.metadata.get("task_contract")
+        if contract_payload is None:
+            contract = None
+        else:
+            contract = TaskContract.model_validate(contract_payload)
+            if (
+                task.metadata.get("task_contract_id") != contract.contract_id
+                or task.metadata.get("task_contract_schema_version")
+                != contract.schema_version
+                or task.metadata.get("task_contract_sha256")
+                != contract_sha256(contract)
+            ):
+                raise OrchestrationValidationError(
+                    "Pinned Task contract does not match its Task ledger binding"
+                )
+        key = operation_key or (
+            "budget:"
+            + canonical_sha256(
+                {
+                    "task_id": task_id,
+                    "expected_task_version": expected_task_version,
+                    "expected_plan_version": expected_plan_version,
+                    "amended_total_token_budget": amended_total_token_budget,
+                    "amended_total_cost_budget_usd": effective_cost_budget,
+                }
+            )[:32]
+        )
+        return self.store.amend_budget(
+            task_id,
+            amended_total_token_budget=amended_total_token_budget,
+            amended_total_cost_budget_usd=effective_cost_budget,
+            expected_task_version=expected_task_version,
+            expected_plan_version=expected_plan_version,
+            operation_key=key,
+            route=self.control_plane.get_stage_route(task_id),
+            contract=contract,
+            actor=actor,
+            reason=reason,
         )
 
     async def run_next(

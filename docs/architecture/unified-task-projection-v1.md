@@ -83,6 +83,13 @@ current reservation plus protected future reviewer budget at claim time. Legacy
 Runs may report no policy. Projection reads validate the stored content hash,
 never recreate historical rationale, and never change routing or budget state.
 
+Unified projection schema `7.0` adds paginated, hash-verified
+`budget_amendments`. Each receipt exposes the exact Task/Plan, inventory,
+methodology, contract, Stage allocation, version, and policy bindings before
+and after an envelope increase. The current budget projection reads the amended
+Plan totals, while historical Stage allocations and usage remain unchanged.
+Projection reads never reuse an amendment's resulting policy for dispatch.
+
 Formal progress counts only Control Plane Stages in `completed` state. A passed
 process, compatibility Run, or Gate cannot increase the completed count by
 itself. Operational Stages not yet configured in the Control Plane remain

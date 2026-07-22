@@ -65,6 +65,12 @@ Current recovery baseline (2026-07-22):
   methodology-graph changes. Kiro and Claude Code both returned explicit final
   approval; the complete comparable backend suite passed 466 tests with 18
   deselected.
+- Latest reviewed increment: a versioned, hash-sealed Task budget amendment for
+  a retry blocked only by protected review capacity. It increases the Task/Plan
+  total envelope under optimistic versions, preserves Stage allocations,
+  reviewer requirements, and historical usage, and records policy snapshots
+  before and after the atomic change. Kiro and Claude Code both approved; the
+  complete backend suite passed 474 tests with 18 deselected.
 
 ## 2026-07-18 — Latest transformation requirements recovery
 
@@ -999,6 +1005,83 @@ or historical usage, then force the routing policy to re-derive before another
 claim. Keep provider discovery, dynamic runtime substitution, authenticated
 HTTP, the missing authoritative AI-DLC graph, parallel/DAG routing, and Task
 Workbench UI deferred.
+
+## 2026-07-22 - Versioned Task budget amendment (reviewed)
+
+### Scope
+
+- [x] Added an append-only, hash-sealed `BudgetAmendment` bound to exact Task,
+  Plan, grouped inventory, methodology, concrete contract, routed Stage, Stage
+  allocation, and routing-policy inputs.
+- [x] Added `agora task amend-budget` with required Task/Plan optimistic
+  versions, bounded actor/reason, and replay-safe explicit or derived operation
+  keys.
+- [x] Limited amendments to a currently runnable formal route whose only policy
+  blocker is `protected_budget`; active operational or unsettled formal Runs
+  reject the mutation.
+- [x] Allowed only a strict increase to the Task/Plan total Token or configured
+  cost envelope. Unbounded cost remains unbounded, while Stage Token/cost
+  allocations, reviewer assignments, and historical usage remain unchanged.
+- [x] Re-derived the routing policy before and after the envelope update inside
+  one SQLite write transaction and rolled back unless the resulting policy is
+  fully dispatchable. The next Run claim still derives a new per-Run policy.
+- [x] Added additive `orchestration_budget_amendments` migration, Task audit
+  event, payload/row tamper validation, and unified projection schema `7.0`
+  with paginated amendment history.
+- [x] Added success/retry, insufficient-increase rollback, stale/replay,
+  active-Run, unbounded-cost, tamper, migration, projection, and CLI coverage.
+- [x] Run the complete backend verification set and Schema consistency checks.
+- [x] Obtain Kiro protocol/methodology/reconciliation review and fix all
+  actionable findings.
+- [x] Obtain independent Claude Code correctness/safety/regression review and
+  fix all actionable findings.
+- [x] Commit and push only after both review gates approve (the commit containing
+  this snapshot).
+
+### Current verification log
+
+- Formal protocol orchestration suite after all review fixes: 46 passed.
+- Expanded orchestration, routing, lifecycle, grouped-inventory, frozen-state,
+  protocol-Run, and Registry suite: 164 passed.
+- Final isolated system-Temp non-integration backend suite excluding the
+  deferred static-export Web UI test: 474 passed, 18 deselected, with the
+  existing Starlette/httpx warning and Windows Proactor cleanup warning.
+- A sandboxed full-suite run first passed 471 tests and hit only the two known
+  legacy tests that hard-code literal `/tmp` paths. The required sandbox-external
+  rerun passed all 474 selected tests.
+- Protocol Schema export consistency, isolated `compileall`, `agora task --help`
+  amendment smoke, and `git diff --check`: passed after all review fixes.
+- The migration regression drops the new ledger from an existing populated
+  database, reinitializes additively, and confirms the Task data is unchanged.
+- Claude Code core review initially returned `CHANGES_REQUESTED` for two medium
+  findings: replay matching omitted route/contract bindings, and store/model
+  cost comparisons used inconsistent tolerance. Replay now binds the route and
+  concrete contract, all cost comparisons are exact, and direct regressions
+  cover tiny decreases, route/contract forgery, a second amendment/version
+  chain, and an unsettled formal Run. Targeted re-review returned
+  `CLAUDE_CORE_APPROVE`.
+- Kiro protocol/methodology review initially returned `CHANGES_REQUESTED` for
+  receipt semantic hardening and clarity around redacted replay identity and
+  SQLite Stage-allocation serialization. Prior/resulting policy decision IDs
+  are now required to differ with resealed-forgery coverage; comments and docs
+  explicitly bind the canonical redacted reason and `BEGIN IMMEDIATE` writer
+  lock. Kiro re-reviewed the actual lock semantics and returned `KIRO_APPROVE`.
+- Claude integration review initially questioned the globally unique amendment
+  operation key. The repository-wide Control Plane contract, architecture text,
+  and a new cross-Task no-mutation regression prove that reuse must fail closed;
+  Claude retracted the finding and returned `CLAUDE_INTEGRATION_APPROVE`.
+- No frontend or authenticated HTTP contract changed; frontend validation is
+  not required for this increment.
+
+### Next safe action
+
+After the reviewed commit, define the smallest read-only, versioned provider
+usage-observation contract for native CLI results. It must distinguish exact,
+estimated, and unavailable Token/cost measurements, bind each observation to
+the Run and adapter provenance, and leave routing, runtime/model selection, and
+historical ledger entries unchanged. Provider capability discovery, dynamic
+runtime/model substitution, authenticated HTTP, the missing authoritative
+AI-DLC graph, parallel/DAG routing, and Task Workbench UI remain deferred.
 
 ## 2026-07-13
 

@@ -17,13 +17,22 @@ from agora.orchestration.models import Measurement, PlanState, RunState, StageSt
 from agora.orchestration.protocol_context import RepositoryRevision, resolve_git_revision
 from agora.orchestration.runtime import RuntimeCommand, RuntimeResult
 from agora.orchestration.service import TaskOrchestrationService
-from agora.orchestration.store import OrchestrationConflictError
+from agora.orchestration.store import (
+    OrchestrationConflictError,
+    OrchestrationValidationError,
+)
 from agora.projects import ProjectRegistry
 from agora.protocol.agent_adapter import AgentAdapterResult
-from agora.protocol.hashing import seal_model_payload
+from agora.protocol.hashing import seal_model_payload, seal_payload
 from agora.protocol.models import ContextPack, HandoffPack
 from agora.protocol.state_machines import GateStatus, StageStatus, TaskStatus
-from agora.tasks.models import AppendEventRequest, TaskRisk, TaskState, utc_now
+from agora.tasks.models import (
+    AppendEventRequest,
+    CreateTaskRequest,
+    TaskRisk,
+    TaskState,
+    utc_now,
+)
 from agora.tasks.store import TaskStore
 
 
@@ -251,6 +260,35 @@ def test_git_revision_is_commit_bound_and_rejects_a_dirty_worktree(tmp_path):
     tracked.write_text("dirty", encoding="utf-8")
     with pytest.raises(ValueError, match="clean Git worktree"):
         resolve_git_revision(root, repository_id="alpha")
+
+
+def test_schema_adds_budget_amendment_ledger_without_rewriting_existing_data(
+    tmp_path,
+):
+    tasks, _, _, task = _system(tmp_path)
+    with tasks._transaction() as db:
+        db.execute("DROP INDEX idx_orchestration_budget_amendments_plan_version")
+        db.execute("DROP TABLE orchestration_budget_amendments")
+
+    reopened = TaskStore(tasks.db_path)
+
+    assert reopened.get(task.task_id) == tasks.get(task.task_id)
+    with reopened._connect() as db:
+        columns = {
+            row[1]
+            for row in db.execute(
+                "PRAGMA table_info(orchestration_budget_amendments)"
+            )
+        }
+    assert columns == {
+        "amendment_id",
+        "plan_id",
+        "task_id",
+        "version",
+        "operation_key",
+        "payload",
+        "created_at",
+    }
 
 
 @pytest.mark.asyncio
@@ -551,7 +589,7 @@ async def test_unified_projection_reports_formal_progress_usage_and_human_action
 
     projection = service.unified_status(task.task_id)
 
-    assert projection.schema_version == "6.0"
+    assert projection.schema_version == "7.0"
     assert projection.task.task_id == task.task_id
     assert projection.task.state == TaskState.REQUIREMENTS
     assert projection.task_state_source == "control_plane"
@@ -870,7 +908,7 @@ async def test_cli_exposes_unified_projection_without_changing_legacy_status(
         ["status", task.task_id, "--protocol-v1", "--json", "--limit", "1"]
     ) == 0
     unified = json.loads(capsys.readouterr().out)
-    assert unified["schema_version"] == "6.0"
+    assert unified["schema_version"] == "7.0"
     assert unified["progress"]["source"] == "control_plane_stage_inventory"
     assert unified["progress"]["inventory_complete"] is True
     assert unified["task_state"] == "active"
@@ -894,6 +932,47 @@ async def test_cli_exposes_unified_projection_without_changing_legacy_status(
     legacy = json.loads(capsys.readouterr().out)
     assert "schema_version" not in legacy
     assert "plan" in legacy
+
+
+@pytest.mark.asyncio
+async def test_cli_amends_budget_with_explicit_versions_and_discloses_receipt(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    tasks, service, runner, task = _system(tmp_path, invalid_outputs=1)
+    first = await service.run_next(task.task_id, protocol_v1=True)
+    service.retry_protocol(task.task_id, first.stage_key)
+    current_task = tasks.get(task.task_id)
+    current_plan = service.store.require_plan(task.task_id)
+    monkeypatch.setattr(orchestration_cli, "build_service", lambda: service)
+
+    assert orchestration_cli.main(
+        [
+            "amend-budget",
+            task.task_id,
+            "--tokens",
+            "43500",
+            "--cost-usd",
+            "17.4",
+            "--expected-task-version",
+            str(current_task.version),
+            "--expected-plan-version",
+            str(current_plan.version),
+            "--reason",
+            "Restore protected review headroom",
+            "--actor",
+            "owner",
+        ]
+    ) == 0
+
+    output = capsys.readouterr().out
+    assert '"schema_version": "1.0"' in output
+    assert '"claim_requires_policy_rederivation": true' in output
+    assert "Budget amendments:" in output
+    assert "tokens=30000->43500" in output
+    assert "cost=12.0->17.4" in output
+    assert len(runner.prompts) == 1
 
 
 @pytest.mark.asyncio
@@ -1056,6 +1135,437 @@ async def test_protocol_retry_cannot_consume_protected_independent_review_budget
     assert service.control_plane.get_stage(
         task.task_id, first.stage_key
     ).status == StageStatus.READY
+
+
+@pytest.mark.asyncio
+async def test_versioned_budget_amendment_restores_retry_without_reallocating_stages(
+    tmp_path,
+):
+    tasks, service, runner, task = _system(tmp_path, invalid_outputs=1)
+    first = await service.run_next(task.task_id, protocol_v1=True)
+    service.retry_protocol(task.task_id, first.stage_key)
+    before_task = tasks.get(task.task_id)
+    before_status = service.status(task.task_id)
+    stage_allocations = [
+        (stage.stage_key, stage.token_budget, stage.cost_budget_usd)
+        for stage in before_status.stages
+    ]
+    usage_before = [item.model_dump(mode="json") for item in before_status.usage]
+
+    amendment = service.amend_budget(
+        task.task_id,
+        amended_total_token_budget=43_500,
+        amended_total_cost_budget_usd=17.4,
+        expected_task_version=before_task.version,
+        expected_plan_version=before_status.plan.version,
+        operation_key="budget:test-retry-headroom",
+        actor="owner",
+        reason="Restore retry headroom without weakening independent review",
+    )
+
+    assert amendment.amendment_version == 1
+    assert amendment.previous_total_token_budget == 30_000
+    assert amendment.amended_total_token_budget == 43_500
+    assert amendment.previous_total_cost_budget_usd == 12
+    assert amendment.amended_total_cost_budget_usd == 17.4
+    assert amendment.prior_policy.dispatchable is False
+    assert amendment.resulting_policy.dispatchable is True
+    assert next(
+        item
+        for item in amendment.prior_policy.checks
+        if item.constraint == "protected_budget"
+    ).satisfied is False
+    assert all(item.satisfied for item in amendment.resulting_policy.checks)
+    assert amendment.prior_policy.required_reviewers == ["claude", "kiro"]
+    assert (
+        amendment.prior_policy.reviewer_assignments
+        == amendment.resulting_policy.reviewer_assignments
+    )
+    assert amendment.claim_requires_policy_rederivation is True
+
+    after_task = tasks.get(task.task_id)
+    after_status = service.status(task.task_id)
+    assert after_task.version == before_task.version + 1
+    assert after_task.budget.max_cost_usd == 17.4
+    assert after_status.plan.version == before_status.plan.version + 1
+    assert after_status.plan.total_token_budget == 43_500
+    assert after_status.plan.total_cost_budget_usd == 17.4
+    assert [
+        (stage.stage_key, stage.token_budget, stage.cost_budget_usd)
+        for stage in after_status.stages
+    ] == stage_allocations
+    assert [item.model_dump(mode="json") for item in after_status.usage] == usage_before
+    assert service.store.budget_amendments(after_status.plan.plan_id) == [amendment]
+
+    replay = service.amend_budget(
+        task.task_id,
+        amended_total_token_budget=43_500,
+        amended_total_cost_budget_usd=17.4,
+        expected_task_version=before_task.version,
+        expected_plan_version=before_status.plan.version,
+        operation_key="budget:test-retry-headroom",
+        actor="owner",
+        reason="Restore retry headroom without weakening independent review",
+    )
+    assert replay == amendment
+    assert tasks.get(task.task_id).version == after_task.version
+    assert service.store.require_plan(task.task_id).version == after_status.plan.version
+
+    projection = service.unified_status(task.task_id)
+    assert projection.schema_version == "7.0"
+    assert projection.budget_amendments == [amendment]
+    assert projection.collection_totals["budget_amendments"] == 1
+    assert projection.collection_pages["budget_amendments"].total == 1
+    assert projection.budget.token_allocated == 43_500
+    assert projection.budget.cost_allocated_usd == 17.4
+
+    recovered = await service.run_next(task.task_id, protocol_v1=True)
+    assert len(runner.prompts) == 2
+    assert recovered.token_reserved == 13_500
+    assert recovered.cost_reserved_usd == 5.4
+    assert recovered.routing_policy.task_token_budget == 43_500
+    assert recovered.routing_policy.task_cost_budget_usd == 17.4
+
+
+@pytest.mark.asyncio
+async def test_budget_amendment_versions_chain_across_distinct_retries(tmp_path):
+    tasks, service, _, task = _system(tmp_path, invalid_outputs=2)
+    first_run = await service.run_next(task.task_id, protocol_v1=True)
+    service.retry_protocol(task.task_id, first_run.stage_key)
+    first_task = tasks.get(task.task_id)
+    first_plan = service.store.require_plan(task.task_id)
+    first_amendment = service.amend_budget(
+        task.task_id,
+        amended_total_token_budget=43_500,
+        amended_total_cost_budget_usd=17.4,
+        expected_task_version=first_task.version,
+        expected_plan_version=first_plan.version,
+        operation_key="budget:chain:first",
+        actor="owner",
+        reason="Restore first retry headroom",
+    )
+
+    second_run = await service.run_next(task.task_id, protocol_v1=True)
+    service.retry_protocol(task.task_id, second_run.stage_key)
+    second_task = tasks.get(task.task_id)
+    second_plan = service.store.require_plan(task.task_id)
+    second_amendment = service.amend_budget(
+        task.task_id,
+        amended_total_token_budget=57_000,
+        amended_total_cost_budget_usd=22.8,
+        expected_task_version=second_task.version,
+        expected_plan_version=second_plan.version,
+        operation_key="budget:chain:second",
+        actor="owner",
+        reason="Restore second retry headroom",
+    )
+
+    assert first_amendment.amendment_version == 1
+    assert second_amendment.amendment_version == 2
+    assert second_amendment.task_version_before == first_amendment.task_version_after
+    assert second_amendment.plan_version_before > first_amendment.plan_version_after
+    assert second_amendment.plan_version_after == (
+        second_amendment.plan_version_before + 1
+    )
+    assert second_amendment.previous_total_token_budget == 43_500
+    assert second_amendment.previous_total_cost_budget_usd == 17.4
+    assert service.store.budget_amendments(second_plan.plan_id) == [
+        first_amendment,
+        second_amendment,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_budget_amendment_rolls_back_when_increase_is_insufficient(tmp_path):
+    tasks, service, _, task = _system(tmp_path, invalid_outputs=1)
+    first = await service.run_next(task.task_id, protocol_v1=True)
+    service.retry_protocol(task.task_id, first.stage_key)
+    before_task = tasks.get(task.task_id)
+    before_status = service.status(task.task_id)
+    events_before = tasks.events(task.task_id)
+
+    with pytest.raises(
+        OrchestrationValidationError,
+        match="may not reduce the Task cost envelope",
+    ):
+        service.amend_budget(
+            task.task_id,
+            amended_total_token_budget=30_000,
+            amended_total_cost_budget_usd=12 - 5e-10,
+            expected_task_version=before_task.version,
+            expected_plan_version=before_status.plan.version,
+            operation_key="budget:tiny-cost-decrease",
+            actor="owner",
+            reason="Tiny decreases must still fail closed",
+        )
+
+    with pytest.raises(
+        OrchestrationValidationError,
+        match="still does not satisfy protected budget",
+    ):
+        service.amend_budget(
+            task.task_id,
+            amended_total_token_budget=30_001,
+            amended_total_cost_budget_usd=12.01,
+            expected_task_version=before_task.version,
+            expected_plan_version=before_status.plan.version,
+            operation_key="budget:insufficient",
+            actor="owner",
+            reason="Too little headroom",
+        )
+
+    after_task = tasks.get(task.task_id)
+    after_status = service.status(task.task_id)
+    assert after_task == before_task
+    assert after_status.plan == before_status.plan
+    assert after_status.stages == before_status.stages
+    assert after_status.usage == before_status.usage
+    assert tasks.events(task.task_id) == events_before
+    assert service.store.budget_amendments(before_status.plan.plan_id) == []
+
+
+@pytest.mark.asyncio
+async def test_budget_amendment_rejects_stale_or_conflicting_replay_inputs(tmp_path):
+    tasks, service, _, task = _system(tmp_path, invalid_outputs=1)
+    first = await service.run_next(task.task_id, protocol_v1=True)
+    service.retry_protocol(task.task_id, first.stage_key)
+    before_task = tasks.get(task.task_id)
+    before_plan = service.store.require_plan(task.task_id)
+    service.amend_budget(
+        task.task_id,
+        amended_total_token_budget=43_500,
+        amended_total_cost_budget_usd=17.4,
+        expected_task_version=before_task.version,
+        expected_plan_version=before_plan.version,
+        operation_key="budget:replay-guard",
+        actor="owner",
+        reason="Restore review headroom",
+    )
+
+    with pytest.raises(OrchestrationConflictError, match="different inputs"):
+        service.amend_budget(
+            task.task_id,
+            amended_total_token_budget=44_000,
+            amended_total_cost_budget_usd=17.4,
+            expected_task_version=before_task.version,
+            expected_plan_version=before_plan.version,
+            operation_key="budget:replay-guard",
+            actor="owner",
+            reason="Restore review headroom",
+        )
+    contract = load_task_contract(CONTRACT_PATH)
+    current_route = service.control_plane.get_stage_route(task.task_id)
+    with pytest.raises(OrchestrationConflictError, match="different inputs"):
+        service.store.amend_budget(
+            task.task_id,
+            amended_total_token_budget=43_500,
+            amended_total_cost_budget_usd=17.4,
+            expected_task_version=before_task.version,
+            expected_plan_version=before_plan.version,
+            operation_key="budget:replay-guard",
+            route=current_route.model_copy(update={"stage_key": "forged_route"}),
+            contract=contract,
+            actor="owner",
+            reason="Restore review headroom",
+        )
+    with pytest.raises(OrchestrationConflictError, match="different inputs"):
+        service.store.amend_budget(
+            task.task_id,
+            amended_total_token_budget=43_500,
+            amended_total_cost_budget_usd=17.4,
+            expected_task_version=before_task.version,
+            expected_plan_version=before_plan.version,
+            operation_key="budget:replay-guard",
+            route=current_route,
+            contract=contract.model_copy(update={"contract_id": "forged_contract"}),
+            actor="owner",
+            reason="Restore review headroom",
+        )
+    second_task = tasks.create(
+        CreateTaskRequest(
+            project_id=task.project_id,
+            title="Second Task must not share an operation key",
+            kind="architecture",
+        )
+    )
+    with pytest.raises(OrchestrationConflictError, match="different inputs"):
+        service.store.amend_budget(
+            second_task.task_id,
+            amended_total_token_budget=43_500,
+            amended_total_cost_budget_usd=17.4,
+            expected_task_version=before_task.version,
+            expected_plan_version=before_plan.version,
+            operation_key="budget:replay-guard",
+            route=current_route,
+            contract=contract,
+            actor="owner",
+            reason="Restore review headroom",
+        )
+    assert tasks.get(second_task.task_id) == second_task
+    with pytest.raises(OrchestrationConflictError, match="Expected Task version"):
+        service.amend_budget(
+            task.task_id,
+            amended_total_token_budget=44_000,
+            amended_total_cost_budget_usd=18,
+            expected_task_version=before_task.version,
+            expected_plan_version=before_plan.version,
+            operation_key="budget:stale-writer",
+            actor="owner",
+            reason="Stale second amendment",
+        )
+
+
+@pytest.mark.asyncio
+async def test_budget_amendment_rejects_active_run_and_unbounded_cost_rebinding(
+    tmp_path,
+):
+    tasks, service, _, task = _system(tmp_path, invalid_outputs=1)
+    first = await service.run_next(task.task_id, protocol_v1=True)
+    service.retry_protocol(task.task_id, first.stage_key)
+    current_task = tasks.get(task.task_id)
+    current_plan = service.store.require_plan(task.task_id)
+    with tasks._transaction() as db:
+        db.execute(
+            "UPDATE orchestration_runs SET state = ? WHERE run_id = ?",
+            (RunState.RUNNING.value, first.run_id),
+        )
+    with pytest.raises(OrchestrationConflictError, match="operational Run is active"):
+        service.amend_budget(
+            task.task_id,
+            amended_total_token_budget=43_500,
+            amended_total_cost_budget_usd=17.4,
+            expected_task_version=current_task.version,
+            expected_plan_version=current_plan.version,
+            operation_key="budget:active-run",
+            actor="owner",
+            reason="Must wait for active Run",
+        )
+    with tasks._transaction() as db:
+        db.execute(
+            "UPDATE orchestration_runs SET state = ? WHERE run_id = ?",
+            (first.state.value, first.run_id),
+        )
+        db.execute(
+            """UPDATE protocol_runs
+               SET protocol_state_payload = NULL,
+                   handoff_pack_id = NULL,
+                   handoff_payload = NULL,
+                   handoff_sha256 = NULL,
+                   adapter_error_code = NULL,
+                   attention_required = 0,
+                   attention_item_id = NULL,
+                   settled_at = NULL
+               WHERE run_id = ?""",
+            (first.run_id,),
+        )
+    with pytest.raises(OrchestrationConflictError, match="formal Run is unsettled"):
+        service.amend_budget(
+            task.task_id,
+            amended_total_token_budget=43_500,
+            amended_total_cost_budget_usd=17.4,
+            expected_task_version=current_task.version,
+            expected_plan_version=current_plan.version,
+            operation_key="budget:unsettled-formal-run",
+            actor="owner",
+            reason="Must wait for formal settlement",
+        )
+
+    _, unbounded_service, _, unbounded_task = _system(
+        tmp_path / "unbounded",
+        invalid_outputs=1,
+        cost_budget_usd=None,
+    )
+    unbounded_first = await unbounded_service.run_next(
+        unbounded_task.task_id,
+        protocol_v1=True,
+    )
+    unbounded_service.retry_protocol(
+        unbounded_task.task_id,
+        unbounded_first.stage_key,
+    )
+    unbounded_current_task = unbounded_service.tasks.get(unbounded_task.task_id)
+    unbounded_plan = unbounded_service.store.require_plan(unbounded_task.task_id)
+    with pytest.raises(
+        OrchestrationValidationError,
+        match="may not replace an unbounded cost envelope",
+    ):
+        unbounded_service.amend_budget(
+            unbounded_task.task_id,
+            amended_total_token_budget=43_500,
+            amended_total_cost_budget_usd=1,
+            expected_task_version=unbounded_current_task.version,
+            expected_plan_version=unbounded_plan.version,
+            operation_key="budget:unbounded-cost",
+            actor="owner",
+            reason="Do not introduce a cost ceiling",
+        )
+
+
+@pytest.mark.asyncio
+async def test_budget_amendment_hash_tamper_fails_closed_in_projection(tmp_path):
+    tasks, service, _, task = _system(tmp_path, invalid_outputs=1)
+    first = await service.run_next(task.task_id, protocol_v1=True)
+    service.retry_protocol(task.task_id, first.stage_key)
+    current_task = tasks.get(task.task_id)
+    current_plan = service.store.require_plan(task.task_id)
+    amendment = service.amend_budget(
+        task.task_id,
+        amended_total_token_budget=43_500,
+        amended_total_cost_budget_usd=17.4,
+        expected_task_version=current_task.version,
+        expected_plan_version=current_plan.version,
+        operation_key="budget:tamper",
+        actor="owner",
+        reason="Restore review headroom",
+    )
+    with tasks._transaction() as db:
+        row = db.execute(
+            """SELECT payload FROM orchestration_budget_amendments
+               WHERE amendment_id = ?""",
+            (amendment.amendment_id,),
+        ).fetchone()
+        payload = json.loads(row["payload"])
+        payload["reason"] = "tampered reason"
+        db.execute(
+            """UPDATE orchestration_budget_amendments SET payload = ?
+               WHERE amendment_id = ?""",
+            (json.dumps(payload), amendment.amendment_id),
+        )
+
+    with pytest.raises(ValidationError, match="content_sha256"):
+        service.unified_status(task.task_id)
+
+    payload = amendment.model_dump(mode="json")
+    payload["resulting_policy"]["reviewer_assignments"][0]["runtime"] = (
+        "forged_reviewer_runtime"
+    )
+    payload["resulting_policy"] = seal_payload(payload["resulting_policy"])
+    payload = seal_payload(payload)
+    with tasks._transaction() as db:
+        db.execute(
+            """UPDATE orchestration_budget_amendments SET payload = ?
+               WHERE amendment_id = ?""",
+            (json.dumps(payload), amendment.amendment_id),
+        )
+
+    with pytest.raises(ValidationError, match="reviewer_assignments"):
+        service.unified_status(task.task_id)
+
+    payload = amendment.model_dump(mode="json")
+    payload["resulting_policy"]["decision_id"] = payload["prior_policy"][
+        "decision_id"
+    ]
+    payload["resulting_policy"] = seal_payload(payload["resulting_policy"])
+    payload = seal_payload(payload)
+    with tasks._transaction() as db:
+        db.execute(
+            """UPDATE orchestration_budget_amendments SET payload = ?
+               WHERE amendment_id = ?""",
+            (json.dumps(payload), amendment.amendment_id),
+        )
+
+    with pytest.raises(ValidationError, match="distinct decision IDs"):
+        service.unified_status(task.task_id)
 
 
 @pytest.mark.asyncio

@@ -4,7 +4,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
 from agora.attention.models import AttentionItem
 from agora.control_plane.models import (
@@ -192,7 +192,7 @@ class RoutingPolicyDecision(HashSealedModel):
     settled_token_debit: int = Field(ge=0)
     active_token_reservations: int = Field(ge=0)
     available_tokens_before_dispatch: int = Field(ge=0)
-    current_run_token_reservation: int = Field(ge=1)
+    current_run_token_reservation: int = Field(ge=0)
     protected_future_reviewer_tokens: int = Field(ge=0)
     task_cost_budget_usd: float | None = Field(default=None, ge=0)
     settled_cost_debit_usd: float | None = Field(default=None, ge=0)
@@ -210,6 +210,181 @@ class RoutingPolicyDecision(HashSealedModel):
         min_length=5,
         max_length=10,
     )
+
+
+class BudgetAmendment(HashSealedModel):
+    """Versioned, hash-bound increase to one Task orchestration envelope."""
+
+    schema_version: Literal["1.0"] = "1.0"
+    amendment_id: StableId
+    amendment_version: int = Field(ge=1)
+    operation_key: StableId
+    task_id: StableId
+    project_id: StableId
+    plan_id: StableId
+    task_version_before: int = Field(ge=1)
+    task_version_after: int = Field(ge=2)
+    plan_version_before: int = Field(ge=1)
+    plan_version_after: int = Field(ge=2)
+    inventory_id: StableId
+    inventory_sha256: Sha256Hex
+    methodology_id: StableId
+    methodology_version: Annotated[str, Field(pattern=r"^\d+\.\d+$")]
+    methodology_sha256: Sha256Hex
+    contract_id: StableId
+    contract_schema_version: Annotated[str, Field(pattern=r"^1\.[0-9]+$")]
+    contract_sha256: Sha256Hex
+    stage_key: StableId
+    stage_allocations_sha256: Sha256Hex
+    previous_total_token_budget: int = Field(ge=3_000, le=10_000_000)
+    amended_total_token_budget: int = Field(ge=3_000, le=10_000_000)
+    previous_total_cost_budget_usd: float | None = Field(
+        default=None,
+        ge=0,
+        allow_inf_nan=False,
+    )
+    amended_total_cost_budget_usd: float | None = Field(
+        default=None,
+        ge=0,
+        allow_inf_nan=False,
+    )
+    prior_policy: RoutingPolicyDecision
+    resulting_policy: RoutingPolicyDecision
+    claim_requires_policy_rederivation: Literal[True] = True
+    actor: Annotated[str, Field(min_length=1, max_length=128)]
+    reason: Annotated[str, Field(min_length=1, max_length=1000)]
+    created_at: AwareDatetime
+
+    @model_validator(mode="after")
+    def validate_amendment_semantics(self):
+        if self.task_version_after != self.task_version_before + 1:
+            raise ValueError("Budget amendment must increment the Task version once")
+        if self.plan_version_after != self.plan_version_before + 1:
+            raise ValueError("Budget amendment must increment the Plan version once")
+
+        token_increased = (
+            self.amended_total_token_budget > self.previous_total_token_budget
+        )
+        if self.amended_total_token_budget < self.previous_total_token_budget:
+            raise ValueError("Budget amendment cannot decrease the Token envelope")
+        if (self.previous_total_cost_budget_usd is None) != (
+            self.amended_total_cost_budget_usd is None
+        ):
+            raise ValueError("Budget amendment cannot add or remove a cost ceiling")
+        cost_increased = False
+        if self.previous_total_cost_budget_usd is not None:
+            assert self.amended_total_cost_budget_usd is not None
+            if (
+                self.amended_total_cost_budget_usd
+                < self.previous_total_cost_budget_usd
+            ):
+                raise ValueError("Budget amendment cannot decrease the cost envelope")
+            cost_increased = (
+                self.amended_total_cost_budget_usd
+                > self.previous_total_cost_budget_usd
+            )
+        if not token_increased and not cost_increased:
+            raise ValueError(
+                "Budget amendment must strictly increase at least one envelope"
+            )
+
+        expected_bindings = {
+            "task_id": self.task_id,
+            "project_id": self.project_id,
+            "plan_id": self.plan_id,
+            "inventory_id": self.inventory_id,
+            "inventory_sha256": self.inventory_sha256,
+            "methodology_id": self.methodology_id,
+            "methodology_version": self.methodology_version,
+            "methodology_sha256": self.methodology_sha256,
+            "stage_key": self.stage_key,
+        }
+        for policy_name, policy in (
+            ("prior", self.prior_policy),
+            ("resulting", self.resulting_policy),
+        ):
+            for field_name, expected in expected_bindings.items():
+                if getattr(policy, field_name) != expected:
+                    raise ValueError(
+                        f"Budget amendment {policy_name} policy {field_name} binding differs"
+                    )
+
+        if self.prior_policy.task_token_budget != self.previous_total_token_budget:
+            raise ValueError("Prior policy Token budget differs from the prior envelope")
+        if self.resulting_policy.task_token_budget != self.amended_total_token_budget:
+            raise ValueError("Resulting policy Token budget differs from the amended envelope")
+        if (
+            self.prior_policy.task_cost_budget_usd
+            != self.previous_total_cost_budget_usd
+        ):
+            raise ValueError("Prior policy cost budget differs from the prior envelope")
+        if (
+            self.resulting_policy.task_cost_budget_usd
+            != self.amended_total_cost_budget_usd
+        ):
+            raise ValueError("Resulting policy cost budget differs from the amended envelope")
+
+        invariant_policy_fields = (
+            "policy_id",
+            "policy_version",
+            "policy_sha256",
+            "role",
+            "pinned_runtime",
+            "task_risk",
+            "required_capabilities",
+            "runtime_capabilities",
+            "required_reviewers",
+            "reviewer_assignments",
+            "settled_token_debit",
+            "active_token_reservations",
+            "current_run_token_reservation",
+            "protected_future_reviewer_tokens",
+            "settled_cost_debit_usd",
+            "active_cost_reservations_usd",
+            "current_run_cost_reservation_usd",
+            "protected_future_reviewer_cost_usd",
+        )
+        for field_name in invariant_policy_fields:
+            if getattr(self.prior_policy, field_name) != getattr(
+                self.resulting_policy,
+                field_name,
+            ):
+                raise ValueError(
+                    f"Budget amendment changed invariant policy field {field_name}"
+                )
+        if self.prior_policy.decision_id == self.resulting_policy.decision_id:
+            raise ValueError(
+                "Prior and resulting policies must have distinct decision IDs"
+            )
+
+        prior_checks = {
+            check.constraint: check.satisfied for check in self.prior_policy.checks
+        }
+        resulting_checks = {
+            check.constraint: check.satisfied
+            for check in self.resulting_policy.checks
+        }
+        expected_constraints = {
+            "stage_assignment",
+            "runtime_capability",
+            "reviewer_coverage",
+            "risk_coverage",
+            "protected_budget",
+        }
+        if set(prior_checks) != expected_constraints or len(prior_checks) != 5:
+            raise ValueError("Prior policy must contain every routing constraint once")
+        if set(resulting_checks) != expected_constraints or len(resulting_checks) != 5:
+            raise ValueError("Resulting policy must contain every routing constraint once")
+        if self.prior_policy.dispatchable or prior_checks["protected_budget"]:
+            raise ValueError("Prior policy must be blocked by protected budget")
+        if not all(
+            prior_checks[constraint]
+            for constraint in expected_constraints - {"protected_budget"}
+        ):
+            raise ValueError("Prior policy may only be blocked by protected budget")
+        if not self.resulting_policy.dispatchable or not all(resulting_checks.values()):
+            raise ValueError("Resulting policy must be fully dispatchable")
+        return self
 
 
 class OrchestrationRun(StrictModel):
@@ -431,7 +606,7 @@ class UnifiedBudgetProjection(StrictModel):
 
 
 class UnifiedTaskProjection(StrictModel):
-    schema_version: Literal["6.0"] = "6.0"
+    schema_version: Literal["7.0"] = "7.0"
     snapshot_at: str
     task: TaskManifest
     task_state: TaskStatus | None
@@ -458,6 +633,7 @@ class UnifiedTaskProjection(StrictModel):
     attention: list[AttentionItem]
     required_human_actions: list[RequiredHumanAction]
     decisions: list[TaskDecision]
+    budget_amendments: list[BudgetAmendment]
     usage: list[UsageLedgerEntry]
     audit_events: list[UnifiedAuditEvent]
     budget: UnifiedBudgetProjection
