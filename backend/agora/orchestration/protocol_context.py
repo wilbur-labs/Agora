@@ -26,7 +26,7 @@ from agora.protocol.models import (
 from agora.tasks.models import TaskManifest
 
 from .contracts import StageTaskContract, TaskContract, contract_sha256
-from .models import OrchestrationStage, TaskDecision
+from .models import OrchestrationStage, RoutingPolicyDecision, TaskDecision
 
 
 PROTOCOL_PROMPT_LIMIT = 24 * 1024
@@ -95,6 +95,7 @@ def build_protocol_run_definition(
     revision: RepositoryRevision,
     prior_artifacts: Sequence[Artifact],
     decisions: Sequence[TaskDecision],
+    routing_policy: RoutingPolicyDecision,
     generated_at: datetime | str,
     timeout_seconds: int,
     max_output_bytes: int = 1_000_000,
@@ -105,6 +106,15 @@ def build_protocol_run_definition(
     role = next(item for item in contract.roles if item.role_id == stage_contract.role_id)
     if role.runtime != stage.adapter:
         raise ValueError("Task contract runtime does not match the claimed Stage adapter")
+    if (
+        not routing_policy.dispatchable
+        or routing_policy.task_id != task.task_id
+        or routing_policy.project_id != task.project_id
+        or routing_policy.stage_key != stage.stage_key
+        or routing_policy.role != stage.role
+        or routing_policy.pinned_runtime != stage.adapter
+    ):
+        raise ValueError("Routing policy does not authorize the pinned Stage assignment")
     if task.project_id != revision.repository_id:
         raise ValueError("Repository identity must match the Task project")
 
@@ -176,6 +186,20 @@ def build_protocol_run_definition(
                 f"git:{revision.repository_id}:{revision.ref}:{revision.commit_sha}"
             ),
         ),
+        _context_entry(
+            prefix="policy",
+            title="Explainable pinned runtime and protected review budget",
+            content=json.dumps(
+                routing_policy.model_dump(mode="json"),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            source_ref=(
+                f"routing-policy:{routing_policy.decision_id}:"
+                f"{routing_policy.content_sha256}"
+            ),
+        ),
     ]
     task_memory = [
         _context_entry(
@@ -231,8 +255,8 @@ def build_protocol_run_definition(
         "budget": RunBudget(
             max_seconds=timeout_seconds,
             max_output_bytes=max_output_bytes,
-            max_model_tokens=stage.token_budget,
-            max_cost_usd=stage.cost_budget_usd,
+            max_model_tokens=routing_policy.current_run_token_reservation,
+            max_cost_usd=routing_policy.current_run_cost_reservation_usd,
         ),
     }
     context_pack = ContextPack.model_validate(seal_model_payload(ContextPack, payload))

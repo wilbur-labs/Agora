@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -17,15 +17,19 @@ from agora.protocol.models import (
     Approval,
     ArtifactVersionRef,
     Evidence,
+    HashSealedModel,
     ProcessStatus,
+    ProtocolModel,
     SchemaStatus,
     SemanticStageResult,
+    Sha256Hex,
+    StableId,
     StageInventory,
     StageInventoryItem,
     TransportStatus,
 )
 from agora.protocol.state_machines import TaskStatus
-from agora.tasks.models import TaskManifest
+from agora.tasks.models import TaskManifest, TaskRisk
 
 
 class StrictModel(BaseModel):
@@ -133,6 +137,81 @@ class OrchestrationStage(StrictModel):
     updated_at: str
 
 
+class RoutingConstraintCheck(ProtocolModel):
+    constraint: Literal[
+        "stage_assignment",
+        "runtime_capability",
+        "reviewer_coverage",
+        "risk_coverage",
+        "protected_budget",
+    ]
+    satisfied: bool
+    detail: Annotated[str, Field(min_length=1, max_length=1000)]
+
+
+class RoutingReviewerAssignment(ProtocolModel):
+    runtime: StableId
+    role: StableId
+    stage_key: StableId
+    independent_from_roles: list[StableId] = Field(min_length=1, max_length=20)
+    required_capabilities: list[StableId] = Field(min_length=1, max_length=20)
+
+
+class RoutingPolicyDecision(HashSealedModel):
+    """Hash-bound explanation for one pinned formal Run dispatch."""
+
+    schema_version: Literal["1.0"] = "1.0"
+    decision_id: StableId
+    policy_id: StableId
+    policy_version: Literal["1.0"] = "1.0"
+    policy_sha256: Sha256Hex
+    task_id: StableId
+    project_id: StableId
+    plan_id: StableId
+    inventory_id: StableId
+    inventory_sha256: Sha256Hex
+    methodology_id: StableId
+    methodology_version: Annotated[str, Field(pattern=r"^\d+\.\d+$")]
+    methodology_sha256: Sha256Hex
+    stage_key: StableId
+    role: StableId
+    pinned_runtime: StableId
+    task_risk: TaskRisk
+    # Empty collections are valid evidence in a blocked decision. For example,
+    # an unknown role has no declared required capabilities and a methodology
+    # without reviewer stages has no reviewer assignments. The checks below
+    # must carry those failures as structured policy blockers instead of
+    # turning fail-closed derivation into an unrelated model-validation crash.
+    required_capabilities: list[StableId] = Field(max_length=20)
+    runtime_capabilities: list[StableId] = Field(max_length=20)
+    required_reviewers: list[StableId] = Field(max_length=10)
+    reviewer_assignments: list[RoutingReviewerAssignment] = Field(
+        max_length=10,
+    )
+    task_token_budget: int = Field(ge=0)
+    settled_token_debit: int = Field(ge=0)
+    active_token_reservations: int = Field(ge=0)
+    available_tokens_before_dispatch: int = Field(ge=0)
+    current_run_token_reservation: int = Field(ge=1)
+    protected_future_reviewer_tokens: int = Field(ge=0)
+    task_cost_budget_usd: float | None = Field(default=None, ge=0)
+    settled_cost_debit_usd: float | None = Field(default=None, ge=0)
+    active_cost_reservations_usd: float | None = Field(default=None, ge=0)
+    available_cost_before_dispatch_usd: float | None = Field(default=None, ge=0)
+    current_run_cost_reservation_usd: float | None = Field(default=None, ge=0)
+    protected_future_reviewer_cost_usd: float | None = Field(default=None, ge=0)
+    checks: list[RoutingConstraintCheck] = Field(min_length=5, max_length=5)
+    dispatchable: bool
+    blockers: list[Annotated[str, Field(min_length=1, max_length=1000)]] = Field(
+        default_factory=list,
+        max_length=10,
+    )
+    rationale: list[Annotated[str, Field(min_length=1, max_length=1000)]] = Field(
+        min_length=5,
+        max_length=10,
+    )
+
+
 class OrchestrationRun(StrictModel):
     run_id: str
     plan_id: str
@@ -157,6 +236,10 @@ class OrchestrationRun(StrictModel):
     cost_used_usd: float | None
     cost_measurement: Measurement
     attempt: int
+    routing_policy: RoutingPolicyDecision | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
     started_at: str
     finished_at: str | None
 
@@ -292,6 +375,7 @@ class UnifiedRunProjection(StrictModel):
     cost_reserved_usd: float | None = Field(default=None, ge=0)
     cost_settled_usd: float | None = Field(default=None, ge=0)
     cost_measurement: Measurement | None = None
+    routing_policy: RoutingPolicyDecision | None = None
     started_at: str
     finished_at: str | None = None
     elapsed_seconds: float = Field(ge=0)
@@ -347,7 +431,7 @@ class UnifiedBudgetProjection(StrictModel):
 
 
 class UnifiedTaskProjection(StrictModel):
-    schema_version: Literal["5.0"] = "5.0"
+    schema_version: Literal["6.0"] = "6.0"
     snapshot_at: str
     task: TaskManifest
     task_state: TaskStatus | None

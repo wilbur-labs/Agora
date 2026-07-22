@@ -112,6 +112,13 @@ Stage in inventory order and only that route may start a formal Run. Successful
 formal settlement activates the next route atomically; compatibility Plan state
 does not select the Stage or runtime.
 
+Before dispatching that pinned route, Agora records a hash-sealed routing-policy
+decision that verifies the Stage/runtime capability binding, Task-risk reviewer
+coverage, reviewer independence, and protected budget for every unfinished
+required reviewer Stage. The policy is re-derived in the Run-claim transaction;
+it cannot substitute a runtime or alter the sealed methodology graph. Budget
+pressure must block before process spawn rather than remove a required review.
+
 ### Gate
 
 ```text

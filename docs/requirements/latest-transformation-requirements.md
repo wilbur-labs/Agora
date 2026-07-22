@@ -196,13 +196,20 @@ Already present and reviewed as of commit `2750dfe`:
 - append-only Token reservation/settlement with measurement truthfulness;
 - restart safety, Windows native runtime recovery, and bounded output capture.
 
+Subsequent reviewed increments added frozen Task state, a sealed grouped Stage
+inventory, lifecycle derivation, and authoritative linear Stage routing. The
+current explainable-routing increment adds a bounded policy record for the
+already pinned runtime/reviewer assignments and protects unfinished reviewer
+Stage budgets; its final review state is tracked in `PROGRESS.md`.
+
 Still required:
 
 - the authoritative full AI-DLC method source and executable graph;
 - a concrete Task contract with roles, process, Context/Handoff expectations,
   acceptance criteria, and required Artifacts/Evidence/Gates;
 - consult and decide/adopt semantics under the authoritative Task;
-- risk/capability-aware dynamic routing and recorded rationale;
+- dynamic runtime/model selection or substitution beyond the recorded,
+  capability-checked pinned routing rationale;
 - provider/model-specific exact usage where available and protected review
   budgets;
 - the unified authoritative Task status/progress/result projection;

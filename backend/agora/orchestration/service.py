@@ -292,6 +292,12 @@ class TaskOrchestrationService:
         else:
             token_used = self._estimate_tokens(prompt, output)
             token_measurement = Measurement.ESTIMATED
+        if result is not None and not result.process_started:
+            cost_used_usd = 0.0
+            cost_measurement = Measurement.EXACT
+        else:
+            cost_used_usd = None
+            cost_measurement = Measurement.UNAVAILABLE
         return self.store.finish_run(
             run.run_id, exit_code=exit_code,
             timed_out=bool(result and result.timed_out), output=output,
@@ -299,6 +305,8 @@ class TaskOrchestrationService:
             semantic=semantic,
             token_used=token_used,
             token_measurement=token_measurement,
+            cost_used_usd=cost_used_usd,
+            cost_measurement=cost_measurement,
         )
 
     async def run_next_protocol(self, task_id: str) -> OrchestrationRun:
@@ -383,6 +391,14 @@ class TaskOrchestrationService:
                 "Formal Artifact history exceeds the bounded Context projection"
             )
         run_id = self.store.new_run_id()
+        routing_policy = self.store.preview_routing_policy(
+            task_id,
+            route=route,
+            contract=contract,
+            run_id=run_id,
+        )
+        if not routing_policy.dispatchable:
+            raise OrchestrationConflictError(routing_policy.blockers[0])
         definition = build_protocol_run_definition(
             task=task,
             contract=contract,
@@ -391,6 +407,7 @@ class TaskOrchestrationService:
             revision=revision,
             prior_artifacts=prior,
             decisions=self.store.latest_decisions(status.plan.plan_id),
+            routing_policy=routing_policy,
             generated_at=utc_now(),
             timeout_seconds=self.timeout_seconds,
             max_output_bytes=OUTPUT_LIMIT,
@@ -406,6 +423,9 @@ class TaskOrchestrationService:
             run_id=run_id,
             expected_stage_key=route.stage_key,
             expected_adapter=route.runtime,
+            route=route,
+            contract=contract,
+            routing_policy=routing_policy,
         )
         try:
             self.control_plane.configure_gate(
@@ -443,6 +463,8 @@ class TaskOrchestrationService:
                     semantic=None,
                     token_used=0,
                     token_measurement=Measurement.EXACT,
+                    cost_used_usd=0.0,
+                    cost_measurement=Measurement.EXACT,
                 )
                 raise OrchestrationConflictError(
                     f"Formal protocol Run could not start: {detail}"

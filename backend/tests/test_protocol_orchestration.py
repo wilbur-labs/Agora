@@ -7,9 +7,11 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from agora.attention.models import AttentionKind, CreateAttentionRequest
 from agora.orchestration import cli as orchestration_cli
+from agora.orchestration import routing_policy
 from agora.orchestration.contracts import load_task_contract
 from agora.orchestration.models import Measurement, PlanState, RunState, StageState
 from agora.orchestration.protocol_context import RepositoryRevision, resolve_git_revision
@@ -21,7 +23,7 @@ from agora.protocol.agent_adapter import AgentAdapterResult
 from agora.protocol.hashing import seal_model_payload
 from agora.protocol.models import ContextPack, HandoffPack
 from agora.protocol.state_machines import GateStatus, StageStatus, TaskStatus
-from agora.tasks.models import AppendEventRequest, TaskState, utc_now
+from agora.tasks.models import AppendEventRequest, TaskRisk, TaskState, utc_now
 from agora.tasks.store import TaskStore
 
 
@@ -172,6 +174,8 @@ def _system(
     invalid_outputs: int = 0,
     blocked_outputs: int = 0,
     wrong_ref: bool = False,
+    risk: TaskRisk = TaskRisk.MEDIUM,
+    cost_budget_usd: float | None = 12,
 ):
     root = tmp_path / "repo"
     root.mkdir(parents=True)
@@ -214,7 +218,8 @@ def _system(
         title=contract.title,
         description=contract.goal,
         total_token_budget=30_000,
-        total_cost_budget_usd=12,
+        total_cost_budget_usd=cost_budget_usd,
+        risk=risk,
         contract=contract,
     )
     return tasks, service, runner, task
@@ -262,10 +267,27 @@ async def test_protocol_v1_runs_all_stages_through_authoritative_gates(tmp_path)
     assert status.plan.state == PlanState.AWAITING_APPROVAL
     assert [stage.state for stage in status.stages] == [StageState.PASSED] * 3
     assert [run.state for run in status.runs] == [RunState.PASSED] * 3
+    assert all(run.routing_policy is not None for run in status.runs)
     assert len(status.usage) == 6
     assert all("SEALED CONTEXT PACK" in prompt for prompt in runner.prompts)
     assert all(len(prompt.encode("utf-8")) <= 24 * 1024 for prompt in runner.prompts)
     assert runner.contexts[0].input_artifacts == []
+    first_policy = status.runs[0].routing_policy
+    assert first_policy.pinned_runtime == "codex"
+    assert first_policy.required_reviewers == ["claude", "kiro"]
+    assert first_policy.current_run_token_reservation == 13_500
+    assert first_policy.protected_future_reviewer_tokens == 16_500
+    assert first_policy.current_run_cost_reservation_usd == 5.4
+    assert first_policy.protected_future_reviewer_cost_usd == 6.6
+    assert all(check.satisfied for check in first_policy.checks)
+    assert first_policy.dispatchable is True
+    assert runner.contexts[0].budget.max_model_tokens == 13_500
+    assert runner.contexts[0].budget.max_cost_usd == 5.4
+    assert any(
+        item.source_ref
+        == f"routing-policy:{first_policy.decision_id}:{first_policy.content_sha256}"
+        for item in runner.contexts[0].policies
+    )
     assert [item.artifact_id for item in runner.contexts[1].input_artifacts] == [
         runner.contexts[0].required_outputs[0].output_id
     ]
@@ -320,6 +342,174 @@ async def test_protocol_v1_runs_all_stages_through_authoritative_gates(tmp_path)
 
 
 @pytest.mark.asyncio
+async def test_high_risk_route_requires_both_independent_reviewers(tmp_path):
+    _, service, _, task = _system(tmp_path, risk=TaskRisk.HIGH)
+
+    run = await service.run_next(task.task_id, protocol_v1=True)
+
+    policy = run.routing_policy
+    assert policy is not None
+    assert policy.task_risk == TaskRisk.HIGH
+    assert policy.required_reviewers == ["claude", "kiro"]
+    assert {item.runtime for item in policy.reviewer_assignments} == {
+        "claude",
+        "kiro",
+    }
+    risk_check = next(
+        item for item in policy.checks if item.constraint == "risk_coverage"
+    )
+    assert risk_check.satisfied is True
+    assert "at least 2 independent reviewer" in risk_check.detail
+
+
+@pytest.mark.asyncio
+async def test_policy_blocks_an_unknown_role_capability_without_crashing(
+    tmp_path,
+    monkeypatch,
+):
+    _, service, runner, task = _system(tmp_path)
+    monkeypatch.delitem(
+        routing_policy.ROLE_REQUIRED_CAPABILITIES,
+        "engineering_planner",
+    )
+
+    with pytest.raises(
+        OrchestrationConflictError,
+        match="lacks declared capabilities",
+    ):
+        await service.run_next(task.task_id, protocol_v1=True)
+
+    assert runner.prompts == []
+    assert service.status(task.task_id).runs == []
+
+
+@pytest.mark.asyncio
+async def test_policy_blocks_empty_reviewer_assignments_without_crashing(
+    tmp_path,
+    monkeypatch,
+):
+    _, service, runner, task = _system(tmp_path)
+    monkeypatch.setitem(routing_policy.RUNTIME_CAPABILITIES, "claude", ())
+    monkeypatch.setitem(routing_policy.RUNTIME_CAPABILITIES, "kiro", ())
+
+    with pytest.raises(
+        OrchestrationConflictError,
+        match="capability-complete independent contract binding",
+    ):
+        await service.run_next(task.task_id, protocol_v1=True)
+
+    assert runner.prompts == []
+    assert service.status(task.task_id).runs == []
+
+
+@pytest.mark.asyncio
+async def test_policy_supports_an_explicitly_unbounded_cost_envelope(tmp_path):
+    _, service, _, task = _system(tmp_path, cost_budget_usd=None)
+
+    run = await service.run_next(task.task_id, protocol_v1=True)
+
+    policy = run.routing_policy
+    assert policy is not None
+    assert policy.task_cost_budget_usd is None
+    assert policy.current_run_cost_reservation_usd is None
+    assert policy.protected_future_reviewer_cost_usd is None
+    assert next(
+        item for item in policy.checks if item.constraint == "protected_budget"
+    ).satisfied is True
+
+
+@pytest.mark.asyncio
+async def test_formal_dispatch_rejects_reviewer_set_reduction_before_claim(tmp_path):
+    tasks, service, runner, task = _system(tmp_path)
+    with tasks._transaction() as db:
+        db.execute(
+            "UPDATE tasks SET reviewers = ? WHERE task_id = ?",
+            (json.dumps(["claude"]), task.task_id),
+        )
+
+    with pytest.raises(
+        OrchestrationConflictError,
+        match="reviewer declarations differ",
+    ):
+        await service.run_next(task.task_id, protocol_v1=True)
+
+    assert runner.prompts == []
+    assert service.status(task.task_id).runs == []
+
+
+@pytest.mark.asyncio
+async def test_policy_rejects_a_premature_compatibility_reviewer_pass(tmp_path):
+    tasks, service, runner, task = _system(tmp_path)
+    with tasks._transaction() as db:
+        plan_id = db.execute(
+            "SELECT plan_id FROM orchestration_plans WHERE task_id = ?",
+            (task.task_id,),
+        ).fetchone()["plan_id"]
+        db.execute(
+            """UPDATE orchestration_stages SET state = ?
+               WHERE plan_id = ? AND stage_key = 'correctness_review'""",
+            (StageState.PASSED.value, plan_id),
+        )
+
+    with pytest.raises(
+        OrchestrationConflictError,
+        match="compatibility assignment do not agree",
+    ):
+        await service.run_next(task.task_id, protocol_v1=True)
+
+    assert runner.prompts == []
+    assert service.status(task.task_id).runs == []
+
+
+@pytest.mark.asyncio
+async def test_policy_is_revalidated_atomically_before_run_claim(
+    tmp_path,
+    monkeypatch,
+):
+    tasks, service, runner, task = _system(tmp_path)
+    original_claim = service.store.claim_current_stage
+
+    def mutate_reviewer_set_before_claim(*args, **kwargs):
+        with tasks._transaction() as db:
+            db.execute(
+                "UPDATE tasks SET reviewers = ? WHERE task_id = ?",
+                (json.dumps(["claude"]), task.task_id),
+            )
+        return original_claim(*args, **kwargs)
+
+    monkeypatch.setattr(
+        service.store,
+        "claim_current_stage",
+        mutate_reviewer_set_before_claim,
+    )
+    with pytest.raises(OrchestrationConflictError, match="inputs changed"):
+        await service.run_next(task.task_id, protocol_v1=True)
+
+    assert runner.prompts == []
+    assert service.status(task.task_id).runs == []
+
+
+@pytest.mark.asyncio
+async def test_persisted_routing_policy_hash_tamper_fails_closed(tmp_path):
+    tasks, service, _, task = _system(tmp_path)
+    run = await service.run_next(task.task_id, protocol_v1=True)
+    with tasks._transaction() as db:
+        row = db.execute(
+            "SELECT routing_policy_payload FROM orchestration_runs WHERE run_id = ?",
+            (run.run_id,),
+        ).fetchone()
+        payload = json.loads(row["routing_policy_payload"])
+        payload["rationale"][0] = "tampered policy rationale"
+        db.execute(
+            "UPDATE orchestration_runs SET routing_policy_payload = ? WHERE run_id = ?",
+            (json.dumps(payload), run.run_id),
+        )
+
+    with pytest.raises(ValidationError, match="content_sha256"):
+        service.status(task.task_id)
+
+
+@pytest.mark.asyncio
 async def test_explicit_task_approval_completes_frozen_lifecycle_idempotently(
     tmp_path,
 ):
@@ -361,7 +551,7 @@ async def test_unified_projection_reports_formal_progress_usage_and_human_action
 
     projection = service.unified_status(task.task_id)
 
-    assert projection.schema_version == "5.0"
+    assert projection.schema_version == "6.0"
     assert projection.task.task_id == task.task_id
     assert projection.task.state == TaskState.REQUIREMENTS
     assert projection.task_state_source == "control_plane"
@@ -680,7 +870,7 @@ async def test_cli_exposes_unified_projection_without_changing_legacy_status(
         ["status", task.task_id, "--protocol-v1", "--json", "--limit", "1"]
     ) == 0
     unified = json.loads(capsys.readouterr().out)
-    assert unified["schema_version"] == "5.0"
+    assert unified["schema_version"] == "6.0"
     assert unified["progress"]["source"] == "control_plane_stage_inventory"
     assert unified["progress"]["inventory_complete"] is True
     assert unified["task_state"] == "active"
@@ -690,6 +880,7 @@ async def test_cli_exposes_unified_projection_without_changing_legacy_status(
     assert unified["stage_route"]["runtime"] == "claude"
     assert unified["progress"]["current_stage_source"] == "control_plane_route"
     assert unified["collection_pages"]["runs"]["limit"] == 1
+    assert unified["runs"][0]["routing_policy"]["dispatchable"] is True
 
     assert orchestration_cli.main(
         ["status", task.task_id, "--protocol-v1"]
@@ -697,6 +888,7 @@ async def test_cli_exposes_unified_projection_without_changing_legacy_status(
     text_status = capsys.readouterr().out
     assert "[active] source=control_plane legacy=backlog" in text_status
     assert "lifecycle=control_plane_managed" in text_status
+    assert "routing=agora-foundation-routing-policy@1.0" in text_status
 
     assert orchestration_cli.main(["status", task.task_id, "--json"]) == 0
     legacy = json.loads(capsys.readouterr().out)
@@ -745,6 +937,8 @@ async def test_formal_start_failure_never_dispatches_and_settles_exact_zero(
     assert status.runs[0].state == RunState.FAILED
     assert status.runs[0].token_used == 0
     assert status.runs[0].token_measurement == Measurement.EXACT
+    assert status.runs[0].cost_used_usd == 0.0
+    assert status.runs[0].cost_measurement == Measurement.EXACT
     assert service.control_plane.get_protocol_run(status.runs[0].run_id) is None
 
     service.retry_protocol(task.task_id, status.runs[0].stage_key)
@@ -837,8 +1031,10 @@ async def test_runtime_cancellation_stays_distinct_in_formal_and_operational_sta
 
 
 @pytest.mark.asyncio
-async def test_protocol_retry_reopens_both_projections_and_reevaluates_gate(tmp_path):
-    _, service, _, task = _system(tmp_path, invalid_outputs=1)
+async def test_protocol_retry_cannot_consume_protected_independent_review_budget(
+    tmp_path,
+):
+    _, service, runner, task = _system(tmp_path, invalid_outputs=1)
     first = await service.run_next(task.task_id, protocol_v1=True)
 
     service.retry_protocol(task.task_id, first.stage_key)
@@ -849,17 +1045,17 @@ async def test_protocol_retry_reopens_both_projections_and_reevaluates_gate(tmp_
     retry_projection = service.unified_status(task.task_id)
     assert retry_projection.attention[0].state.value == "cancelled"
     assert retry_projection.task_state == TaskStatus.READY
-    second = await service.run_next(task.task_id, protocol_v1=True)
+    with pytest.raises(
+        OrchestrationConflictError,
+        match="protected for required independent review",
+    ):
+        await service.run_next(task.task_id, protocol_v1=True)
 
-    assert second.attempt == 2
-    assert second.state == RunState.PASSED
-    assert (
-        service.control_plane.get_stage(task.task_id, first.stage_key).status
-        == StageStatus.COMPLETED
-    )
-    assert service.control_plane.get_gate(
-        task.task_id, f"gate:{first.stage_key}"
-    ).status == GateStatus.PASSED
+    assert len(runner.prompts) == 1
+    assert len(service.status(task.task_id).runs) == 1
+    assert service.control_plane.get_stage(
+        task.task_id, first.stage_key
+    ).status == StageStatus.READY
 
 
 @pytest.mark.asyncio

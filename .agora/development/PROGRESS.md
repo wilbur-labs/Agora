@@ -5,7 +5,7 @@ Current branch: `main`
 Current recovery baseline (2026-07-22):
 
 - Local `main` and `origin/main` are synchronized through the reviewed
-  authoritative Stage activation/routing commit containing this snapshot.
+  explainable pinned routing policy commit containing this snapshot.
 - Active program: the ordered Agora Control Plane transformation. The first two
   stages (protocol/domain freeze and Control Plane v2 persistence/Registry) are
   complete; the bounded API, concrete Task contract, and Runner/Agent Adapter
@@ -58,6 +58,13 @@ Current recovery baseline (2026-07-22):
   comparable backend suite passed 458 tests with 18 deselected. `.kiro/` and
   historical pytest temp directories are unrelated local artifacts and were not
   staged.
+- Latest reviewed increment: explain and enforce the already pinned formal route
+  with a hash-sealed per-Run policy decision. It validates Stage/runtime
+  capabilities, Task-risk reviewer coverage, contract independence, and
+  protected future reviewer budget without runtime substitution or
+  methodology-graph changes. Kiro and Claude Code both returned explicit final
+  approval; the complete comparable backend suite passed 466 tests with 18
+  deselected.
 
 ## 2026-07-18 — Latest transformation requirements recovery
 
@@ -921,6 +928,77 @@ independent reviewer set satisfy Stage, risk, capability, and protected-budget
 constraints without yet permitting runtime substitution or changing the sealed
 methodology graph. Keep authenticated HTTP lifecycle commands, the missing
 authoritative AI-DLC graph, parallel/DAG routing, and Task Workbench UI deferred.
+
+## 2026-07-22 - Explainable pinned routing policy (reviewed)
+
+### Scope
+
+- [x] Added versioned `agora-foundation-routing-policy@1.0` capability,
+  reviewer-role, risk-minimum, and protected-budget facts for the pinned
+  provisional methodology.
+- [x] Added a hash-sealed per-Run routing decision covering exact inventory and
+  methodology bindings, Stage/role/runtime, Task risk, capabilities, required
+  reviewers, independence, conservative budget inputs, five explicit checks,
+  blockers, and rationale.
+- [x] Kept the sealed inventory route authoritative and prohibited runtime or
+  reviewer substitution; unknown or changed policy inputs fail closed.
+- [x] Included the policy in the sealed Context Pack and re-derived it inside
+  the same SQLite transaction as the operational Run and usage reservation.
+- [x] Protected every unfinished later required reviewer Stage allocation; a
+  retry that would consume review capacity now blocks before process spawn.
+- [x] Preserved exact-zero Token and cost settlement when a process provably
+  never started, while unavailable settlements conservatively debit their Run
+  reservations.
+- [x] Added additive `routing_policy_payload` migration and upgraded the
+  read-only unified Task projection to schema `6.0`; historical legacy Runs may
+  explicitly have no policy.
+- [x] Added capability/risk/reviewer/budget, Context binding, preview/claim
+  race, hash-tamper, CLI/projection, and exact-zero recovery regressions.
+- [x] Run the complete backend verification set and Schema consistency checks.
+- [x] Obtain Kiro protocol/methodology/reconciliation review and fix all
+  actionable findings.
+- [x] Obtain independent Claude Code correctness/safety/regression review and
+  fix all actionable findings.
+- [x] Commit and push only after both review gates approve (the commit
+  containing this snapshot).
+
+### Current verification log
+
+- Formal protocol orchestration suite after review fixes: 38 passed.
+- Complete non-integration backend suite excluding the deferred static-export
+  Web UI test: 466 passed, 18 deselected. The existing Starlette/httpx
+  deprecation warning and Windows Proactor cleanup warning remain unrelated to
+  this increment.
+- Schema export consistency, isolated `compileall`, `agora task --help`, and
+  `git diff --check` passed. Compile bytecode and pytest basetemp were redirected
+  to system Temp because pre-existing repository and `D:\tmp` ACLs denied
+  isolated directory creation.
+- Kiro core, migration, and projection reviews returned `APPROVE`; broad CLI
+  attempts that ended in `channel closed` without a verdict were discarded.
+  Its post-fix targeted re-review returned `KIRO_FIX_APPROVE` with no
+  high/medium findings.
+- Claude core review returned `CHANGES_REQUESTED` for one medium structured-
+  blocker issue plus two low hardening observations. Empty capability/reviewer
+  evidence now remains a valid blocked policy decision, inventory sequence is
+  independently bound by group and Stage keys, and the missing-current budget
+  snapshot uses neutral zero; both new regressions block before process spawn.
+- Claude post-fix review returned `CLAUDE_FIX_APPROVE`. Its integration review
+  initially questioned `exclude_if` using older Pydantic behavior; the installed
+  Pydantic 2.13.4 signature and a minimal dump prove the parameter is supported,
+  and a passing legacy-Run regression now locks key omission. Claude then
+  returned `CLAUDE_INTEGRATION_APPROVE`; no high/medium findings remain.
+- No frontend or authenticated HTTP contract changed; frontend validation is
+  not required for this increment.
+
+### Next safe action
+
+After the reviewed commit, define the smallest versioned Task budget-amendment
+workflow bound to the exact Task, Plan, and policy inputs. It should add explicit
+retry headroom without mutating sealed Stage allocations, reviewer requirements,
+or historical usage, then force the routing policy to re-derive before another
+claim. Keep provider discovery, dynamic runtime substitution, authenticated
+HTTP, the missing authoritative AI-DLC graph, parallel/DAG routing, and Task
+Workbench UI deferred.
 
 ## 2026-07-13
 

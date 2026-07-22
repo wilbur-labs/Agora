@@ -3,20 +3,22 @@ from __future__ import annotations
 
 import json
 import hashlib
+import math
 import re
 import sqlite3
 import uuid
 from contextlib import closing, contextmanager
 from typing import Any, Iterator
 
-from agora.control_plane.models import RunSettlementReceipt
+from agora.control_plane.models import RunSettlementReceipt, StageRouteDecision
 from agora.execution.security import redact_text, sanitize_data
 from agora.protocol.agent_adapter import AgentAdapterResult
-from agora.protocol.models import SemanticStageResult
+from agora.protocol.models import SemanticStageResult, StageInventory
 from agora.protocol.state_machines import GateStatus, StageStatus
 from agora.tasks.models import utc_now
 from agora.tasks.store import TaskNotFoundError, TaskStore
 
+from .contracts import TaskContract, contract_sha256
 from .methodology import MethodologyDefinition, methodology_sha256
 from .models import (
     LedgerEntryType,
@@ -25,6 +27,7 @@ from .models import (
     OrchestrationRun,
     OrchestrationStage,
     PlanState,
+    RoutingPolicyDecision,
     RunState,
     SemanticResult,
     StageState,
@@ -32,6 +35,7 @@ from .models import (
     TaskOrchestrationStatus,
     UsageLedgerEntry,
 )
+from .routing_policy import RoutingStageBudget, derive_routing_policy_decision
 
 
 DECISION_CONTEXT_LIMIT = 2_000
@@ -354,6 +358,202 @@ class OrchestrationStore:
             raise OrchestrationNotFoundError(decision_id)
         return self._decision(row)
 
+    def preview_routing_policy(
+        self,
+        task_id: str,
+        *,
+        route: StageRouteDecision,
+        contract: TaskContract,
+        run_id: str,
+    ) -> RoutingPolicyDecision:
+        """Derive a read-only policy snapshot that claim revalidates atomically."""
+
+        with closing(self._connect()) as db:
+            db.execute("BEGIN")
+            try:
+                return self._routing_policy_decision(
+                    db,
+                    task_id=task_id,
+                    route=route,
+                    contract=contract,
+                    run_id=run_id,
+                )
+            finally:
+                db.rollback()
+
+    def _routing_policy_decision(
+        self,
+        db: sqlite3.Connection,
+        *,
+        task_id: str,
+        route: StageRouteDecision,
+        contract: TaskContract,
+        run_id: str,
+    ) -> RoutingPolicyDecision:
+        task_row = db.execute(
+            "SELECT * FROM tasks WHERE task_id = ?",
+            (task_id,),
+        ).fetchone()
+        plan = db.execute(
+            "SELECT * FROM orchestration_plans WHERE task_id = ?",
+            (task_id,),
+        ).fetchone()
+        inventory_row = db.execute(
+            "SELECT * FROM control_stage_inventories WHERE task_id = ?",
+            (task_id,),
+        ).fetchone()
+        if task_row is None or plan is None or inventory_row is None:
+            raise OrchestrationNotFoundError(task_id)
+        task = self.tasks._manifest(task_row)
+        inventory = StageInventory.model_validate_json(inventory_row["payload"])
+        methodology = MethodologyDefinition.model_validate_json(
+            plan["methodology_payload"]
+        )
+        methodology_digest = methodology_sha256(methodology)
+        ordered_inventory = [
+            (inventory_sequence, group, stage)
+            for inventory_sequence, (group, stage) in enumerate(
+                (
+                    (group, stage)
+                    for group in inventory.groups
+                    for stage in group.stages
+                ),
+                start=1,
+            )
+        ]
+        inventory_route = next(
+            (
+                item
+                for item in ordered_inventory
+                if item[1].group_key == route.group_key
+                and item[2].stage_key == route.stage_key
+            ),
+            None,
+        )
+        if (
+            route.task_id != task.task_id
+            or route.project_id != task.project_id
+            or route.inventory_id != inventory.inventory_id
+            or route.inventory_sha256 != inventory.content_sha256
+            or inventory.plan_id != plan["plan_id"]
+            or inventory.methodology_id != methodology.methodology_id
+            or inventory.methodology_version != methodology.version
+            or inventory.methodology_sha256 != methodology_digest
+            or plan["methodology_sha256"] != methodology_digest
+            or inventory_route is None
+            or inventory_route[0] != route.inventory_sequence
+            or inventory_route[1].sequence != route.group_sequence
+            or inventory_route[2].gate_key != route.gate_key
+            or inventory_route[2].sequence != route.stage_sequence
+            or inventory_route[2].title != route.title
+            or inventory_route[2].role != route.role
+            or inventory_route[2].runtime != route.runtime
+        ):
+            raise OrchestrationValidationError(
+                "Authoritative route does not match its sealed inventory and methodology"
+            )
+        stored_contract = task.metadata.get("task_contract")
+        contract_digest = contract_sha256(contract)
+        if (
+            stored_contract is None
+            or TaskContract.model_validate(stored_contract) != contract
+            or task.metadata.get("task_contract_id") != contract.contract_id
+            or task.metadata.get("task_contract_schema_version")
+            != contract.schema_version
+            or task.metadata.get("task_contract_sha256") != contract_digest
+            or inventory.contract is None
+            or inventory.contract.contract_id != contract.contract_id
+            or inventory.contract.schema_version != contract.schema_version
+            or inventory.contract.sha256 != contract_digest
+        ):
+            raise OrchestrationValidationError(
+                "Routing policy requires the exact pinned Task contract"
+            )
+
+        stage_rows = db.execute(
+            "SELECT * FROM orchestration_stages WHERE plan_id = ? ORDER BY sequence",
+            (plan["plan_id"],),
+        ).fetchall()
+        stages = [
+            RoutingStageBudget(
+                stage_key=row["stage_key"],
+                sequence=int(row["sequence"]),
+                title=row["title"],
+                role=row["role"],
+                runtime=row["adapter"],
+                state=StageState(row["state"]),
+                token_budget=int(row["token_budget"]),
+                cost_budget_usd=row["cost_budget_usd"],
+            )
+            for row in stage_rows
+        ]
+        settled_tokens = int(db.execute(
+            """SELECT COALESCE(SUM(
+                       CASE
+                           WHEN ledger.token_measurement = ? OR ledger.tokens IS NULL
+                               THEN runs.token_reserved
+                           ELSE ledger.tokens
+                       END
+                   ), 0) AS total
+               FROM orchestration_usage_ledger AS ledger
+               JOIN orchestration_runs AS runs ON runs.run_id = ledger.run_id
+               WHERE ledger.plan_id = ? AND ledger.entry_type = ?""",
+            (
+                Measurement.UNAVAILABLE.value,
+                plan["plan_id"],
+                LedgerEntryType.SETTLEMENT.value,
+            ),
+        ).fetchone()["total"])
+        active_tokens = int(db.execute(
+            """SELECT COALESCE(SUM(token_reserved), 0) AS total
+               FROM orchestration_runs WHERE plan_id = ? AND state = ?""",
+            (plan["plan_id"], RunState.RUNNING.value),
+        ).fetchone()["total"])
+
+        if plan["total_cost_budget_usd"] is None:
+            settled_cost = None
+            active_cost = None
+        else:
+            settled_cost = float(db.execute(
+                """SELECT COALESCE(SUM(
+                           CASE
+                               WHEN ledger.cost_measurement = ? OR ledger.cost_usd IS NULL
+                                   THEN runs.cost_reserved_usd
+                               ELSE ledger.cost_usd
+                           END
+                       ), 0.0) AS total
+                   FROM orchestration_usage_ledger AS ledger
+                   JOIN orchestration_runs AS runs ON runs.run_id = ledger.run_id
+                   WHERE ledger.plan_id = ? AND ledger.entry_type = ?""",
+                (
+                    Measurement.UNAVAILABLE.value,
+                    plan["plan_id"],
+                    LedgerEntryType.SETTLEMENT.value,
+                ),
+            ).fetchone()["total"])
+            active_cost = float(db.execute(
+                """SELECT COALESCE(SUM(cost_reserved_usd), 0.0) AS total
+                   FROM orchestration_runs WHERE plan_id = ? AND state = ?""",
+                (plan["plan_id"], RunState.RUNNING.value),
+            ).fetchone()["total"])
+
+        return derive_routing_policy_decision(
+            decision_id=f"routing-policy:{hashlib.sha256(run_id.encode('utf-8')).hexdigest()[:32]}",
+            task=task,
+            contract=contract,
+            methodology=methodology,
+            methodology_sha256=methodology_digest,
+            plan_id=plan["plan_id"],
+            route=route,
+            stages=stages,
+            task_token_budget=int(plan["total_token_budget"]),
+            settled_token_debit=settled_tokens,
+            active_token_reservations=active_tokens,
+            task_cost_budget_usd=plan["total_cost_budget_usd"],
+            settled_cost_debit_usd=settled_cost,
+            active_cost_reservations_usd=active_cost,
+        )
+
     def claim_current_stage(
         self,
         task_id: str,
@@ -363,8 +563,22 @@ class OrchestrationStore:
         run_id: str | None = None,
         expected_stage_key: str | None = None,
         expected_adapter: str | None = None,
+        route: StageRouteDecision | None = None,
+        contract: TaskContract | None = None,
+        routing_policy: RoutingPolicyDecision | None = None,
         actor: str = "orchestrator",
     ) -> OrchestrationRun:
+        policy_inputs = (route, contract, routing_policy)
+        if any(item is not None for item in policy_inputs) and not all(
+            item is not None for item in policy_inputs
+        ):
+            raise OrchestrationValidationError(
+                "Formal routing policy inputs must be supplied together"
+            )
+        if routing_policy is not None and run_id is None:
+            raise OrchestrationValidationError(
+                "A policy-bound formal Run requires a stable Run id"
+            )
         if run_id is not None and not re.fullmatch(
             r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", run_id
         ):
@@ -431,8 +645,35 @@ class OrchestrationStore:
                    FROM orchestration_runs WHERE plan_id = ? AND state = ?""",
                 (plan["plan_id"], RunState.RUNNING.value),
             ).fetchone()["total"]
-            if settled + active_reserved + stage["token_budget"] > plan["total_token_budget"]:
-                raise OrchestrationConflictError("Token budget is exhausted; increase it before retrying")
+            if routing_policy is not None:
+                assert route is not None and contract is not None and run_id is not None
+                current_policy = self._routing_policy_decision(
+                    db,
+                    task_id=task_id,
+                    route=route,
+                    contract=contract,
+                    run_id=run_id,
+                )
+                if current_policy != routing_policy:
+                    raise OrchestrationConflictError(
+                        "Routing policy inputs changed before the authoritative claim"
+                    )
+                if not current_policy.dispatchable:
+                    raise OrchestrationConflictError(current_policy.blockers[0])
+                token_reservation = current_policy.current_run_token_reservation
+                cost_reservation = current_policy.current_run_cost_reservation_usd
+                routing_policy_payload = self._json(current_policy.model_dump(mode="json"))
+            else:
+                if (
+                    settled + active_reserved + stage["token_budget"]
+                    > plan["total_token_budget"]
+                ):
+                    raise OrchestrationConflictError(
+                        "Token budget is exhausted; increase it before retrying"
+                    )
+                token_reservation = stage["token_budget"]
+                cost_reservation = stage["cost_budget_usd"]
+                routing_policy_payload = None
 
             run_id = run_id or self._id("orun")
             attempt = int(stage["attempt_count"]) + 1
@@ -441,14 +682,15 @@ class OrchestrationStore:
                 INSERT INTO orchestration_runs (
                     run_id, plan_id, task_id, stage_key, adapter, state, operation_key,
                     prompt_sha256, findings, token_reserved, token_measurement,
-                    cost_reserved_usd, cost_measurement, attempt, started_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, ?, ?, ?, ?)
+                    cost_reserved_usd, cost_measurement, attempt,
+                    routing_policy_payload, started_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run_id, plan["plan_id"], task_id, stage["stage_key"], stage["adapter"],
-                    RunState.RUNNING.value, operation_key, prompt_sha256, stage["token_budget"],
-                    Measurement.UNAVAILABLE.value, stage["cost_budget_usd"],
-                    Measurement.UNAVAILABLE.value, attempt, now,
+                    RunState.RUNNING.value, operation_key, prompt_sha256, token_reservation,
+                    Measurement.UNAVAILABLE.value, cost_reservation,
+                    Measurement.UNAVAILABLE.value, attempt, routing_policy_payload, now,
                 ),
             )
             db.execute(
@@ -471,8 +713,8 @@ class OrchestrationStore:
                 """,
                 (
                     self._id("usage"), task_id, plan["plan_id"], stage["stage_key"], run_id,
-                    LedgerEntryType.RESERVATION.value, stage["token_budget"],
-                    Measurement.UNAVAILABLE.value, stage["cost_budget_usd"],
+                    LedgerEntryType.RESERVATION.value, token_reservation,
+                    Measurement.UNAVAILABLE.value, cost_reservation,
                     Measurement.UNAVAILABLE.value, stage["adapter"], now,
                 ),
             )
@@ -481,8 +723,16 @@ class OrchestrationStore:
                 payload={
                     "plan_id": plan["plan_id"], "run_id": run_id,
                     "stage_key": stage["stage_key"], "adapter": stage["adapter"],
-                    "token_reserved": stage["token_budget"],
-                    "cost_reserved_usd": stage["cost_budget_usd"],
+                    "token_reserved": token_reservation,
+                    "cost_reserved_usd": cost_reservation,
+                    "routing_policy_id": (
+                        routing_policy.decision_id if routing_policy is not None else None
+                    ),
+                    "routing_policy_sha256": (
+                        routing_policy.content_sha256
+                        if routing_policy is not None
+                        else None
+                    ),
                 },
                 created_at=now,
             )
@@ -709,8 +959,23 @@ class OrchestrationStore:
         semantic: SemanticResult | None,
         token_used: int | None,
         token_measurement: Measurement = Measurement.ESTIMATED,
+        cost_used_usd: float | None = None,
+        cost_measurement: Measurement = Measurement.UNAVAILABLE,
         actor: str = "orchestrator",
     ) -> OrchestrationRun:
+        if cost_measurement == Measurement.UNAVAILABLE:
+            if cost_used_usd is not None:
+                raise OrchestrationValidationError(
+                    "Unavailable cost measurement may not carry a value"
+                )
+        elif (
+            cost_used_usd is None
+            or not math.isfinite(cost_used_usd)
+            or cost_used_usd < 0
+        ):
+            raise OrchestrationValidationError(
+                "Measured cost must be a finite non-negative value"
+            )
         now = utc_now()
         safe_output = redact_text(output)[-64 * 1024:]
         safe_error = redact_text(error_message) if error_message else None
@@ -745,6 +1010,15 @@ class OrchestrationStore:
                 blockers.append(
                     f"Estimated token use {token_used} exceeded the reserved {run['token_reserved']} tokens"
                 )
+            if (
+                cost_used_usd is not None
+                and run["cost_reserved_usd"] is not None
+                and cost_used_usd > run["cost_reserved_usd"]
+            ):
+                blockers.append(
+                    f"Measured cost {cost_used_usd} exceeded the reserved "
+                    f"{run['cost_reserved_usd']} USD"
+                )
             passed = not blockers
             run_state = RunState.PASSED if passed else (
                 RunState.FAILED if timed_out or exit_code != 0 else RunState.BLOCKED
@@ -754,7 +1028,7 @@ class OrchestrationStore:
                 UPDATE orchestration_runs
                 SET state = ?, exit_code = ?, timed_out = ?, output = ?, error_message = ?,
                     semantic_status = ?, semantic_summary = ?, findings = ?,
-                    token_used = ?, token_measurement = ?, cost_used_usd = NULL,
+                    token_used = ?, token_measurement = ?, cost_used_usd = ?,
                     cost_measurement = ?, finished_at = ?
                 WHERE run_id = ?
                 """,
@@ -762,7 +1036,8 @@ class OrchestrationStore:
                     run_state.value, exit_code, int(timed_out), safe_output, safe_error,
                     semantic.status.value if semantic else None, safe_summary,
                     self._json(sanitize_data(safe_findings)), token_used,
-                    token_measurement.value, Measurement.UNAVAILABLE.value, now, run_id,
+                    token_measurement.value, cost_used_usd,
+                    cost_measurement.value, now, run_id,
                 ),
             )
             db.execute(
@@ -770,12 +1045,12 @@ class OrchestrationStore:
                 INSERT INTO orchestration_usage_ledger (
                     entry_id, task_id, plan_id, stage_key, run_id, entry_type,
                     tokens, token_measurement, cost_usd, cost_measurement, adapter, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     self._id("usage"), run["task_id"], run["plan_id"], run["stage_key"],
                     run_id, LedgerEntryType.SETTLEMENT.value, token_used,
-                    token_measurement.value, Measurement.UNAVAILABLE.value,
+                    token_measurement.value, cost_used_usd, cost_measurement.value,
                     run["adapter"], now,
                 ),
             )
@@ -815,7 +1090,8 @@ class OrchestrationStore:
                     "semantic_status": semantic.status.value if semantic else None,
                     "stage_state": stage_state.value, "token_used": token_used,
                     "token_measurement": token_measurement.value,
-                    "cost_measurement": Measurement.UNAVAILABLE.value,
+                    "cost_used_usd": cost_used_usd,
+                    "cost_measurement": cost_measurement.value,
                     "blockers": sanitize_data(blockers),
                 },
                 created_at=now,
@@ -1178,6 +1454,11 @@ class OrchestrationStore:
             token_used=row["token_used"], token_measurement=row["token_measurement"],
             cost_reserved_usd=row["cost_reserved_usd"], cost_used_usd=row["cost_used_usd"],
             cost_measurement=row["cost_measurement"], attempt=row["attempt"],
+            routing_policy=(
+                RoutingPolicyDecision.model_validate_json(row["routing_policy_payload"])
+                if row["routing_policy_payload"]
+                else None
+            ),
             started_at=row["started_at"], finished_at=row["finished_at"],
         )
 

@@ -648,6 +648,11 @@ async def test_three_runtime_loop_records_usage_and_requires_human_approval(tmp_
     assert status.plan.state == PlanState.AWAITING_APPROVAL
     assert [stage.state for stage in status.stages] == [StageState.PASSED] * 3
     assert [run.adapter for run in status.runs] == ["codex", "claude", "kiro"]
+    assert all(run.routing_policy is None for run in status.runs)
+    assert all(
+        "routing_policy" not in run.model_dump(mode="json")
+        for run in status.runs
+    )
     assert all(run.token_measurement == Measurement.ESTIMATED for run in status.runs)
     assert all(run.cost_measurement == Measurement.UNAVAILABLE for run in status.runs)
     assert status.tokens_used > 0

@@ -346,6 +346,14 @@ def _print_unified_status(status) -> None:
                 f"semantic={semantic} wait={run.wait_state.value} "
                 f"elapsed={run.elapsed_seconds:.3f}s"
             )
+            if run.routing_policy is not None:
+                policy = run.routing_policy
+                print(
+                    f"     routing={policy.policy_id}@{policy.policy_version} "
+                    f"pinned={policy.pinned_runtime} risk={policy.task_risk.value} "
+                    f"reviewers={','.join(policy.required_reviewers)} "
+                    f"protected_tokens={policy.protected_future_reviewer_tokens}"
+                )
     if status.required_human_actions:
         print("Required human actions:")
         for action in status.required_human_actions:

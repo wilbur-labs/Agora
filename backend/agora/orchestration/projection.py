@@ -642,6 +642,7 @@ class TaskProjectionStore:
             cost_reserved_usd=(operational.cost_reserved_usd if operational else None),
             cost_settled_usd=operational.cost_used_usd if operational else None,
             cost_measurement=operational.cost_measurement if operational else None,
+            routing_policy=(operational.routing_policy if operational else None),
             started_at=started_at,
             finished_at=finished_at,
             elapsed_seconds=self._elapsed_seconds(

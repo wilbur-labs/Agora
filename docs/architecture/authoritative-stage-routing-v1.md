@@ -53,6 +53,13 @@ binding, ready Stage status, and frozen Task lifecycle before sealing a Context
 Pack. Exit code, compatibility state, Agent suggestions, or caller-selected
 runtime cannot bypass those checks.
 
+The subsequent explainable-policy increment does not change route selection.
+Before a formal Run claim, `agora-foundation-routing-policy@1.0` verifies and
+records the pinned Stage/runtime capability binding, Task-risk reviewer
+coverage, reviewer independence, and protected future review budget. The
+policy preview is re-derived atomically with the operational Run reservation;
+see `explainable-routing-policy-v1.md`.
+
 ## Read model and recovery
 
 Unified Task projection schema `5.0` exposes the bounded route and labels the
@@ -60,6 +67,10 @@ current Stage source `control_plane_route`. Reads derive the route inside their
 existing rollback-only snapshot and never activate a Stage. Missing Task state
 or inventory keeps routing unavailable and directs explicit resume recovery;
 all completed Stages produce no current route.
+
+Projection schema `6.0` additionally exposes the hash-sealed routing-policy
+decision persisted with each formal operational Run. It does not move routing
+authority into the compatibility ledger.
 
 Create and attach explicitly activate the first route after Task state and
 inventory initialization. Resume activates a missing/pending route only after
@@ -73,7 +84,8 @@ to make a route dispatchable.
 
 ## Deferred boundaries
 
-This increment does not add authenticated HTTP commands, Task Workbench UI,
-methodology migration, parallel/DAG routing, risk-driven runtime substitution,
-or the missing authoritative AI-DLC graph. It does not change the existing
-runtime budget allocator or provider-specific usage measurement.
+This routing baseline does not add authenticated HTTP commands, Task Workbench
+UI, methodology migration, parallel/DAG routing, risk-driven runtime
+substitution, or the missing authoritative AI-DLC graph. The follow-up policy
+guard protects reviewer allocations without changing the existing Stage
+allocator; provider-specific usage measurement remains deferred.

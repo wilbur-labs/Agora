@@ -76,6 +76,13 @@ only inside `plan`. A crash after formal settlement may therefore show the next
 Control Plane route while the compatibility Plan still points at the settled
 Stage, making the required resume repair explicit without weakening authority.
 
+Unified projection schema `6.0` adds each formal operational Run's persisted,
+hash-sealed `routing_policy`. The decision explains the pinned runtime's Stage
+capability match, risk/reviewer coverage, reviewer independence, and the exact
+current reservation plus protected future reviewer budget at claim time. Legacy
+Runs may report no policy. Projection reads validate the stored content hash,
+never recreate historical rationale, and never change routing or budget state.
+
 Formal progress counts only Control Plane Stages in `completed` state. A passed
 process, compatibility Run, or Gate cannot increase the completed count by
 itself. Operational Stages not yet configured in the Control Plane remain
@@ -84,7 +91,8 @@ visible as `unconfigured` and count as remaining work.
 ## Run and recovery projection
 
 Each Run summary keeps the four frozen protocol dimensions separate from the
-operational state and usage fields. It also reports one derived wait state:
+operational state, routing-policy decision, and usage fields. It also reports
+one derived wait state:
 
 - `operational_runtime_pending` for a running legacy dispatch;
 - `protocol_start_pending` after a formal operational reservation but before a
