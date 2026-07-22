@@ -10,8 +10,13 @@ from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
 from typing import Awaitable, Callable
 
+from agora.protocol.models import ProviderUsageObservation
+
+from .provider_usage import RuntimeResultFormat, normalize_native_output
+
 
 OUTPUT_LIMIT = 64 * 1024
+CAPTURE_LIMIT = OUTPUT_LIMIT + 16 * 1024
 OUTPUT_READ_SIZE = 8 * 1024
 POST_STOP_DRAIN_TIMEOUT = 5
 
@@ -20,6 +25,7 @@ POST_STOP_DRAIN_TIMEOUT = 5
 class RuntimeCommand:
     adapter: str
     command_template: tuple[str, ...]
+    result_format: RuntimeResultFormat = RuntimeResultFormat.PLAIN_TEXT
 
     def build(self, prompt: str) -> list[str]:
         return [prompt if item == "{prompt}" else item for item in self.command_template]
@@ -32,6 +38,7 @@ class RuntimeResult:
     stderr: str
     timed_out: bool = False
     process_started: bool = True
+    usage_observation: ProviderUsageObservation | None = None
 
 
 class RuntimeInterrupted(RuntimeError):
@@ -45,15 +52,21 @@ class RuntimeLaunchError(RuntimeError):
 DEFAULT_RUNTIME_COMMANDS = {
     "codex": (
         "codex", "exec", "--skip-git-repo-check", "--sandbox", "read-only",
-        "--ephemeral", "{prompt}",
+        "--ephemeral", "--json", "{prompt}",
     ),
     "claude": (
-        "claude", "-p", "{prompt}", "--output-format", "text",
+        "claude", "-p", "{prompt}", "--output-format", "json",
         "--permission-mode", "plan", "--no-session-persistence",
     ),
     "kiro": (
         "kiro-cli", "chat", "--no-interactive", "--trust-tools=", "{prompt}",
     ),
+}
+
+DEFAULT_RESULT_FORMATS = {
+    "codex": RuntimeResultFormat.CODEX_JSONL_V1,
+    "claude": RuntimeResultFormat.CLAUDE_JSON_V1,
+    "kiro": RuntimeResultFormat.PLAIN_TEXT,
 }
 
 
@@ -137,7 +150,35 @@ def build_runtime_registry(config: dict) -> dict[str, RuntimeCommand]:
                 f"orchestration.runtimes.{adapter}.command may not use the prompt "
                 "as its executable"
             )
-        registry[adapter] = RuntimeCommand(adapter=adapter, command_template=tuple(command))
+        format_default = (
+            DEFAULT_RESULT_FORMATS[adapter]
+            if "command" not in values
+            else RuntimeResultFormat.PLAIN_TEXT
+        )
+        try:
+            result_format = RuntimeResultFormat(
+                values.get("result_format", format_default.value)
+            )
+        except (TypeError, ValueError):
+            allowed = ", ".join(item.value for item in RuntimeResultFormat)
+            raise ValueError(
+                f"orchestration.runtimes.{adapter}.result_format must be one of: {allowed}"
+            ) from None
+        if (
+            result_format == RuntimeResultFormat.CODEX_JSONL_V1
+            and adapter != "codex"
+        ) or (
+            result_format == RuntimeResultFormat.CLAUDE_JSON_V1
+            and adapter != "claude"
+        ):
+            raise ValueError(
+                f"orchestration.runtimes.{adapter}.result_format does not match its adapter"
+            )
+        registry[adapter] = RuntimeCommand(
+            adapter=adapter,
+            command_template=tuple(command),
+            result_format=result_format,
+        )
     return registry
 
 
@@ -200,13 +241,24 @@ class ReadOnlyCliRunner:
                     stderr = "process output drain did not close after termination"
                 else:
                     stdout, stderr = captured
+                stdout, observation = self._normalize_stdout(
+                    runtime, stdout, run_id=run_id,
+                )
                 return RuntimeResult(
                     exit_code=proc.returncode,
-                    stdout=stdout, stderr=stderr, timed_out=True,
+                    stdout=stdout,
+                    stderr=stderr[-OUTPUT_LIMIT:],
+                    timed_out=True,
+                    usage_observation=observation,
                 )
+            stdout, observation = self._normalize_stdout(
+                runtime, stdout, run_id=run_id,
+            )
             return RuntimeResult(
                 exit_code=proc.returncode,
-                stdout=stdout, stderr=stderr,
+                stdout=stdout,
+                stderr=stderr[-OUTPUT_LIMIT:],
+                usage_observation=observation,
             )
         except asyncio.CancelledError:
             await self._stop(proc)
@@ -243,10 +295,10 @@ class ReadOnlyCliRunner:
             return b""
         tail = bytearray()
         while chunk := await stream.read(OUTPUT_READ_SIZE):
-            if len(chunk) >= OUTPUT_LIMIT:
-                tail[:] = chunk[-OUTPUT_LIMIT:]
+            if len(chunk) >= CAPTURE_LIMIT:
+                tail[:] = chunk[-CAPTURE_LIMIT:]
                 continue
-            overflow = len(tail) + len(chunk) - OUTPUT_LIMIT
+            overflow = len(tail) + len(chunk) - CAPTURE_LIMIT
             if overflow > 0:
                 del tail[:overflow]
             tail.extend(chunk)
@@ -288,6 +340,21 @@ class ReadOnlyCliRunner:
     @staticmethod
     def _decode(value: bytes) -> str:
         return value.decode("utf-8", errors="replace")
+
+    @staticmethod
+    def _normalize_stdout(
+        runtime: RuntimeCommand,
+        stdout: str,
+        *,
+        run_id: str,
+    ) -> tuple[str, ProviderUsageObservation | None]:
+        semantic, observation = normalize_native_output(
+            adapter=runtime.adapter,
+            result_format=runtime.result_format,
+            stdout=stdout,
+            run_id=run_id,
+        )
+        return semantic[-OUTPUT_LIMIT:], observation
 
     def _environment(self, additions: dict[str, str]) -> dict[str, str]:
         env = dict(os.environ)

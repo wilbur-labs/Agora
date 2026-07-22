@@ -15,7 +15,11 @@ from agora.control_plane.store import ControlPlaneConflictError, ControlPlaneSto
 from agora.execution.security import redact_text, sanitize_data
 from agora.protocol.agent_adapter import AgentAdapterResult
 from agora.protocol.hashing import canonical_sha256, seal_model_payload
-from agora.protocol.models import SemanticStageResult, StageInventory
+from agora.protocol.models import (
+    ProviderUsageObservation,
+    SemanticStageResult,
+    StageInventory,
+)
 from agora.protocol.state_machines import GateStatus, StageStatus
 from agora.tasks.models import TaskBudget, utc_now
 from agora.tasks.store import TaskNotFoundError, TaskStore
@@ -1183,6 +1187,9 @@ class OrchestrationStore:
         error_message: str | None,
         token_used: int | None,
         token_measurement: Measurement,
+        cost_used_usd: float | None,
+        cost_measurement: Measurement,
+        usage_observation: ProviderUsageObservation | None = None,
         actor: str = "orchestrator",
     ) -> OrchestrationRun:
         """Project an authoritative protocol settlement into the 0.5 ledger.
@@ -1200,6 +1207,7 @@ class OrchestrationStore:
             raise OrchestrationValidationError(
                 "Protocol settlement does not match the operational Run"
             )
+        self._validate_measured_cost(cost_used_usd, cost_measurement)
         now = utc_now()
         safe_output = redact_text(output)[-64 * 1024:]
         safe_error = redact_text(error_message) if error_message else None
@@ -1241,6 +1249,14 @@ class OrchestrationStore:
                 raise OrchestrationConflictError(
                     "Terminal protocol projection is missing its usage settlement"
                 )
+            self._validate_usage_observation(
+                run,
+                usage_observation,
+                token_used=token_used,
+                token_measurement=token_measurement,
+                cost_used_usd=cost_used_usd,
+                cost_measurement=cost_measurement,
+            )
             stage = db.execute(
                 "SELECT * FROM orchestration_stages WHERE plan_id = ? AND stage_key = ?",
                 (run["plan_id"], run["stage_key"]),
@@ -1255,8 +1271,8 @@ class OrchestrationStore:
                 UPDATE orchestration_runs
                 SET state = ?, exit_code = ?, timed_out = ?, output = ?, error_message = ?,
                     semantic_status = ?, semantic_summary = ?, findings = ?,
-                    token_used = ?, token_measurement = ?, cost_used_usd = NULL,
-                    cost_measurement = ?, finished_at = ?
+                    token_used = ?, token_measurement = ?, cost_used_usd = ?,
+                    cost_measurement = ?, usage_observation_payload = ?, finished_at = ?
                 WHERE run_id = ?
                 """,
                 (
@@ -1270,7 +1286,13 @@ class OrchestrationStore:
                     self._json(sanitize_data(findings)),
                     token_used,
                     token_measurement.value,
-                    Measurement.UNAVAILABLE.value,
+                    cost_used_usd,
+                    cost_measurement.value,
+                    (
+                        self._json(usage_observation.model_dump(mode="json"))
+                        if usage_observation is not None
+                        else None
+                    ),
                     now,
                     run_id,
                 ),
@@ -1280,7 +1302,7 @@ class OrchestrationStore:
                 INSERT INTO orchestration_usage_ledger (
                     entry_id, task_id, plan_id, stage_key, run_id, entry_type,
                     tokens, token_measurement, cost_usd, cost_measurement, adapter, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     self._id("usage"),
@@ -1291,7 +1313,8 @@ class OrchestrationStore:
                     LedgerEntryType.SETTLEMENT.value,
                     token_used,
                     token_measurement.value,
-                    Measurement.UNAVAILABLE.value,
+                    cost_used_usd,
+                    cost_measurement.value,
                     run["adapter"],
                     now,
                 ),
@@ -1363,7 +1386,13 @@ class OrchestrationStore:
                     "operational_run_state": run_state.value,
                     "token_used": token_used,
                     "token_measurement": token_measurement.value,
-                    "cost_measurement": Measurement.UNAVAILABLE.value,
+                    "cost_used_usd": cost_used_usd,
+                    "cost_measurement": cost_measurement.value,
+                    "usage_observation_sha256": (
+                        usage_observation.content_sha256
+                        if usage_observation is not None
+                        else None
+                    ),
                 },
                 created_at=now,
             )
@@ -1382,21 +1411,10 @@ class OrchestrationStore:
         token_measurement: Measurement = Measurement.ESTIMATED,
         cost_used_usd: float | None = None,
         cost_measurement: Measurement = Measurement.UNAVAILABLE,
+        usage_observation: ProviderUsageObservation | None = None,
         actor: str = "orchestrator",
     ) -> OrchestrationRun:
-        if cost_measurement == Measurement.UNAVAILABLE:
-            if cost_used_usd is not None:
-                raise OrchestrationValidationError(
-                    "Unavailable cost measurement may not carry a value"
-                )
-        elif (
-            cost_used_usd is None
-            or not math.isfinite(cost_used_usd)
-            or cost_used_usd < 0
-        ):
-            raise OrchestrationValidationError(
-                "Measured cost must be a finite non-negative value"
-            )
+        self._validate_measured_cost(cost_used_usd, cost_measurement)
         now = utc_now()
         safe_output = redact_text(output)[-64 * 1024:]
         safe_error = redact_text(error_message) if error_message else None
@@ -1411,6 +1429,14 @@ class OrchestrationStore:
                 raise OrchestrationNotFoundError(run_id)
             if run["state"] != RunState.RUNNING.value:
                 raise OrchestrationConflictError("Run is already terminal")
+            self._validate_usage_observation(
+                run,
+                usage_observation,
+                token_used=token_used,
+                token_measurement=token_measurement,
+                cost_used_usd=cost_used_usd,
+                cost_measurement=cost_measurement,
+            )
             stage = db.execute(
                 "SELECT * FROM orchestration_stages WHERE plan_id = ? AND stage_key = ?",
                 (run["plan_id"], run["stage_key"]),
@@ -1450,7 +1476,7 @@ class OrchestrationStore:
                 SET state = ?, exit_code = ?, timed_out = ?, output = ?, error_message = ?,
                     semantic_status = ?, semantic_summary = ?, findings = ?,
                     token_used = ?, token_measurement = ?, cost_used_usd = ?,
-                    cost_measurement = ?, finished_at = ?
+                    cost_measurement = ?, usage_observation_payload = ?, finished_at = ?
                 WHERE run_id = ?
                 """,
                 (
@@ -1458,7 +1484,13 @@ class OrchestrationStore:
                     semantic.status.value if semantic else None, safe_summary,
                     self._json(sanitize_data(safe_findings)), token_used,
                     token_measurement.value, cost_used_usd,
-                    cost_measurement.value, now, run_id,
+                    cost_measurement.value,
+                    (
+                        self._json(usage_observation.model_dump(mode="json"))
+                        if usage_observation is not None
+                        else None
+                    ),
+                    now, run_id,
                 ),
             )
             db.execute(
@@ -1513,6 +1545,11 @@ class OrchestrationStore:
                     "token_measurement": token_measurement.value,
                     "cost_used_usd": cost_used_usd,
                     "cost_measurement": cost_measurement.value,
+                    "usage_observation_sha256": (
+                        usage_observation.content_sha256
+                        if usage_observation is not None
+                        else None
+                    ),
                     "blockers": sanitize_data(blockers),
                 },
                 created_at=now,
@@ -1780,15 +1817,23 @@ class OrchestrationStore:
             item.tokens or 0 for item in usage if item.entry_type == LedgerEntryType.SETTLEMENT
         )
         used = None if token_measurement == Measurement.UNAVAILABLE else known_used
-        cost_entries = [
-            item for item in usage
-            if item.entry_type == LedgerEntryType.SETTLEMENT and item.cost_usd is not None
-        ]
-        cost_used = sum(item.cost_usd or 0 for item in cost_entries) if cost_entries else None
-        cost_measurement = (
-            Measurement.EXACT if cost_entries and all(item.cost_measurement == Measurement.EXACT for item in cost_entries)
-            else Measurement.ESTIMATED if cost_entries else Measurement.UNAVAILABLE
-        )
+        if not settlement_entries or any(
+            item.cost_measurement == Measurement.UNAVAILABLE
+            or item.cost_usd is None
+            for item in settlement_entries
+        ):
+            cost_used = None
+            cost_measurement = Measurement.UNAVAILABLE
+        else:
+            cost_used = sum(item.cost_usd or 0 for item in settlement_entries)
+            cost_measurement = (
+                Measurement.ESTIMATED
+                if any(
+                    item.cost_measurement == Measurement.ESTIMATED
+                    for item in settlement_entries
+                )
+                else Measurement.EXACT
+            )
         return TaskOrchestrationStatus(
             plan=plan, stages=stages, runs=runs, usage=usage, decisions=decisions,
             tokens_reserved=reservations,
@@ -1829,6 +1874,51 @@ class OrchestrationStore:
         values = [round(total * weight / 100, 6) for weight in weights]
         values[-1] = round(values[-1] + total - sum(values), 6)
         return values
+
+    @staticmethod
+    def _validate_measured_cost(
+        cost_used_usd: float | None,
+        cost_measurement: Measurement,
+    ) -> None:
+        if cost_measurement == Measurement.UNAVAILABLE:
+            if cost_used_usd is not None:
+                raise OrchestrationValidationError(
+                    "Unavailable cost measurement may not carry a value"
+                )
+        elif (
+            cost_used_usd is None
+            or not math.isfinite(cost_used_usd)
+            or cost_used_usd < 0
+        ):
+            raise OrchestrationValidationError(
+                "Measured cost must be a finite non-negative value"
+            )
+
+    @staticmethod
+    def _validate_usage_observation(
+        run: sqlite3.Row,
+        observation: ProviderUsageObservation | None,
+        *,
+        token_used: int | None,
+        token_measurement: Measurement,
+        cost_used_usd: float | None,
+        cost_measurement: Measurement,
+    ) -> None:
+        if observation is None:
+            return
+        if observation.run_id != run["run_id"] or observation.adapter != run["adapter"]:
+            raise OrchestrationValidationError(
+                "Usage observation crosses its Run or adapter scope"
+            )
+        if (
+            observation.total_tokens != token_used
+            or observation.token_measurement != token_measurement.value
+            or observation.cost_usd != cost_used_usd
+            or observation.cost_measurement != cost_measurement.value
+        ):
+            raise OrchestrationValidationError(
+                "Usage observation does not match the compatibility settlement"
+            )
 
     @staticmethod
     def _same_optional_money(left: float | None, right: float | None) -> bool:
@@ -1912,7 +2002,14 @@ class OrchestrationStore:
 
     @staticmethod
     def _run(row: sqlite3.Row) -> OrchestrationRun:
-        return OrchestrationRun(
+        usage_observation = (
+            ProviderUsageObservation.model_validate_json(
+                row["usage_observation_payload"]
+            )
+            if row["usage_observation_payload"]
+            else None
+        )
+        run = OrchestrationRun(
             run_id=row["run_id"], plan_id=row["plan_id"], task_id=row["task_id"],
             stage_key=row["stage_key"], adapter=row["adapter"], state=row["state"],
             operation_key=row["operation_key"], prompt_sha256=row["prompt_sha256"], pid=row["pid"],
@@ -1928,8 +2025,21 @@ class OrchestrationStore:
                 if row["routing_policy_payload"]
                 else None
             ),
+            usage_observation=usage_observation,
             started_at=row["started_at"], finished_at=row["finished_at"],
         )
+        if usage_observation is not None and (
+            usage_observation.run_id != run.run_id
+            or usage_observation.adapter != run.adapter
+            or usage_observation.total_tokens != run.token_used
+            or usage_observation.token_measurement != run.token_measurement.value
+            or usage_observation.cost_usd != run.cost_used_usd
+            or usage_observation.cost_measurement != run.cost_measurement.value
+        ):
+            raise OrchestrationConflictError(
+                "Persisted usage observation does not match its Run settlement"
+            )
+        return run
 
     @staticmethod
     def _usage(row: sqlite3.Row) -> UsageLedgerEntry:

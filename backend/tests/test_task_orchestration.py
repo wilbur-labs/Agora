@@ -16,6 +16,11 @@ from agora.orchestration.contracts import (
 )
 from agora.orchestration.models import Measurement, PlanState, RunState, StageState
 from agora.orchestration.processes import ProcessState, inspect_process
+from agora.orchestration.provider_usage import (
+    RuntimeResultFormat,
+    normalize_native_output,
+)
+from agora.orchestration.schema import initialize_orchestration_schema
 from agora.orchestration.runtime import (
     ReadOnlyCliRunner,
     RuntimeCommand,
@@ -383,8 +388,8 @@ async def test_runtime_output_capture_retains_only_a_bounded_tail():
 
     reader = ChunkedReader(orchestration_runtime.OUTPUT_LIMIT * 10)
     captured = await ReadOnlyCliRunner._read_tail(reader)
-    assert len(captured) == orchestration_runtime.OUTPUT_LIMIT
-    assert captured == b"x" * orchestration_runtime.OUTPUT_LIMIT
+    assert len(captured) == orchestration_runtime.CAPTURE_LIMIT
+    assert captured == b"x" * orchestration_runtime.CAPTURE_LIMIT
     assert reader.largest_request == orchestration_runtime.OUTPUT_READ_SIZE
 
 
@@ -739,6 +744,157 @@ async def test_process_start_failure_settles_exact_zero_tokens(tmp_path):
     assert status.tokens_remaining == status.plan.total_token_budget
     assert status.usage[-1].tokens == 0
     assert status.usage[-1].token_measurement == Measurement.EXACT
+
+
+@pytest.mark.asyncio
+async def test_exact_native_usage_is_bound_persisted_and_projected_on_the_run(tmp_path):
+    tasks, service, _, task = _system(tmp_path)
+
+    class StructuredRunner:
+        async def run(self, runtime, prompt, **kwargs):
+            await kwargs["on_process"](424_242)
+            stdout = "\n".join([
+                json.dumps({
+                    "type": "item.completed",
+                    "item": {"type": "agent_message", "text": PASS},
+                }),
+                json.dumps({
+                    "type": "turn.completed",
+                    "usage": {
+                        "input_tokens": 100,
+                        "cached_input_tokens": 80,
+                        "output_tokens": 20,
+                        "reasoning_output_tokens": 5,
+                    },
+                }),
+            ])
+            output, observation = normalize_native_output(
+                adapter=runtime.adapter,
+                result_format=runtime.result_format,
+                stdout=stdout,
+                run_id=kwargs["run_id"],
+            )
+            return RuntimeResult(
+                0,
+                output,
+                "",
+                usage_observation=observation,
+            )
+
+    service.runtimes["codex"] = RuntimeCommand(
+        adapter="codex",
+        command_template=("fake", "{prompt}"),
+        result_format=RuntimeResultFormat.CODEX_JSONL_V1,
+    )
+    service.runner = StructuredRunner()
+
+    run = await service.run_next(task.task_id)
+    persisted = service.store.require_run(run.run_id)
+    event = next(
+        item
+        for item in tasks.events(task.task_id)
+        if item.event_type == "orchestration.run_finished"
+    )
+
+    assert persisted.usage_observation is not None
+    assert persisted.usage_observation.run_id == run.run_id
+    assert persisted.usage_observation.adapter == "codex"
+    assert persisted.usage_observation.total_tokens == 120
+    assert persisted.token_used == 120
+    assert persisted.token_measurement == Measurement.EXACT
+    assert persisted.cost_used_usd is None
+    assert persisted.cost_measurement == Measurement.UNAVAILABLE
+    assert (
+        event.payload["usage_observation_sha256"]
+        == persisted.usage_observation.content_sha256
+    )
+
+
+@pytest.mark.asyncio
+async def test_usage_observation_migration_does_not_rewrite_historical_ledger(tmp_path):
+    tasks, service, _, task = _system(tmp_path)
+    run = await service.run_next(task.task_id)
+    before = [
+        item.model_dump(mode="json")
+        for item in service.store.usage(run.plan_id)
+    ]
+
+    db = tasks._connect()
+    try:
+        db.execute(
+            "ALTER TABLE orchestration_runs DROP COLUMN usage_observation_payload"
+        )
+        initialize_orchestration_schema(db)
+        db.commit()
+        columns = {
+            row[1] for row in db.execute("PRAGMA table_info(orchestration_runs)")
+        }
+    finally:
+        db.close()
+
+    recovered = service.store.require_run(run.run_id)
+    after = [
+        item.model_dump(mode="json")
+        for item in service.store.usage(run.plan_id)
+    ]
+    assert "usage_observation_payload" in columns
+    assert recovered.usage_observation is None
+    assert after == before
+
+
+@pytest.mark.asyncio
+async def test_unknown_provider_cost_keeps_mixed_task_cost_unavailable(tmp_path):
+    _, service, _, task = _system(tmp_path)
+
+    class MixedCostRunner:
+        async def run(self, runtime, prompt, **kwargs):
+            await kwargs["on_process"](424_242)
+            if runtime.adapter == "codex":
+                raw = "\n".join([
+                    json.dumps({
+                        "type": "item.completed",
+                        "item": {"type": "agent_message", "text": PASS},
+                    }),
+                    json.dumps({
+                        "type": "turn.completed",
+                        "usage": {"input_tokens": 10, "output_tokens": 5},
+                    }),
+                ])
+            else:
+                raw = json.dumps({
+                    "result": PASS,
+                    "total_cost_usd": 0.25,
+                    "usage": {
+                        "input_tokens": 10,
+                        "output_tokens": 5,
+                        "cache_read_input_tokens": 0,
+                        "cache_creation_input_tokens": 0,
+                    },
+                })
+            output, observation = normalize_native_output(
+                adapter=runtime.adapter,
+                result_format=runtime.result_format,
+                stdout=raw,
+                run_id=kwargs["run_id"],
+            )
+            return RuntimeResult(0, output, "", usage_observation=observation)
+
+    service.runtimes["codex"] = RuntimeCommand(
+        "codex", ("fake", "{prompt}"), RuntimeResultFormat.CODEX_JSONL_V1,
+    )
+    service.runtimes["claude"] = RuntimeCommand(
+        "claude", ("fake", "{prompt}"), RuntimeResultFormat.CLAUDE_JSON_V1,
+    )
+    service.runner = MixedCostRunner()
+
+    await service.run_next(task.task_id)
+    await service.run_next(task.task_id)
+    status = service.status(task.task_id)
+
+    assert status.runs[1].cost_used_usd == 0.25
+    assert status.runs[1].cost_measurement == Measurement.EXACT
+    assert status.cost_used_usd is None
+    assert status.cost_measurement == Measurement.UNAVAILABLE
 
 
 @pytest.mark.asyncio

@@ -4,8 +4,9 @@ Current branch: `main`
 
 Current recovery baseline (2026-07-22):
 
-- Local `main` and `origin/main` are synchronized through the reviewed
-  explainable pinned routing policy commit containing this snapshot.
+- Before this increment, local `main` and `origin/main` were synchronized at
+  reviewed Task budget-amendment commit `03f3f6b`. The commit containing this
+  snapshot is the next intended recovery baseline after close-out.
 - Active program: the ordered Agora Control Plane transformation. The first two
   stages (protocol/domain freeze and Control Plane v2 persistence/Registry) are
   complete; the bounded API, concrete Task contract, and Runner/Agent Adapter
@@ -71,6 +72,90 @@ Current recovery baseline (2026-07-22):
   reviewer requirements, and historical usage, and records policy snapshots
   before and after the atomic change. Kiro and Claude Code both approved; the
   complete backend suite passed 474 tests with 18 deselected.
+- Latest reviewed increment: a versioned, hash-sealed provider usage
+  observation for native CLI results. Codex and Claude defaults opt into their
+  documented structured formats; Kiro/custom text remains an explicit
+  estimate, malformed structured results are unavailable, and only a process
+  that never started is exact zero. The additive Run column does not rewrite
+  historical ledger rows. Kiro and Claude Code both returned explicit final
+  approval; the complete backend suite passed 483 tests with 18 deselected.
+
+## 2026-07-22 — Native provider usage observation
+
+### Scope and implementation
+
+- [x] Added hash-sealed `ProviderUsageObservation@1.0` plus a checked-in JSON
+  Schema. Every observation binds the Run, adapter, provider, structured source
+  hash where available, model, duration, Token components/total, USD cost,
+  native credits, measurement status, and measurement method.
+- [x] Made runtime result formats explicit. Default Codex uses `exec --json`
+  JSONL and default Claude print mode uses `--output-format json`; custom
+  commands default to plain text unless their format is explicitly configured.
+  Kiro remains plain text because its current chat help exposes no stable
+  machine-readable result format.
+- [x] Added strict, bounded native normalization. Codex reads the final agent
+  message and one `turn.completed` usage event, treating cached input and
+  reasoning output as subsets. Claude unwraps the semantic `result` and records
+  exact input/output/cache Tokens, reported USD cost, model, and duration.
+- [x] Kept failure semantics conservative: malformed/truncated structured
+  output is unavailable, a started plain-text CLI is only estimated, a lost
+  crash-recovery envelope is unavailable, and only a process that provably did
+  not start records exact zero Tokens/cost/credits.
+- [x] Persisted the sealed observation in an additive nullable Run column and
+  revalidated its Run/adapter and aggregate settlement binding on every read.
+  Existing Run rows remain `NULL`; append-only reservation/settlement ledger
+  rows are not migrated or rewritten.
+- [x] Added the observation to unified Run projection and bumped the unified
+  Task projection to schema `8.0`. Routing policy, Stage runtime/model
+  selection, and historical ledger entries are unchanged.
+- [x] Corrected compatibility cost aggregation for mixed providers: any
+  unavailable settled Run makes the Task cost total unavailable instead of
+  presenting a partial known cost as an exact complete total.
+
+### Native capability evidence
+
+- Claude Code `2.1.217` was reconnected and exercised with a low-cost
+  authenticated JSON probe. It returned exact input, output, cache-creation,
+  cache-read Tokens, `total_cost_usd`, `duration_ms`, and `modelUsage`; the
+  implemented fixture mirrors those observed fields.
+- Kiro CLI `2.13.0` help was inspected. Chat output has no structured result
+  mode, so Agora does not parse its human credits footer and leaves exact cost
+  or credits unavailable.
+- `codex` did not resolve in the current PowerShell `PATH`, so no local Codex
+  smoke was claimed. The parser and regression fixture follow the official
+  Codex manual's documented `exec --json` JSONL events and
+  `turn.completed.usage` fields. This documentation is provenance, not a
+  runtime dependency.
+
+### Verification and review log
+
+- Provider usage plus protocol/schema focused suite: 39 passed.
+- Orchestration and formal protocol targeted suite: 93 passed.
+- Complete non-integration backend suite excluding static-export-dependent
+  `tests/test_web_ui.py`: 483 passed, 18 deselected, with one existing
+  Starlette/httpx warning and the existing Windows Proactor cleanup warning.
+- Protocol Schema export/check, isolated `compileall`, `git diff --check`, and
+  `agora task --help`: passed.
+- Kiro protocol/methodology review: `KIRO_APPROVE`; no high/medium findings.
+  Its two low findings were fixed by removing the dead legacy estimator and
+  explicitly testing/documenting non-zero Codex reasoning Tokens as an output
+  subset. Targeted re-review returned `KIRO_APPROVE`.
+- Claude Code correctness/security review: `CLAUDE_APPROVE`; no high/medium
+  actionable findings across parsing, provenance, migration, recovery,
+  aggregation, bounds, and regression coverage.
+- No frontend or authenticated HTTP contract changed; frontend validation was
+  not required. `.kiro/` and historical pytest temp directories remain
+  unrelated local artifacts and were not modified or staged.
+
+### Next safe action
+
+After the reviewed commit, define the smallest read-only, versioned native
+runtime capability-observation contract: installed adapter/version and
+declared model/capability availability only, bound to collection provenance.
+It must not substitute runtimes/models, alter the sealed Stage inventory or
+pinned route, or infer the missing authoritative AI-DLC graph. Dynamic
+substitution, authenticated HTTP, the missing authoritative AI-DLC graph,
+parallel/DAG routing, and Task Workbench UI remain deferred.
 
 ## 2026-07-18 — Latest transformation requirements recovery
 

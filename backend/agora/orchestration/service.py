@@ -4,7 +4,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import math
 import re
 from collections.abc import Callable
 from pathlib import Path
@@ -63,6 +62,7 @@ from .protocol_context import (
     resolve_git_revision,
 )
 from .projection import TaskProjectionStore
+from .provider_usage import settlement_observation
 from .runtime import (
     OUTPUT_LIMIT,
     ReadOnlyCliRunner,
@@ -345,21 +345,20 @@ class TaskOrchestrationService:
             output = result.stdout
             exit_code = result.exit_code
             semantic = self._parse_semantic(output) if exit_code == 0 else None
-        if result is None:
-            token_used = None
-            token_measurement = Measurement.UNAVAILABLE
-        elif not result.process_started:
-            token_used = 0
-            token_measurement = Measurement.EXACT
-        else:
-            token_used = self._estimate_tokens(prompt, output)
-            token_measurement = Measurement.ESTIMATED
-        if result is not None and not result.process_started:
-            cost_used_usd = 0.0
-            cost_measurement = Measurement.EXACT
-        else:
-            cost_used_usd = None
-            cost_measurement = Measurement.UNAVAILABLE
+        observation = settlement_observation(
+            run_id=run.run_id,
+            adapter=runtime.adapter,
+            prompt=prompt,
+            output=output,
+            process_started=result.process_started if result is not None else True,
+            exit_code=exit_code,
+            result_format=runtime.result_format,
+            native_observation=(result.usage_observation if result is not None else None),
+        )
+        token_used = observation.total_tokens
+        token_measurement = Measurement(observation.token_measurement)
+        cost_used_usd = observation.cost_usd
+        cost_measurement = Measurement(observation.cost_measurement)
         return self.store.finish_run(
             run.run_id, exit_code=exit_code,
             timed_out=bool(result and result.timed_out), output=output,
@@ -369,6 +368,7 @@ class TaskOrchestrationService:
             token_measurement=token_measurement,
             cost_used_usd=cost_used_usd,
             cost_measurement=cost_measurement,
+            usage_observation=observation,
         )
 
     async def run_next_protocol(self, task_id: str) -> OrchestrationRun:
@@ -527,6 +527,16 @@ class TaskOrchestrationService:
                     token_measurement=Measurement.EXACT,
                     cost_used_usd=0.0,
                     cost_measurement=Measurement.EXACT,
+                    usage_observation=settlement_observation(
+                        run_id=run_id,
+                        adapter=runtime.adapter,
+                        prompt=definition.prompt,
+                        output="",
+                        process_started=False,
+                        exit_code=None,
+                        result_format=runtime.result_format,
+                        native_observation=None,
+                    ),
                 )
                 raise OrchestrationConflictError(
                     f"Formal protocol Run could not start: {detail}"
@@ -595,15 +605,17 @@ class TaskOrchestrationService:
             if result.timed_out
             else (result.stderr.strip() or None if result.exit_code != 0 else None)
         )
-        if not result.process_started:
-            token_used = 0
-            token_measurement = Measurement.EXACT
-        elif result.exit_code is None:
-            token_used = None
-            token_measurement = Measurement.UNAVAILABLE
-        else:
-            token_used = self._estimate_tokens(definition.prompt, result.stdout)
-            token_measurement = Measurement.ESTIMATED
+        runtime = self.runtimes[run.adapter]
+        observation = settlement_observation(
+            run_id=run.run_id,
+            adapter=run.adapter,
+            prompt=definition.prompt,
+            output=result.stdout,
+            process_started=result.process_started,
+            exit_code=result.exit_code,
+            result_format=runtime.result_format,
+            native_observation=result.usage_observation,
+        )
         return self.store.finish_protocol_run(
             run.run_id,
             receipt=receipt,
@@ -612,8 +624,11 @@ class TaskOrchestrationService:
             timed_out=result.timed_out,
             output=result.stdout,
             error_message=failure,
-            token_used=token_used,
-            token_measurement=token_measurement,
+            token_used=observation.total_tokens,
+            token_measurement=Measurement(observation.token_measurement),
+            cost_used_usd=observation.cost_usd,
+            cost_measurement=Measurement(observation.cost_measurement),
+            usage_observation=observation,
         )
 
     async def run_until_blocked(
@@ -677,8 +692,6 @@ class TaskOrchestrationService:
                     stderr="Recovered a protocol Run whose process never attached",
                     process_started=False,
                 )
-                token_used = 0
-                token_measurement = Measurement.EXACT
             else:
                 process_state = self.process_inspector(run.pid)
                 if process_state != ProcessState.DEAD:
@@ -692,8 +705,6 @@ class TaskOrchestrationService:
                     stderr="Recovered a protocol Run whose process was no longer active",
                     process_started=True,
                 )
-                token_used = None
-                token_measurement = Measurement.UNAVAILABLE
             adapted = adapt_runtime_result(
                 protocol_run.context_pack,
                 result,
@@ -704,6 +715,17 @@ class TaskOrchestrationService:
                 actor="orchestrator",
                 operation_key=f"protocol-settle:{run.run_id}",
             )
+            runtime = self.runtimes[run.adapter]
+            observation = settlement_observation(
+                run_id=run.run_id,
+                adapter=run.adapter,
+                prompt="",
+                output=result.stdout,
+                process_started=result.process_started,
+                exit_code=result.exit_code,
+                result_format=runtime.result_format,
+                native_observation=None,
+            )
             self.store.finish_protocol_run(
                 run.run_id,
                 receipt=receipt,
@@ -712,8 +734,11 @@ class TaskOrchestrationService:
                 timed_out=result.timed_out,
                 output=result.stdout,
                 error_message=result.stderr,
-                token_used=token_used,
-                token_measurement=token_measurement,
+                token_used=observation.total_tokens,
+                token_measurement=Measurement(observation.token_measurement),
+                cost_used_usd=observation.cost_usd,
+                cost_measurement=Measurement(observation.cost_measurement),
+                usage_observation=observation,
             )
             return
 
@@ -757,6 +782,19 @@ class TaskOrchestrationService:
             else ""
         )
         process_status = protocol_run.protocol_state.process_status.value
+        runtime = self.runtimes[run.adapter]
+        observation = settlement_observation(
+            run_id=run.run_id,
+            adapter=run.adapter,
+            prompt="",
+            output=output,
+            process_started=process_status != "launch_failed",
+            # The native result envelope was lost before compatibility
+            # projection, so a recovered process exit cannot recreate usage.
+            exit_code=None,
+            result_format=runtime.result_format,
+            native_observation=None,
+        )
         self.store.finish_protocol_run(
             run.run_id,
             receipt=receipt,
@@ -769,12 +807,11 @@ class TaskOrchestrationService:
                 if protocol_run.adapter_error_code
                 else None
             ),
-            token_used=(0 if process_status == "launch_failed" else None),
-            token_measurement=(
-                Measurement.EXACT
-                if process_status == "launch_failed"
-                else Measurement.UNAVAILABLE
-            ),
+            token_used=observation.total_tokens,
+            token_measurement=Measurement(observation.token_measurement),
+            cost_used_usd=observation.cost_usd,
+            cost_measurement=Measurement(observation.cost_measurement),
+            usage_observation=observation,
         )
 
     def retry(self, task_id: str, stage_key: str):
@@ -994,10 +1031,6 @@ or unreviewable assumptions must be explicit. Process success alone is not seman
                 continue
             valid_results.append(result)
         return valid_results[0] if len(valid_results) == 1 else None
-
-    @staticmethod
-    def _estimate_tokens(prompt: str, output: str) -> int:
-        return max(1, math.ceil(len((prompt + output).encode("utf-8")) / 4))
 
     def _assert_runtimes_available(self) -> None:
         missing = [stage.adapter for stage in self.methodology.stages if stage.adapter not in self.runtimes]

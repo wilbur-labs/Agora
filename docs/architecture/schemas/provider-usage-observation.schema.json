@@ -1,0 +1,270 @@
+{
+  "$id": "https://agora.local/schemas/v1/provider-usage-observation.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Read-only, Run-bound usage facts observed at a native CLI boundary.",
+  "properties": {
+    "adapter": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Adapter",
+      "type": "string"
+    },
+    "cache_creation_input_tokens": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Cache Creation Input Tokens"
+    },
+    "cache_read_input_tokens": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Cache Read Input Tokens"
+    },
+    "content_sha256": {
+      "title": "Content Sha256",
+      "type": "string"
+    },
+    "cost_measurement": {
+      "enum": [
+        "exact",
+        "estimated",
+        "unavailable"
+      ],
+      "title": "Cost Measurement",
+      "type": "string"
+    },
+    "cost_method": {
+      "enum": [
+        "provider_reported_total_cost_usd",
+        "provider_rate_card_estimate",
+        "process_not_started",
+        "unavailable"
+      ],
+      "title": "Cost Method",
+      "type": "string"
+    },
+    "cost_usd": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Cost Usd"
+    },
+    "duration_ms": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Duration Ms"
+    },
+    "input_tokens": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Input Tokens"
+    },
+    "model": {
+      "anyOf": [
+        {
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Model"
+    },
+    "native_credit_measurement": {
+      "default": "unavailable",
+      "enum": [
+        "exact",
+        "estimated",
+        "unavailable"
+      ],
+      "title": "Native Credit Measurement",
+      "type": "string"
+    },
+    "native_credit_method": {
+      "default": "unavailable",
+      "enum": [
+        "provider_reported_native_credits",
+        "provider_rate_card_estimate",
+        "process_not_started",
+        "unavailable"
+      ],
+      "title": "Native Credit Method",
+      "type": "string"
+    },
+    "native_credits": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Native Credits"
+    },
+    "output_tokens": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Output Tokens"
+    },
+    "provider": {
+      "enum": [
+        "openai",
+        "anthropic",
+        "kiro",
+        "unknown"
+      ],
+      "title": "Provider",
+      "type": "string"
+    },
+    "reasoning_output_tokens": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reasoning Output Tokens"
+    },
+    "run_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Run Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "source": {
+      "enum": [
+        "codex_exec_jsonl",
+        "claude_print_json",
+        "kiro_cli_text",
+        "custom_text",
+        "process_not_started",
+        "runtime_boundary"
+      ],
+      "title": "Source",
+      "type": "string"
+    },
+    "source_payload_sha256": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Source Payload Sha256"
+    },
+    "token_measurement": {
+      "enum": [
+        "exact",
+        "estimated",
+        "unavailable"
+      ],
+      "title": "Token Measurement",
+      "type": "string"
+    },
+    "token_method": {
+      "enum": [
+        "provider_input_plus_output",
+        "provider_input_output_and_cache",
+        "utf8_bytes_divided_by_four_ceil",
+        "process_not_started",
+        "unavailable"
+      ],
+      "title": "Token Method",
+      "type": "string"
+    },
+    "total_tokens": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Total Tokens"
+    }
+  },
+  "required": [
+    "content_sha256",
+    "run_id",
+    "adapter",
+    "provider",
+    "source",
+    "token_measurement",
+    "token_method",
+    "cost_measurement",
+    "cost_method"
+  ],
+  "title": "ProviderUsageObservation",
+  "type": "object"
+}

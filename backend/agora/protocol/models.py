@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import ntpath
 from enum import Enum
 from typing import Annotated, Any, Literal
@@ -75,6 +76,162 @@ class HashSealedModel(ProtocolModel):
         )
         if self.content_sha256 != expected:
             raise ValueError("content_sha256 does not match canonical protocol content")
+        return self
+
+
+class ProviderUsageObservation(HashSealedModel):
+    """Read-only, Run-bound usage facts observed at a native CLI boundary."""
+
+    schema_version: Literal["1.0"] = "1.0"
+    run_id: StableId
+    adapter: StableId
+    provider: Literal["openai", "anthropic", "kiro", "unknown"]
+    source: Literal[
+        "codex_exec_jsonl",
+        "claude_print_json",
+        "kiro_cli_text",
+        "custom_text",
+        "process_not_started",
+        "runtime_boundary",
+    ]
+    source_payload_sha256: Sha256Hex | None = None
+    model: Annotated[str, Field(min_length=1, max_length=200)] | None = None
+    input_tokens: int | None = Field(default=None, ge=0)
+    output_tokens: int | None = Field(default=None, ge=0)
+    cache_read_input_tokens: int | None = Field(default=None, ge=0)
+    cache_creation_input_tokens: int | None = Field(default=None, ge=0)
+    reasoning_output_tokens: int | None = Field(default=None, ge=0)
+    total_tokens: int | None = Field(default=None, ge=0)
+    token_measurement: Literal["exact", "estimated", "unavailable"]
+    token_method: Literal[
+        "provider_input_plus_output",
+        "provider_input_output_and_cache",
+        "utf8_bytes_divided_by_four_ceil",
+        "process_not_started",
+        "unavailable",
+    ]
+    cost_usd: float | None = Field(default=None, ge=0)
+    cost_measurement: Literal["exact", "estimated", "unavailable"]
+    cost_method: Literal[
+        "provider_reported_total_cost_usd",
+        "provider_rate_card_estimate",
+        "process_not_started",
+        "unavailable",
+    ]
+    native_credits: float | None = Field(default=None, ge=0)
+    native_credit_measurement: Literal[
+        "exact", "estimated", "unavailable"
+    ] = "unavailable"
+    native_credit_method: Literal[
+        "provider_reported_native_credits",
+        "provider_rate_card_estimate",
+        "process_not_started",
+        "unavailable",
+    ] = "unavailable"
+    duration_ms: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def validate_measurements(self):
+        expected_provider = {
+            "codex": "openai",
+            "claude": "anthropic",
+            "kiro": "kiro",
+        }.get(self.adapter)
+        if expected_provider is not None and self.provider != expected_provider:
+            raise ValueError("provider does not match adapter provenance")
+
+        token_parts = (
+            self.input_tokens,
+            self.output_tokens,
+            self.cache_read_input_tokens,
+            self.cache_creation_input_tokens,
+            self.reasoning_output_tokens,
+        )
+        if self.token_measurement == "unavailable":
+            if self.total_tokens is not None or any(item is not None for item in token_parts):
+                raise ValueError("unavailable Token measurement may not carry values")
+            if self.token_method != "unavailable":
+                raise ValueError("unavailable Token measurement requires unavailable method")
+        elif self.total_tokens is None:
+            raise ValueError("measured Token usage requires a total")
+
+        if self.token_method == "provider_input_plus_output":
+            if self.token_measurement != "exact":
+                raise ValueError("provider Token totals must be exact")
+            if self.input_tokens is None or self.output_tokens is None:
+                raise ValueError("provider Token total requires input and output values")
+            if self.total_tokens != self.input_tokens + self.output_tokens:
+                raise ValueError("provider Token total does not match input plus output")
+        elif self.token_method == "provider_input_output_and_cache":
+            required = (
+                self.input_tokens,
+                self.output_tokens,
+                self.cache_read_input_tokens,
+                self.cache_creation_input_tokens,
+            )
+            if self.token_measurement != "exact" or any(item is None for item in required):
+                raise ValueError("provider cache Token total requires exact component values")
+            if self.total_tokens != sum(item for item in required if item is not None):
+                raise ValueError("provider Token total does not match its components")
+        elif self.token_method == "utf8_bytes_divided_by_four_ceil":
+            if self.token_measurement != "estimated" or self.total_tokens is None:
+                raise ValueError("Agora Token estimate requires an estimated total")
+            if any(item is not None for item in token_parts):
+                raise ValueError("Agora Token estimate may not invent provider components")
+        elif self.token_method == "process_not_started":
+            if self.token_measurement != "exact" or self.total_tokens != 0:
+                raise ValueError("a process that did not start has exact zero total Tokens")
+            if any(item not in {None, 0} for item in token_parts):
+                raise ValueError("a process that did not start may only carry zero components")
+        elif self.token_method == "unavailable" and self.token_measurement != "unavailable":
+            raise ValueError("measured Token usage requires a measurement method")
+
+        if self.cost_measurement == "unavailable":
+            if self.cost_usd is not None or self.cost_method != "unavailable":
+                raise ValueError("unavailable cost measurement may not carry a value")
+        else:
+            if self.cost_usd is None or not math.isfinite(self.cost_usd):
+                raise ValueError("measured cost must be finite")
+        if self.cost_method == "provider_reported_total_cost_usd":
+            if self.cost_measurement != "exact":
+                raise ValueError("provider-reported cost must be exact")
+        elif self.cost_method == "provider_rate_card_estimate":
+            if self.cost_measurement != "estimated":
+                raise ValueError("rate-card cost must be estimated")
+        elif self.cost_method == "process_not_started":
+            if self.cost_measurement != "exact" or self.cost_usd != 0:
+                raise ValueError("a process that did not start has exact zero cost")
+        elif self.cost_measurement != "unavailable":
+            raise ValueError("measured cost requires a measurement method")
+
+        if self.native_credit_measurement == "unavailable":
+            if self.native_credits is not None or self.native_credit_method != "unavailable":
+                raise ValueError("unavailable native credits may not carry a value")
+        else:
+            if (
+                self.native_credits is None
+                or not math.isfinite(self.native_credits)
+            ):
+                raise ValueError("measured native credits must be finite")
+        if self.native_credit_method == "provider_reported_native_credits":
+            if self.native_credit_measurement != "exact":
+                raise ValueError("provider-reported native credits must be exact")
+        elif self.native_credit_method == "provider_rate_card_estimate":
+            if self.native_credit_measurement != "estimated":
+                raise ValueError("rate-card native credits must be estimated")
+        elif self.native_credit_method == "process_not_started":
+            if self.native_credit_measurement != "exact" or self.native_credits != 0:
+                raise ValueError("a process that did not start has exact zero credits")
+        elif self.native_credit_measurement != "unavailable":
+            raise ValueError("measured native credits require a measurement method")
+
+        native_source = self.source in {"codex_exec_jsonl", "claude_print_json"}
+        if native_source != (self.source_payload_sha256 is not None):
+            raise ValueError("structured native sources require a source payload hash")
+        if self.source == "codex_exec_jsonl" and self.adapter != "codex":
+            raise ValueError("Codex JSONL source requires the codex adapter")
+        if self.source == "claude_print_json" and self.adapter != "claude":
+            raise ValueError("Claude JSON source requires the claude adapter")
         return self
 
 

@@ -19,6 +19,7 @@ from agora.protocol.models import (
     Evidence,
     HashSealedModel,
     ProcessStatus,
+    ProviderUsageObservation,
     ProtocolModel,
     SchemaStatus,
     SemanticStageResult,
@@ -415,6 +416,10 @@ class OrchestrationRun(StrictModel):
         default=None,
         exclude_if=lambda value: value is None,
     )
+    usage_observation: ProviderUsageObservation | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
     started_at: str
     finished_at: str | None
 
@@ -551,6 +556,7 @@ class UnifiedRunProjection(StrictModel):
     cost_settled_usd: float | None = Field(default=None, ge=0)
     cost_measurement: Measurement | None = None
     routing_policy: RoutingPolicyDecision | None = None
+    usage_observation: ProviderUsageObservation | None = None
     started_at: str
     finished_at: str | None = None
     elapsed_seconds: float = Field(ge=0)
@@ -606,7 +612,7 @@ class UnifiedBudgetProjection(StrictModel):
 
 
 class UnifiedTaskProjection(StrictModel):
-    schema_version: Literal["7.0"] = "7.0"
+    schema_version: Literal["8.0"] = "8.0"
     snapshot_at: str
     task: TaskManifest
     task_state: TaskStatus | None
