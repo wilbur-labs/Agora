@@ -13,7 +13,7 @@ from agora.control_plane.store import (
 )
 from agora.protocol.hashing import seal_model_payload
 from agora.protocol.models import StageInventory
-from agora.protocol.state_machines import TaskStatus
+from agora.protocol.state_machines import StageStatus, TaskStatus
 from agora.tasks.models import CreateTaskRequest
 from agora.tasks.store import TaskStore
 
@@ -254,12 +254,27 @@ def test_formal_stages_must_match_the_immutable_inventory(tmp_path):
             stage_key="design",
             gate_key="gate:wrong",
         )
-    stage = store.ensure_stage(
+    with pytest.raises(ControlPlaneConflictError, match="authoritative route"):
+        store.ensure_stage(
+            task_id=task.task_id,
+            stage_key="design",
+            gate_key="gate:design",
+        )
+    with pytest.raises(ControlPlaneConflictError, match="authoritative route"):
+        store.ensure_stage(
+            task_id=task.task_id,
+            stage_key="review",
+            gate_key="gate:review",
+            status=StageStatus.PENDING,
+        )
+    stage = store.activate_stage_route(
         task_id=task.task_id,
-        stage_key="design",
-        gate_key="gate:design",
-    )
+        expected_stage_key="design",
+        actor="orchestrator",
+        operation_key="route:design",
+    ).route
     assert stage.stage_key == "design"
+    assert stage.stage_status == StageStatus.READY
 
 
 def test_persisted_stage_inventory_binding_is_revalidated_on_read(tmp_path):

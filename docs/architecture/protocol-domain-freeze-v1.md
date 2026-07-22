@@ -107,6 +107,11 @@ reconciliation_required | completed | failed | cancelled
 A completed Stage may reopen to `ready` when an approval or required artifact
 becomes stale.
 
+For a Task with a sealed grouped inventory, Agora routes the first incomplete
+Stage in inventory order and only that route may start a formal Run. Successful
+formal settlement activates the next route atomically; compatibility Plan state
+does not select the Stage or runtime.
+
 ### Gate
 
 ```text

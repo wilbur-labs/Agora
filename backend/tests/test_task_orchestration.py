@@ -488,16 +488,21 @@ def test_create_persists_method_budget_and_task_audit(tmp_path):
         "methodology_review",
     ]
     events = tasks.events(task.task_id)
-    assert [event.event_type for event in events[-4:]] == [
+    assert [event.event_type for event in events[-6:]] == [
         "orchestration.plan_created",
         "task.state_initialized",
         "stage.inventory_initialized",
         "task.state_changed",
+        "stage.created",
+        "stage.activated",
     ]
-    assert events[-4].payload["provisional"] is True
-    assert events[-3].payload == {"status": "backlog", "version": 1}
-    assert events[-2].payload["stage_count"] == 3
-    assert events[-1].payload["from"] == "backlog"
+    assert events[-6].payload["provisional"] is True
+    assert events[-5].payload == {"status": "backlog", "version": 1}
+    assert events[-4].payload["stage_count"] == 3
+    assert events[-3].payload["from"] == "backlog"
+    assert events[-3].payload["to"] == "ready"
+    assert events[-2].payload["status"] == "pending"
+    assert events[-1].payload["from"] == "pending"
     assert events[-1].payload["to"] == "ready"
 
 

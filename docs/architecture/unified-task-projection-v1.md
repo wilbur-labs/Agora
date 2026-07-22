@@ -57,8 +57,8 @@ ordering boundary. Unified projection schema `3.0` began reading the sealed inve
 for Stage grouping, order, title, role, runtime, and total progress. It never
 uses `orchestration_stages` as the Stage inventory authority. Formal completion
 still requires a completed Control Plane Stage, and the compatibility Plan's
-current Stage is labeled as compatibility-sourced until authoritative Stage
-activation/routing is implemented. A missing inventory makes total progress explicitly unavailable
+current Stage was labeled as compatibility-sourced until authoritative Stage
+activation/routing was implemented. A missing inventory makes total progress explicitly unavailable
 and directs explicit `task resume` recovery.
 
 Unified projection schema `4.0` adds the deterministic lifecycle decision
@@ -68,6 +68,13 @@ inputs, `reconciliation_required` when an Attention or other external mutation
 made it stale, and `unavailable` when frozen state or inventory is missing. The
 projection recomputes this decision inside its existing read snapshot but never
 writes it; `task resume` owns repair.
+
+Unified projection schema `5.0` adds the deterministic Control Plane Stage
+route. The current Stage, runtime, role, and order come from the sealed
+inventory and formal Stage state; the compatibility Plan cursor remains visible
+only inside `plan`. A crash after formal settlement may therefore show the next
+Control Plane route while the compatibility Plan still points at the settled
+Stage, making the required resume repair explicit without weakening authority.
 
 Formal progress counts only Control Plane Stages in `completed` state. A passed
 process, compatibility Run, or Gate cannot increase the completed count by
@@ -117,7 +124,7 @@ unavailable rather than zero. Provider-specific exact usage remains deferred.
 The future authenticated HTTP projection should reuse this read model rather
 than construct another status interpretation. Frozen Task-state persistence is
 supplied by `control_tasks`, and grouped Stage identity is supplied by
-`control_stage_inventories`; lifecycle reconciliation is supplied by the
-Control Plane derivation boundary. Authoritative Stage activation/routing,
-exact provider usage, the authenticated HTTP lifecycle surface, the full
+`control_stage_inventories`; lifecycle reconciliation and Stage routing are
+supplied by the Control Plane derivation boundary. Parallel/DAG and risk-aware
+dynamic routing, exact provider usage, the authenticated HTTP lifecycle surface, the full
 AI-DLC graph, and Task Workbench UI remain separate reviewed increments.

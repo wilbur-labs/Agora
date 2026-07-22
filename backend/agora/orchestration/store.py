@@ -361,6 +361,8 @@ class OrchestrationStore:
         prompt_sha256: str,
         operation_key: str,
         run_id: str | None = None,
+        expected_stage_key: str | None = None,
+        expected_adapter: str | None = None,
         actor: str = "orchestrator",
     ) -> OrchestrationRun:
         if run_id is not None and not re.fullmatch(
@@ -383,12 +385,23 @@ class OrchestrationStore:
                 )
             if plan["state"] != PlanState.ACTIVE.value:
                 raise OrchestrationConflictError(f"Plan is {plan['state']}, not active")
+            if (
+                expected_stage_key is not None
+                and plan["current_stage_key"] != expected_stage_key
+            ):
+                raise OrchestrationConflictError(
+                    "Compatibility Plan route changed before the authoritative claim"
+                )
             stage = db.execute(
                 "SELECT * FROM orchestration_stages WHERE plan_id = ? AND stage_key = ?",
                 (plan["plan_id"], plan["current_stage_key"]),
             ).fetchone()
             if not stage or stage["state"] != StageState.PENDING.value:
                 raise OrchestrationConflictError("Current stage is not pending")
+            if expected_adapter is not None and stage["adapter"] != expected_adapter:
+                raise OrchestrationConflictError(
+                    "Compatibility Stage adapter does not match the authoritative route"
+                )
             previous_incomplete = db.execute(
                 """SELECT 1 FROM orchestration_stages
                    WHERE plan_id = ? AND sequence < ? AND state != ? LIMIT 1""",
@@ -625,13 +638,36 @@ class OrchestrationStore:
                 ),
             )
             if stage_completed:
-                next_stage = db.execute(
-                    """SELECT stage_key FROM orchestration_stages
-                       WHERE plan_id = ? AND sequence > ? ORDER BY sequence LIMIT 1""",
-                    (run["plan_id"], stage["sequence"]),
-                ).fetchone()
-                plan_state = PlanState.ACTIVE if next_stage else PlanState.AWAITING_APPROVAL
-                next_key = next_stage["stage_key"] if next_stage else None
+                route = receipt.next_stage_route
+                if route is None:
+                    plan_state = PlanState.AWAITING_APPROVAL
+                    next_key = None
+                else:
+                    next_stage = db.execute(
+                        """SELECT * FROM orchestration_stages
+                           WHERE plan_id = ? AND stage_key = ?""",
+                        (run["plan_id"], route.stage_key),
+                    ).fetchone()
+                    if next_stage is None or next_stage["sequence"] <= stage["sequence"]:
+                        raise OrchestrationValidationError(
+                            "Authoritative next Stage route is absent or out of order in "
+                            "the compatibility ledger"
+                        )
+                    if (
+                        next_stage["adapter"] != route.runtime
+                        or next_stage["role"] != route.role
+                        or next_stage["title"] != route.title
+                    ):
+                        raise OrchestrationValidationError(
+                            "Authoritative next Stage route does not match compatibility "
+                            "Stage metadata"
+                        )
+                    plan_state = (
+                        PlanState.ACTIVE
+                        if route.stage_status in {StageStatus.READY, StageStatus.RUNNING}
+                        else PlanState.BLOCKED
+                    )
+                    next_key = route.stage_key
             else:
                 plan_state = PlanState.BLOCKED
                 next_key = stage["stage_key"]

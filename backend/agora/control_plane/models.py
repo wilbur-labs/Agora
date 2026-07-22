@@ -99,6 +99,38 @@ class StageRecord(ProtocolModel):
     updated_at: str
 
 
+class StageRouteDecision(ProtocolModel):
+    task_id: StableId
+    project_id: StableId
+    inventory_id: StableId
+    inventory_sha256: Sha256Hex
+    group_key: StableId
+    group_sequence: int = Field(ge=1, le=20)
+    stage_key: StableId
+    gate_key: StableId
+    stage_sequence: int = Field(ge=1, le=200)
+    inventory_sequence: int = Field(ge=1, le=200)
+    title: Annotated[str, Field(min_length=1, max_length=300)]
+    role: Annotated[str, Field(min_length=1, max_length=128)]
+    runtime: StableId
+    stage_status: StageStatus | None = None
+    gate_status: GateStatus | None = None
+    runnable: bool
+
+    @model_validator(mode="after")
+    def runnable_requires_ready_status(self):
+        if self.runnable and self.stage_status != StageStatus.READY:
+            raise ValueError("Only the ready routed Stage may be runnable")
+        return self
+
+
+class StageActivationReceipt(ProtocolModel):
+    route: StageRouteDecision
+    previous_status: StageStatus | None = None
+    activated: bool
+    replayed: bool = False
+
+
 class GateRecord(ProtocolModel):
     task_id: StableId
     project_id: StableId
@@ -136,6 +168,7 @@ class RunSettlementReceipt(ProtocolModel):
     artifact_ids: list[StableId]
     evidence_ids: list[StableId]
     active_evidence_ids: list[StableId]
+    next_stage_route: StageRouteDecision | None = None
     replayed: bool = False
 
 

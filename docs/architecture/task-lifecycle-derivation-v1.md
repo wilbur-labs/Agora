@@ -85,11 +85,11 @@ matches current authoritative inputs; it never repairs state during a read.
 
 ## Unified projection and deferred boundaries
 
-Unified projection schema `4.0` adds the bounded lifecycle decision and reports
+Unified projection schema `5.0` retains the bounded lifecycle decision, adds
+the authoritative Stage route, and reports
 one of `control_plane_managed`, `reconciliation_required`, or `unavailable`.
-Grouped progress remains inventory-derived, and current-Stage selection remains
-explicitly compatibility-sourced until authoritative Stage activation/routing
-is a separate reviewed increment.
+Grouped progress and current-Stage selection are inventory-derived; the route
+is activated and advanced only by the Control Plane.
 
 Authenticated HTTP lifecycle commands/fields, dynamic routing, methodology
 migration, the missing authoritative AI-DLC graph, and Task Workbench UI remain

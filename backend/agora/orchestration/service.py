@@ -11,9 +11,12 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
+from agora.attention.models import AttentionState, CancelAttentionRequest
+from agora.attention.store import AttentionConflictError, AttentionStore
 from agora.control_plane.models import (
     ProtocolRunRecord,
     RunSettlementReceipt,
+    StageRouteDecision,
     TaskTransitionCause,
 )
 from agora.control_plane.store import (
@@ -24,7 +27,11 @@ from agora.control_plane.store import (
 )
 from agora.projects import ProjectRegistry
 from agora.protocol.agent_adapter import AgentAdapterResult
-from agora.protocol.hashing import canonical_json_bytes, seal_model_payload
+from agora.protocol.hashing import (
+    canonical_json_bytes,
+    canonical_sha256,
+    seal_model_payload,
+)
 from agora.protocol.models import StageInventory
 from agora.protocol.state_machines import StageStatus, TaskStatus
 from agora.tasks.models import CreateTaskRequest, TaskBudget, TaskManifest, TaskRisk, utc_now
@@ -99,6 +106,7 @@ class TaskOrchestrationService:
         self.methodology = methodology
         self.timeout_seconds = min(max(timeout_seconds, 1), 7200)
         self.store = OrchestrationStore(tasks)
+        self.attention = AttentionStore(tasks)
         self.control_plane = ControlPlaneStore(tasks)
         self.projections = TaskProjectionStore(
             tasks,
@@ -171,6 +179,7 @@ class TaskOrchestrationService:
         )
         self.control_plane.ensure_task_state(task.task_id, actor=actor)
         self._ensure_grouped_stage_inventory(task.task_id, actor=actor)
+        self._ensure_authoritative_stage_route(task.task_id, actor=actor)
         return task
 
     def attach(
@@ -190,6 +199,7 @@ class TaskOrchestrationService:
         )
         self.control_plane.ensure_task_state(task_id, actor=actor)
         self._ensure_grouped_stage_inventory(task_id, actor=actor)
+        self._ensure_authoritative_stage_route(task_id, actor=actor)
         return plan
 
     def status(self, task_id: str) -> TaskOrchestrationStatus:
@@ -308,18 +318,62 @@ class TaskOrchestrationService:
                 "Pinned Task contract hash does not match its content"
             )
         self._ensure_grouped_stage_inventory(task_id, actor="orchestrator")
+        route = self._ensure_authoritative_stage_route(
+            task_id,
+            actor="orchestrator",
+        )
+        if route is None:
+            raise OrchestrationConflictError(
+                "Every authoritative inventory Stage already completed"
+            )
         status = self.store.status(task_id)
         if status.plan.state != PlanState.ACTIVE:
             raise OrchestrationConflictError(f"Plan is {status.plan.state.value}, not active")
+        if status.plan.current_stage_key != route.stage_key:
+            raise OrchestrationConflictError(
+                "Compatibility Plan route does not match the authoritative Control "
+                "Plane route; run task resume"
+            )
         stage = next(
-            (item for item in status.stages if item.stage_key == status.plan.current_stage_key),
+            (item for item in status.stages if item.stage_key == route.stage_key),
             None,
         )
         if stage is None or stage.state != StageState.PENDING:
             raise OrchestrationConflictError("Current stage is not ready to run")
-        runtime = self.runtimes.get(stage.adapter)
+        if (
+            stage.adapter != route.runtime
+            or stage.role != route.role
+            or stage.title != route.title
+        ):
+            raise OrchestrationConflictError(
+                "Compatibility Stage metadata does not match the authoritative route"
+            )
+        if route.stage_status != StageStatus.READY:
+            status_value = route.stage_status.value if route.stage_status else "unconfigured"
+            raise OrchestrationConflictError(
+                f"Authoritative routed Stage is {status_value}, not ready"
+            )
+        frozen_task = self.control_plane.get_task_state(task_id)
+        lifecycle = self.control_plane.get_task_lifecycle_decision(task_id)
+        if frozen_task is None or lifecycle is None:
+            raise OrchestrationConflictError(
+                "Frozen Task lifecycle is unavailable; run task resume"
+            )
+        if frozen_task.status != lifecycle.target_status:
+            raise OrchestrationConflictError(
+                "Frozen Task lifecycle drifted from authoritative facts; run task resume"
+            )
+        if lifecycle.target_status not in {TaskStatus.READY, TaskStatus.ACTIVE}:
+            raise OrchestrationConflictError(
+                f"Frozen Task lifecycle is {lifecycle.target_status.value}, not dispatchable"
+            )
+        if not route.runnable:
+            raise OrchestrationConflictError(
+                "Authoritative Stage route is not dispatchable; run task resume"
+            )
+        runtime = self.runtimes.get(route.runtime)
         if runtime is None:
-            raise OrchestrationConflictError(f"Runtime is unavailable: {stage.adapter}")
+            raise OrchestrationConflictError(f"Runtime is unavailable: {route.runtime}")
         project = self.projects.get(task.project_id)
         revision = self.revision_resolver(project.root, task.project_id)
         projection = self.control_plane.projection(task_id)
@@ -350,6 +404,8 @@ class TaskOrchestrationService:
             prompt_sha256=digest,
             operation_key=operation_key,
             run_id=run_id,
+            expected_stage_key=route.stage_key,
+            expected_adapter=route.runtime,
         )
         try:
             self.control_plane.configure_gate(
@@ -510,6 +566,7 @@ class TaskOrchestrationService:
                 run.run_id,
                 reason="Recovered a run whose process was no longer active",
             )
+        self._ensure_authoritative_stage_route(task_id, actor="reconciler")
         self.control_plane.reconcile_task_lifecycle(
             task_id,
             cause=TaskTransitionCause.RECONCILIATION,
@@ -603,6 +660,11 @@ class TaskOrchestrationService:
                 )
             ),
             active_evidence_ids=gate.active_evidence_ids,
+            next_stage_route=(
+                self.control_plane.get_stage_route(run.task_id)
+                if stage.status == StageStatus.COMPLETED
+                else None
+            ),
             replayed=True,
         )
         output = (
@@ -687,6 +749,26 @@ class TaskOrchestrationService:
                 "Formal retry cannot rebind an immutable Gate after the repository "
                 "ref or commit changed; start a new Task for the new revision"
             )
+        if stage.latest_run_id is not None:
+            protocol_run = self.control_plane.get_protocol_run(stage.latest_run_id)
+            if protocol_run is not None and protocol_run.attention_item_id is not None:
+                item = self.attention.get(protocol_run.attention_item_id)
+                if item is not None and item.state == AttentionState.OPEN:
+                    try:
+                        self.attention.cancel(
+                            item.item_id,
+                            CancelAttentionRequest(
+                                actor=actor,
+                                reason="Superseded by explicit protocol retry",
+                                expected_version=item.version,
+                            ),
+                        )
+                    except AttentionConflictError as exc:
+                        current = self.attention.get(item.item_id)
+                        if current is not None and current.state == AttentionState.OPEN:
+                            raise OrchestrationConflictError(
+                                "Protocol Attention changed while preparing retry"
+                            ) from exc
         if control_stage.status != StageStatus.READY:
             self.control_plane.prepare_protocol_retry(
                 task_id=task_id,
@@ -946,6 +1028,31 @@ or unreviewable assumptions must be explicit. Process success alone is not seman
             seal_model_payload(StageInventory, payload)
         )
         return self.control_plane.ensure_stage_inventory(inventory, actor=actor)
+
+    def _ensure_authoritative_stage_route(
+        self,
+        task_id: str,
+        *,
+        actor: str,
+    ) -> StageRouteDecision | None:
+        route = self.control_plane.get_stage_route(task_id)
+        if route is None:
+            return None
+        if route.stage_status not in {None, StageStatus.PENDING}:
+            return route
+        operation_key = "stage-activate:" + canonical_sha256(
+            {
+                "task_id": task_id,
+                "inventory_sha256": route.inventory_sha256,
+                "stage_key": route.stage_key,
+            }
+        )
+        return self.control_plane.activate_stage_route(
+            task_id=task_id,
+            expected_stage_key=route.stage_key,
+            actor=actor,
+            operation_key=operation_key,
+        ).route
 
     @staticmethod
     def _stage_contract_context(contract: TaskContract, stage_key: str) -> str:

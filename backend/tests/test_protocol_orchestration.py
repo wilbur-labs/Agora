@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from agora.attention.models import AttentionKind, CreateAttentionRequest
 from agora.orchestration import cli as orchestration_cli
 from agora.orchestration.contracts import load_task_contract
 from agora.orchestration.models import Measurement, PlanState, RunState, StageState
@@ -16,6 +17,7 @@ from agora.orchestration.runtime import RuntimeCommand, RuntimeResult
 from agora.orchestration.service import TaskOrchestrationService
 from agora.orchestration.store import OrchestrationConflictError
 from agora.projects import ProjectRegistry
+from agora.protocol.agent_adapter import AgentAdapterResult
 from agora.protocol.hashing import seal_model_payload
 from agora.protocol.models import ContextPack, HandoffPack
 from agora.protocol.state_machines import GateStatus, StageStatus, TaskStatus
@@ -37,9 +39,17 @@ REVISION = RepositoryRevision(
 
 
 class ProtocolRunner:
-    def __init__(self, contract, *, invalid_outputs: int = 0, wrong_ref: bool = False):
+    def __init__(
+        self,
+        contract,
+        *,
+        invalid_outputs: int = 0,
+        blocked_outputs: int = 0,
+        wrong_ref: bool = False,
+    ):
         self.contract = contract
         self.invalid_outputs = invalid_outputs
+        self.blocked_outputs = blocked_outputs
         self.wrong_ref = wrong_ref
         self.prompts: list[str] = []
         self.contexts: list[ContextPack] = []
@@ -114,6 +124,9 @@ class ProtocolRunner:
             }
             for item in stage.gate_requirements
         ]
+        stage_result = "blocked" if self.blocked_outputs else "succeeded"
+        if self.blocked_outputs:
+            self.blocked_outputs -= 1
         payload = {
             "schema_version": "1.0",
             "pack_id": f"handoff:{context.run_id}",
@@ -129,13 +142,15 @@ class ProtocolRunner:
                 item.model_dump(mode="json") for item in context.required_outputs
             ],
             "forbidden_constraints": list(context.forbidden_constraints),
-            "stage_result": "succeeded",
+            "stage_result": stage_result,
             "output_artifacts": [artifact],
             "evidence": evidence,
             "unresolved_questions": [],
             "native_state_snapshot": None,
             "memory_candidates": [],
-            "blocker_requirement_ids": [],
+            "blocker_requirement_ids": (
+                ["agent-blocker"] if stage_result == "blocked" else []
+            ),
             "suggested_next_action": "This suggestion is not authoritative.",
         }
         return RuntimeResult(
@@ -151,7 +166,13 @@ def _context_from_prompt(prompt: str) -> ContextPack:
     return ContextPack.model_validate_json(value)
 
 
-def _system(tmp_path, *, invalid_outputs: int = 0, wrong_ref: bool = False):
+def _system(
+    tmp_path,
+    *,
+    invalid_outputs: int = 0,
+    blocked_outputs: int = 0,
+    wrong_ref: bool = False,
+):
     root = tmp_path / "repo"
     root.mkdir(parents=True)
     projects = ProjectRegistry(
@@ -175,6 +196,7 @@ def _system(tmp_path, *, invalid_outputs: int = 0, wrong_ref: bool = False):
     runner = ProtocolRunner(
         contract,
         invalid_outputs=invalid_outputs,
+        blocked_outputs=blocked_outputs,
         wrong_ref=wrong_ref,
     )
     service = TaskOrchestrationService(
@@ -230,6 +252,11 @@ def test_git_revision_is_commit_bound_and_rejects_a_dirty_worktree(tmp_path):
 async def test_protocol_v1_runs_all_stages_through_authoritative_gates(tmp_path):
     _, service, runner, task = _system(tmp_path)
 
+    initial_route = service.control_plane.get_stage_route(task.task_id)
+    assert initial_route.stage_key == "solution_design"
+    assert initial_route.stage_status == StageStatus.READY
+    assert initial_route.runtime == "codex"
+
     status = await service.run_until_blocked(task.task_id, protocol_v1=True)
 
     assert status.plan.state == PlanState.AWAITING_APPROVAL
@@ -263,6 +290,33 @@ async def test_protocol_v1_runs_all_stages_through_authoritative_gates(tmp_path)
     assert service.control_plane.get_task_state(task.task_id).status == (
         TaskStatus.NEEDS_REVIEW
     )
+    assert service.control_plane.get_stage_route(task.task_id) is None
+    first_run = next(
+        run for run in status.runs if run.stage_key == "solution_design"
+    )
+    persisted = service.control_plane.get_protocol_run(first_run.run_id)
+    assert persisted is not None
+    assert persisted.protocol_state is not None
+    replay = service.control_plane.settle_protocol_run(
+        AgentAdapterResult(
+            protocol_state=persisted.protocol_state,
+            handoff_pack=persisted.handoff_pack,
+            error_code=persisted.adapter_error_code,
+            attention_required=persisted.attention_required,
+        ),
+        actor="replay-auditor",
+        operation_key=f"protocol-settle:{first_run.run_id}",
+    )
+    assert replay.replayed is True
+    assert replay.next_stage_route.stage_key == "correctness_review"
+    assert replay.next_stage_route.stage_status == StageStatus.READY
+    assert len(
+        [
+            event
+            for event in service.control_plane.events(task.task_id)
+            if event.event_type == "stage.activated"
+        ]
+    ) == 3
 
 
 @pytest.mark.asyncio
@@ -307,7 +361,7 @@ async def test_unified_projection_reports_formal_progress_usage_and_human_action
 
     projection = service.unified_status(task.task_id)
 
-    assert projection.schema_version == "4.0"
+    assert projection.schema_version == "5.0"
     assert projection.task.task_id == task.task_id
     assert projection.task.state == TaskState.REQUIREMENTS
     assert projection.task_state_source == "control_plane"
@@ -319,10 +373,14 @@ async def test_unified_projection_reports_formal_progress_usage_and_human_action
     assert projection.task_lifecycle_decision.reason.value == "all_stages_passed"
     assert projection.stage_inventory is not None
     assert projection.stage_inventory_unavailable_reason is None
+    assert projection.stage_route is None
+    assert projection.stage_route_unavailable_reason is None
     assert projection.progress.source == "control_plane_stage_inventory"
     assert projection.progress.inventory_complete is True
     assert projection.progress.total_stages == 3
     assert projection.progress.completed_stages == 3
+    assert projection.progress.current_stage_key is None
+    assert projection.progress.current_stage_source is None
     assert projection.progress.remaining_stage_keys == []
     assert len(projection.progress.groups) == 1
     assert projection.progress.groups[0].completed_stages == 3
@@ -380,6 +438,24 @@ def test_unified_projection_fails_explicitly_when_stage_inventory_is_interrupted
     assert projection.task_lifecycle_decision is None
 
 
+def test_unified_projection_marks_route_unavailable_without_frozen_task_state(
+    tmp_path,
+):
+    tasks, service, _, task = _system(tmp_path)
+    with tasks._transaction() as db:
+        db.execute(
+            "DELETE FROM control_tasks WHERE task_id = ?",
+            (task.task_id,),
+        )
+
+    projection = service.unified_status(task.task_id)
+
+    assert projection.stage_inventory is not None
+    assert projection.stage_route is None
+    assert "frozen Task state" in projection.stage_route_unavailable_reason
+    assert "task resume" in projection.stage_route_unavailable_reason
+
+
 def test_unified_projection_reports_lifecycle_drift_and_resume_repairs_it(tmp_path):
     tasks, service, _, task = _system(tmp_path)
     with tasks._transaction() as db:
@@ -395,8 +471,11 @@ def test_unified_projection_reports_lifecycle_drift_and_resume_repairs_it(tmp_pa
     assert drifted.task_state == TaskStatus.BACKLOG
     assert drifted.task_state_lifecycle == "reconciliation_required"
     assert drifted.task_lifecycle_decision.target_status == TaskStatus.READY
+    assert drifted.stage_route.stage_status == StageStatus.READY
+    assert drifted.stage_route.runnable is False
     assert repaired.task_state == TaskStatus.READY
     assert repaired.task_state_lifecycle == "control_plane_managed"
+    assert repaired.stage_route.runnable is True
 
 
 @pytest.mark.parametrize(
@@ -601,12 +680,15 @@ async def test_cli_exposes_unified_projection_without_changing_legacy_status(
         ["status", task.task_id, "--protocol-v1", "--json", "--limit", "1"]
     ) == 0
     unified = json.loads(capsys.readouterr().out)
-    assert unified["schema_version"] == "4.0"
+    assert unified["schema_version"] == "5.0"
     assert unified["progress"]["source"] == "control_plane_stage_inventory"
     assert unified["progress"]["inventory_complete"] is True
     assert unified["task_state"] == "active"
     assert unified["task_state_source"] == "control_plane"
     assert unified["task_state_version"] == 3
+    assert unified["stage_route"]["stage_key"] == "correctness_review"
+    assert unified["stage_route"]["runtime"] == "claude"
+    assert unified["progress"]["current_stage_source"] == "control_plane_route"
     assert unified["collection_pages"]["runs"]["limit"] == 1
 
     assert orchestration_cli.main(
@@ -675,6 +757,47 @@ async def test_formal_start_failure_never_dispatches_and_settles_exact_zero(
 
 
 @pytest.mark.asyncio
+async def test_protocol_route_rejects_compatibility_current_stage_tamper(tmp_path):
+    tasks, service, runner, task = _system(tmp_path)
+    with tasks._transaction() as db:
+        db.execute(
+            """UPDATE orchestration_plans SET current_stage_key = 'correctness_review'
+               WHERE task_id = ?""",
+            (task.task_id,),
+        )
+
+    with pytest.raises(OrchestrationConflictError, match="does not match"):
+        await service.run_next(task.task_id, protocol_v1=True)
+
+    assert runner.prompts == []
+    assert service.status(task.task_id).runs == []
+    assert service.control_plane.get_stage_route(task.task_id).stage_key == (
+        "solution_design"
+    )
+
+
+@pytest.mark.asyncio
+async def test_protocol_route_rejects_compatibility_runtime_tamper(tmp_path):
+    tasks, service, runner, task = _system(tmp_path)
+    with tasks._transaction() as db:
+        plan_id = db.execute(
+            "SELECT plan_id FROM orchestration_plans WHERE task_id = ?",
+            (task.task_id,),
+        ).fetchone()["plan_id"]
+        db.execute(
+            """UPDATE orchestration_stages SET adapter = 'kiro'
+               WHERE plan_id = ? AND stage_key = 'solution_design'""",
+            (plan_id,),
+        )
+
+    with pytest.raises(OrchestrationConflictError, match="metadata"):
+        await service.run_next(task.task_id, protocol_v1=True)
+
+    assert runner.prompts == []
+    assert service.status(task.task_id).runs == []
+
+
+@pytest.mark.asyncio
 async def test_gate_scope_mismatch_becomes_protocol_failure_instead_of_stuck_run(tmp_path):
     _, service, _, task = _system(tmp_path, wrong_ref=True)
 
@@ -723,6 +846,9 @@ async def test_protocol_retry_reopens_both_projections_and_reevaluates_gate(tmp_
         service.control_plane.get_stage(task.task_id, first.stage_key).status
         == StageStatus.READY
     )
+    retry_projection = service.unified_status(task.task_id)
+    assert retry_projection.attention[0].state.value == "cancelled"
+    assert retry_projection.task_state == TaskStatus.READY
     second = await service.run_next(task.task_id, protocol_v1=True)
 
     assert second.attempt == 2
@@ -734,6 +860,67 @@ async def test_protocol_retry_reopens_both_projections_and_reevaluates_gate(tmp_
     assert service.control_plane.get_gate(
         task.task_id, f"gate:{first.stage_key}"
     ).status == GateStatus.PASSED
+
+
+@pytest.mark.asyncio
+async def test_protocol_retry_preserves_unrelated_attention_and_rejects_dispatch(
+    tmp_path,
+):
+    _, service, runner, task = _system(tmp_path, invalid_outputs=1)
+    first = await service.run_next(task.task_id, protocol_v1=True)
+    unrelated = service.attention.create(
+        CreateAttentionRequest(
+            task_id=task.task_id,
+            kind=AttentionKind.BLOCKER,
+            title="Independent owner decision",
+            requester="owner",
+        )
+    )
+
+    service.retry_protocol(task.task_id, first.stage_key)
+    projection = service.unified_status(task.task_id)
+
+    assert next(
+        item for item in projection.attention if item.item_id == unrelated.item_id
+    ).state.value == "open"
+    assert projection.task_state == TaskStatus.BLOCKED
+    assert projection.stage_route.stage_status == StageStatus.READY
+    assert projection.stage_route.runnable is False
+    with pytest.raises(OrchestrationConflictError, match="not dispatchable"):
+        await service.run_next(task.task_id, protocol_v1=True)
+    assert len(runner.prompts) == 1
+    assert len(service.status(task.task_id).runs) == 1
+
+
+@pytest.mark.asyncio
+async def test_protocol_settlement_rolls_back_next_route_activation_atomically(
+    tmp_path,
+    monkeypatch,
+):
+    _, service, runner, task = _system(tmp_path)
+    original_event = service.control_plane._event
+
+    def fail_next_activation(*args, **kwargs):
+        if (
+            kwargs.get("event_type") == "stage.activated"
+            and kwargs.get("payload", {}).get("stage_key") == "correctness_review"
+        ):
+            raise RuntimeError("next route activation failed")
+        return original_event(*args, **kwargs)
+
+    monkeypatch.setattr(service.control_plane, "_event", fail_next_activation)
+    with pytest.raises(RuntimeError, match="next route activation failed"):
+        await service.run_next(task.task_id, protocol_v1=True)
+
+    status = service.status(task.task_id)
+    formal_run = service.control_plane.get_protocol_run(status.runs[0].run_id)
+    assert len(runner.prompts) == 1
+    assert status.runs[0].state == RunState.RUNNING
+    assert formal_run.settled_at is None
+    assert service.control_plane.get_stage(
+        task.task_id, "solution_design"
+    ).status == StageStatus.RUNNING
+    assert service.control_plane.get_stage(task.task_id, "correctness_review") is None
 
 
 @pytest.mark.asyncio
@@ -778,6 +965,11 @@ async def test_resume_projects_already_settled_protocol_run_without_redispatch(
     projection = service.unified_status(task.task_id)
     assert projection.runs[0].wait_state.value == "compatibility_projection_pending"
     assert projection.runs[0].semantic_result.value == "succeeded"
+    assert projection.stage_route.stage_key == "correctness_review"
+    assert projection.stage_route.stage_status == StageStatus.READY
+    assert projection.progress.current_stage_key == "correctness_review"
+    assert projection.progress.current_stage_source == "control_plane_route"
+    assert projection.plan.current_stage_key == "solution_design"
 
     monkeypatch.setattr(service.store, "finish_protocol_run", original)
     recovered = service.resume(task.task_id)
@@ -786,6 +978,45 @@ async def test_resume_projects_already_settled_protocol_run_without_redispatch(
     assert recovered.runs[0].token_used is None
     assert recovered.runs[0].token_measurement == Measurement.UNAVAILABLE
     assert len(runner.prompts) == 1
+
+
+@pytest.mark.asyncio
+async def test_resume_projects_blocked_settlement_without_advancing_or_redispatch(
+    tmp_path,
+    monkeypatch,
+):
+    _, service, runner, task = _system(tmp_path, blocked_outputs=1)
+    original = service.store.finish_protocol_run
+
+    def interrupt_projection(*_args, **_kwargs):
+        raise RuntimeError("simulated crash after blocked authoritative settlement")
+
+    monkeypatch.setattr(service.store, "finish_protocol_run", interrupt_projection)
+    with pytest.raises(RuntimeError, match="blocked authoritative settlement"):
+        await service.run_next(task.task_id, protocol_v1=True)
+
+    status = service.status(task.task_id)
+    protocol_run = service.control_plane.get_protocol_run(status.runs[0].run_id)
+    control_stage = service.control_plane.get_stage(task.task_id, "solution_design")
+    gate = service.control_plane.get_gate(task.task_id, "gate:solution_design")
+    route = service.control_plane.get_stage_route(task.task_id)
+    assert status.runs[0].state == RunState.RUNNING
+    assert protocol_run is not None and protocol_run.settled_at is not None
+    assert control_stage.status == StageStatus.BLOCKED
+    assert gate.status == GateStatus.PASSED
+    assert route.stage_key == "solution_design"
+    assert route.stage_status == StageStatus.BLOCKED
+    assert service.control_plane.get_stage(task.task_id, "correctness_review") is None
+
+    monkeypatch.setattr(service.store, "finish_protocol_run", original)
+    recovered = service.resume(task.task_id)
+
+    assert recovered.plan.state == PlanState.BLOCKED
+    assert recovered.plan.current_stage_key == "solution_design"
+    assert recovered.stages[0].state == StageState.BLOCKED
+    assert recovered.runs[0].state == RunState.BLOCKED
+    assert len(runner.prompts) == 1
+    assert service.control_plane.get_stage(task.task_id, "correctness_review") is None
 
 
 def test_cli_start_can_explicitly_run_the_formal_protocol_path(

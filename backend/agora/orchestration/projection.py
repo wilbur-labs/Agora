@@ -118,6 +118,7 @@ class TaskProjectionStore:
                 db,
                 task_id,
             )
+            stage_route = self.control_plane.stage_route_snapshot(db, task_id)
         except ControlPlaneConflictError as exc:
             raise OrchestrationConflictError(str(exc)) from exc
         if task_state is None or lifecycle_decision is None:
@@ -216,6 +217,11 @@ class TaskProjectionStore:
                     key,
                 ),
             )
+        current_stage_key = (
+            stage_route.stage_key
+            if stage_inventory is not None and stage_route is not None
+            else (None if stage_inventory is not None else plan.current_stage_key)
+        )
         if len(stage_keys) > MAX_CURRENT_RECORDS:
             raise OrchestrationConflictError(
                 "Unified Stage inventory exceeds the bounded Task projection"
@@ -226,7 +232,7 @@ class TaskProjectionStore:
                 operational_by_key.get(key),
                 stage_by_key.get(key),
                 gate_by_stage.get(key),
-                plan.current_stage_key,
+                current_stage_key,
                 inventory_by_key.get(key),
                 group_by_stage.get(key),
                 inventory_position.get(key),
@@ -299,9 +305,9 @@ class TaskProjectionStore:
                 inventory_complete=True,
                 total_stages=len(stage_keys),
                 completed_stages=len([key for key in stage_keys if key in completed]),
-                current_stage_key=plan.current_stage_key,
+                current_stage_key=current_stage_key,
                 current_stage_source=(
-                    "compatibility_plan" if plan.current_stage_key is not None else None
+                    "control_plane_route" if current_stage_key is not None else None
                 ),
                 completed_stage_keys=[key for key in stage_keys if key in completed],
                 remaining_stage_keys=[key for key in stage_keys if key not in completed],
@@ -418,6 +424,22 @@ class TaskProjectionStore:
                 else (
                     "Grouped Stage inventory has not been initialized; run task resume "
                     "to perform explicit recovery."
+                )
+            ),
+            stage_route=stage_route,
+            stage_route_unavailable_reason=(
+                (
+                    "Authoritative Stage routing requires the grouped Stage inventory; "
+                    "run task resume to perform explicit recovery."
+                )
+                if stage_inventory is None
+                else (
+                    (
+                        "Authoritative Stage routing requires frozen Task state; "
+                        "run task resume to perform explicit recovery."
+                    )
+                    if task_state is None or lifecycle_decision is None
+                    else None
                 )
             ),
             plan=plan,

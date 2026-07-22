@@ -59,7 +59,8 @@ Control Plane HTTP projection is unchanged in this bounded increment.
 The unified JSON projection moves to schema version `2.0` because `task_state`
 now means frozen Control Plane state instead of 0.5 manifest state. The legacy
 manifest remains under `task`, and text output labels it as `legacy`. Unified
-projection schema `4.0` now reports a bounded lifecycle decision and whether
+projection schema `5.0` now reports a bounded lifecycle decision, the
+authoritative Stage route, and whether
 persisted Task state is `control_plane_managed`, requires explicit
 reconciliation, or is unavailable. The read remains side-effect free.
 

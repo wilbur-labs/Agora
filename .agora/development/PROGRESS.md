@@ -4,17 +4,18 @@ Current branch: `main`
 
 Current recovery baseline (2026-07-22):
 
-- Local `main` and `origin/main` are synchronized through the reviewed frozen
-  Task-lifecycle derivation commit containing this snapshot.
+- Local `main` and `origin/main` are synchronized through the reviewed
+  authoritative Stage activation/routing commit containing this snapshot.
 - Active program: the ordered Agora Control Plane transformation. The first two
   stages (protocol/domain freeze and Control Plane v2 persistence/Registry) are
   complete; the bounded API, concrete Task contract, and Runner/Agent Adapter
   are also reviewed foundations. The sealed Run/Gate settlement boundary and
   explicit CLI orchestration wiring and read-only unified Task projection are
   reviewed. Frozen Task-state persistence, the grouped Stage inventory, and
-  deterministic frozen Task-lifecycle derivation are the latest reviewed
-  increments. The work-weighted program estimate must now be recalculated
-  against the grouped inventory before another percentage is recorded.
+  deterministic frozen Task-lifecycle derivation and authoritative linear Stage
+  routing are the latest reviewed increments. The work-weighted program estimate
+  must now be recalculated against the grouped inventory before another
+  percentage is recorded.
   The historical 11-stage label and milestone-count estimate below predate the
   current grouped stage correspondence and must be normalized before they are
   used as a current count.
@@ -51,6 +52,12 @@ Current recovery baseline (2026-07-22):
   grouped inventory and authoritative Stage, Gate, Attention, invalidation,
   and reconciliation facts. Compatibility Plan state remains outside that
   authority. Do not begin Task Workbench UI work.
+- The latest reviewed increment makes the sealed grouped inventory the authority
+  for linear Stage activation, runtime selection, and advancement. Kiro and
+  Claude Code both returned `APPROVE`; focused suite 106 passed and the complete
+  comparable backend suite passed 458 tests with 18 deselected. `.kiro/` and
+  historical pytest temp directories are unrelated local artifacts and were not
+  staged.
 
 ## 2026-07-18 — Latest transformation requirements recovery
 
@@ -838,6 +845,82 @@ labels until that writer is reviewed, and do not infer activation from process
 exit or compatibility Plan state. Keep authenticated HTTP lifecycle commands,
 methodology migration, the missing authoritative AI-DLC graph, and Task
 Workbench UI deferred.
+
+## 2026-07-22 - Authoritative Stage activation and routing (complete)
+
+### Scope
+
+- [x] Added a deterministic read-only route over the first incomplete Stage in
+  the sealed grouped inventory, including its exact Gate, role, runtime, group,
+  order, and inventory hash.
+- [x] Failed closed on out-of-inventory Stage/Gate rows, mismatched bindings,
+  non-prefix completion, later active Stages, lifecycle drift, and compatibility
+  Plan or runtime tampering.
+- [x] Added idempotent transactional Stage activation with one bounded event and
+  operation receipt; sealed-inventory Tasks can no longer use legacy Stage
+  ensure/configure to create a `ready` Stage outside that route.
+- [x] Activated the next authoritative route atomically with successful formal
+  Run settlement, while leaving the 0.5 Plan/Stage ledger as a repairable
+  compatibility projection.
+- [x] Required formal dispatch to revalidate the route, exact Stage/Gate,
+  pinned role/runtime metadata, frozen Task lifecycle, and compatibility cursor
+  before process spawn.
+- [x] Made create/attach initialize the first route and made `task resume`
+  repair route activation or compatibility projection drift without duplicate
+  dispatch.
+- [x] Limited explicit protocol retry to cancelling only the blocker Attention
+  created by the same failed formal Run; unrelated Attention remains blocking.
+- [x] Upgraded the read-only unified projection to schema `5.0` with the
+  authoritative route and lifecycle-aware `runnable` state; missing inventory
+  or frozen Task state directs explicit resume recovery without read-time writes.
+- [x] Kept authenticated HTTP commands, parallel/DAG routing, dynamic
+  risk/capability substitution, methodology migration, exact provider usage,
+  the missing authoritative AI-DLC graph, and Task Workbench UI deferred.
+- [x] Run focused and complete backend verification plus Schema, compile, diff,
+  and CLI smoke checks.
+- [x] Obtain Kiro protocol/methodology/reconciliation review and fix all
+  actionable findings.
+- [x] Obtain independent Claude Code correctness/safety/regression review and
+  fix all actionable findings.
+- [x] Commit and push only after both review gates approve (the commit
+  containing this snapshot).
+
+### Current verification and review log
+
+- Focused route, inventory, protocol settlement, orchestration, projection, and
+  compatibility suite after all review fixes: 106 passed.
+- Isolated system-Temp full non-integration backend suite excluding
+  static-export-dependent `tests/test_web_ui.py`: 458 passed, 18 deselected,
+  with only the existing Starlette/httpx deprecation and Windows Proactor
+  cleanup warnings.
+- Protocol Schema export check, Python compile, `agora task --help` smoke, and
+  `git diff --check`: passed.
+- Kiro initial review: `APPROVE`; no HIGH/MEDIUM protocol, methodology,
+  authority, atomicity, recovery, or coverage findings.
+- Claude Code core review: `CHANGES_REQUESTED` for a public
+  `ensure_stage(..., PENDING)` path that could pre-create a sealed-inventory
+  Stage. The path is now private to authoritative route activation; READY and
+  PENDING public writes are both rejected and covered by regression tests.
+- Claude's proposed symmetric rejection of `Gate=passed` with a non-completed
+  Stage was reconciled against the frozen two-dimension contract: a semantic
+  blocker may validly leave `Stage=blocked` with passing formal Evidence. The
+  architecture and regression now make this explicit; targeted core re-review:
+  `CORE_APPROVE`.
+- Claude orchestration/recovery review: `ORCHESTRATION_APPROVE`; no HIGH/MEDIUM
+  findings. Its one LOW coverage gap was fixed with a crash-after-settlement
+  resume regression for `Stage=blocked` plus `Gate=passed`, proving no advance
+  or redispatch. Final targeted review: `APPROVE`; no remaining findings.
+- Kiro targeted review of all Claude-driven fixes and new recovery coverage:
+  `APPROVE`; no HIGH/MEDIUM findings.
+
+### Next safe action
+
+After committing and pushing this reviewed checkpoint, define the next bounded
+explainable routing-policy increment: record why the pinned runtime and required
+independent reviewer set satisfy Stage, risk, capability, and protected-budget
+constraints without yet permitting runtime substitution or changing the sealed
+methodology graph. Keep authenticated HTTP lifecycle commands, the missing
+authoritative AI-DLC graph, parallel/DAG routing, and Task Workbench UI deferred.
 
 ## 2026-07-13
 

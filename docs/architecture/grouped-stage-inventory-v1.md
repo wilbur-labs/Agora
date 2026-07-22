@@ -4,8 +4,8 @@ Status: reviewed implementation baseline.
 
 This increment persists the complete Stage identity and order for the
 methodology already pinned to an Agora Task. It is the authority for which
-Stages belong to that Task and is now consumed by the separately reviewed
-frozen Task lifecycle derivation.
+Stages belong to that Task and is now consumed by frozen Task lifecycle
+derivation and authoritative Stage routing.
 
 ## Authority and grouping
 
@@ -55,24 +55,24 @@ backfilling it during status reads.
 
 ## Unified projection
 
-Unified Task projection schema `4.0` retains Stage identity, grouping, order,
+Unified Task projection schema `5.0` retains Stage identity, grouping, order,
 title, role, runtime, and total progress from compatibility interpretation to
 the sealed Control Plane inventory. Formal completion still counts only a
 `control_stages` record in `completed`; an inventory Stage with no live Stage
 record is remaining work, not completed work.
 
-The projection labels the current Stage as sourced from the compatibility Plan
-because authoritative Control Plane Stage activation/routing remains deferred.
+The projection labels the current Stage as sourced from the Control Plane route.
 If the inventory is absent, total, completed, and remaining progress are
-unavailable rather than inferred from compatibility rows.
+unavailable rather than inferred from compatibility rows; only the explicitly
+separate compatibility Plan remains visible.
 
 ## Lifecycle and deferred boundaries
 
-The lifecycle reconciler now consumes the complete inventory plus authoritative
-Stage, Gate, Attention, invalidation, and reconciliation state. This inventory
-increment still does not:
+The lifecycle reconciler and Stage router now consume the complete inventory
+plus authoritative Stage, Gate, Attention, invalidation, and reconciliation
+state. This inventory increment still does not:
 
-- activate later Stages or derive dependency edges;
+- derive parallel/DAG dependency edges or dynamic branches;
 - migrate a Task to a different methodology;
 - expose inventory commands or fields through the authenticated HTTP API;
 - recover or invent the missing authoritative AI-DLC graph;

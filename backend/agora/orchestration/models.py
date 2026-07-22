@@ -10,6 +10,7 @@ from agora.attention.models import AttentionItem
 from agora.control_plane.models import (
     GateRecord,
     StageRecord,
+    StageRouteDecision,
     TaskLifecycleDecision,
 )
 from agora.protocol.models import (
@@ -235,7 +236,10 @@ class UnifiedTaskProgress(StrictModel):
     total_stages: int | None = Field(default=None, ge=0)
     completed_stages: int | None = Field(default=None, ge=0)
     current_stage_key: str | None
-    current_stage_source: Literal["compatibility_plan"] | None = None
+    current_stage_source: Literal[
+        "control_plane_route",
+        "compatibility_plan",
+    ] | None = None
     completed_stage_keys: list[str]
     remaining_stage_keys: list[str]
     groups: list[UnifiedStageGroupProgress]
@@ -343,7 +347,7 @@ class UnifiedBudgetProjection(StrictModel):
 
 
 class UnifiedTaskProjection(StrictModel):
-    schema_version: Literal["4.0"] = "4.0"
+    schema_version: Literal["5.0"] = "5.0"
     snapshot_at: str
     task: TaskManifest
     task_state: TaskStatus | None
@@ -358,6 +362,8 @@ class UnifiedTaskProjection(StrictModel):
     task_lifecycle_decision: TaskLifecycleDecision | None = None
     stage_inventory: StageInventory | None = None
     stage_inventory_unavailable_reason: str | None = None
+    stage_route: StageRouteDecision | None = None
+    stage_route_unavailable_reason: str | None = None
     plan: OrchestrationPlan
     progress: UnifiedTaskProgress
     stages: list[UnifiedStageProjection]

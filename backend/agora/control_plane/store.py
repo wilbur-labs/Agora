@@ -48,7 +48,9 @@ from .models import (
     ProtocolRunRecord,
     RegistrationReceipt,
     RunSettlementReceipt,
+    StageActivationReceipt,
     StageRecord,
+    StageRouteDecision,
     TaskLifecycleDecision,
     TaskLifecycleReason,
     TaskLifecycleReceipt,
@@ -61,6 +63,7 @@ from .lifecycle import (
     derive_task_lifecycle,
     task_transition_path,
 )
+from .routing import StageRoutingError, derive_stage_route
 from .schema import initialize_control_plane_schema
 
 
@@ -283,6 +286,15 @@ class ControlPlaneStore:
 
         return self._task_lifecycle_decision_tx(db, task_id, required=False)
 
+    def get_task_lifecycle_decision(
+        self,
+        task_id: str,
+    ) -> TaskLifecycleDecision | None:
+        """Read the derived Task lifecycle without mutating frozen state."""
+
+        with closing(self.tasks._connect()) as db:
+            return self._task_lifecycle_decision_tx(db, task_id, required=False)
+
     def ensure_stage_inventory(
         self,
         inventory: StageInventory,
@@ -365,6 +377,93 @@ class ControlPlaneStore:
             ).fetchone()
             assert row is not None
             return self._stage_inventory(row)
+
+    def get_stage_route(self, task_id: str) -> StageRouteDecision | None:
+        """Read the authoritative current Stage route without mutating state."""
+
+        with closing(self.tasks._connect()) as db:
+            return self._stage_route_decision_tx(db, task_id, required=False)
+
+    def stage_route_snapshot(
+        self,
+        db: sqlite3.Connection,
+        task_id: str,
+    ) -> StageRouteDecision | None:
+        """Read one Stage route without closing the caller-owned snapshot."""
+
+        return self._stage_route_decision_tx(db, task_id, required=False)
+
+    def activate_stage_route(
+        self,
+        *,
+        task_id: str,
+        expected_stage_key: str,
+        actor: str,
+        operation_key: str,
+    ) -> StageActivationReceipt:
+        """Idempotently activate the inventory-selected Stage and no other."""
+
+        self._validate_operation_key(operation_key)
+        self._validate_actor(actor)
+        fingerprint = canonical_sha256(
+            {
+                "action": "activate_stage_route",
+                "task_id": task_id,
+                "expected_stage_key": expected_stage_key,
+            }
+        )
+        now = utc_now()
+        with self.tasks._transaction() as db:
+            replay = self._operation_result(db, operation_key, fingerprint)
+            if replay is not None:
+                return StageActivationReceipt.model_validate(
+                    {**replay["receipt"], "replayed": True}
+                )
+            route = self._stage_route_decision_tx(db, task_id, required=True)
+            if route is None:
+                raise ControlPlaneConflictError(
+                    "Every inventory Stage already completed its formal Gate"
+                )
+            if route.stage_key != expected_stage_key:
+                raise ControlPlaneConflictError(
+                    "Requested Stage is not the authoritative current inventory route"
+                )
+            previous_status = route.stage_status
+            route, activated = self._activate_stage_route_tx(
+                db,
+                route=route,
+                actor=actor,
+                event_key_prefix=operation_key,
+                now=now,
+            )
+            if route.stage_status != StageStatus.READY:
+                raise ControlPlaneConflictError(
+                    f"Authoritative routed Stage is {route.stage_status.value}, not ready"
+                )
+            self._reconcile_task_lifecycle_tx(
+                db,
+                task_id=task_id,
+                cause=TaskTransitionCause.ORCHESTRATION,
+                actor=actor,
+                event_key_prefix=operation_key,
+                now=now,
+                required=True,
+            )
+            route = self._stage_route_decision_tx(db, task_id, required=True)
+            assert route is not None
+            receipt = StageActivationReceipt(
+                route=route,
+                previous_status=previous_status,
+                activated=activated,
+            )
+            self._complete_operation(
+                db,
+                operation_key,
+                fingerprint,
+                {"receipt": receipt.model_dump(mode="json")},
+                now,
+            )
+            return receipt
 
     def ensure_stage(
         self,
@@ -550,6 +649,34 @@ class ControlPlaneStore:
 
             task = self._task_row(db, context_pack.task_id)
             self._assert_project(task, context_pack.project_id)
+            route = self._stage_route_decision_tx(
+                db,
+                context_pack.task_id,
+                required=True,
+            )
+            if route is None or route.stage_key != context_pack.stage_key:
+                raise ControlPlaneConflictError(
+                    "Context Pack Stage is not the authoritative current inventory route"
+                )
+            lifecycle = self._task_lifecycle_decision_tx(
+                db,
+                context_pack.task_id,
+                required=True,
+            )
+            assert lifecycle is not None
+            frozen_task = db.execute(
+                "SELECT status FROM control_tasks WHERE task_id = ?",
+                (context_pack.task_id,),
+            ).fetchone()
+            assert frozen_task is not None
+            if frozen_task["status"] != lifecycle.target_status.value:
+                raise ControlPlaneConflictError(
+                    "Frozen Task lifecycle requires explicit resume before dispatch"
+                )
+            if lifecycle.target_status not in {TaskStatus.READY, TaskStatus.ACTIVE}:
+                raise ControlPlaneConflictError(
+                    f"Frozen Task lifecycle is {lifecycle.target_status.value}, not dispatchable"
+                )
             stage = db.execute(
                 """
                 SELECT * FROM control_stages
@@ -567,7 +694,7 @@ class ControlPlaneStore:
                     "Context Pack Stage does not match its configured Gate"
                 )
             current_stage = StageStatus(stage["status"])
-            if current_stage != StageStatus.READY:
+            if current_stage != StageStatus.READY or not route.runnable:
                 raise ControlPlaneConflictError(
                     f"Protocol Run requires a ready Stage, current status is "
                     f"{current_stage.value}"
@@ -872,6 +999,21 @@ class ControlPlaneStore:
                 },
                 now=now,
             )
+            next_stage_route = None
+            if next_stage == StageStatus.COMPLETED:
+                candidate = self._stage_route_decision_tx(
+                    db,
+                    row["task_id"],
+                    required=True,
+                )
+                if candidate is not None:
+                    next_stage_route, _ = self._activate_stage_route_tx(
+                        db,
+                        route=candidate,
+                        actor=actor,
+                        event_key_prefix=f"{operation_key}:advance",
+                        now=now,
+                    )
             self._reconcile_task_lifecycle_tx(
                 db,
                 task_id=row["task_id"],
@@ -903,6 +1045,7 @@ class ControlPlaneStore:
                 artifact_ids=sorted(artifact_ids),
                 evidence_ids=sorted(evidence_ids),
                 active_evidence_ids=active_evidence_ids,
+                next_stage_route=next_stage_route,
             )
             self._complete_operation(
                 db,
@@ -2077,6 +2220,166 @@ class ControlPlaneStore:
         assert updated is not None
         return self._task_record(updated)
 
+    def _stage_route_decision_tx(
+        self,
+        db: sqlite3.Connection,
+        task_id: str,
+        *,
+        required: bool,
+    ) -> StageRouteDecision | None:
+        lifecycle = self._task_lifecycle_decision_tx(
+            db,
+            task_id,
+            required=required,
+        )
+        if lifecycle is None:
+            return None
+        task_state = db.execute(
+            "SELECT status FROM control_tasks WHERE task_id = ?",
+            (task_id,),
+        ).fetchone()
+        assert task_state is not None
+        task_dispatchable = (
+            TaskStatus(task_state["status"]) == lifecycle.target_status
+            and lifecycle.target_status in {TaskStatus.READY, TaskStatus.ACTIVE}
+        )
+        inventory_row = db.execute(
+            "SELECT * FROM control_stage_inventories WHERE task_id = ?",
+            (task_id,),
+        ).fetchone()
+        assert inventory_row is not None
+        inventory = self._stage_inventory(inventory_row)
+        stage_rows = db.execute(
+            """
+            SELECT * FROM control_stages
+            WHERE task_id = ? ORDER BY stage_key
+            LIMIT ?
+            """,
+            (task_id, PROJECTION_COLLECTION_LIMIT + 1),
+        ).fetchall()
+        gate_rows = db.execute(
+            """
+            SELECT * FROM control_gates
+            WHERE task_id = ? ORDER BY gate_key
+            LIMIT ?
+            """,
+            (task_id, PROJECTION_COLLECTION_LIMIT + 1),
+        ).fetchall()
+        if (
+            len(stage_rows) > PROJECTION_COLLECTION_LIMIT
+            or len(gate_rows) > PROJECTION_COLLECTION_LIMIT
+        ):
+            raise ControlPlaneConflictError(
+                "Stage routing inputs exceed the bounded Stage inventory"
+            )
+        gate_keys = {row["stage_key"]: row["gate_key"] for row in gate_rows}
+        if len(gate_keys) != len(gate_rows):
+            raise ControlPlaneConflictError(
+                "Multiple formal Gates are bound to one Stage"
+            )
+        try:
+            return derive_stage_route(
+                inventory=inventory,
+                stage_statuses={
+                    row["stage_key"]: StageStatus(row["status"])
+                    for row in stage_rows
+                },
+                stage_gate_keys={
+                    row["stage_key"]: row["gate_key"] for row in stage_rows
+                },
+                gate_statuses={
+                    row["stage_key"]: GateStatus(row["status"])
+                    for row in gate_rows
+                },
+                gate_keys=gate_keys,
+                task_dispatchable=task_dispatchable,
+            )
+        except StageRoutingError as exc:
+            raise ControlPlaneConflictError(str(exc)) from exc
+
+    def _activate_stage_route_tx(
+        self,
+        db: sqlite3.Connection,
+        *,
+        route: StageRouteDecision,
+        actor: str,
+        event_key_prefix: str,
+        now: str,
+    ) -> tuple[StageRouteDecision, bool]:
+        task = self._task_row(db, route.task_id)
+        self._assert_project(task, route.project_id)
+        if route.stage_status is None:
+            self._ensure_stage_row(
+                db,
+                task=task,
+                stage_key=route.stage_key,
+                gate_key=route.gate_key,
+                status=StageStatus.PENDING,
+                actor=actor,
+                now=now,
+                authoritative_route_activation=True,
+            )
+            route = self._stage_route_decision_tx(
+                db,
+                task["task_id"],
+                required=True,
+            )
+            assert route is not None
+        if route.stage_status != StageStatus.PENDING:
+            return route, False
+
+        row = db.execute(
+            """SELECT * FROM control_stages
+               WHERE task_id = ? AND stage_key = ?""",
+            (task["task_id"], route.stage_key),
+        ).fetchone()
+        assert row is not None
+        target = transition_stage(StageStatus.PENDING, StageStatus.READY)
+        cursor = db.execute(
+            """
+            UPDATE control_stages
+            SET status = ?, version = version + 1, updated_at = ?
+            WHERE task_id = ? AND stage_key = ? AND status = ? AND version = ?
+            """,
+            (
+                target.value,
+                now,
+                task["task_id"],
+                route.stage_key,
+                StageStatus.PENDING.value,
+                row["version"],
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise ControlPlaneConflictError("Stage changed during route activation")
+        self._event(
+            db,
+            event_key=f"{event_key_prefix}:stage.activated:{route.stage_key}",
+            task_id=task["task_id"],
+            project_id=task["project_id"],
+            event_type="stage.activated",
+            actor=actor,
+            payload={
+                "inventory_id": route.inventory_id,
+                "inventory_sha256": route.inventory_sha256,
+                "group_key": route.group_key,
+                "stage_key": route.stage_key,
+                "gate_key": route.gate_key,
+                "runtime": route.runtime,
+                "role": route.role,
+                "from": StageStatus.PENDING.value,
+                "to": target.value,
+            },
+            now=now,
+        )
+        updated = self._stage_route_decision_tx(
+            db,
+            task["task_id"],
+            required=True,
+        )
+        assert updated is not None
+        return updated, True
+
     def _task_lifecycle_decision_tx(
         self,
         db: sqlite3.Connection,
@@ -2264,6 +2567,7 @@ class ControlPlaneStore:
         status: StageStatus,
         actor: str,
         now: str,
+        authoritative_route_activation: bool = False,
     ) -> sqlite3.Row:
         task_id = task["task_id"]
         self._assert_inventory_stage(
@@ -2282,6 +2586,21 @@ class ControlPlaneStore:
                     "Stage is already bound to a different gate"
                 )
             return existing
+        if (
+            db.execute(
+                "SELECT 1 FROM control_stage_inventories WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
+            is not None
+            and not (
+                authoritative_route_activation
+                and status == StageStatus.PENDING
+            )
+        ):
+            raise ControlPlaneConflictError(
+                "A sealed-inventory Stage must be activated through its "
+                "authoritative route"
+            )
         try:
             db.execute(
                 """

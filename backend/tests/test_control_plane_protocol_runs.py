@@ -12,7 +12,13 @@ from agora.control_plane.store import (
 )
 from agora.protocol.agent_adapter import TerminalRunnerObservation, adapt_agent_output
 from agora.protocol.hashing import seal_model_payload
-from agora.protocol.models import ContextPack, Evidence, GateRequirement, HandoffPack
+from agora.protocol.models import (
+    ContextPack,
+    Evidence,
+    GateRequirement,
+    HandoffPack,
+    StageInventory,
+)
 from agora.protocol.state_machines import GateStatus, StageStatus
 from agora.tasks.models import CreateTaskRequest
 from agora.tasks.store import TaskStore
@@ -37,6 +43,48 @@ def _stores(
         )
     )
     store = ControlPlaneStore(tasks)
+    store.ensure_task_state(task.task_id)
+    inventory = StageInventory.model_validate(
+        seal_model_payload(
+            StageInventory,
+            {
+                "schema_version": "1.0",
+                "inventory_id": f"inventory:{task.task_id}",
+                "task_id": task.task_id,
+                "project_id": task.project_id,
+                "plan_id": f"plan:{task.task_id}",
+                "methodology_id": "protocol_test",
+                "methodology_version": "1.0",
+                "methodology_sha256": "a" * 64,
+                "provisional": True,
+                "contract": None,
+                "groups": [
+                    {
+                        "group_key": "protocol_test",
+                        "sequence": 1,
+                        "title": "Protocol test",
+                        "stages": [
+                            {
+                                "stage_key": "implementation",
+                                "gate_key": "implementation-gate",
+                                "sequence": 1,
+                                "title": "Implementation",
+                                "role": "implementer",
+                                "runtime": "codex",
+                            }
+                        ],
+                    }
+                ],
+            },
+        )
+    )
+    store.ensure_stage_inventory(inventory, actor="agora")
+    store.activate_stage_route(
+        task_id=task.task_id,
+        expected_stage_key="implementation",
+        actor="agora",
+        operation_key=f"activate:{task.task_id}",
+    )
     store.configure_gate(
         task_id=task.task_id,
         gate_key="implementation-gate",
