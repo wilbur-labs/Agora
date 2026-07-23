@@ -25,7 +25,10 @@ hash-covered definition records:
 
 The capability declarations are local policy facts derived from the checked-in
 product requirements. They are not live provider discovery and do not authorize
-a different model, runtime, role, or methodology Stage. An unknown role,
+a different model, runtime, role, or methodology Stage. The separate
+`NativeRuntimeCapabilityObservation@1.0` contract may report local
+installation/version and declared model/capability facts, but it explicitly has
+no routing authority and is not an input to this policy. An unknown role,
 runtime, capability binding, reviewer, or contract relationship fails closed.
 
 ## Dispatch checks
@@ -98,7 +101,8 @@ fail closed.
 
 ## Deferred boundaries
 
-Dynamic runtime/model substitution, provider capability discovery, reviewer-set
-changes, policy migration, Stage reallocation, authenticated HTTP lifecycle
-commands, parallel/DAG routing, exact provider usage, the missing authoritative
-AI-DLC graph, and Task Workbench UI remain separate reviewed increments.
+Dynamic runtime/model substitution, live provider/model discovery, feeding
+native capability observations into routing, reviewer-set changes, policy
+migration, Stage reallocation, authenticated HTTP lifecycle commands,
+parallel/DAG routing, the missing authoritative AI-DLC graph, and Task
+Workbench UI remain separate reviewed increments.

@@ -1,0 +1,266 @@
+{
+  "$defs": {
+    "RuntimeCapabilityAdapterObservation": {
+      "additionalProperties": false,
+      "description": "One configured native adapter observed without granting route authority.",
+      "properties": {
+        "adapter": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Adapter",
+          "type": "string"
+        },
+        "declared_capabilities": {
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+            "type": "string"
+          },
+          "maxItems": 50,
+          "minItems": 1,
+          "title": "Declared Capabilities",
+          "type": "array"
+        },
+        "declared_models": {
+          "items": {
+            "maxLength": 200,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:/-]*$",
+            "type": "string"
+          },
+          "maxItems": 50,
+          "title": "Declared Models",
+          "type": "array"
+        },
+        "installation_status": {
+          "enum": [
+            "installed",
+            "not_found",
+            "uninspectable"
+          ],
+          "title": "Installation Status",
+          "type": "string"
+        },
+        "model_availability": {
+          "enum": [
+            "declared",
+            "unavailable"
+          ],
+          "title": "Model Availability",
+          "type": "string"
+        },
+        "provider": {
+          "enum": [
+            "openai",
+            "anthropic",
+            "kiro",
+            "unknown"
+          ],
+          "title": "Provider",
+          "type": "string"
+        },
+        "resolved_runtime_command_sha256": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Resolved Runtime Command Sha256"
+        },
+        "resolved_version_command_sha256": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Resolved Version Command Sha256"
+        },
+        "runtime_command_sha256": {
+          "title": "Runtime Command Sha256",
+          "type": "string"
+        },
+        "version": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Version"
+        },
+        "version_command_sha256": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Version Command Sha256"
+        },
+        "version_method": {
+          "enum": [
+            "native_version_command",
+            "not_configured",
+            "not_installed",
+            "probe_failed"
+          ],
+          "title": "Version Method",
+          "type": "string"
+        },
+        "version_output_sha256": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Version Output Sha256"
+        },
+        "version_probe_exit_code": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Version Probe Exit Code"
+        },
+        "version_probe_timed_out": {
+          "default": false,
+          "title": "Version Probe Timed Out",
+          "type": "boolean"
+        },
+        "version_status": {
+          "enum": [
+            "exact",
+            "unavailable"
+          ],
+          "title": "Version Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "adapter",
+        "provider",
+        "installation_status",
+        "version_status",
+        "version_method",
+        "model_availability",
+        "declared_capabilities",
+        "runtime_command_sha256"
+      ],
+      "title": "RuntimeCapabilityAdapterObservation",
+      "type": "object"
+    }
+  },
+  "$id": "https://agora.local/schemas/v1/native-runtime-capability-observation.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Read-only local installation and declaration facts for native adapters.",
+  "properties": {
+    "adapters": {
+      "items": {
+        "$ref": "#/$defs/RuntimeCapabilityAdapterObservation"
+      },
+      "maxItems": 20,
+      "minItems": 1,
+      "title": "Adapters",
+      "type": "array"
+    },
+    "capability_declaration_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Capability Declaration Id",
+      "type": "string"
+    },
+    "capability_declaration_sha256": {
+      "title": "Capability Declaration Sha256",
+      "type": "string"
+    },
+    "capability_declaration_version": {
+      "pattern": "^\\d+\\.\\d+$",
+      "title": "Capability Declaration Version",
+      "type": "string"
+    },
+    "collected_at": {
+      "format": "date-time",
+      "title": "Collected At",
+      "type": "string"
+    },
+    "collector_id": {
+      "const": "agora-native-runtime-capability-observer",
+      "default": "agora-native-runtime-capability-observer",
+      "title": "Collector Id",
+      "type": "string"
+    },
+    "collector_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Collector Version",
+      "type": "string"
+    },
+    "content_sha256": {
+      "title": "Content Sha256",
+      "type": "string"
+    },
+    "platform": {
+      "maxLength": 100,
+      "minLength": 1,
+      "title": "Platform",
+      "type": "string"
+    },
+    "routing_authority": {
+      "const": false,
+      "default": false,
+      "title": "Routing Authority",
+      "type": "boolean"
+    },
+    "runtime_registry_sha256": {
+      "title": "Runtime Registry Sha256",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "content_sha256",
+    "collected_at",
+    "platform",
+    "runtime_registry_sha256",
+    "capability_declaration_id",
+    "capability_declaration_version",
+    "capability_declaration_sha256",
+    "adapters"
+  ],
+  "title": "NativeRuntimeCapabilityObservation",
+  "type": "object"
+}

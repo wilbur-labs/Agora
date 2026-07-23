@@ -235,6 +235,125 @@ class ProviderUsageObservation(HashSealedModel):
         return self
 
 
+RuntimeModelName = Annotated[
+    str,
+    Field(
+        min_length=1,
+        max_length=200,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:/-]*$",
+    ),
+]
+
+NATIVE_ADAPTER_PROVIDERS = {
+    "codex": "openai",
+    "claude": "anthropic",
+    "kiro": "kiro",
+}
+
+
+class RuntimeCapabilityAdapterObservation(ProtocolModel):
+    """One configured native adapter observed without granting route authority."""
+
+    adapter: StableId
+    provider: Literal["openai", "anthropic", "kiro", "unknown"]
+    installation_status: Literal["installed", "not_found", "uninspectable"]
+    version: Annotated[str, Field(min_length=1, max_length=200)] | None = None
+    version_status: Literal["exact", "unavailable"]
+    version_method: Literal[
+        "native_version_command",
+        "not_configured",
+        "not_installed",
+        "probe_failed",
+    ]
+    model_availability: Literal["declared", "unavailable"]
+    declared_models: list[RuntimeModelName] = Field(default_factory=list, max_length=50)
+    declared_capabilities: list[StableId] = Field(min_length=1, max_length=50)
+    runtime_command_sha256: Sha256Hex
+    version_command_sha256: Sha256Hex | None = None
+    resolved_runtime_command_sha256: Sha256Hex | None = None
+    resolved_version_command_sha256: Sha256Hex | None = None
+    version_output_sha256: Sha256Hex | None = None
+    version_probe_exit_code: int | None = None
+    version_probe_timed_out: bool = False
+
+    @model_validator(mode="after")
+    def validate_observed_capability_facts(self):
+        expected_provider = NATIVE_ADAPTER_PROVIDERS.get(self.adapter)
+        if expected_provider is not None and self.provider != expected_provider:
+            raise ValueError("provider does not match adapter provenance")
+        if self.declared_models != sorted(set(self.declared_models)):
+            raise ValueError("declared models must be unique and canonically ordered")
+        if self.declared_capabilities != sorted(set(self.declared_capabilities)):
+            raise ValueError("declared capabilities must be unique and canonically ordered")
+        if self.model_availability == "declared" and not self.declared_models:
+            raise ValueError("declared model availability requires at least one model")
+        if self.model_availability == "unavailable" and self.declared_models:
+            raise ValueError("unavailable model declarations may not carry models")
+
+        if self.installation_status == "installed":
+            if self.resolved_runtime_command_sha256 is None:
+                raise ValueError("installed adapter requires resolved command provenance")
+        elif self.resolved_runtime_command_sha256 is not None:
+            raise ValueError("unavailable adapter may not claim a resolved runtime command")
+
+        if self.version_status == "exact":
+            if (
+                self.installation_status != "installed"
+                or self.version is None
+                or self.version_method != "native_version_command"
+                or self.version_command_sha256 is None
+                or self.resolved_version_command_sha256 is None
+                or self.version_output_sha256 is None
+                or self.version_probe_exit_code != 0
+                or self.version_probe_timed_out
+            ):
+                raise ValueError("exact adapter version requires successful native probe provenance")
+        elif self.version is not None:
+            raise ValueError("unavailable adapter version may not carry a value")
+
+        if self.version_method == "not_configured":
+            if self.installation_status != "installed" or self.version_command_sha256 is not None:
+                raise ValueError("unconfigured version probe requires an installed adapter")
+        elif self.version_method == "not_installed":
+            if self.installation_status != "not_found":
+                raise ValueError("not-installed version result requires a missing adapter")
+        elif self.version_method == "native_version_command":
+            if self.version_status != "exact":
+                raise ValueError("native version command must yield an exact version")
+        elif self.version_method == "probe_failed":
+            if self.version_status != "unavailable":
+                raise ValueError("failed version probe must remain unavailable")
+        return self
+
+
+class NativeRuntimeCapabilityObservation(HashSealedModel):
+    """Read-only local installation and declaration facts for native adapters."""
+
+    schema_version: Literal["1.0"] = "1.0"
+    collected_at: AwareDatetime
+    collector_id: Literal["agora-native-runtime-capability-observer"] = (
+        "agora-native-runtime-capability-observer"
+    )
+    collector_version: Literal["1.0"] = "1.0"
+    platform: Annotated[str, Field(min_length=1, max_length=100)]
+    runtime_registry_sha256: Sha256Hex
+    capability_declaration_id: StableId
+    capability_declaration_version: Annotated[str, Field(pattern=r"^\d+\.\d+$")]
+    capability_declaration_sha256: Sha256Hex
+    adapters: list[RuntimeCapabilityAdapterObservation] = Field(
+        min_length=1,
+        max_length=20,
+    )
+    routing_authority: Literal[False] = False
+
+    @model_validator(mode="after")
+    def validate_adapter_set(self):
+        adapter_names = [item.adapter for item in self.adapters]
+        if adapter_names != sorted(set(adapter_names)):
+            raise ValueError("adapter observations must be unique and canonically ordered")
+        return self
+
+
 class StageInventoryContractBinding(ProtocolModel):
     contract_id: StableId
     schema_version: ProtocolVersion

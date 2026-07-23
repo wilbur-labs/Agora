@@ -40,6 +40,8 @@ the Pydantic models in `backend/agora/protocol/`:
 - `gate-requirement.schema.json`
 - `runner-isolation-contract.schema.json`
 - `stage-inventory.schema.json`
+- `provider-usage-observation.schema.json`
+- `native-runtime-capability-observation.schema.json`
 
 `scripts/export_protocol_schemas.py --check` fails when a checked-in schema
 does not match its executable model.
@@ -126,6 +128,13 @@ records sealed policy snapshots before and after the increase and commits only
 when the resulting policy passes. Every subsequent Run claim still derives a
 new per-Run policy inside its own transaction; the amendment receipt is audit
 evidence, not dispatch authority.
+
+Native provider usage and native runtime capability observations are separate
+read-only, hash-sealed contracts. Usage observations bind measured Run results
+without rewriting historical ledger entries. Capability observations bind
+local installation/version probes and declared model/capability provenance but
+carry `routing_authority: false`; they cannot select a runtime/model or alter
+the sealed route.
 
 ### Gate
 

@@ -26,6 +26,8 @@ class RuntimeCommand:
     adapter: str
     command_template: tuple[str, ...]
     result_format: RuntimeResultFormat = RuntimeResultFormat.PLAIN_TEXT
+    version_command: tuple[str, ...] | None = None
+    declared_models: tuple[str, ...] = ()
 
     def build(self, prompt: str) -> list[str]:
         return [prompt if item == "{prompt}" else item for item in self.command_template]
@@ -67,6 +69,12 @@ DEFAULT_RESULT_FORMATS = {
     "codex": RuntimeResultFormat.CODEX_JSONL_V1,
     "claude": RuntimeResultFormat.CLAUDE_JSON_V1,
     "kiro": RuntimeResultFormat.PLAIN_TEXT,
+}
+
+DEFAULT_VERSION_COMMANDS = {
+    "codex": ("codex", "--version"),
+    "claude": ("claude", "--version"),
+    "kiro": ("kiro-cli", "--version"),
 }
 
 
@@ -174,10 +182,45 @@ def build_runtime_registry(config: dict) -> dict[str, RuntimeCommand]:
             raise ValueError(
                 f"orchestration.runtimes.{adapter}.result_format does not match its adapter"
             )
+        version_default = DEFAULT_VERSION_COMMANDS[adapter] if "command" not in values else None
+        version_command = values.get("version_command", version_default)
+        if version_command is not None and (
+            not isinstance(version_command, list | tuple)
+            or not version_command
+            or len(version_command) > 32
+            or any(
+                not isinstance(item, str) or not item or len(item) > 1_000
+                for item in version_command
+            )
+            or any("{prompt}" in item for item in version_command)
+        ):
+            raise ValueError(
+                f"orchestration.runtimes.{adapter}.version_command must be a bounded "
+                "non-empty string list without {prompt}"
+            )
+        declared_models = values.get("declared_models", [])
+        if (
+            not isinstance(declared_models, list)
+            or len(declared_models) > 50
+            or any(
+                not isinstance(item, str)
+                or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,199}", item)
+                for item in declared_models
+            )
+            or len(declared_models) != len(set(declared_models))
+        ):
+            raise ValueError(
+                f"orchestration.runtimes.{adapter}.declared_models must contain "
+                "at most 50 unique model identifiers"
+            )
         registry[adapter] = RuntimeCommand(
             adapter=adapter,
             command_template=tuple(command),
             result_format=result_format,
+            version_command=(
+                tuple(version_command) if version_command is not None else None
+            ),
+            declared_models=tuple(sorted(declared_models)),
         )
     return registry
 

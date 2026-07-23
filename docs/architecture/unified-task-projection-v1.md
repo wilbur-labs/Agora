@@ -90,6 +90,15 @@ and after an envelope increase. The current budget projection reads the amended
 Plan totals, while historical Stage allocations and usage remain unchanged.
 Projection reads never reuse an amendment's resulting policy for dispatch.
 
+Unified projection schema `8.0` adds each formal operational Run's persisted,
+hash-sealed `usage_observation`. It exposes exact provider components when a
+structured native result supplied them, conservative estimates for started
+plain-text runtimes, unavailable measurements when provider facts were lost or
+malformed, and exact zero only when the process provably never started.
+Historical ledger entries remain unchanged. Native runtime capability
+observations are machine-local, non-persisted, and intentionally absent from
+this Task projection.
+
 Formal progress counts only Control Plane Stages in `completed` state. A passed
 process, compatibility Run, or Gate cannot increase the completed count by
 itself. Operational Stages not yet configured in the Control Plane remain
@@ -141,5 +150,6 @@ than construct another status interpretation. Frozen Task-state persistence is
 supplied by `control_tasks`, and grouped Stage identity is supplied by
 `control_stage_inventories`; lifecycle reconciliation and Stage routing are
 supplied by the Control Plane derivation boundary. Parallel/DAG and risk-aware
-dynamic routing, exact provider usage, the authenticated HTTP lifecycle surface, the full
-AI-DLC graph, and Task Workbench UI remain separate reviewed increments.
+dynamic routing, live provider/model discovery, use of native capability
+observations as routing inputs, the authenticated HTTP lifecycle surface, the
+full AI-DLC graph, and Task Workbench UI remain separate reviewed increments.

@@ -5,8 +5,8 @@ Current branch: `main`
 Current recovery baseline (2026-07-22):
 
 - Before this increment, local `main` and `origin/main` were synchronized at
-  reviewed Task budget-amendment commit `03f3f6b`. The commit containing this
-  snapshot is the next intended recovery baseline after close-out.
+  reviewed provider-usage commit `847a616`. The commit containing this snapshot
+  is the next intended recovery baseline after close-out.
 - Active program: the ordered Agora Control Plane transformation. The first two
   stages (protocol/domain freeze and Control Plane v2 persistence/Registry) are
   complete; the bounded API, concrete Task contract, and Runner/Agent Adapter
@@ -79,6 +79,12 @@ Current recovery baseline (2026-07-22):
   that never started is exact zero. The additive Run column does not rewrite
   historical ledger rows. Kiro and Claude Code both returned explicit final
   approval; the complete backend suite passed 483 tests with 18 deselected.
+- Latest reviewed increment: a read-only, versioned native runtime capability
+  observation. It reports exact installed adapter versions where bounded native
+  probes succeed, configured model declarations, and hash-bound policy
+  capability declarations without persisting state or becoming routing
+  authority. Kiro and Claude Code both returned explicit final approval; the
+  complete backend suite passed 495 tests with 18 deselected.
 
 ## 2026-07-22 — Native provider usage observation
 
@@ -156,6 +162,79 @@ It must not substitute runtimes/models, alter the sealed Stage inventory or
 pinned route, or infer the missing authoritative AI-DLC graph. Dynamic
 substitution, authenticated HTTP, the missing authoritative AI-DLC graph,
 parallel/DAG routing, and Task Workbench UI remain deferred.
+
+## 2026-07-23 - Native runtime capability observation (reviewed)
+
+### Scope and implementation
+
+- [x] Added hash-sealed `NativeRuntimeCapabilityObservation@1.0` plus a
+  deterministic checked-in JSON Schema.
+- [x] Bound every observation to collection time, collector/platform, the
+  configured runtime-registry hash, and the exact pinned routing-policy
+  declaration ID/version/hash.
+- [x] Kept installation, exact version, declared model availability, and
+  declared capability availability separate. Empty model declarations remain
+  unavailable rather than inferred from CLI defaults or provider output.
+- [x] Added bounded no-shell default version probes for Codex, Claude, and Kiro;
+  custom runtime commands require an explicit bounded `version_command`.
+- [x] Added 10-second timeout, terminate/kill escalation, bounded concurrent
+  stream capture, post-stop drain bounds, cancellation propagation, sibling
+  cleanup, proxy scrubbing, and fail-closed Windows wrapper/lookup behavior.
+- [x] Added `agora task capabilities` as a read-only JSON command that does not
+  build the Task service, initialize SQLite, persist observations, or change
+  the unified Task projection.
+- [x] Preserved the sealed inventory and pinned routing policy as the only
+  dispatch authority; every observation carries `routing_authority=false`.
+- [x] Kept live provider/model discovery, authentication/serviceability probes,
+  runtime/model substitution, HTTP, the missing authoritative AI-DLC graph,
+  parallel/DAG routing, and Task Workbench UI deferred.
+
+### Verification and review log
+
+- Initial capability, provider-usage, orchestration, and protocol suite:
+  92 passed.
+- Pre-review complete system-Temp non-integration backend suite excluding the
+  deferred static-export Web UI test: 489 passed, 18 deselected.
+- Kiro protocol/methodology review returned `CHANGES_REQUESTED` for missing
+  real-child timeout/reap and cancellation-propagation regressions. Both were
+  added, along with direct `uninspectable`/`not_configured` coverage, proxy
+  scrubbing, and a shared adapter/provider declaration; focused suite:
+  96 passed.
+- Kiro targeted re-review returned `KIRO_APPROVE`; no HIGH/MEDIUM findings.
+- Claude Code correctness/safety review returned `CLAUDE_APPROVE`; no
+  HIGH/MEDIUM findings. Its actionable LOW observation about sibling probe
+  cleanup was nevertheless fixed: any probe exception now cancels and awaits
+  every unfinished sibling, executable lookup `OSError` is fail-closed, and
+  both paths have direct regressions.
+- Final focused capability, provider-usage, orchestration, and protocol suite:
+  98 passed.
+- Final narrow Kiro and Claude Code confirmations both returned explicit
+  `KIRO_APPROVE` / `CLAUDE_APPROVE`; no HIGH/MEDIUM findings remain.
+- Final complete system-Temp non-integration backend suite excluding
+  `tests/test_web_ui.py`: 495 passed, 18 deselected, with the existing
+  Starlette/httpx deprecation warning and Windows Proactor cleanup warning.
+- Final Protocol Schema export/check, isolated `compileall`, staged and
+  unstaged `git diff --check`, `agora task --help`, and validated capability
+  JSON smoke passed.
+- Final read-only CLI observation reported Claude Code `2.1.217` and Kiro CLI
+  `2.14.0` as exact versions, Codex as `not_found` in the current PowerShell
+  `PATH`, all undeclared models as unavailable, and
+  `routing_authority=false`.
+- No frontend or authenticated HTTP contract changed; frontend validation was
+  not required. `.kiro/` and historical pytest temp directories remain
+  unrelated local artifacts and were not modified or staged.
+
+### Next safe action
+
+Define the smallest versioned pinned-runtime preflight decision over a fresh
+native capability observation. It may only allow or block the already sealed
+route, must bind the exact observation, runtime command, and policy declaration
+hashes, and must collect outside the SQLite write transaction with an immediate
+pre-spawn recheck. It must not substitute a runtime/model, treat declarations
+as live provider serviceability, or mutate the sealed methodology graph. Live
+provider/model catalogs, authentication probes, dynamic substitution,
+authenticated HTTP, the missing authoritative AI-DLC graph, parallel/DAG
+routing, and Task Workbench UI remain deferred.
 
 ## 2026-07-18 — Latest transformation requirements recovery
 

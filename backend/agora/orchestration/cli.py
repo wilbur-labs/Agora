@@ -21,6 +21,7 @@ from agora.tasks.store import TaskNotFoundError, TaskStore
 from .contracts import load_task_contract
 from .models import Measurement, PlanState
 from .runtime import ReadOnlyCliRunner, build_runtime_registry
+from .runtime_capabilities import collect_native_runtime_capabilities
 from .service import TaskOrchestrationService
 from .store import (
     OrchestrationConflictError,
@@ -51,6 +52,11 @@ def parser() -> argparse.ArgumentParser:
         description="Task-scoped, methodology-driven orchestration foundation",
     )
     commands = root.add_subparsers(dest="command", required=True)
+
+    commands.add_parser(
+        "capabilities",
+        help="Observe local native adapter versions and declared capabilities as JSON",
+    )
 
     start = commands.add_parser("start", help="Create a Task and attach the provisional method")
     start.add_argument("title", nargs="?")
@@ -138,8 +144,21 @@ def parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     _configure_safe_output()
     args = parser().parse_args(argv)
-    service = build_service()
     try:
+        if args.command == "capabilities":
+            cfg = get_config()
+            observation = asyncio.run(
+                collect_native_runtime_capabilities(build_runtime_registry(cfg))
+            )
+            print(
+                json.dumps(
+                    observation.model_dump(mode="json"),
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return 0
+        service = build_service()
         if args.command == "start":
             contract = load_task_contract(args.contract) if args.contract else None
             if contract and args.title:
