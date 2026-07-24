@@ -45,6 +45,20 @@ class RuntimeCapabilityProbe:
     version_probe_timed_out: bool = False
 
 
+@dataclass(frozen=True)
+class RuntimeLaunchBinding:
+    installation_status: str
+    resolved_command: tuple[str, ...] | None
+
+    @property
+    def content_sha256(self) -> str | None:
+        return (
+            canonical_sha256(list(self.resolved_command))
+            if self.resolved_command is not None
+            else None
+        )
+
+
 RuntimeProbe = Callable[
     [RuntimeCommand, str],
     Awaitable[RuntimeCapabilityProbe],
@@ -83,28 +97,13 @@ async def collect_native_runtime_capabilities(
         _adapter_observation(runtimes[name], result)
         for name, result in zip(adapter_names, probes, strict=True)
     ]
-    registry_facts = {
-        name: {
-            "runtime_command_sha256": canonical_sha256(
-                list(runtimes[name].command_template)
-            ),
-            "version_command_sha256": (
-                canonical_sha256(list(runtimes[name].version_command))
-                if runtimes[name].version_command is not None
-                else None
-            ),
-            "declared_models": list(runtimes[name].declared_models),
-            "result_format": runtimes[name].result_format.value,
-        }
-        for name in adapter_names
-    }
     payload = {
         "schema_version": "1.0",
         "collected_at": collected,
         "collector_id": "agora-native-runtime-capability-observer",
         "collector_version": "1.0",
         "platform": platform_name,
-        "runtime_registry_sha256": canonical_sha256(registry_facts),
+        "runtime_registry_sha256": runtime_registry_sha256(runtimes),
         "capability_declaration_id": ROUTING_POLICY_ID,
         "capability_declaration_version": ROUTING_POLICY_VERSION,
         "capability_declaration_sha256": ROUTING_POLICY_SHA256,
@@ -133,7 +132,7 @@ def _adapter_observation(
         model_availability="declared" if declared_models else "unavailable",
         declared_models=declared_models,
         declared_capabilities=sorted(RUNTIME_CAPABILITIES.get(runtime.adapter, ())),
-        runtime_command_sha256=canonical_sha256(list(runtime.command_template)),
+        runtime_command_sha256=runtime_command_sha256(runtime),
         version_command_sha256=(
             canonical_sha256(list(runtime.version_command))
             if runtime.version_command is not None
@@ -147,39 +146,71 @@ def _adapter_observation(
     )
 
 
-async def _probe_runtime(
+def runtime_command_sha256(runtime: RuntimeCommand) -> str:
+    return canonical_sha256(list(runtime.command_template))
+
+
+def runtime_registry_sha256(runtimes: dict[str, RuntimeCommand]) -> str:
+    facts = {
+        name: {
+            "runtime_command_sha256": runtime_command_sha256(runtimes[name]),
+            "version_command_sha256": (
+                canonical_sha256(list(runtimes[name].version_command))
+                if runtimes[name].version_command is not None
+                else None
+            ),
+            "declared_models": list(runtimes[name].declared_models),
+            "result_format": runtimes[name].result_format.value,
+        }
+        for name in sorted(runtimes)
+    }
+    return canonical_sha256(facts)
+
+
+def resolve_runtime_launch_binding(
     runtime: RuntimeCommand,
-    platform: str,
-) -> RuntimeCapabilityProbe:
+    *,
+    platform: str | None = None,
+) -> RuntimeLaunchBinding:
+    """Resolve only the executable prefix used by the audited no-shell launcher."""
+    platform_name = platform or sys.platform
     try:
         executable = shutil.which(runtime.command_template[0])
         if executable is None:
             candidate = Path(runtime.command_template[0])
             if not candidate.is_file():
-                return RuntimeCapabilityProbe(
-                    installation_status="not_found",
-                    version=None,
-                    version_status="unavailable",
-                    version_method="not_installed",
-                )
+                return RuntimeLaunchBinding("not_found", None)
             executable = str(candidate)
     except OSError:
-        return RuntimeCapabilityProbe(
-            installation_status="uninspectable",
-            version=None,
-            version_status="unavailable",
-            version_method="probe_failed",
-        )
+        return RuntimeLaunchBinding("uninspectable", None)
     try:
-        resolved_runtime = resolve_runtime_command([executable], platform=platform)
+        resolved = resolve_runtime_command([executable], platform=platform_name)
     except RuntimeLaunchError:
+        return RuntimeLaunchBinding("uninspectable", None)
+    return RuntimeLaunchBinding("installed", tuple(resolved))
+
+
+async def _probe_runtime(
+    runtime: RuntimeCommand,
+    platform: str,
+) -> RuntimeCapabilityProbe:
+    launch = resolve_runtime_launch_binding(runtime, platform=platform)
+    if launch.installation_status == "not_found":
+        return RuntimeCapabilityProbe(
+            installation_status="not_found",
+            version=None,
+            version_status="unavailable",
+            version_method="not_installed",
+        )
+    if launch.installation_status != "installed":
         return RuntimeCapabilityProbe(
             installation_status="uninspectable",
             version=None,
             version_status="unavailable",
             version_method="probe_failed",
         )
-    resolved_runtime_sha256 = canonical_sha256(resolved_runtime)
+    resolved_runtime_sha256 = launch.content_sha256
+    assert resolved_runtime_sha256 is not None
     if runtime.version_command is None:
         return RuntimeCapabilityProbe(
             installation_status="installed",

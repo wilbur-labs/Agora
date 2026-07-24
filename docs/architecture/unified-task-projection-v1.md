@@ -99,6 +99,11 @@ Historical ledger entries remain unchanged. Native runtime capability
 observations are machine-local, non-persisted, and intentionally absent from
 this Task projection.
 
+Unified projection schema `9.0` adds each formal operational Run's persisted,
+hash-sealed `runtime_preflight`. Historical Runs may omit it. Projection reads
+verify the decision's Run and routing-policy bindings without collecting new
+native observations or mutating dispatch state.
+
 Formal progress counts only Control Plane Stages in `completed` state. A passed
 process, compatibility Run, or Gate cannot increase the completed count by
 itself. Operational Stages not yet configured in the Control Plane remain
@@ -151,5 +156,5 @@ supplied by `control_tasks`, and grouped Stage identity is supplied by
 `control_stage_inventories`; lifecycle reconciliation and Stage routing are
 supplied by the Control Plane derivation boundary. Parallel/DAG and risk-aware
 dynamic routing, live provider/model discovery, use of native capability
-observations as routing inputs, the authenticated HTTP lifecycle surface, the
+observations for route selection, the authenticated HTTP lifecycle surface, the
 full AI-DLC graph, and Task Workbench UI remain separate reviewed increments.

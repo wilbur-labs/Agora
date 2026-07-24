@@ -85,6 +85,13 @@ Current recovery baseline (2026-07-22):
   capability declarations without persisting state or becoming routing
   authority. Kiro and Claude Code both returned explicit final approval; the
   complete backend suite passed 495 tests with 18 deselected.
+- Latest reviewed increment: a versioned pinned-runtime preflight over one
+  complete fresh native capability observation. It can only allow or block the
+  already sealed route, persists the exact decision with its Run, and rechecks
+  registry, policy, command, and resolved launcher argv immediately before
+  process creation. It never substitutes a runtime/model or claims provider
+  serviceability. Kiro and Claude Code both returned explicit final approval;
+  the complete backend suite passed 506 tests with 18 deselected.
 
 ## 2026-07-22 — Native provider usage observation
 
@@ -235,6 +242,81 @@ as live provider serviceability, or mutate the sealed methodology graph. Live
 provider/model catalogs, authentication probes, dynamic substitution,
 authenticated HTTP, the missing authoritative AI-DLC graph, parallel/DAG
 routing, and Task Workbench UI remain deferred.
+
+## 2026-07-24 - Pinned native runtime preflight (reviewed)
+
+### Scope and implementation
+
+- [x] Added hash-sealed `PinnedRuntimePreflightDecision@1.0` plus a
+  deterministic checked-in JSON Schema.
+- [x] Bound the exact Task, project, Run, sealed inventory route, per-Run
+  routing-policy decision, reviewed policy declaration, complete fresh native
+  capability observation, configured runtime registry, command template, and
+  audited resolved launch target.
+- [x] Limited the decision to allow or block the already pinned runtime. It
+  carries explicit false markers for route-selection authority, runtime/model
+  substitution, and provider serviceability verification.
+- [x] Required six deterministic checks: route binding, 60-second observation
+  freshness, observation integrity, command binding, local installation, and
+  capability-declaration binding. An unavailable version remains informational
+  because the reviewed policy has no version constraint.
+- [x] Collected the native observation outside SQLite write transactions. A
+  blocked initial decision creates no Run, reservation, Gate mutation, or
+  process.
+- [x] Persisted an allowed decision in an additive nullable Run column, included
+  it in the sealed Context Pack, and upgraded the unified Task projection to
+  schema `9.0`. Historical Runs remain `NULL`.
+- [x] Added a second recheck inside the Runner immediately before
+  `asyncio.create_subprocess_exec`. Expiry or changed registry, policy, command,
+  or resolved launch target fails before process creation and settles an
+  already claimed formal Run with exact-zero process-not-started usage.
+- [x] Kept live provider/model discovery, authentication/serviceability claims,
+  dynamic substitution, authenticated HTTP, the missing authoritative AI-DLC
+  graph, parallel/DAG routing, and Task Workbench UI deferred.
+
+### Verification and review log
+
+- Focused preflight, capability, provider-usage, formal orchestration, frozen
+  protocol, Stage routing/lifecycle/inventory, protocol Run, and Registry suite:
+  221 passed.
+- Complete system-Temp non-integration backend suite excluding the deferred
+  static-export Web UI test: 506 passed, 18 deselected, with the existing
+  Starlette/httpx deprecation warning and Windows Proactor cleanup warning.
+- Protocol Schema export/check, isolated `compileall`, `git diff --check`, and
+  `agora task --help`: passed.
+- Live read-only `agora task capabilities` smoke passed. It observed Claude
+  Code `2.1.217` and Kiro CLI `2.14.0` as exact installed versions, while Codex
+  remains `not_found` in the current PowerShell `PATH`. A real Codex-pinned
+  route will therefore block before Run claim on this shell; no substitution
+  is permitted.
+- Direct regressions cover initial missing-runtime no-claim behavior,
+  missing-adapter observation, observation expiry, post-claim command drift
+  before spawn, exact-zero settlement, nullable migration, hash tamper,
+  resealed Run forgery, and Context/projection bindings.
+- Kiro protocol/methodology/reconciliation review returned `KIRO_APPROVE` with
+  no HIGH/MEDIUM defects. Its LOW Runner-contract and test-callback notes were
+  fixed; targeted re-review returned `KIRO_FIX_APPROVE`.
+- Independent Claude Code correctness/safety/regression review returned
+  `CLAUDE_APPROVE` with no HIGH/MEDIUM defects. Its LOW notes were fixed by
+  clarifying that the resolved binding hashes launcher argv rather than binary
+  content and returning a structured blocked decision when an injected
+  observation omits the pinned adapter. Targeted re-review returned
+  `CLAUDE_FIX_APPROVE`.
+- No frontend or authenticated HTTP contract changed; frontend validation is
+  not required. `.kiro/` and historical pytest temp directories remain
+  unrelated local artifacts and were not modified or staged.
+
+### Next safe action
+
+After committing and pushing this reviewed checkpoint, define the smallest
+read-only Task-scoped preflight preview that
+reuses this exact decision without claiming a Run, persisting an observation,
+or spawning a runtime. It may explain how to remediate the pinned route but
+must not substitute a runtime/model, infer provider serviceability, or alter the
+sealed methodology graph. Live provider/model catalogs, authenticated
+serviceability probes, dynamic substitution, authenticated HTTP, the missing
+authoritative AI-DLC graph, parallel/DAG routing, and Task Workbench UI remain
+deferred.
 
 ## 2026-07-18 — Latest transformation requirements recovery
 

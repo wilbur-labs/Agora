@@ -16,6 +16,7 @@ from agora.execution.security import redact_text, sanitize_data
 from agora.protocol.agent_adapter import AgentAdapterResult
 from agora.protocol.hashing import canonical_sha256, seal_model_payload
 from agora.protocol.models import (
+    PinnedRuntimePreflightDecision,
     ProviderUsageObservation,
     SemanticStageResult,
     StageInventory,
@@ -991,14 +992,15 @@ class OrchestrationStore:
         route: StageRouteDecision | None = None,
         contract: TaskContract | None = None,
         routing_policy: RoutingPolicyDecision | None = None,
+        runtime_preflight: PinnedRuntimePreflightDecision | None = None,
         actor: str = "orchestrator",
     ) -> OrchestrationRun:
-        policy_inputs = (route, contract, routing_policy)
+        policy_inputs = (route, contract, routing_policy, runtime_preflight)
         if any(item is not None for item in policy_inputs) and not all(
             item is not None for item in policy_inputs
         ):
             raise OrchestrationValidationError(
-                "Formal routing policy inputs must be supplied together"
+                "Formal routing and runtime preflight inputs must be supplied together"
             )
         if routing_policy is not None and run_id is None:
             raise OrchestrationValidationError(
@@ -1085,9 +1087,33 @@ class OrchestrationStore:
                     )
                 if not current_policy.dispatchable:
                     raise OrchestrationConflictError(current_policy.blockers[0])
+                assert runtime_preflight is not None
+                if (
+                    not runtime_preflight.allowed
+                    or runtime_preflight.task_id != task_id
+                    or runtime_preflight.project_id != route.project_id
+                    or runtime_preflight.run_id != run_id
+                    or runtime_preflight.inventory_id != route.inventory_id
+                    or runtime_preflight.inventory_sha256 != route.inventory_sha256
+                    or runtime_preflight.stage_key != route.stage_key
+                    or runtime_preflight.role != route.role
+                    or runtime_preflight.pinned_runtime != route.runtime
+                    or runtime_preflight.routing_policy_decision_id
+                    != current_policy.decision_id
+                    or runtime_preflight.routing_policy_decision_sha256
+                    != current_policy.content_sha256
+                    or runtime_preflight.routing_policy_declaration_sha256
+                    != current_policy.policy_sha256
+                ):
+                    raise OrchestrationConflictError(
+                        "Runtime preflight does not match the authoritative Run claim"
+                    )
                 token_reservation = current_policy.current_run_token_reservation
                 cost_reservation = current_policy.current_run_cost_reservation_usd
                 routing_policy_payload = self._json(current_policy.model_dump(mode="json"))
+                runtime_preflight_payload = self._json(
+                    runtime_preflight.model_dump(mode="json")
+                )
             else:
                 if (
                     settled + active_reserved + stage["token_budget"]
@@ -1099,6 +1125,7 @@ class OrchestrationStore:
                 token_reservation = stage["token_budget"]
                 cost_reservation = stage["cost_budget_usd"]
                 routing_policy_payload = None
+                runtime_preflight_payload = None
 
             run_id = run_id or self._id("orun")
             attempt = int(stage["attempt_count"]) + 1
@@ -1108,14 +1135,15 @@ class OrchestrationStore:
                     run_id, plan_id, task_id, stage_key, adapter, state, operation_key,
                     prompt_sha256, findings, token_reserved, token_measurement,
                     cost_reserved_usd, cost_measurement, attempt,
-                    routing_policy_payload, started_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, ?, ?, ?, ?, ?)
+                    routing_policy_payload, runtime_preflight_payload, started_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run_id, plan["plan_id"], task_id, stage["stage_key"], stage["adapter"],
                     RunState.RUNNING.value, operation_key, prompt_sha256, token_reservation,
                     Measurement.UNAVAILABLE.value, cost_reservation,
-                    Measurement.UNAVAILABLE.value, attempt, routing_policy_payload, now,
+                    Measurement.UNAVAILABLE.value, attempt, routing_policy_payload,
+                    runtime_preflight_payload, now,
                 ),
             )
             db.execute(
@@ -1156,6 +1184,16 @@ class OrchestrationStore:
                     "routing_policy_sha256": (
                         routing_policy.content_sha256
                         if routing_policy is not None
+                        else None
+                    ),
+                    "runtime_preflight_id": (
+                        runtime_preflight.decision_id
+                        if runtime_preflight is not None
+                        else None
+                    ),
+                    "runtime_preflight_sha256": (
+                        runtime_preflight.content_sha256
+                        if runtime_preflight is not None
                         else None
                     ),
                 },
@@ -2002,6 +2040,13 @@ class OrchestrationStore:
 
     @staticmethod
     def _run(row: sqlite3.Row) -> OrchestrationRun:
+        runtime_preflight = (
+            PinnedRuntimePreflightDecision.model_validate_json(
+                row["runtime_preflight_payload"]
+            )
+            if row["runtime_preflight_payload"]
+            else None
+        )
         usage_observation = (
             ProviderUsageObservation.model_validate_json(
                 row["usage_observation_payload"]
@@ -2025,6 +2070,7 @@ class OrchestrationStore:
                 if row["routing_policy_payload"]
                 else None
             ),
+            runtime_preflight=runtime_preflight,
             usage_observation=usage_observation,
             started_at=row["started_at"], finished_at=row["finished_at"],
         )
@@ -2038,6 +2084,20 @@ class OrchestrationStore:
         ):
             raise OrchestrationConflictError(
                 "Persisted usage observation does not match its Run settlement"
+            )
+        if runtime_preflight is not None and (
+            run.routing_policy is None
+            or runtime_preflight.run_id != run.run_id
+            or runtime_preflight.task_id != run.task_id
+            or runtime_preflight.stage_key != run.stage_key
+            or runtime_preflight.pinned_runtime != run.adapter
+            or runtime_preflight.routing_policy_decision_id
+            != run.routing_policy.decision_id
+            or runtime_preflight.routing_policy_decision_sha256
+            != run.routing_policy.content_sha256
+        ):
+            raise OrchestrationConflictError(
+                "Persisted runtime preflight does not match its Run bindings"
             )
         return run
 

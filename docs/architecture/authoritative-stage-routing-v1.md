@@ -60,6 +60,11 @@ coverage, reviewer independence, and protected future review budget. The
 policy preview is re-derived atomically with the operational Run reservation;
 see `explainable-routing-policy-v1.md`.
 
+The later pinned-runtime preflight does not change this route. It observes the
+already pinned adapter outside the write transaction and may only allow or
+block its launch, with an immediate pre-spawn command-binding recheck; see
+`pinned-runtime-preflight-v1.md`.
+
 ## Read model and recovery
 
 Unified Task projection schema `5.0` exposes the bounded route and labels the

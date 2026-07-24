@@ -16,6 +16,7 @@ from agora.protocol.models import (
     ContextEntry,
     ContextPack,
     GateRequirement,
+    PinnedRuntimePreflightDecision,
     RequiredOutput,
     RequirementSeverity,
     RunBudget,
@@ -96,6 +97,7 @@ def build_protocol_run_definition(
     prior_artifacts: Sequence[Artifact],
     decisions: Sequence[TaskDecision],
     routing_policy: RoutingPolicyDecision,
+    runtime_preflight: PinnedRuntimePreflightDecision,
     generated_at: datetime | str,
     timeout_seconds: int,
     max_output_bytes: int = 1_000_000,
@@ -115,6 +117,20 @@ def build_protocol_run_definition(
         or routing_policy.pinned_runtime != stage.adapter
     ):
         raise ValueError("Routing policy does not authorize the pinned Stage assignment")
+    if (
+        not runtime_preflight.allowed
+        or runtime_preflight.task_id != task.task_id
+        or runtime_preflight.project_id != task.project_id
+        or runtime_preflight.run_id != run_id
+        or runtime_preflight.stage_key != stage.stage_key
+        or runtime_preflight.role != stage.role
+        or runtime_preflight.pinned_runtime != stage.adapter
+        or runtime_preflight.routing_policy_decision_id
+        != routing_policy.decision_id
+        or runtime_preflight.routing_policy_decision_sha256
+        != routing_policy.content_sha256
+    ):
+        raise ValueError("Runtime preflight does not authorize the pinned Stage launch")
     if task.project_id != revision.repository_id:
         raise ValueError("Repository identity must match the Task project")
 
@@ -198,6 +214,20 @@ def build_protocol_run_definition(
             source_ref=(
                 f"routing-policy:{routing_policy.decision_id}:"
                 f"{routing_policy.content_sha256}"
+            ),
+        ),
+        _context_entry(
+            prefix="policy",
+            title="Fresh pinned native runtime preflight",
+            content=json.dumps(
+                runtime_preflight.model_dump(mode="json"),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            source_ref=(
+                f"runtime-preflight:{runtime_preflight.decision_id}:"
+                f"{runtime_preflight.content_sha256}"
             ),
         ),
     ]

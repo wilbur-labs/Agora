@@ -31,6 +31,11 @@ installation/version and declared model/capability facts, but it explicitly has
 no routing authority and is not an input to this policy. An unknown role,
 runtime, capability binding, reviewer, or contract relationship fails closed.
 
+A later pinned-runtime preflight consumes a fresh native observation only after
+this policy has approved the already sealed route. It can block that runtime
+before spawn, but cannot change this policy decision or substitute another
+runtime; see `pinned-runtime-preflight-v1.md`.
+
 ## Dispatch checks
 
 Before a formal process starts, Agora derives exactly five checks:
@@ -101,8 +106,8 @@ fail closed.
 
 ## Deferred boundaries
 
-Dynamic runtime/model substitution, live provider/model discovery, feeding
-native capability observations into routing, reviewer-set changes, policy
+Dynamic runtime/model substitution, live provider/model discovery,
+capability-driven route selection, reviewer-set changes, policy
 migration, Stage reallocation, authenticated HTTP lifecycle commands,
 parallel/DAG routing, the missing authoritative AI-DLC graph, and Task
 Workbench UI remain separate reviewed increments.

@@ -5,7 +5,7 @@ import asyncio
 import hashlib
 import json
 import re
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -31,7 +31,7 @@ from agora.protocol.hashing import (
     canonical_sha256,
     seal_model_payload,
 )
-from agora.protocol.models import StageInventory
+from agora.protocol.models import NativeRuntimeCapabilityObservation, StageInventory
 from agora.protocol.state_machines import StageStatus, TaskStatus
 from agora.tasks.models import CreateTaskRequest, TaskBudget, TaskManifest, TaskRisk, utc_now
 from agora.tasks.store import TaskStore
@@ -69,6 +69,12 @@ from .runtime import (
     RuntimeCommand,
     RuntimeInterrupted,
     RuntimeResult,
+    resolve_runtime_command,
+)
+from .runtime_capabilities import collect_native_runtime_capabilities
+from .runtime_preflight import (
+    derive_pinned_runtime_preflight,
+    recheck_pinned_runtime_preflight,
 )
 from .store import (
     OrchestrationConflictError,
@@ -91,6 +97,11 @@ class TaskOrchestrationService:
         runner: ReadOnlyCliRunner | None = None,
         process_inspector: Callable[[int], ProcessState] = inspect_process,
         revision_resolver: Callable[[Path, str], RepositoryRevision] | None = None,
+        capability_collector: Callable[
+            [dict[str, RuntimeCommand]],
+            Awaitable[NativeRuntimeCapabilityObservation],
+        ] = collect_native_runtime_capabilities,
+        preflight_rechecker: Callable[..., None] = recheck_pinned_runtime_preflight,
         methodology: MethodologyDefinition = FOUNDATION_METHODOLOGY,
         timeout_seconds: int = 600,
     ):
@@ -104,6 +115,8 @@ class TaskOrchestrationService:
                 root, repository_id=repository_id
             )
         )
+        self.capability_collector = capability_collector
+        self.preflight_rechecker = preflight_rechecker
         self.methodology = methodology
         self.timeout_seconds = min(max(timeout_seconds, 1), 7200)
         self.store = OrchestrationStore(tasks)
@@ -461,6 +474,16 @@ class TaskOrchestrationService:
         )
         if not routing_policy.dispatchable:
             raise OrchestrationConflictError(routing_policy.blockers[0])
+        capability_observation = await self.capability_collector(self.runtimes)
+        runtime_preflight = derive_pinned_runtime_preflight(
+            observation=capability_observation,
+            runtimes=self.runtimes,
+            route=route,
+            routing_policy=routing_policy,
+            run_id=run_id,
+        )
+        if not runtime_preflight.allowed:
+            raise OrchestrationConflictError(runtime_preflight.blockers[0])
         definition = build_protocol_run_definition(
             task=task,
             contract=contract,
@@ -470,6 +493,7 @@ class TaskOrchestrationService:
             prior_artifacts=prior,
             decisions=self.store.latest_decisions(status.plan.plan_id),
             routing_policy=routing_policy,
+            runtime_preflight=runtime_preflight,
             generated_at=utc_now(),
             timeout_seconds=self.timeout_seconds,
             max_output_bytes=OUTPUT_LIMIT,
@@ -488,6 +512,7 @@ class TaskOrchestrationService:
             route=route,
             contract=contract,
             routing_policy=routing_policy,
+            runtime_preflight=runtime_preflight,
         )
         try:
             self.control_plane.configure_gate(
@@ -545,7 +570,26 @@ class TaskOrchestrationService:
         async def attach_pid(pid: int) -> None:
             self.store.attach_pid(run_id, pid)
 
+        def before_spawn(
+            checked_runtime: RuntimeCommand,
+            resolved_command: list[str],
+        ) -> None:
+            self.preflight_rechecker(
+                decision=runtime_preflight,
+                observation=capability_observation,
+                runtimes=self.runtimes,
+                runtime=checked_runtime,
+                resolved_command=resolved_command,
+            )
+
         try:
+            # Keep a service-boundary check for injected/custom Runners. The
+            # default Runner invokes the same callback again after its own
+            # command resolution, immediately before process creation.
+            before_spawn(
+                runtime,
+                resolve_runtime_command(runtime.build(definition.prompt)),
+            )
             result = await self.runner.run(
                 runtime,
                 definition.prompt,
@@ -555,6 +599,7 @@ class TaskOrchestrationService:
                 stage_key=stage.stage_key,
                 timeout_seconds=self.timeout_seconds,
                 on_process=attach_pid,
+                before_spawn=before_spawn,
             )
         except RuntimeInterrupted as exc:
             result = RuntimeResult(

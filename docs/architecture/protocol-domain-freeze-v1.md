@@ -42,6 +42,7 @@ the Pydantic models in `backend/agora/protocol/`:
 - `stage-inventory.schema.json`
 - `provider-usage-observation.schema.json`
 - `native-runtime-capability-observation.schema.json`
+- `pinned-runtime-preflight-decision.schema.json`
 
 `scripts/export_protocol_schemas.py --check` fails when a checked-in schema
 does not match its executable model.
@@ -135,6 +136,17 @@ without rewriting historical ledger entries. Capability observations bind
 local installation/version probes and declared model/capability provenance but
 carry `routing_authority: false`; they cannot select a runtime/model or alter
 the sealed route.
+
+Before native process creation, a fresh hash-sealed pinned-runtime preflight may
+only allow or block that already sealed route. It binds the exact capability
+observation, command template and resolved launch target, and reviewed routing
+policy hashes. Collection occurs outside SQLite write transactions; an
+immediate Runner recheck rejects expiry or changed launch bindings before
+spawn. The preflight cannot substitute a runtime/model or treat declarations
+as provider serviceability.
+
+The resolved launch binding hashes the no-shell launcher argv prefix, not the
+contents of the executable image at that path.
 
 ### Gate
 

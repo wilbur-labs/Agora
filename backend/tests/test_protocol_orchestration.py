@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -216,7 +217,10 @@ def _system(
         tasks,
         projects,
         {
-            name: RuntimeCommand(adapter=name, command_template=("fake", "{prompt}"))
+            name: RuntimeCommand(
+                adapter=name,
+                command_template=(sys.executable, "{prompt}"),
+            )
             for name in ("codex", "claude", "kiro")
         },
         runner=runner,
@@ -291,6 +295,33 @@ def test_schema_adds_budget_amendment_ledger_without_rewriting_existing_data(
     }
 
 
+def test_schema_adds_nullable_runtime_preflight_without_rewriting_existing_data(
+    tmp_path,
+):
+    tasks, service, _, task = _system(tmp_path)
+    before = service.status(task.task_id)
+    with tasks._transaction() as db:
+        db.execute(
+            "ALTER TABLE orchestration_runs DROP COLUMN runtime_preflight_payload"
+        )
+
+    reopened = TaskStore(tasks.db_path)
+    recovered_service = TaskOrchestrationService(
+        reopened,
+        service.projects,
+        service.runtimes,
+        runner=service.runner,
+        revision_resolver=lambda _root, _repository_id: REVISION,
+    )
+
+    with reopened._connect() as db:
+        columns = {
+            row[1] for row in db.execute("PRAGMA table_info(orchestration_runs)")
+        }
+    assert "runtime_preflight_payload" in columns
+    assert recovered_service.status(task.task_id) == before
+
+
 @pytest.mark.asyncio
 async def test_protocol_v1_runs_all_stages_through_authoritative_gates(tmp_path):
     _, service, runner, task = _system(tmp_path)
@@ -306,6 +337,8 @@ async def test_protocol_v1_runs_all_stages_through_authoritative_gates(tmp_path)
     assert [stage.state for stage in status.stages] == [StageState.PASSED] * 3
     assert [run.state for run in status.runs] == [RunState.PASSED] * 3
     assert all(run.routing_policy is not None for run in status.runs)
+    assert all(run.runtime_preflight is not None for run in status.runs)
+    assert all(run.runtime_preflight.allowed for run in status.runs)
     assert len(status.usage) == 6
     assert all("SEALED CONTEXT PACK" in prompt for prompt in runner.prompts)
     assert all(len(prompt.encode("utf-8")) <= 24 * 1024 for prompt in runner.prompts)
@@ -324,6 +357,21 @@ async def test_protocol_v1_runs_all_stages_through_authoritative_gates(tmp_path)
     assert any(
         item.source_ref
         == f"routing-policy:{first_policy.decision_id}:{first_policy.content_sha256}"
+        for item in runner.contexts[0].policies
+    )
+    first_preflight = status.runs[0].runtime_preflight
+    assert first_preflight.routing_policy_decision_sha256 == (
+        first_policy.content_sha256
+    )
+    assert first_preflight.pinned_runtime == "codex"
+    assert first_preflight.runtime_substitution_allowed is False
+    assert first_preflight.provider_serviceability_verified is False
+    assert any(
+        item.source_ref
+        == (
+            f"runtime-preflight:{first_preflight.decision_id}:"
+            f"{first_preflight.content_sha256}"
+        )
         for item in runner.contexts[0].policies
     )
     assert [item.artifact_id for item in runner.contexts[1].input_artifacts] == [
@@ -548,6 +596,102 @@ async def test_persisted_routing_policy_hash_tamper_fails_closed(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_persisted_runtime_preflight_hash_tamper_fails_closed(tmp_path):
+    tasks, service, _, task = _system(tmp_path)
+    run = await service.run_next(task.task_id, protocol_v1=True)
+    with tasks._transaction() as db:
+        row = db.execute(
+            "SELECT runtime_preflight_payload FROM orchestration_runs WHERE run_id = ?",
+            (run.run_id,),
+        ).fetchone()
+        payload = json.loads(row["runtime_preflight_payload"])
+        payload["rationale"][0] = "tampered preflight rationale"
+        db.execute(
+            "UPDATE orchestration_runs SET runtime_preflight_payload = ? "
+            "WHERE run_id = ?",
+            (json.dumps(payload), run.run_id),
+        )
+
+    with pytest.raises(ValidationError, match="content_sha256"):
+        service.status(task.task_id)
+
+
+@pytest.mark.asyncio
+async def test_resealed_runtime_preflight_run_forgery_fails_closed(tmp_path):
+    tasks, service, _, task = _system(tmp_path)
+    run = await service.run_next(task.task_id, protocol_v1=True)
+    payload = run.runtime_preflight.model_dump(mode="json")
+    payload["run_id"] = "forged_run"
+    forged = seal_model_payload(type(run.runtime_preflight), payload)
+    with tasks._transaction() as db:
+        db.execute(
+            "UPDATE orchestration_runs SET runtime_preflight_payload = ? "
+            "WHERE run_id = ?",
+            (json.dumps(forged), run.run_id),
+        )
+
+    with pytest.raises(
+        OrchestrationConflictError,
+        match="preflight does not match its Run bindings",
+    ):
+        service.status(task.task_id)
+
+
+@pytest.mark.asyncio
+async def test_missing_pinned_runtime_blocks_before_run_claim(tmp_path):
+    _, service, runner, task = _system(tmp_path)
+    service.runtimes["codex"] = RuntimeCommand(
+        adapter="codex",
+        command_template=("agora-preflight-missing-runtime", "{prompt}"),
+    )
+
+    with pytest.raises(
+        OrchestrationConflictError,
+        match="unavailable or uninspectable",
+    ):
+        await service.run_next(task.task_id, protocol_v1=True)
+
+    assert runner.prompts == []
+    assert service.status(task.task_id).runs == []
+
+
+@pytest.mark.asyncio
+async def test_command_change_after_claim_blocks_immediate_spawn_and_settles_zero(
+    tmp_path,
+    monkeypatch,
+):
+    _, service, runner, task = _system(tmp_path)
+    original_claim = service.store.claim_current_stage
+
+    def mutate_command_after_claim(*args, **kwargs):
+        run = original_claim(*args, **kwargs)
+        service.runtimes["codex"] = RuntimeCommand(
+            adapter="codex",
+            command_template=(sys.executable, "-I", "{prompt}"),
+        )
+        return run
+
+    monkeypatch.setattr(
+        service.store,
+        "claim_current_stage",
+        mutate_command_after_claim,
+    )
+    run = await service.run_next(task.task_id, protocol_v1=True)
+
+    assert runner.prompts == []
+    assert run.state == RunState.FAILED
+    assert run.pid is None
+    assert run.token_used == 0
+    assert run.token_measurement == Measurement.EXACT
+    assert run.cost_used_usd == 0.0
+    assert run.cost_measurement == Measurement.EXACT
+    assert run.runtime_preflight is not None
+    assert run.runtime_preflight.allowed is True
+    assert run.usage_observation.source == "process_not_started"
+    assert "preflight bindings changed" in run.error_message
+
+
+@pytest.mark.asyncio
 async def test_explicit_task_approval_completes_frozen_lifecycle_idempotently(
     tmp_path,
 ):
@@ -589,7 +733,7 @@ async def test_unified_projection_reports_formal_progress_usage_and_human_action
 
     projection = service.unified_status(task.task_id)
 
-    assert projection.schema_version == "8.0"
+    assert projection.schema_version == "9.0"
     assert projection.task.task_id == task.task_id
     assert projection.task.state == TaskState.REQUIREMENTS
     assert projection.task_state_source == "control_plane"
@@ -914,7 +1058,7 @@ async def test_cli_exposes_unified_projection_without_changing_legacy_status(
         ["status", task.task_id, "--protocol-v1", "--json", "--limit", "1"]
     ) == 0
     unified = json.loads(capsys.readouterr().out)
-    assert unified["schema_version"] == "8.0"
+    assert unified["schema_version"] == "9.0"
     assert unified["progress"]["source"] == "control_plane_stage_inventory"
     assert unified["progress"]["inventory_complete"] is True
     assert unified["task_state"] == "active"
@@ -1218,7 +1362,7 @@ async def test_versioned_budget_amendment_restores_retry_without_reallocating_st
     assert service.store.require_plan(task.task_id).version == after_status.plan.version
 
     projection = service.unified_status(task.task_id)
-    assert projection.schema_version == "8.0"
+    assert projection.schema_version == "9.0"
     assert projection.budget_amendments == [amendment]
     assert projection.collection_totals["budget_amendments"] == 1
     assert projection.collection_pages["budget_amendments"].total == 1

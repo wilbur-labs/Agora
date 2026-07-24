@@ -75,6 +75,11 @@ that policy hash, but it is not fresh capability discovery and cannot satisfy,
 override, or repair the dispatch policy. The existing pinned policy continues
 to derive routing from checked-in facts in the Run-claim transaction.
 
+The subsequent `PinnedRuntimePreflightDecision@1.0` may consume one fresh
+observation only to allow or block the runtime already selected by that route.
+It does not feed capability facts into route selection; see
+`pinned-runtime-preflight-v1.md`.
+
 ## Read-only CLI boundary
 
 `agora task capabilities` emits the checked and sealed JSON contract directly.
@@ -85,7 +90,8 @@ or bump the unified Task projection schema.
 ## Deferred boundaries
 
 Live provider/model catalog discovery, authentication or serviceability probes,
-dynamic runtime/model substitution, feeding observations into routing, policy
-migration, authenticated HTTP exposure, historical observation persistence,
+dynamic runtime/model substitution, capability-driven route selection, policy
+migration, authenticated HTTP exposure, standalone historical observation
+persistence,
 the missing authoritative AI-DLC graph, parallel/DAG routing, and Task
 Workbench UI remain separate reviewed increments.

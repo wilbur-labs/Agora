@@ -29,6 +29,7 @@ project/repository, ref, commit, Stage, and the contract's Evidence requirements
 
 ```text
 pinned Task Contract + current Git revision + formal prior Artifacts
+    -> fresh pinned-runtime observation and allow/block preflight
     -> bounded sealed Context Pack
     -> operational Run reservation
     -> ControlPlaneStore.start_protocol_run
@@ -63,6 +64,13 @@ completed, blocked, failed, or cancelled. The provisional Plan advances only
 after it receives a completed authoritative Stage receipt. This projection
 exists temporarily to preserve the reviewed Token reservation/settlement ledger
 and existing CLI status while the unified Task projection is still missing.
+
+The native capability observation is collected outside the operational Run
+claim transaction. Its sealed preflight decision is included in the Context
+Pack and persisted with the Run. After formal Run start, the Runner rechecks
+the exact observation, registry, command, resolved launch target, and policy
+hashes immediately before process creation. Expiry or drift fails before spawn
+and settles exact-zero process-not-started usage; no alternate runtime is tried.
 
 ## Recovery
 

@@ -354,6 +354,169 @@ class NativeRuntimeCapabilityObservation(HashSealedModel):
         return self
 
 
+class PinnedRuntimePreflightCheck(ProtocolModel):
+    """One deterministic allow/block check for an already selected runtime."""
+
+    check: Literal[
+        "route_binding",
+        "observation_freshness",
+        "observation_integrity",
+        "runtime_command_binding",
+        "runtime_installation",
+        "capability_declaration_binding",
+    ]
+    satisfied: bool
+    detail: Annotated[str, Field(min_length=1, max_length=1000)]
+
+
+class PinnedRuntimePreflightDecision(HashSealedModel):
+    """Fresh native preflight for one pinned route without route substitution."""
+
+    schema_version: Literal["1.0"] = "1.0"
+    decision_id: StableId
+    evaluated_at: AwareDatetime
+    valid_until: AwareDatetime
+    max_observation_age_seconds: Literal[60] = 60
+    task_id: StableId
+    project_id: StableId
+    run_id: StableId
+    inventory_id: StableId
+    inventory_sha256: Sha256Hex
+    stage_key: StableId
+    role: StableId
+    pinned_runtime: StableId
+    routing_policy_decision_id: StableId
+    routing_policy_decision_sha256: Sha256Hex
+    routing_policy_declaration_sha256: Sha256Hex
+    capability_observation_sha256: Sha256Hex
+    capability_observation: NativeRuntimeCapabilityObservation
+    observation_collected_at: AwareDatetime
+    runtime_registry_sha256: Sha256Hex
+    runtime_command_sha256: Sha256Hex
+    resolved_runtime_command_sha256: Sha256Hex | None = None
+    capability_declaration_id: StableId
+    capability_declaration_version: Annotated[str, Field(pattern=r"^\d+\.\d+$")]
+    capability_declaration_sha256: Sha256Hex
+    installation_status: Literal["installed", "not_found", "uninspectable"]
+    version: Annotated[str, Field(min_length=1, max_length=200)] | None = None
+    version_status: Literal["exact", "unavailable"]
+    model_availability: Literal["declared", "unavailable"]
+    declared_models: list[RuntimeModelName] = Field(default_factory=list, max_length=50)
+    declared_capabilities: list[StableId] = Field(default_factory=list, max_length=50)
+    checks: list[PinnedRuntimePreflightCheck] = Field(min_length=6, max_length=6)
+    allowed: bool
+    blockers: list[Annotated[str, Field(min_length=1, max_length=1000)]] = Field(
+        default_factory=list,
+        max_length=6,
+    )
+    rationale: list[Annotated[str, Field(min_length=1, max_length=1000)]] = Field(
+        min_length=3,
+        max_length=10,
+    )
+    route_selection_authority: Literal[False] = False
+    runtime_substitution_allowed: Literal[False] = False
+    provider_serviceability_verified: Literal[False] = False
+
+    @model_validator(mode="after")
+    def validate_preflight_decision(self):
+        expected_checks = {
+            "route_binding",
+            "observation_freshness",
+            "observation_integrity",
+            "runtime_command_binding",
+            "runtime_installation",
+            "capability_declaration_binding",
+        }
+        check_names = [item.check for item in self.checks]
+        if set(check_names) != expected_checks or len(check_names) != len(
+            expected_checks
+        ):
+            raise ValueError("preflight decision must contain every check exactly once")
+        if self.checks != sorted(self.checks, key=lambda item: item.check):
+            raise ValueError("preflight checks must be canonically ordered")
+        if self.valid_until <= self.observation_collected_at:
+            raise ValueError("preflight validity must follow observation collection")
+        if (
+            self.valid_until - self.observation_collected_at
+        ).total_seconds() != self.max_observation_age_seconds:
+            raise ValueError("preflight validity must match its maximum observation age")
+        if self.allowed != all(item.satisfied for item in self.checks):
+            raise ValueError("preflight allowed result must match all checks")
+        if self.allowed and self.blockers:
+            raise ValueError("allowed preflight may not carry blockers")
+        if not self.allowed and not self.blockers:
+            raise ValueError("blocked preflight requires at least one blocker")
+        if self.version_status == "exact" and self.version is None:
+            raise ValueError("exact preflight version requires a value")
+        if self.version_status == "unavailable" and self.version is not None:
+            raise ValueError("unavailable preflight version may not carry a value")
+        if self.model_availability == "declared" and not self.declared_models:
+            raise ValueError("declared model availability requires models")
+        if self.model_availability == "unavailable" and self.declared_models:
+            raise ValueError("unavailable model availability may not carry models")
+        if self.declared_models != sorted(set(self.declared_models)):
+            raise ValueError("declared models must be unique and canonically ordered")
+        if self.declared_capabilities != sorted(set(self.declared_capabilities)):
+            raise ValueError("declared capabilities must be unique and canonically ordered")
+        observed_adapter = next(
+            (
+                item
+                for item in self.capability_observation.adapters
+                if item.adapter == self.pinned_runtime
+            ),
+            None,
+        )
+        if (
+            self.capability_observation.content_sha256
+            != self.capability_observation_sha256
+            or self.capability_observation.collected_at
+            != self.observation_collected_at
+            or self.capability_observation.runtime_registry_sha256
+            != self.runtime_registry_sha256
+            or self.capability_observation.capability_declaration_id
+            != self.capability_declaration_id
+            or self.capability_observation.capability_declaration_version
+            != self.capability_declaration_version
+            or self.capability_observation.capability_declaration_sha256
+            != self.capability_declaration_sha256
+        ):
+            raise ValueError(
+                "preflight does not match its sealed capability observation"
+            )
+        if observed_adapter is None:
+            if (
+                self.allowed
+                or self.installation_status != "uninspectable"
+                or self.resolved_runtime_command_sha256 is not None
+                or self.version is not None
+                or self.version_status != "unavailable"
+                or self.model_availability != "unavailable"
+                or self.declared_models
+                or self.declared_capabilities
+            ):
+                raise ValueError(
+                    "missing pinned adapter requires a blocked unavailable projection"
+                )
+            return self
+        if (
+            observed_adapter.runtime_command_sha256
+            != self.runtime_command_sha256
+            or observed_adapter.resolved_runtime_command_sha256
+            != self.resolved_runtime_command_sha256
+            or observed_adapter.installation_status != self.installation_status
+            or observed_adapter.version != self.version
+            or observed_adapter.version_status != self.version_status
+            or observed_adapter.model_availability != self.model_availability
+            or observed_adapter.declared_models != self.declared_models
+            or observed_adapter.declared_capabilities
+            != self.declared_capabilities
+        ):
+            raise ValueError(
+                "preflight observation projection does not match its sealed observation"
+            )
+        return self
+
+
 class StageInventoryContractBinding(ProtocolModel):
     contract_id: StableId
     schema_version: ProtocolVersion

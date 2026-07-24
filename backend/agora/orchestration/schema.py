@@ -76,6 +76,7 @@ def initialize_orchestration_schema(db: sqlite3.Connection) -> None:
             cost_measurement TEXT NOT NULL,
             attempt INTEGER NOT NULL,
             routing_policy_payload TEXT,
+            runtime_preflight_payload TEXT,
             usage_observation_payload TEXT,
             started_at TEXT NOT NULL,
             finished_at TEXT
@@ -141,6 +142,11 @@ def initialize_orchestration_schema(db: sqlite3.Connection) -> None:
         db.execute(
             "ALTER TABLE orchestration_runs "
             "ADD COLUMN routing_policy_payload TEXT"
+        )
+    if "runtime_preflight_payload" not in columns:
+        db.execute(
+            "ALTER TABLE orchestration_runs "
+            "ADD COLUMN runtime_preflight_payload TEXT"
         )
     if "usage_observation_payload" not in columns:
         db.execute(

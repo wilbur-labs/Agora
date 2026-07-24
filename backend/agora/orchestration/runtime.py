@@ -243,9 +243,13 @@ class ReadOnlyCliRunner:
         stage_key: str,
         timeout_seconds: int,
         on_process: Callable[[int], Awaitable[None]],
+        before_spawn: Callable[[RuntimeCommand, list[str]], None] | None = None,
     ) -> RuntimeResult:
+        """Run directly; a pre-spawn rejection propagates before child creation."""
         try:
             command = resolve_runtime_command(runtime.build(prompt))
+            if before_spawn is not None:
+                before_spawn(runtime, command)
             proc = await asyncio.create_subprocess_exec(
                 *command,
                 cwd=str(cwd),

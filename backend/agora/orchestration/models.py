@@ -18,6 +18,7 @@ from agora.protocol.models import (
     ArtifactVersionRef,
     Evidence,
     HashSealedModel,
+    PinnedRuntimePreflightDecision,
     ProcessStatus,
     ProviderUsageObservation,
     ProtocolModel,
@@ -416,6 +417,10 @@ class OrchestrationRun(StrictModel):
         default=None,
         exclude_if=lambda value: value is None,
     )
+    runtime_preflight: PinnedRuntimePreflightDecision | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
     usage_observation: ProviderUsageObservation | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
@@ -612,7 +617,7 @@ class UnifiedBudgetProjection(StrictModel):
 
 
 class UnifiedTaskProjection(StrictModel):
-    schema_version: Literal["8.0"] = "8.0"
+    schema_version: Literal["9.0"] = "9.0"
     snapshot_at: str
     task: TaskManifest
     task_state: TaskStatus | None

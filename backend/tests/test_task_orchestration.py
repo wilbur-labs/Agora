@@ -96,7 +96,10 @@ def _system(tmp_path, results=None, *, tokens=30_000, process_inspector=inspect_
     projects = ProjectRegistry(config, project_root=tmp_path)
     tasks = TaskStore(tmp_path / "agora.db")
     runtimes = {
-        name: RuntimeCommand(adapter=name, command_template=("fake", "{prompt}"))
+        name: RuntimeCommand(
+            adapter=name,
+            command_template=(sys.executable, "{prompt}"),
+        )
         for name in ("codex", "claude", "kiro")
     }
     runner = FakeRunner(results or [RuntimeResult(0, PASS, "") for _ in range(3)])
@@ -402,6 +405,47 @@ async def test_post_stop_capture_drain_is_time_bounded(monkeypatch):
 
     assert captured is None
     assert never_finishes.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_runner_executes_pre_spawn_recheck_before_process_creation(
+    tmp_path,
+    monkeypatch,
+):
+    spawned = False
+    checked: list[list[str]] = []
+
+    async def forbidden_spawn(*args, **kwargs):
+        nonlocal spawned
+        spawned = True
+        raise AssertionError("process creation must follow the pre-spawn check")
+
+    def reject(_runtime, resolved_command):
+        checked.append(resolved_command)
+        raise RuntimeError("preflight changed")
+
+    async def unused_pid_callback(_pid):
+        raise AssertionError("PID callback must not run before process creation")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", forbidden_spawn)
+    with pytest.raises(RuntimeError, match="preflight changed"):
+        await ReadOnlyCliRunner().run(
+            RuntimeCommand(
+                adapter="python",
+                command_template=(sys.executable, "{prompt}"),
+            ),
+            "do not spawn",
+            cwd=tmp_path,
+            task_id="task_preflight",
+            run_id="run_preflight",
+            stage_key="test",
+            timeout_seconds=10,
+            on_process=unused_pid_callback,
+            before_spawn=reject,
+        )
+
+    assert checked
+    assert spawned is False
 
 
 @pytest.mark.asyncio
