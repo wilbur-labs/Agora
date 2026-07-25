@@ -17,6 +17,7 @@ agora task next TASK_ID --protocol-v1
 agora task run TASK_ID --protocol-v1
 agora task retry TASK_ID STAGE_KEY --protocol-v1
 agora task resume TASK_ID
+agora task preflight TASK_ID
 ```
 
 A formal Run requires a pinned concrete Task contract whose persisted canonical
@@ -71,6 +72,14 @@ Pack and persisted with the Run. After formal Run start, the Runner rechecks
 the exact observation, registry, command, resolved launch target, and policy
 hashes immediately before process creation. Expiry or drift fails before spawn
 and settles exact-zero process-not-started usage; no alternate runtime is tried.
+
+The Task-scoped `preflight` command is a read-only preview over an already
+initialized formal route. It returns the exact sealed decision used by the
+dispatch derivation together with explicit no-claim/no-persistence/no-spawn
+markers and bounded pinned-route remediation. It does not call `resume` or
+initialize missing state, and its synthetic preview Run identity is never
+persisted or supplied to the claim path. Real dispatch always derives a fresh
+decision and rechecks it at claim and immediately before spawn.
 
 ## Recovery
 

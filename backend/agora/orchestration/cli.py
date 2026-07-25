@@ -58,6 +58,12 @@ def parser() -> argparse.ArgumentParser:
         help="Observe local native adapter versions and declared capabilities as JSON",
     )
 
+    preflight = commands.add_parser(
+        "preflight",
+        help="Preview the pinned runtime allow/block decision without claiming a Run",
+    )
+    preflight.add_argument("task_id")
+
     start = commands.add_parser("start", help="Create a Task and attach the provisional method")
     start.add_argument("title", nargs="?")
     start.add_argument("--description", default="")
@@ -232,6 +238,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             _print_unified_status(service.unified_status(args.task_id))
             return 0
+        if args.command == "preflight":
+            preview = asyncio.run(
+                service.preview_runtime_preflight(args.task_id)
+            )
+            print(
+                json.dumps(
+                    preview.model_dump(mode="json"),
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return 0 if preview.decision.allowed else 2
         if args.command == "next":
             run = asyncio.run(
                 service.run_next(args.task_id, protocol_v1=args.protocol_v1)

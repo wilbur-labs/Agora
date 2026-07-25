@@ -260,6 +260,51 @@ def derive_pinned_runtime_preflight(
     )
 
 
+def runtime_preflight_remediation(
+    decision: PinnedRuntimePreflightDecision,
+) -> list[str]:
+    """Explain bounded repair for the pinned route without suggesting substitution."""
+
+    if decision.allowed:
+        return [
+            (
+                "No local launch-binding remediation is required. Provider "
+                "authentication and serviceability remain unverified."
+            )
+        ]
+    remediation_by_check = {
+        "route_binding": (
+            "Reconcile the authoritative Task and Stage route with `agora task "
+            "resume`, then rerun this preview."
+        ),
+        "observation_freshness": (
+            "Rerun this preview to collect a fresh native capability observation."
+        ),
+        "observation_integrity": (
+            "Restore the reviewed routing-policy declaration and complete pinned "
+            "adapter observation, then rerun this preview."
+        ),
+        "runtime_command_binding": (
+            "Restore the configured command and audited launcher binding for the "
+            "already pinned runtime, then rerun this preview."
+        ),
+        "runtime_installation": (
+            "Install or repair the already pinned runtime executable or launcher. "
+            "Changing runtimes requires a separate reviewed route or methodology "
+            "change."
+        ),
+        "capability_declaration_binding": (
+            "Restore the reviewed capability declaration for the already pinned "
+            "runtime. This preview cannot select a substitute."
+        ),
+    }
+    return [
+        remediation_by_check[item.check]
+        for item in decision.checks
+        if not item.satisfied
+    ]
+
+
 def recheck_pinned_runtime_preflight(
     *,
     decision: PinnedRuntimePreflightDecision,

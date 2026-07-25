@@ -46,8 +46,10 @@ from .models import (
     BudgetAmendment,
     Measurement,
     OrchestrationRun,
+    OrchestrationStage,
     PlanState,
     RunState,
+    RuntimePreflightPreview,
     SemanticResult,
     StageState,
     TaskOrchestrationStatus,
@@ -75,6 +77,7 @@ from .runtime_capabilities import collect_native_runtime_capabilities
 from .runtime_preflight import (
     derive_pinned_runtime_preflight,
     recheck_pinned_runtime_preflight,
+    runtime_preflight_remediation,
 )
 from .store import (
     OrchestrationConflictError,
@@ -387,76 +390,9 @@ class TaskOrchestrationService:
     async def run_next_protocol(self, task_id: str) -> OrchestrationRun:
         """Dispatch one explicit Context/Handoff v1 Run through the formal Gate."""
 
-        task = self.tasks.get(task_id)
-        if task is None:
-            raise OrchestrationConflictError("Task not found")
-        contract_payload = task.metadata.get("task_contract")
-        if contract_payload is None:
-            raise OrchestrationValidationError(
-                "Formal protocol orchestration requires a pinned concrete Task contract"
-            )
-        contract = TaskContract.model_validate(contract_payload)
-        if task.metadata.get("task_contract_sha256") != contract_sha256(contract):
-            raise OrchestrationValidationError(
-                "Pinned Task contract hash does not match its content"
-            )
-        self._ensure_grouped_stage_inventory(task_id, actor="orchestrator")
-        route = self._ensure_authoritative_stage_route(
-            task_id,
-            actor="orchestrator",
+        task, contract, route, status, stage, runtime = (
+            self._protocol_dispatch_inputs(task_id, repair=True)
         )
-        if route is None:
-            raise OrchestrationConflictError(
-                "Every authoritative inventory Stage already completed"
-            )
-        status = self.store.status(task_id)
-        if status.plan.state != PlanState.ACTIVE:
-            raise OrchestrationConflictError(f"Plan is {status.plan.state.value}, not active")
-        if status.plan.current_stage_key != route.stage_key:
-            raise OrchestrationConflictError(
-                "Compatibility Plan route does not match the authoritative Control "
-                "Plane route; run task resume"
-            )
-        stage = next(
-            (item for item in status.stages if item.stage_key == route.stage_key),
-            None,
-        )
-        if stage is None or stage.state != StageState.PENDING:
-            raise OrchestrationConflictError("Current stage is not ready to run")
-        if (
-            stage.adapter != route.runtime
-            or stage.role != route.role
-            or stage.title != route.title
-        ):
-            raise OrchestrationConflictError(
-                "Compatibility Stage metadata does not match the authoritative route"
-            )
-        if route.stage_status != StageStatus.READY:
-            status_value = route.stage_status.value if route.stage_status else "unconfigured"
-            raise OrchestrationConflictError(
-                f"Authoritative routed Stage is {status_value}, not ready"
-            )
-        frozen_task = self.control_plane.get_task_state(task_id)
-        lifecycle = self.control_plane.get_task_lifecycle_decision(task_id)
-        if frozen_task is None or lifecycle is None:
-            raise OrchestrationConflictError(
-                "Frozen Task lifecycle is unavailable; run task resume"
-            )
-        if frozen_task.status != lifecycle.target_status:
-            raise OrchestrationConflictError(
-                "Frozen Task lifecycle drifted from authoritative facts; run task resume"
-            )
-        if lifecycle.target_status not in {TaskStatus.READY, TaskStatus.ACTIVE}:
-            raise OrchestrationConflictError(
-                f"Frozen Task lifecycle is {lifecycle.target_status.value}, not dispatchable"
-            )
-        if not route.runnable:
-            raise OrchestrationConflictError(
-                "Authoritative Stage route is not dispatchable; run task resume"
-            )
-        runtime = self.runtimes.get(route.runtime)
-        if runtime is None:
-            raise OrchestrationConflictError(f"Runtime is unavailable: {route.runtime}")
         project = self.projects.get(task.project_id)
         revision = self.revision_resolver(project.root, task.project_id)
         projection = self.control_plane.projection(task_id)
@@ -674,6 +610,41 @@ class TaskOrchestrationService:
             cost_used_usd=observation.cost_usd,
             cost_measurement=Measurement(observation.cost_measurement),
             usage_observation=observation,
+        )
+
+    async def preview_runtime_preflight(
+        self,
+        task_id: str,
+    ) -> RuntimePreflightPreview:
+        """Collect and explain one exact preflight without claiming or spawning."""
+
+        task, contract, route, _, _, _ = self._protocol_dispatch_inputs(
+            task_id,
+            repair=False,
+        )
+        run_id = self.store.new_run_id().replace("orun_", "preview_", 1)
+        routing_policy = self.store.preview_routing_policy(
+            task_id,
+            route=route,
+            contract=contract,
+            run_id=run_id,
+        )
+        if not routing_policy.dispatchable:
+            raise OrchestrationConflictError(routing_policy.blockers[0])
+        capability_observation = await self.capability_collector(self.runtimes)
+        decision = derive_pinned_runtime_preflight(
+            observation=capability_observation,
+            runtimes=self.runtimes,
+            route=route,
+            routing_policy=routing_policy,
+            run_id=run_id,
+        )
+        return RuntimePreflightPreview(
+            generated_at=utc_now(),
+            task_id=task.task_id,
+            project_id=task.project_id,
+            decision=decision,
+            remediation=runtime_preflight_remediation(decision),
         )
 
     async def run_until_blocked(
@@ -1190,6 +1161,107 @@ or unreviewable assumptions must be explicit. Process success alone is not seman
             seal_model_payload(StageInventory, payload)
         )
         return self.control_plane.ensure_stage_inventory(inventory, actor=actor)
+
+    def _protocol_dispatch_inputs(
+        self,
+        task_id: str,
+        *,
+        repair: bool,
+    ) -> tuple[
+        TaskManifest,
+        TaskContract,
+        StageRouteDecision,
+        TaskOrchestrationStatus,
+        OrchestrationStage,
+        RuntimeCommand,
+    ]:
+        """Load one dispatchable sealed route, optionally repairing durable state."""
+
+        task = self.tasks.get(task_id)
+        if task is None:
+            raise OrchestrationConflictError("Task not found")
+        contract_payload = task.metadata.get("task_contract")
+        if contract_payload is None:
+            raise OrchestrationValidationError(
+                "Formal protocol orchestration requires a pinned concrete Task contract"
+            )
+        contract = TaskContract.model_validate(contract_payload)
+        if task.metadata.get("task_contract_sha256") != contract_sha256(contract):
+            raise OrchestrationValidationError(
+                "Pinned Task contract hash does not match its content"
+            )
+        if repair:
+            self._ensure_grouped_stage_inventory(task_id, actor="orchestrator")
+            route = self._ensure_authoritative_stage_route(
+                task_id,
+                actor="orchestrator",
+            )
+        else:
+            if self.control_plane.get_stage_inventory(task_id) is None:
+                raise OrchestrationConflictError(
+                    "Authoritative Stage inventory is unavailable; run task resume"
+                )
+            route = self.control_plane.get_stage_route(task_id)
+        if route is None:
+            raise OrchestrationConflictError(
+                "Every authoritative inventory Stage already completed"
+            )
+        status = self.store.status(task_id)
+        if status.plan.state != PlanState.ACTIVE:
+            raise OrchestrationConflictError(
+                f"Plan is {status.plan.state.value}, not active"
+            )
+        if status.plan.current_stage_key != route.stage_key:
+            raise OrchestrationConflictError(
+                "Compatibility Plan route does not match the authoritative Control "
+                "Plane route; run task resume"
+            )
+        stage = next(
+            (item for item in status.stages if item.stage_key == route.stage_key),
+            None,
+        )
+        if stage is None or stage.state != StageState.PENDING:
+            raise OrchestrationConflictError("Current stage is not ready to run")
+        if (
+            stage.adapter != route.runtime
+            or stage.role != route.role
+            or stage.title != route.title
+        ):
+            raise OrchestrationConflictError(
+                "Compatibility Stage metadata does not match the authoritative route"
+            )
+        if route.stage_status != StageStatus.READY:
+            status_value = (
+                route.stage_status.value if route.stage_status else "unconfigured"
+            )
+            raise OrchestrationConflictError(
+                f"Authoritative routed Stage is {status_value}, not ready"
+            )
+        frozen_task = self.control_plane.get_task_state(task_id)
+        lifecycle = self.control_plane.get_task_lifecycle_decision(task_id)
+        if frozen_task is None or lifecycle is None:
+            raise OrchestrationConflictError(
+                "Frozen Task lifecycle is unavailable; run task resume"
+            )
+        if frozen_task.status != lifecycle.target_status:
+            raise OrchestrationConflictError(
+                "Frozen Task lifecycle drifted from authoritative facts; run task resume"
+            )
+        if lifecycle.target_status not in {TaskStatus.READY, TaskStatus.ACTIVE}:
+            raise OrchestrationConflictError(
+                f"Frozen Task lifecycle is {lifecycle.target_status.value}, "
+                "not dispatchable"
+            )
+        if not route.runnable:
+            raise OrchestrationConflictError(
+                "Authoritative Stage route is not dispatchable; run task resume"
+            )
+        runtime = self.runtimes.get(route.runtime)
+        if runtime is None:
+            raise OrchestrationConflictError(
+                f"Runtime is unavailable: {route.runtime}"
+            )
+        return task, contract, route, status, stage, runtime
 
     def _ensure_authoritative_stage_route(
         self,

@@ -15,8 +15,8 @@ Current recovery baseline (2026-07-22):
   reviewed. Frozen Task-state persistence, the grouped Stage inventory, and
   deterministic frozen Task-lifecycle derivation and authoritative linear Stage
   routing are the latest reviewed increments. The work-weighted program estimate
-  must now be recalculated against the grouped inventory before another
-  percentage is recorded.
+  has now been recalculated against the grouped inventory and current product
+  acceptance gaps; see the 2026-07-25 calibration below.
   The historical 11-stage label and milestone-count estimate below predate the
   current grouped stage correspondence and must be normalized before they are
   used as a current count.
@@ -92,6 +92,22 @@ Current recovery baseline (2026-07-22):
   process creation. It never substitutes a runtime/model or claims provider
   serviceability. Kiro and Claude Code both returned explicit final approval;
   the complete backend suite passed 506 tests with 18 deselected.
+- Latest reviewed increment: a read-only Task-scoped preview of that exact
+  pinned-runtime decision. `agora task preflight TASK_ID` revalidates the
+  already initialized sealed route and routing policy, collects one fresh
+  observation, and returns an explicit no-claim/no-persistence/no-spawn
+  projection with pinned-route remediation. It never initializes missing
+  Task/Stage state or substitutes a runtime/model. Kiro and Claude Code both
+  returned explicit final approval; the complete backend suite passed 514
+  tests with 18 deselected.
+- Current work-weighted transformation estimate (2026-07-25): approximately
+  75%, with a practical range of 72%-78%. The backend/control-plane path is
+  substantially implemented and independently reviewed, but the authoritative
+  full AI-DLC graph, real new-architecture three-runtime end-to-end acceptance,
+  consult/adopt semantics, dynamic runtime/model selection and authenticated
+  serviceability, parallel/DAG formal routing, and Task Workbench remain
+  incomplete. This supersedes the older roughly 70% checkpoint and is not a
+  milestone-count claim.
 
 ## 2026-07-22 — Native provider usage observation
 
@@ -317,6 +333,83 @@ sealed methodology graph. Live provider/model catalogs, authenticated
 serviceability probes, dynamic substitution, authenticated HTTP, the missing
 authoritative AI-DLC graph, parallel/DAG routing, and Task Workbench UI remain
 deferred.
+
+## 2026-07-25 - Task-scoped runtime preflight preview (reviewed)
+
+### Scope and implementation
+
+- [x] Added `agora task preflight TASK_ID` as a read-only JSON entry point over
+  an already initialized formal Task route.
+- [x] Added versioned `RuntimePreflightPreview@1.0`, containing the exact sealed
+  `PinnedRuntimePreflightDecision@1.0` plus literal `preview_only=true`,
+  `run_claimed=false`, `observation_persisted=false`, and
+  `runtime_spawned=false` markers.
+- [x] Reused the same dispatch-input validation, routing-policy preview,
+  capability collector, and preflight derivation as the real dispatch path.
+  Preview selects `repair=false`, so it cannot initialize an inventory,
+  activate a Stage, call `resume`, claim a Run, configure a Gate, persist an
+  observation, or spawn the Task runtime.
+- [x] Gave every preview a synthetic `preview_*` identity and enforced that
+  prefix in the read model in addition to Task/project scope bindings. Real
+  dispatch derives a different Run identity, policy, observation, and
+  preflight.
+- [x] Added deterministic remediation for all six preflight checks. Advice only
+  repairs the already pinned route, command, installation, observation, or
+  reviewed declaration; it never substitutes a runtime/model or claims
+  provider serviceability.
+- [x] Preserved policy ordering: a blocked routing policy stops before native
+  capability probing. A blocked preflight returns JSON with CLI exit 2; an
+  allowed informational preview returns exit 0.
+
+### Verification and review log
+
+- Initial preflight plus formal orchestration focused suite: 59 passed.
+- Expanded protocol freeze, Control Plane Run, Agent Adapter, capability,
+  usage, inventory, lifecycle, Stage routing, Task orchestration, and formal
+  orchestration suite: 236 passed.
+- Post-review focused suite: 64 passed.
+- Final system-Temp non-integration backend suite excluding the deferred
+  static-export Web UI test: 514 passed, 18 deselected, with the existing
+  Starlette/httpx warning and Windows Proactor cleanup warning.
+- Protocol Schema export/check, isolated `compileall`, `git diff --check`, and
+  `agora task preflight --help`: passed.
+- Direct regressions compare complete SQLite dumps before and after allowed,
+  blocked, stale-observation, policy-blocked, and missing-inventory previews;
+  they also verify no Runner prompt, no Run, no automatic repair, allowed and
+  blocked CLI exit semantics, Task-scope forgery rejection, and resealed
+  non-preview identity rejection.
+- Kiro protocol/methodology/reconciliation review returned `KIRO_APPROVE` with
+  no HIGH/MEDIUM findings. Its actionable LOW blocked-CLI exit coverage was
+  added; targeted confirmation returned `KIRO_FIX_APPROVE` with no remaining
+  actionable finding.
+- Independent Claude Code correctness/safety/regression review returned
+  `CLAUDE_APPROVE` with no HIGH/MEDIUM findings. Its LOW defense-in-depth and
+  adversarial-coverage notes produced the preview-identity guard,
+  policy-blocked-before-probe, stale observation, scope tamper, and resealed
+  identity regressions. Targeted confirmation returned `CLAUDE_FIX_APPROVE`
+  with no remaining actionable finding.
+- No frontend or authenticated HTTP contract changed; frontend validation is
+  not required. `.kiro/` and historical pytest temp directories remain
+  unrelated local artifacts and were not modified or staged.
+
+### Progress calibration and next safe action
+
+- Work-weighted transformation progress is now approximately 75%, with a
+  reasonable 72%-78% range. This is based on the checked-in backend/control
+  plane plus current acceptance gaps, not the obsolete historical stage count.
+- The root `data/agora.db` still contains the earlier compatibility demonstration
+  Task (one Task, one approved Plan, three compatibility Stages, and five Runs)
+  rather than a completed new-architecture formal acceptance Task. Source
+  implementation progress therefore must not be mistaken for end-to-end
+  product acceptance.
+- After committing and pushing this reviewed checkpoint, the next safe action
+  is to restore the audited pinned Codex launcher in the current PowerShell
+  environment and, with an explicit bounded provider-spend authorization,
+  execute one fresh concrete CLI-first formal Task through preflight, Run,
+  independent review, Gate, intervention/resume, and handoff. Record any
+  acceptance gaps before adding authenticated serviceability probes, dynamic
+  runtime/model substitution, the missing authoritative AI-DLC graph,
+  parallel/DAG routing, or Task Workbench UI.
 
 ## 2026-07-18 — Latest transformation requirements recovery
 

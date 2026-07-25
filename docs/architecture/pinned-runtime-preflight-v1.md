@@ -71,6 +71,29 @@ Unified Task projection schema `9.0` exposes the persisted decision on each
 formal operational Run. Reads verify its content hash and Run/routing-policy
 bindings but do not re-run probes or mutate state.
 
+## Task-scoped read-only preview
+
+`agora task preflight TASK_ID` evaluates the already initialized formal route
+without calling inventory initialization, Stage activation, `resume`, Run
+claim, observation persistence, or runtime spawn. It first revalidates the
+existing sealed route and read-only routing-policy preview, then collects one
+fresh native capability observation and calls the same
+`derive_pinned_runtime_preflight` function used by dispatch.
+
+The versioned `RuntimePreflightPreview@1.0` operational read model contains the
+exact sealed `PinnedRuntimePreflightDecision@1.0` plus explicit
+`preview_only=true`, `run_claimed=false`, `observation_persisted=false`, and
+`runtime_spawned=false` markers. Its synthetic `preview_*` Run identity is
+never written or supplied to the claim path. An allowed preview remains
+informational: real dispatch creates a new Run identity, derives a new policy
+and observation, and performs the reviewed claim and immediate pre-spawn
+recheck.
+
+Blocked previews return bounded remediation only for the already pinned route,
+runtime installation, command binding, and reviewed capability declaration.
+They never recommend or perform runtime/model substitution. An allowed preview
+still states that provider authentication and serviceability are unverified.
+
 ## Deferred boundaries
 
 Live provider/model catalogs, authentication and serviceability probes, version

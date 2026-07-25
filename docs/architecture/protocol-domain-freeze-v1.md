@@ -148,6 +148,12 @@ as provider serviceability.
 The resolved launch binding hashes the no-shell launcher argv prefix, not the
 contents of the executable image at that path.
 
+A Task-scoped read-only preview may return the exact same sealed preflight
+decision for an already initialized route, but it carries explicit no-claim,
+no-persistence, and no-spawn markers. The preview cannot initialize or repair
+Task/Stage state, and an allowed result is not dispatch authority; a real Run
+must derive a fresh policy, observation, and decision.
+
 ### Gate
 
 ```text

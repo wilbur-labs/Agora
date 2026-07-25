@@ -5,6 +5,7 @@ import hashlib
 import json
 import subprocess
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -14,9 +15,18 @@ from agora.attention.models import AttentionKind, CreateAttentionRequest
 from agora.orchestration import cli as orchestration_cli
 from agora.orchestration import routing_policy
 from agora.orchestration.contracts import load_task_contract
-from agora.orchestration.models import Measurement, PlanState, RunState, StageState
+from agora.orchestration.models import (
+    Measurement,
+    PlanState,
+    RunState,
+    RuntimePreflightPreview,
+    StageState,
+)
 from agora.orchestration.protocol_context import RepositoryRevision, resolve_git_revision
 from agora.orchestration.runtime import RuntimeCommand, RuntimeResult
+from agora.orchestration.runtime_capabilities import (
+    collect_native_runtime_capabilities,
+)
 from agora.orchestration.service import TaskOrchestrationService
 from agora.orchestration.store import (
     OrchestrationConflictError,
@@ -1042,6 +1052,238 @@ def test_unified_projection_bounds_oversized_audit_payloads(tmp_path):
     assert projection.budget.cost_settled_usd == 0
     assert projection.budget.cost_measurement == Measurement.EXACT
     assert projection.budget.cost_remaining_usd == 12
+
+
+@pytest.mark.asyncio
+async def test_task_scoped_preflight_preview_is_read_only_and_does_not_spawn(
+    tmp_path,
+):
+    tasks, service, runner, task = _system(tmp_path)
+
+    with tasks._connect() as db:
+        before = tuple(db.iterdump())
+
+    preview = await service.preview_runtime_preflight(task.task_id)
+
+    assert preview.schema_version == "1.0"
+    assert preview.preview_only is True
+    assert preview.run_claimed is False
+    assert preview.observation_persisted is False
+    assert preview.runtime_spawned is False
+    assert preview.task_id == task.task_id
+    assert preview.project_id == task.project_id
+    assert preview.decision.task_id == task.task_id
+    assert preview.decision.run_id.startswith("preview_")
+    assert preview.decision.allowed is True
+    assert preview.decision.runtime_substitution_allowed is False
+    assert preview.decision.provider_serviceability_verified is False
+    assert preview.remediation == [
+        (
+            "No local launch-binding remediation is required. Provider "
+            "authentication and serviceability remain unverified."
+        )
+    ]
+    assert runner.prompts == []
+    assert service.status(task.task_id).runs == []
+
+    with tasks._connect() as db:
+        after = tuple(db.iterdump())
+    assert after == before
+
+
+@pytest.mark.asyncio
+async def test_task_scoped_preflight_preview_blocks_and_remediates_pinned_runtime(
+    tmp_path,
+):
+    tasks, service, runner, task = _system(tmp_path)
+    service.runtimes["codex"] = RuntimeCommand(
+        adapter="codex",
+        command_template=("agora-preview-missing-runtime", "{prompt}"),
+    )
+
+    with tasks._connect() as db:
+        before = tuple(db.iterdump())
+    preview = await service.preview_runtime_preflight(task.task_id)
+
+    assert preview.decision.allowed is False
+    assert preview.decision.pinned_runtime == "codex"
+    assert preview.decision.installation_status == "not_found"
+    assert any(
+        "already pinned runtime executable or launcher" in item
+        for item in preview.remediation
+    )
+    assert any(
+        "separate reviewed route or methodology change" in item
+        for item in preview.remediation
+    )
+    assert runner.prompts == []
+
+    with tasks._connect() as db:
+        after = tuple(db.iterdump())
+    assert after == before
+
+
+@pytest.mark.asyncio
+async def test_task_scoped_preflight_preview_never_initializes_missing_inventory(
+    tmp_path,
+):
+    tasks, service, runner, task = _system(tmp_path)
+    with tasks._transaction() as db:
+        db.execute(
+            "DELETE FROM control_stage_inventories WHERE task_id = ?",
+            (task.task_id,),
+        )
+    with tasks._connect() as db:
+        before = tuple(db.iterdump())
+
+    with pytest.raises(
+        OrchestrationConflictError,
+        match="Stage inventory is unavailable; run task resume",
+    ):
+        await service.preview_runtime_preflight(task.task_id)
+
+    assert service.control_plane.get_stage_inventory(task.task_id) is None
+    assert runner.prompts == []
+    with tasks._connect() as db:
+        after = tuple(db.iterdump())
+    assert after == before
+
+
+@pytest.mark.asyncio
+async def test_task_scoped_preflight_preview_stops_before_capability_probe_when_policy_blocks(
+    tmp_path,
+    monkeypatch,
+):
+    tasks, service, runner, task = _system(tmp_path)
+    monkeypatch.delitem(
+        routing_policy.ROLE_REQUIRED_CAPABILITIES,
+        "engineering_planner",
+    )
+
+    async def unexpected_capability_probe(_runtimes):
+        raise AssertionError("blocked routing policy must stop before capability probing")
+
+    service.capability_collector = unexpected_capability_probe
+    with tasks._connect() as db:
+        before = tuple(db.iterdump())
+
+    with pytest.raises(
+        OrchestrationConflictError,
+        match="lacks declared capabilities",
+    ):
+        await service.preview_runtime_preflight(task.task_id)
+
+    assert runner.prompts == []
+    with tasks._connect() as db:
+        after = tuple(db.iterdump())
+    assert after == before
+
+
+@pytest.mark.asyncio
+async def test_task_scoped_preflight_preview_reports_stale_observation_remediation(
+    tmp_path,
+):
+    tasks, service, runner, task = _system(tmp_path)
+    stale_observation = await collect_native_runtime_capabilities(
+        service.runtimes,
+        collected_at=datetime.now(timezone.utc) - timedelta(seconds=120),
+    )
+
+    async def collect_stale_observation(_runtimes):
+        return stale_observation
+
+    service.capability_collector = collect_stale_observation
+    with tasks._connect() as db:
+        before = tuple(db.iterdump())
+
+    preview = await service.preview_runtime_preflight(task.task_id)
+
+    assert preview.decision.allowed is False
+    assert next(
+        item
+        for item in preview.decision.checks
+        if item.check == "observation_freshness"
+    ).satisfied is False
+    assert (
+        "Rerun this preview to collect a fresh native capability observation."
+        in preview.remediation
+    )
+    assert runner.prompts == []
+    with tasks._connect() as db:
+        after = tuple(db.iterdump())
+    assert after == before
+
+
+@pytest.mark.asyncio
+async def test_preflight_preview_rejects_scope_and_non_preview_identity_forgery(
+    tmp_path,
+):
+    _, service, _, task = _system(tmp_path)
+    preview = await service.preview_runtime_preflight(task.task_id)
+
+    scope_forgery = preview.model_dump(mode="json")
+    scope_forgery["task_id"] = "task_other"
+    with pytest.raises(ValidationError, match="does not match its Task scope"):
+        RuntimePreflightPreview.model_validate(scope_forgery)
+
+    identity_forgery = preview.model_dump(mode="json")
+    forged_decision = identity_forgery["decision"]
+    forged_decision["run_id"] = "orun_forged"
+    identity_forgery["decision"] = seal_model_payload(
+        type(preview.decision),
+        forged_decision,
+    )
+    with pytest.raises(ValidationError, match="must use a preview Run identity"):
+        RuntimePreflightPreview.model_validate(identity_forgery)
+
+
+def test_cli_preflight_emits_the_exact_read_only_preview(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    _, service, runner, task = _system(tmp_path)
+    monkeypatch.setattr(orchestration_cli, "build_service", lambda: service)
+
+    assert orchestration_cli.main(["preflight", task.task_id]) == 0
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["schema_version"] == "1.0"
+    assert output["preview_only"] is True
+    assert output["run_claimed"] is False
+    assert output["observation_persisted"] is False
+    assert output["runtime_spawned"] is False
+    assert output["decision"]["task_id"] == task.task_id
+    assert output["decision"]["allowed"] is True
+    assert output["decision"]["route_selection_authority"] is False
+    assert output["decision"]["runtime_substitution_allowed"] is False
+    assert output["decision"]["provider_serviceability_verified"] is False
+    assert runner.prompts == []
+
+
+def test_cli_preflight_returns_exit_two_for_a_blocked_pinned_runtime(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    _, service, runner, task = _system(tmp_path)
+    service.runtimes["codex"] = RuntimeCommand(
+        adapter="codex",
+        command_template=("agora-preview-missing-runtime", "{prompt}"),
+    )
+    monkeypatch.setattr(orchestration_cli, "build_service", lambda: service)
+
+    assert orchestration_cli.main(["preflight", task.task_id]) == 2
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["decision"]["allowed"] is False
+    assert output["decision"]["pinned_runtime"] == "codex"
+    assert output["decision"]["installation_status"] == "not_found"
+    assert any(
+        "already pinned runtime executable or launcher" in item
+        for item in output["remediation"]
+    )
+    assert runner.prompts == []
 
 
 @pytest.mark.asyncio

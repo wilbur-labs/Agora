@@ -429,6 +429,34 @@ class OrchestrationRun(StrictModel):
     finished_at: str | None
 
 
+class RuntimePreflightPreview(StrictModel):
+    """Read-only Task-scoped projection of the exact pinned-runtime decision."""
+
+    schema_version: Literal["1.0"] = "1.0"
+    generated_at: AwareDatetime
+    task_id: StableId
+    project_id: StableId
+    preview_only: Literal[True] = True
+    run_claimed: Literal[False] = False
+    observation_persisted: Literal[False] = False
+    runtime_spawned: Literal[False] = False
+    decision: PinnedRuntimePreflightDecision
+    remediation: list[
+        Annotated[str, Field(min_length=1, max_length=1000)]
+    ] = Field(min_length=1, max_length=10)
+
+    @model_validator(mode="after")
+    def validate_preview_bindings(self):
+        if (
+            self.decision.task_id != self.task_id
+            or self.decision.project_id != self.project_id
+        ):
+            raise ValueError("preflight preview does not match its Task scope")
+        if not self.decision.run_id.startswith("preview_"):
+            raise ValueError("preflight preview decision must use a preview Run identity")
+        return self
+
+
 class UsageLedgerEntry(StrictModel):
     entry_id: str
     task_id: str
