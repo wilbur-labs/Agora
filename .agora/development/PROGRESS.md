@@ -1,5 +1,48 @@
 # Agora Control Plane Development Progress
 
+## 2026-07-26 - Current-commit formal acceptance preparation
+
+### Isolated acceptance state
+
+- [x] Confirmed the reviewed implementation baseline at
+  `main == origin/main == 2916060` while preserving the unrelated untracked
+  `.kiro/` and historical pytest temp directories.
+- [x] Created clean detached worktree
+  `D:\Projects\Agora-acceptance-2916060` at exact commit `2916060`. Its local
+  ignored acceptance contract is bound to that commit and has contract hash
+  `1296133762e8d766ca44f9abe5ea36f6ff3df67d186c61c012247940712fe8fc`.
+- [x] Created fresh formal Task
+  `task_f67b410c5aea4133bd7c1316a3e485f7`, Plan
+  `plan_08d74257c5dd452baf9110bd4d95b0b1`, and a 30,000-Token admission-control
+  envelope split across pinned Codex, Claude, and Kiro Stages. No provider
+  runtime was started.
+- [x] The read-only capability observation found Codex CLI `0.145.0`, Claude
+  Code `2.1.220`, and Kiro CLI `2.14.2`; observation hash
+  `72af620df174189e2ca1b9a4b67bfb9180465ef7ff4f7eee962aded64ff72cc2`
+  retains `routing_authority=false`.
+- [x] Task-scoped preflight allowed the pinned Codex route with all six checks
+  passing. Decision hash
+  `05c6d2cba6c2bcdb8f34bcf548ff855d815fb5571ad22a7e8605d97d91803b77`
+  retained `preview_only=true`, `run_claimed=false`,
+  `observation_persisted=false`, `runtime_spawned=false`,
+  `route_selection_authority=false`,
+  `runtime_substitution_allowed=false`, and
+  `provider_serviceability_verified=false`.
+- [x] Deliberately invoked formal `task next` without
+  `--allow-unbounded-native-usage`. It exited 2 at the safety interlock. The
+  Task remains `ready`, the first Stage remains runnable, and authoritative
+  status still reports zero Runs, zero reservations, zero settled usage, and
+  no artifacts, evidence, Gates, or Attention.
+
+### Next safe action
+
+- [ ] Do not start the provider-backed Stage until the user makes a new
+  explicit spend decision acknowledging that the 30,000-Token Task envelope
+  is not a native provider hard cap. If authorized, run exactly the first
+  Stage with
+  `agora task next task_f67b410c5aea4133bd7c1316a3e485f7 --protocol-v1 --allow-unbounded-native-usage`,
+  inspect settlement and actual usage, and stop before any second Stage.
+
 ## 2026-07-26 - Explicit unbounded native usage acknowledgement (reviewed)
 
 ### Scope and recovery decision
