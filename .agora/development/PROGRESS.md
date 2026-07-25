@@ -1,5 +1,107 @@
 # Agora Control Plane Development Progress
 
+## 2026-07-25 - Live formal acceptance preparation
+
+### Recovered launcher and isolated acceptance state
+
+- [x] Re-read the repository recovery contract, complete progress ledger,
+  active protocol/preflight/orchestration architecture, current requirements,
+  and Git state before continuing.
+- [x] Confirmed `main == origin/main == bbc02e6` before this documentation
+  checkpoint. The only root-worktree additions remain the preserved `.kiro/`
+  and historical pytest temp directories.
+- [x] Restored observation of the audited npm Codex launcher without changing
+  the global environment. The current no-shell capability probe resolves Codex
+  `0.145.0`, Claude Code `2.1.217`, and Kiro CLI `2.14.2`; every version probe
+  exited zero.
+- [x] Created clean detached worktree
+  `D:\Projects\Agora-acceptance-bbc02e6` at exact commit `bbc02e6` so formal
+  Evidence does not bind to the unrelated untracked files in the root
+  worktree.
+- [x] Created fresh formal Task
+  `task_94b7c311827d4fa69d2dc5dc40718499`, Plan
+  `plan_a237ba8dd98d4ad4adb534324fda9596`, and concrete contract hash
+  `155c021bdf2c39c2daf0c1585ff2d4a7b5d4cc6d952c21321e5c885a25a2a3de`
+  in the isolated worktree database. Its total Task ledger envelope is 30,000
+  Tokens with no configured monetary amount because provider cost is not
+  uniformly observable.
+- [x] Ran the Task-scoped read-only preflight. Decision hash
+  `27b9302cec7bef91401a53aabbc92997681ee77dfa1beb2fb7151b37a7178313`
+  was allowed for the pinned Codex route with all six checks passing and
+  `preview_only=true`, `run_claimed=false`,
+  `observation_persisted=false`, `runtime_spawned=false`.
+- [x] Verified the Task remains `ready`, the Plan remains `active` at
+  `solution_design`, all three inventory Stages remain incomplete, and the
+  Run count is zero. No provider-backed runtime was started.
+- [x] Kept the root `data/agora.db` read-only; it still contains only the
+  earlier compatibility demonstration Task and was not migrated for this
+  acceptance.
+
+### Current blocker and next safe action
+
+- [x] Obtained explicit authorization for the bounded provider-backed
+  acceptance envelope: the user replied `继续` directly to the presented
+  30,000-Token, stage-by-stage authorization request. Monetary cost and Kiro
+  native credits remain not uniformly enforceable or observable.
+- [x] Ran exactly one Stage first with
+  `agora task next task_94b7c311827d4fa69d2dc5dc40718499 --protocol-v1`
+  from the isolated worktree. Codex exited zero after 488 seconds, but the
+  persisted Run blocked with `handoff_json_invalid`; Claude and Kiro were not
+  started.
+- [x] Exercised restart-safe `task resume` after the blocked Run. Task/Plan and
+  Stage remained blocked, the same Attention remained open, Run count and
+  attempt count stayed one, and no runtime was redispatched.
+- [ ] Do not retry the provider-backed Task until the local repair passes both
+  review gates and the user makes a new explicit spend decision. Human approval
+  remains required only after all formal Gates eventually pass.
+
+### Live acceptance finding and local fix
+
+- [x] Preserved the fail-closed terminal state: Task and Plan are `blocked`,
+  authoritative `solution_design` is `blocked`, its Gate remains `pending`,
+  and Attention `attn_protocol_78d5c07df67014e631c3031404c3fdbb` is open.
+  Process exit zero did not advance the Stage.
+- [x] Read the persisted 64 KiB output without mutating the acceptance
+  database. The bounded tail began inside one prior command-execution JSONL
+  event, followed by a valid command event, one fully schema-valid
+  `succeeded` Handoff, and one valid `turn.completed` usage event.
+- [x] Confirmed the real Codex usage was 2,745,043 input Tokens, including
+  2,613,248 cached input Tokens, plus 18,998 output Tokens: 2,764,041 total.
+  This proves the 30,000-Token Task envelope is an admission-control
+  reservation rather than a provider-enforced hard cap. No uniform USD cost
+  was available.
+- [x] Stopped provider-backed acceptance after the first Run. No Claude or Kiro
+  execution is authorized after the observed overrun without a new explicit
+  decision.
+- [x] Added format-only Codex JSONL tail recovery. The Runner now records
+  whether its byte tail actually dropped a prefix; only in that case may the
+  normalizer discard exactly one malformed leading transport frame. Every
+  later line, final agent message, and unique usage event must remain valid.
+- [x] Added a process-level regression that emits more than the capture bound
+  and reproduces the split first event. Provider/Runner focused tests pass:
+  56 passed. Formal orchestration/capability/preflight regressions pass:
+  76 passed.
+- [x] Final post-review non-integration backend suite excluding the deferred
+  static Web UI test: 516 passed, 18 deselected, with the existing
+  Starlette/httpx warning and Windows Proactor cleanup warning. Protocol Schema
+  export/check, isolated `compileall`, `agora task --help`, and
+  `git diff --check` passed.
+- [x] Kiro methodology/protocol review returned `CHANGES_REQUESTED` for two
+  regression gaps: a real UTF-8 code point split at the retained byte-tail
+  boundary, and explicit fail-closed recovery when terminal usage is absent.
+  Both tests were added; the focused provider/Runner suite remained 56 passed.
+  Targeted Kiro re-review returned `KIRO_APPROVE`. The two recorded review
+  calls consumed 1.87 and 1.13 Kiro credits.
+- [x] Independent Claude correctness/safety review returned
+  `CLAUDE_APPROVE`; no high/medium findings remained. The call used a native
+  `$0.20` maximum and reported `$0.1062697` actual cost, with 2 direct input,
+  8,760 cache-creation input, 3,289 cache-read input, and 3,122 output Tokens
+  for Sonnet, plus the reported lightweight Haiku routing overhead.
+- [x] The implementation review gate is complete. Do not retry the formal
+  provider-backed Task as part of this repair close-out: a new acceptance Run
+  still requires a separate explicit spend decision because the Codex adapter
+  exposes no native hard Token cap.
+
 Current branch: `main`
 
 Current recovery baseline (2026-07-22):

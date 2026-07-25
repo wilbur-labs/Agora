@@ -43,6 +43,12 @@ class RuntimeResult:
     usage_observation: ProviderUsageObservation | None = None
 
 
+@dataclass(frozen=True)
+class CapturedTail:
+    data: bytes
+    prefix_truncated: bool
+
+
 class RuntimeInterrupted(RuntimeError):
     pass
 
@@ -277,7 +283,7 @@ class ReadOnlyCliRunner:
         try:
             await on_process(proc.pid)
             try:
-                stdout, stderr = await asyncio.wait_for(
+                stdout, stderr, stdout_prefix_truncated = await asyncio.wait_for(
                     asyncio.shield(capture), timeout=timeout_seconds,
                 )
             except (TimeoutError, asyncio.TimeoutError):
@@ -286,10 +292,14 @@ class ReadOnlyCliRunner:
                 if captured is None:
                     stdout = ""
                     stderr = "process output drain did not close after termination"
+                    stdout_prefix_truncated = False
                 else:
-                    stdout, stderr = captured
+                    stdout, stderr, stdout_prefix_truncated = captured
                 stdout, observation = self._normalize_stdout(
-                    runtime, stdout, run_id=run_id,
+                    runtime,
+                    stdout,
+                    run_id=run_id,
+                    stdout_prefix_truncated=stdout_prefix_truncated,
                 )
                 return RuntimeResult(
                     exit_code=proc.returncode,
@@ -299,7 +309,10 @@ class ReadOnlyCliRunner:
                     usage_observation=observation,
                 )
             stdout, observation = self._normalize_stdout(
-                runtime, stdout, run_id=run_id,
+                runtime,
+                stdout,
+                run_id=run_id,
+                stdout_prefix_truncated=stdout_prefix_truncated,
             )
             return RuntimeResult(
                 exit_code=proc.returncode,
@@ -320,7 +333,7 @@ class ReadOnlyCliRunner:
     async def _capture_output(
         cls,
         proc: asyncio.subprocess.Process,
-    ) -> tuple[str, str]:
+    ) -> tuple[str, str, bool]:
         """Drain both pipes concurrently while retaining only bounded tails."""
         stdout_task = asyncio.create_task(cls._read_tail(proc.stdout))
         stderr_task = asyncio.create_task(cls._read_tail(proc.stderr))
@@ -334,14 +347,22 @@ class ReadOnlyCliRunner:
                     task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
             raise
-        return cls._decode(stdout_task.result()), cls._decode(stderr_task.result())
+        stdout = stdout_task.result()
+        stderr = stderr_task.result()
+        return (
+            cls._decode(stdout.data),
+            cls._decode(stderr.data),
+            stdout.prefix_truncated,
+        )
 
     @staticmethod
-    async def _read_tail(stream: asyncio.StreamReader | None) -> bytes:
+    async def _read_tail(stream: asyncio.StreamReader | None) -> CapturedTail:
         if stream is None:
-            return b""
+            return CapturedTail(data=b"", prefix_truncated=False)
         tail = bytearray()
+        total_bytes = 0
         while chunk := await stream.read(OUTPUT_READ_SIZE):
+            total_bytes += len(chunk)
             if len(chunk) >= CAPTURE_LIMIT:
                 tail[:] = chunk[-CAPTURE_LIMIT:]
                 continue
@@ -349,12 +370,15 @@ class ReadOnlyCliRunner:
             if overflow > 0:
                 del tail[:overflow]
             tail.extend(chunk)
-        return bytes(tail)
+        return CapturedTail(
+            data=bytes(tail),
+            prefix_truncated=total_bytes > CAPTURE_LIMIT,
+        )
 
     @staticmethod
     async def _finish_capture(
-        capture: asyncio.Task[tuple[str, str]],
-    ) -> tuple[str, str] | None:
+        capture: asyncio.Task[tuple[str, str, bool]],
+    ) -> tuple[str, str, bool] | None:
         """Bound post-stop pipe drain when descendants retain inherited handles."""
         try:
             return await asyncio.wait_for(
@@ -394,12 +418,14 @@ class ReadOnlyCliRunner:
         stdout: str,
         *,
         run_id: str,
+        stdout_prefix_truncated: bool = False,
     ) -> tuple[str, ProviderUsageObservation | None]:
         semantic, observation = normalize_native_output(
             adapter=runtime.adapter,
             result_format=runtime.result_format,
             stdout=stdout,
             run_id=run_id,
+            stdout_prefix_truncated=stdout_prefix_truncated,
         )
         return semantic[-OUTPUT_LIMIT:], observation
 

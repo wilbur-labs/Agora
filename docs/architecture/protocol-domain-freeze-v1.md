@@ -137,6 +137,15 @@ local installation/version probes and declared model/capability provenance but
 carry `routing_authority: false`; they cannot select a runtime/model or alter
 the sealed route.
 
+Task, Stage, and Run Token envelopes are admission-control reservations, not a
+provider-side hard execution cap unless the pinned adapter exposes and records
+an enforceable native limit. Terminal provider usage remains authoritative for
+settlement and may exceed a reservation; Agora must record that overrun
+truthfully and block later dispatch when protected review capacity is no longer
+available. Interactive account summaries such as native `/usage` output may
+corroborate account-level availability, but they do not replace a Run-bound
+usage observation.
+
 Before native process creation, a fresh hash-sealed pinned-runtime preflight may
 only allow or block that already sealed route. It binds the exact capability
 observation, command template and resolved launch target, and reviewed routing

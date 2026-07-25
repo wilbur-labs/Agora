@@ -73,6 +73,13 @@ the exact observation, registry, command, resolved launch target, and policy
 hashes immediately before process creation. Expiry or drift fails before spawn
 and settles exact-zero process-not-started usage; no alternate runtime is tried.
 
+Structured native output is drained into a bounded byte tail. When that bound
+is known to have removed the stream prefix, the Codex JSONL normalizer may
+discard exactly one partial leading transport frame. Every later non-empty line
+must still be valid JSON, and exactly one final usage event plus a valid agent
+message remain mandatory. This is format-only recovery; it cannot change or
+invent Handoff semantics, Evidence, blockers, or usage.
+
 The Task-scoped `preflight` command is a read-only preview over an already
 initialized formal route. It returns the exact sealed decision used by the
 dispatch derivation together with explicit no-claim/no-persistence/no-spawn

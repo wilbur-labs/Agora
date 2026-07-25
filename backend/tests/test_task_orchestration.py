@@ -391,9 +391,105 @@ async def test_runtime_output_capture_retains_only_a_bounded_tail():
 
     reader = ChunkedReader(orchestration_runtime.OUTPUT_LIMIT * 10)
     captured = await ReadOnlyCliRunner._read_tail(reader)
-    assert len(captured) == orchestration_runtime.CAPTURE_LIMIT
-    assert captured == b"x" * orchestration_runtime.CAPTURE_LIMIT
+    assert len(captured.data) == orchestration_runtime.CAPTURE_LIMIT
+    assert captured.data == b"x" * orchestration_runtime.CAPTURE_LIMIT
+    assert captured.prefix_truncated is True
     assert reader.largest_request == orchestration_runtime.OUTPUT_READ_SIZE
+
+
+@pytest.mark.asyncio
+async def test_runner_recovers_codex_jsonl_after_tail_splits_multibyte_first_event(
+    tmp_path,
+):
+    script = tmp_path / "emit_codex_jsonl.py"
+    final_events = [
+        {
+            "type": "item.completed",
+            "item": {"type": "agent_message", "text": "done"},
+        },
+        {
+            "type": "turn.completed",
+            "usage": {
+                "input_tokens": 2_745_043,
+                "cached_input_tokens": 2_613_248,
+                "output_tokens": 18_998,
+                "reasoning_output_tokens": 7_988,
+            },
+        },
+    ]
+    padding = None
+    emitted = b""
+    for candidate in range(3):
+        events = [
+            {
+                "type": "item.completed",
+                "item": {
+                    "type": "command_execution",
+                    "aggregated_output": (
+                        "界" * orchestration_runtime.CAPTURE_LIMIT
+                        + "p" * candidate
+                    ),
+                },
+            },
+            *final_events,
+        ]
+        emitted = (
+            "\n".join(
+                json.dumps(event, separators=(",", ":"), ensure_ascii=False)
+                for event in events
+            )
+            + "\n"
+        ).encode("utf-8")
+        if emitted[-orchestration_runtime.CAPTURE_LIMIT] & 0xC0 == 0x80:
+            padding = candidate
+            break
+    assert padding is not None
+    assert emitted[-orchestration_runtime.CAPTURE_LIMIT:].decode(
+        "utf-8", errors="replace",
+    ).startswith("\ufffd")
+
+    script.write_text(
+        "import json, sys\n"
+        f"limit = {orchestration_runtime.CAPTURE_LIMIT}\n"
+        f"padding = {padding}\n"
+        f"final_events = {final_events!r}\n"
+        "events = [{\n"
+        "    'type': 'item.completed',\n"
+        "    'item': {\n"
+        "        'type': 'command_execution',\n"
+        "        'aggregated_output': '界' * limit + 'p' * padding,\n"
+        "    },\n"
+        "}, *final_events]\n"
+        "payload = '\\n'.join(\n"
+        "    json.dumps(event, separators=(',', ':'), ensure_ascii=False)\n"
+        "    for event in events\n"
+        ") + '\\n'\n"
+        "sys.stdout.buffer.write(payload.encode('utf-8'))\n",
+        encoding="utf-8",
+    )
+
+    async def capture_pid(_pid: int) -> None:
+        return None
+
+    result = await ReadOnlyCliRunner().run(
+        RuntimeCommand(
+            adapter="codex",
+            command_template=(sys.executable, str(script), "{prompt}"),
+            result_format=RuntimeResultFormat.CODEX_JSONL_V1,
+        ),
+        "ignored",
+        cwd=tmp_path,
+        task_id="task_truncated",
+        run_id="orun_truncated",
+        stage_key="solution_design",
+        timeout_seconds=10,
+        on_process=capture_pid,
+    )
+
+    assert result.exit_code == 0
+    assert result.stdout == "done"
+    assert result.usage_observation is not None
+    assert result.usage_observation.total_tokens == 2_764_041
 
 
 @pytest.mark.asyncio

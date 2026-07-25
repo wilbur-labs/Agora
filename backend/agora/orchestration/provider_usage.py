@@ -22,11 +22,17 @@ def normalize_native_output(
     result_format: RuntimeResultFormat,
     stdout: str,
     run_id: str,
+    stdout_prefix_truncated: bool = False,
 ) -> tuple[str, ProviderUsageObservation | None]:
     """Return semantic stdout and provider facts without mutating native state."""
 
     if result_format == RuntimeResultFormat.CODEX_JSONL_V1:
-        return _normalize_codex_jsonl(stdout, run_id=run_id, adapter=adapter)
+        return _normalize_codex_jsonl(
+            stdout,
+            run_id=run_id,
+            adapter=adapter,
+            stdout_prefix_truncated=stdout_prefix_truncated,
+        )
     if result_format == RuntimeResultFormat.CLAUDE_JSON_V1:
         return _normalize_claude_json(stdout, run_id=run_id, adapter=adapter)
     return stdout, None
@@ -98,11 +104,22 @@ def _normalize_codex_jsonl(
     *,
     run_id: str,
     adapter: str,
+    stdout_prefix_truncated: bool,
 ) -> tuple[str, ProviderUsageObservation | None]:
-    try:
-        events = [json.loads(line) for line in stdout.splitlines() if line.strip()]
-    except json.JSONDecodeError:
-        return stdout, None
+    lines = [line for line in stdout.splitlines() if line.strip()]
+    events: list[Any] = []
+    for index, line in enumerate(lines):
+        try:
+            events.append(json.loads(line))
+        except json.JSONDecodeError:
+            # The bounded Runner retains a byte tail. If it overflowed, only
+            # the first retained JSONL event may be a partial transport frame.
+            # Discarding that one prefix is format-only recovery: every
+            # subsequent event must still be valid and the final semantic
+            # message plus usage event remain mandatory below.
+            if index == 0 and stdout_prefix_truncated:
+                continue
+            return stdout, None
     if not events or any(not isinstance(event, dict) for event in events):
         return stdout, None
 

@@ -80,6 +80,78 @@ def test_codex_jsonl_extracts_exact_usage_without_double_counting_cached_input()
     assert observation.cost_measurement == "unavailable"
 
 
+def test_codex_jsonl_recovers_only_one_truncated_leading_transport_frame():
+    valid_tail = "\n".join([
+        json.dumps({
+            "type": "item.completed",
+            "item": {"id": "item_1", "type": "agent_message", "text": "done"},
+        }),
+        json.dumps({
+            "type": "turn.completed",
+            "usage": {
+                "input_tokens": 2_745_043,
+                "cached_input_tokens": 2_613_248,
+                "output_tokens": 18_998,
+                "reasoning_output_tokens": 7_988,
+            },
+        }),
+    ])
+    stdout = 'partial prior command event"}\n' + valid_tail
+
+    output, observation = normalize_native_output(
+        adapter="codex",
+        result_format=RuntimeResultFormat.CODEX_JSONL_V1,
+        stdout=stdout,
+        run_id="orun_truncated",
+        stdout_prefix_truncated=True,
+    )
+
+    assert output == "done"
+    assert observation is not None
+    assert observation.total_tokens == 2_764_041
+    assert observation.cache_read_input_tokens == 2_613_248
+    assert observation.reasoning_output_tokens == 7_988
+
+    failed_output, failed_observation = normalize_native_output(
+        adapter="codex",
+        result_format=RuntimeResultFormat.CODEX_JSONL_V1,
+        stdout=stdout,
+        run_id="orun_not_truncated",
+    )
+    assert failed_output == stdout
+    assert failed_observation is None
+
+    later_corruption = valid_tail.replace(
+        '{"type": "turn.completed"',
+        'not-json\n{"type": "turn.completed"',
+    )
+    _, later_observation = normalize_native_output(
+        adapter="codex",
+        result_format=RuntimeResultFormat.CODEX_JSONL_V1,
+        stdout='partial prior event"}\n' + later_corruption,
+        run_id="orun_later_corruption",
+        stdout_prefix_truncated=True,
+    )
+    assert later_observation is None
+
+    missing_usage = "\n".join([
+        'partial prior event"}',
+        json.dumps({
+            "type": "item.completed",
+            "item": {"id": "item_1", "type": "agent_message", "text": "done"},
+        }),
+    ])
+    missing_output, missing_observation = normalize_native_output(
+        adapter="codex",
+        result_format=RuntimeResultFormat.CODEX_JSONL_V1,
+        stdout=missing_usage,
+        run_id="orun_missing_usage",
+        stdout_prefix_truncated=True,
+    )
+    assert missing_output == missing_usage
+    assert missing_observation is None
+
+
 def test_claude_json_extracts_exact_components_cost_model_and_duration():
     stdout = json.dumps({
         "type": "result",
