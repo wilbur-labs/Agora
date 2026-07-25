@@ -12,9 +12,9 @@ Formal dispatch is opt-in so existing 0.5 planning Tasks are not silently
 reinterpreted:
 
 ```text
-agora task start --contract PATH --run --protocol-v1
-agora task next TASK_ID --protocol-v1
-agora task run TASK_ID --protocol-v1
+agora task start --contract PATH --run --protocol-v1 --allow-unbounded-native-usage
+agora task next TASK_ID --protocol-v1 --allow-unbounded-native-usage
+agora task run TASK_ID --protocol-v1 --allow-unbounded-native-usage
 agora task retry TASK_ID STAGE_KEY --protocol-v1
 agora task resume TASK_ID
 agora task preflight TASK_ID
@@ -25,6 +25,18 @@ hash still matches its content. The project root must resolve to an exact Git
 ref and commit, and its worktree must be clean so a runtime cannot inspect
 content outside that commit binding. Each immutable Gate is scoped to that
 project/repository, ref, commit, Stage, and the contract's Evidence requirements.
+
+Every CLI command that can start a provider-backed Run requires the explicit
+`--allow-unbounded-native-usage` acknowledgement. Without it, the CLI fails
+before service construction, capability collection, Task creation, Run claim,
+or process spawn. The acknowledgement is a local dispatch safety interlock; it
+does not claim or create a provider-native limit.
+
+Both the formal and compatibility `next`/`run` paths invoke native runtime
+adapters, so the interlock applies to both. `retry` is intentionally different:
+it only moves the blocked Stage projections back to ready/pending and never
+claims a Run or starts a process. Any later provider execution still enters
+through an acknowledged `next` or `run`.
 
 ## Dispatch and authority flow
 

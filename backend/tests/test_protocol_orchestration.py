@@ -2132,9 +2132,27 @@ def test_cli_start_can_explicitly_run_the_formal_protocol_path(
             "30000",
             "--run",
             "--protocol-v1",
+            "--allow-unbounded-native-usage",
         ]
     )
 
     assert exit_code == 0
     assert len(runner.prompts) == 3
     assert "awaiting_approval" in capsys.readouterr().out
+
+
+def test_cli_protocol_retry_is_state_only_and_does_not_require_usage_ack(
+    tmp_path,
+    monkeypatch,
+):
+    _, service, runner, task = _system(tmp_path, invalid_outputs=1)
+    first = asyncio.run(service.run_next(task.task_id, protocol_v1=True))
+    monkeypatch.setattr(orchestration_cli, "build_service", lambda: service)
+
+    assert orchestration_cli.main(
+        ["retry", task.task_id, first.stage_key, "--protocol-v1"]
+    ) == 0
+    assert len(runner.prompts) == 1
+    assert service.control_plane.get_stage(
+        task.task_id, first.stage_key
+    ).status == StageStatus.READY

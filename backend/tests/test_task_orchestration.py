@@ -272,6 +272,45 @@ def test_cli_starts_from_a_concrete_contract(tmp_path, monkeypatch, capsys):
     assert "Next safe action" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["start", "unbounded task", "--run"],
+        ["next", "task_unbounded"],
+        ["run", "task_unbounded"],
+        ["next", "task_unbounded", "--protocol-v1"],
+        ["run", "task_unbounded", "--protocol-v1"],
+    ],
+)
+def test_cli_requires_explicit_unbounded_native_usage_ack_before_service_build(
+    argv,
+    monkeypatch,
+    capsys,
+):
+    def forbidden_build():
+        raise AssertionError("service must not be built before spend acknowledgement")
+
+    monkeypatch.setattr(orchestration_cli, "build_service", forbidden_build)
+
+    assert orchestration_cli.main(argv) == 2
+    output = capsys.readouterr().out
+    assert "--allow-unbounded-native-usage" in output
+    assert "admission-control reservations, not native hard caps" in output
+
+
+@pytest.mark.parametrize("command", ["status", "resume"])
+def test_cli_non_dispatch_commands_do_not_require_unbounded_usage_ack(
+    command,
+    tmp_path,
+    monkeypatch,
+):
+    _, service, runner, task = _system(tmp_path)
+    monkeypatch.setattr(orchestration_cli, "build_service", lambda: service)
+
+    assert orchestration_cli.main([command, task.task_id]) == 0
+    assert runner.prompts == []
+
+
 def test_runtime_defaults_are_read_only_and_bounded():
     runtimes = build_runtime_registry({})
     assert "read-only" in runtimes["codex"].command_template

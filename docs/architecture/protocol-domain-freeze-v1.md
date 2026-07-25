@@ -146,6 +146,16 @@ available. Interactive account summaries such as native `/usage` output may
 corroborate account-level availability, but they do not replace a Run-bound
 usage observation.
 
+The unified CLI must not present invocation of a provider-backed Run as if the
+Task envelope were a hard provider limit. Until the pinned adapter exposes and
+records such a limit, every dispatching CLI command requires an explicit
+unbounded-native-usage acknowledgement and fails before Task or Run mutation
+when it is absent. The acknowledgement permits dispatch only; it does not
+weaken routing policy, protected review capacity, settlement, or Gates.
+Compatibility and formal `next`/`run` commands both dispatch native adapters
+and are covered. A state-only retry does not dispatch; its subsequent
+`next`/`run` remains subject to the acknowledgement.
+
 Before native process creation, a fresh hash-sealed pinned-runtime preflight may
 only allow or block that already sealed route. It binds the exact capability
 observation, command template and resolved launch target, and reviewed routing

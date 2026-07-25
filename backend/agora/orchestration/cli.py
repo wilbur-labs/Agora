@@ -74,6 +74,14 @@ def parser() -> argparse.ArgumentParser:
     start.add_argument("--cost-usd", type=float)
     start.add_argument("--run", action="store_true", help="Run all three planning/review stages")
     start.add_argument(
+        "--allow-unbounded-native-usage",
+        action="store_true",
+        help=(
+            "Acknowledge that provider usage is not hard-capped by the "
+            "Task Token envelope"
+        ),
+    )
+    start.add_argument(
         "--protocol-v1",
         action="store_true",
         help="Use sealed Context/Handoff Packs and formal Control Plane Gates",
@@ -125,6 +133,14 @@ def parser() -> argparse.ArgumentParser:
                 action="store_true",
                 help="Use sealed Context/Handoff Packs and formal Control Plane Gates",
             )
+            command.add_argument(
+                "--allow-unbounded-native-usage",
+                action="store_true",
+                help=(
+                    "Acknowledge that provider usage is not hard-capped by the "
+                    "Task Token envelope"
+                ),
+            )
         if name == "status":
             command.add_argument("--json", action="store_true", dest="as_json")
             command.add_argument(
@@ -164,6 +180,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             )
             return 0
+        provider_dispatch_requested = (
+            (args.command == "start" and args.run)
+            or args.command in {"next", "run"}
+        )
+        if (
+            provider_dispatch_requested
+            and not getattr(args, "allow_unbounded_native_usage", False)
+        ):
+            raise ValueError(
+                "Provider-backed dispatch requires "
+                "--allow-unbounded-native-usage because Task Token envelopes "
+                "are admission-control reservations, not native hard caps"
+            )
         service = build_service()
         if args.command == "start":
             contract = load_task_contract(args.contract) if args.contract else None

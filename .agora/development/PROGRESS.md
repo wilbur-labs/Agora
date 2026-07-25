@@ -1,5 +1,60 @@
 # Agora Control Plane Development Progress
 
+## 2026-07-26 - Explicit unbounded native usage acknowledgement (active)
+
+### Scope and recovery decision
+
+- [x] Re-read the recovery contract, active progress and protocol documents,
+  requirements, and Git state. The reviewed baseline is
+  `main == origin/main == 88d0137`; preserved `.kiro/` and historical pytest
+  temp directories remain unrelated and untracked.
+- [x] Kept the blocked acceptance Task and its databases read-only. The prior
+  Run is already immutably settled by the Control Plane, so reinterpreting its
+  stored output with a newer parser would rewrite authoritative history rather
+  than perform restart recovery.
+- [x] Added `--allow-unbounded-native-usage` to every CLI command that can
+  dispatch a provider-backed Run: `start --run`, `next`, and `run`, for both
+  compatibility and `--protocol-v1` paths.
+- [x] Missing acknowledgement now fails before service construction, native
+  capability collection, Task creation, Run claim, or process spawn. The flag
+  permits dispatch only; it does not claim a provider hard cap or weaken
+  routing, protected review budget, settlement, or Gates.
+- [x] Updated the protocol freeze and formal orchestration entry-point
+  documentation to distinguish the explicit safety interlock from a native
+  execution limit.
+
+### Verification and review state
+
+- [x] Focused CLI regressions: 5 passed. The tests cover all three dispatching
+  command shapes, prove that service construction is not reached without the
+  acknowledgement, and preserve the explicitly acknowledged formal path.
+- [x] Related Task/protocol/provider/capability/preflight suite: 135 passed.
+- [x] Pre-review complete non-integration backend suite: 519 passed,
+  18 deselected. Schema export/check, isolated `compileall`,
+  `agora task next --help`, and `git diff --check` passed.
+- [x] Initial Kiro review returned `CHANGES_REQUESTED`. Its retry concern was
+  resolved by documenting and testing that `retry` is state-only and never
+  claims a Run or starts a process; both compatibility and formal `next`/`run`
+  do invoke native adapters and remain guarded. Added defensive `getattr` plus
+  status/resume/preflight compatibility coverage. Targeted fixes: 8 passed.
+  Targeted Kiro re-review returned `KIRO_APPROVE`; the two review calls used
+  1.45 and 0.65 credits.
+- [x] Initial Claude correctness/safety review returned `CHANGES_REQUESTED`
+  only for explicit missing-ack regressions on the formal
+  `next/run --protocol-v1` variants. Both variants were added to the pre-service
+  rejection test. The review used a native `$0.12` cap and reported
+  `$0.0837707` actual cost.
+- [x] Final targeted safety group: 10 passed. Claude targeted re-review returned
+  `CLAUDE_APPROVE` and reported `$0.0127122`; total recorded Claude review cost
+  for the increment was `$0.0964829`. Kiro and Claude review gates are both
+  complete.
+- [x] Final post-review non-integration backend suite: 524 passed,
+  18 deselected, with the existing Starlette/httpx warning and Windows
+  Proactor cleanup warning. Schema export/check, isolated `compileall`,
+  `agora task next --help`, and `git diff --check` passed.
+- [ ] Commit and push the reviewed increment. Do not retry the
+  provider-backed acceptance Task as part of this safety increment.
+
 ## 2026-07-25 - Live formal acceptance preparation
 
 ### Recovered launcher and isolated acceptance state
