@@ -1,6 +1,6 @@
 # Agora Control Plane Development Progress
 
-## 2026-07-26 - Explicit unbounded native usage acknowledgement (active)
+## 2026-07-26 - Explicit unbounded native usage acknowledgement (reviewed)
 
 ### Scope and recovery decision
 
@@ -52,8 +52,9 @@
   18 deselected, with the existing Starlette/httpx warning and Windows
   Proactor cleanup warning. Schema export/check, isolated `compileall`,
   `agora task next --help`, and `git diff --check` passed.
-- [ ] Commit and push the reviewed increment. Do not retry the
-  provider-backed acceptance Task as part of this safety increment.
+- [x] Committed and pushed the reviewed implementation as `cc1a775`. The
+  provider-backed acceptance Task was not retried as part of this safety
+  increment.
 
 ## 2026-07-25 - Live formal acceptance preparation
 
