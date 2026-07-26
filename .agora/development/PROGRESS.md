@@ -64,14 +64,41 @@
 
 ### Current checkpoint and next safe action
 
-The acceptance Task remains durably blocked at 2/3 Stages only because the
-pre-fix Kiro Run's Attention is still open. Commit and push the reviewed
-transport increment, then use formal `retry` to cancel only
-`attn_protocol_bd5ad70fc70b88b1fc4952c90bba06a3`, derive a fresh exact budget
-envelope from the conservative settled debit plus the 7,500-Token reservation,
-and dispatch only the final Kiro Stage. If all three Gates pass, record the
-user's explicit instruction to continue through completion as the final human
-approval and persist the terminal Task/Plan checkpoint.
+- [x] Committed and pushed the reviewed transport increment as `781f9fd`.
+  Formal `retry` then cancelled only
+  `attn_protocol_bd5ad70fc70b88b1fc4952c90bba06a3`; it did not spawn a
+  provider or alter either passed Stage.
+- [x] A fresh policy preview conservatively debited 6,992,721 Tokens and
+  required the remaining sealed 7,500-Token reservation. Budget amendment
+  `budget_aedbfb0aa8e249cebbf4f87b71259160` therefore set the exact
+  admission envelope to 7,000,221 Tokens. The fresh Kiro 2.14.2 preflight was
+  allowed and bound resolved command hash
+  `38357ea664f1ab69481102846821260442115fc08617788107922e18108cc65d`.
+- [x] Final Kiro Run `orun_e6152ef5a04a4088ae8cdedb0771fcbe`
+  exited zero, produced a schema-valid and semantically successful Handoff,
+  passed `gate:methodology_review`, and settled 23,654 estimated Tokens with
+  unavailable cost. Its Handoff hash is
+  `d3e079c1c408a73fb9d0a3e449b40133623789cdaf66e1d0ba49fa7397113ff0`.
+- [x] All 3/3 frozen Stages and 3/3 Gates are passed. The user's explicit
+  instruction to continue through final completion was persisted as the
+  terminal human approval. Task `task_f67b410c5aea4133bd7c1316a3e485f7`
+  is `completed`, Plan `plan_08d74257c5dd452baf9110bd4d95b0b1`
+  is `ready_for_implementation`, `current_stage_key=null`, and no Attention
+  remains open.
+- [x] The completed Task contains 11 formal Runs, 3 managed Artifacts, and
+  3 active Evidence records. Reported usage is 7,007,375 Tokens:
+  6,972,436 exact and 34,939 estimated. One timed-out Claude Run remains
+  explicitly unavailable and was conservatively debited at admission time.
+  Reported provider cost totals `$14.230025`; Kiro cost remains unavailable.
+  The final Kiro Run exceeded its reservation, so the aggregate budget
+  projection correctly remains unavailable rather than inventing remaining
+  capacity.
+
+The completed Task and its frozen acceptance worktree at `2916060` must remain
+immutable. The next safe product action is a new bounded implementation Task
+that references these accepted Artifact versions and pins the repository to
+the commit containing this terminal checkpoint. Keep UI deferred until that
+implementation Task proves its CLI/control-plane path.
 
 ## 2026-07-26 - Memory source-reference guidance (reviewed)
 
