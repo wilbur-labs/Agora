@@ -65,9 +65,19 @@
 
 ### Current checkpoint and next safe action
 
-Both independent review gates approve the current implementation diff, so this
-bounded persistence and explicit-disposition increment is ready to commit and
-push. The next independent backend slice is native
+- [x] Committed and pushed the reviewed increment as `9969e0f`; `main` and
+  `origin/main` matched that commit immediately after push. User-owned
+  `.kiro/` and historical pytest temp directories remained untracked and were
+  not staged.
+- [x] The repo-grounded whole-program estimate is now about 82%, with a
+  practical 80-84% range. The completed real formal end-to-end acceptance and
+  this candidate/adoption authority boundary close two previously high-weight
+  gaps. The remaining work is native consultation dispatch, the missing
+  authoritative complete AI-DLC graph plus branch/rework/DAG semantics,
+  authenticated serviceability/dynamic routing policy, authenticated API and
+  Workbench, and migration/release closeout.
+
+The next independent backend slice is native
 `agora task consult` dispatch with candidate-only result parsing and truthful
 provider usage settlement. The missing authoritative complete AI-DLC source
 still blocks formal method-graph freeze, but does not block this consultation
