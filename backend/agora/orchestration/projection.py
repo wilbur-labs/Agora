@@ -273,6 +273,22 @@ class TaskProjectionStore:
             history_limit,
             history_offset,
         )
+        consultation_candidates, consultation_candidate_total = (
+            self._consultation_candidates(
+                db,
+                plan.plan_id,
+                history_limit,
+                history_offset,
+            )
+        )
+        candidate_dispositions, candidate_disposition_total = (
+            self._consultation_candidate_dispositions(
+                db,
+                plan.plan_id,
+                history_limit,
+                history_offset,
+            )
+        )
         budget_amendments, budget_amendment_total = self._budget_amendments(
             db,
             plan.plan_id,
@@ -298,6 +314,24 @@ class TaskProjectionStore:
             "SELECT COUNT(*) AS count FROM attention_items WHERE task_id = ?",
             (task_id,),
         ).fetchone()["count"]
+        pending_candidate_rows = db.execute(
+            """SELECT candidate.*
+               FROM orchestration_consultation_candidates AS candidate
+               LEFT JOIN orchestration_candidate_dispositions AS disposition
+                 ON disposition.candidate_id = candidate.candidate_id
+               WHERE candidate.plan_id = ? AND disposition.candidate_id IS NULL
+               ORDER BY candidate.created_at, candidate.candidate_id
+               LIMIT ?""",
+            (plan.plan_id, MAX_CURRENT_RECORDS + 1),
+        ).fetchall()
+        if len(pending_candidate_rows) > MAX_CURRENT_RECORDS:
+            raise OrchestrationConflictError(
+                "Pending consultation candidates exceed the bounded Task projection"
+            )
+        pending_candidates = [
+            self.orchestration._consultation_candidate(row)
+            for row in pending_candidate_rows
+        ]
 
         completed_stage_keys = [
             item.stage_key
@@ -359,6 +393,7 @@ class TaskProjectionStore:
             attention,
             plan.state,
             plan.plan_id,
+            pending_candidates,
         )
         budget = self._budget_projection(db, plan)
         next_action = GateDerivedNextSafeAction.model_validate(
@@ -374,6 +409,8 @@ class TaskProjectionStore:
             "approvals": approval_total,
             "attention": attention_total,
             "decisions": decision_total,
+            "consultation_candidates": consultation_candidate_total,
+            "consultation_candidate_dispositions": candidate_disposition_total,
             "budget_amendments": budget_amendment_total,
             "usage": usage_total,
             "audit_events": audit_total,
@@ -402,6 +439,8 @@ class TaskProjectionStore:
                     "evidence",
                     "approvals",
                     "decisions",
+                    "consultation_candidates",
+                    "consultation_candidate_dispositions",
                     "budget_amendments",
                     "usage",
                     "audit_events",
@@ -460,6 +499,8 @@ class TaskProjectionStore:
             attention=attention,
             required_human_actions=required_actions,
             decisions=decisions,
+            consultation_candidates=consultation_candidates,
+            consultation_candidate_dispositions=candidate_dispositions,
             budget_amendments=budget_amendments,
             usage=usage,
             audit_events=audit_events,
@@ -758,6 +799,38 @@ class TaskProjectionStore:
         ).fetchone()["count"]
         return [self.orchestration._decision(row) for row in rows], total
 
+    def _consultation_candidates(self, db, plan_id, limit, offset):
+        rows = db.execute(
+            """SELECT * FROM orchestration_consultation_candidates
+               WHERE plan_id = ?
+               ORDER BY created_at, candidate_id LIMIT ? OFFSET ?""",
+            (plan_id, limit, offset),
+        ).fetchall()
+        total = db.execute(
+            """SELECT COUNT(*) AS count
+               FROM orchestration_consultation_candidates WHERE plan_id = ?""",
+            (plan_id,),
+        ).fetchone()["count"]
+        return [
+            self.orchestration._consultation_candidate(row) for row in rows
+        ], total
+
+    def _consultation_candidate_dispositions(self, db, plan_id, limit, offset):
+        rows = db.execute(
+            """SELECT * FROM orchestration_candidate_dispositions
+               WHERE plan_id = ?
+               ORDER BY created_at, disposition_id LIMIT ? OFFSET ?""",
+            (plan_id, limit, offset),
+        ).fetchall()
+        total = db.execute(
+            """SELECT COUNT(*) AS count
+               FROM orchestration_candidate_dispositions WHERE plan_id = ?""",
+            (plan_id,),
+        ).fetchone()["count"]
+        return [
+            self.orchestration._candidate_disposition(row) for row in rows
+        ], total
+
     def _usage(self, db, plan_id, limit, offset):
         rows = db.execute(
             """SELECT * FROM orchestration_usage_ledger WHERE plan_id = ?
@@ -822,7 +895,7 @@ class TaskProjectionStore:
         return events, total
 
     @staticmethod
-    def _required_human_actions(attention, plan_state, plan_id):
+    def _required_human_actions(attention, plan_state, plan_id, pending_candidates):
         actions = [
             RequiredHumanAction(
                 action_id=f"attention:{item.item_id}",
@@ -842,6 +915,15 @@ class TaskProjectionStore:
                     source_id=plan_id,
                 )
             )
+        actions.extend(
+            RequiredHumanAction(
+                action_id=f"candidate-disposition:{candidate.candidate_id}",
+                kind="candidate_disposition",
+                title=f"Adopt or reject consultation candidate: {candidate.title}",
+                source_id=candidate.candidate_id,
+            )
+            for candidate in pending_candidates
+        )
         return actions
 
     @staticmethod

@@ -43,6 +43,8 @@ the Pydantic models in `backend/agora/protocol/`:
 - `provider-usage-observation.schema.json`
 - `native-runtime-capability-observation.schema.json`
 - `pinned-runtime-preflight-decision.schema.json`
+- `consultation-candidate.schema.json`
+- `consultation-candidate-disposition.schema.json`
 
 `scripts/export_protocol_schemas.py --check` fails when a checked-in schema
 does not match its executable model.

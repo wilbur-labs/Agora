@@ -996,7 +996,7 @@ async def test_unified_projection_reports_formal_progress_usage_and_human_action
 
     projection = service.unified_status(task.task_id)
 
-    assert projection.schema_version == "9.0"
+    assert projection.schema_version == "10.0"
     assert projection.task.task_id == task.task_id
     assert projection.task.state == TaskState.REQUIREMENTS
     assert projection.task_state_source == "control_plane"
@@ -1553,7 +1553,7 @@ async def test_cli_exposes_unified_projection_without_changing_legacy_status(
         ["status", task.task_id, "--protocol-v1", "--json", "--limit", "1"]
     ) == 0
     unified = json.loads(capsys.readouterr().out)
-    assert unified["schema_version"] == "9.0"
+    assert unified["schema_version"] == "10.0"
     assert unified["progress"]["source"] == "control_plane_stage_inventory"
     assert unified["progress"]["inventory_complete"] is True
     assert unified["task_state"] == "active"
@@ -1857,7 +1857,7 @@ async def test_versioned_budget_amendment_restores_retry_without_reallocating_st
     assert service.store.require_plan(task.task_id).version == after_status.plan.version
 
     projection = service.unified_status(task.task_id)
-    assert projection.schema_version == "9.0"
+    assert projection.schema_version == "10.0"
     assert projection.budget_amendments == [amendment]
     assert projection.collection_totals["budget_amendments"] == 1
     assert projection.collection_pages["budget_amendments"].total == 1

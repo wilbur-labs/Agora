@@ -8,6 +8,8 @@ from pydantic import BaseModel
 from .models import (
     Approval,
     Artifact,
+    ConsultationCandidate,
+    ConsultationCandidateDisposition,
     ContextPack,
     Evidence,
     GateRequirement,
@@ -26,6 +28,8 @@ SchemaModel: TypeAlias = type[BaseModel]
 SCHEMA_MODELS: dict[str, SchemaModel] = {
     "approval": Approval,
     "artifact": Artifact,
+    "consultation-candidate": ConsultationCandidate,
+    "consultation-candidate-disposition": ConsultationCandidateDisposition,
     "context-pack": ContextPack,
     "evidence": Evidence,
     "gate-requirement": GateRequirement,

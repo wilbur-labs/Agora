@@ -16,6 +16,8 @@ from agora.execution.security import redact_text, sanitize_data
 from agora.protocol.agent_adapter import AgentAdapterResult
 from agora.protocol.hashing import canonical_sha256, seal_model_payload
 from agora.protocol.models import (
+    ConsultationCandidate,
+    ConsultationCandidateDisposition,
     PinnedRuntimePreflightDecision,
     ProviderUsageObservation,
     SemanticStageResult,
@@ -229,6 +231,27 @@ class OrchestrationStore:
             ).fetchall()
         return [self._decision(row) for row in rows]
 
+    def consultation_candidates(self, plan_id: str) -> list[ConsultationCandidate]:
+        with closing(self._connect()) as db:
+            rows = db.execute(
+                """SELECT * FROM orchestration_consultation_candidates
+                   WHERE plan_id = ? ORDER BY created_at, candidate_id""",
+                (plan_id,),
+            ).fetchall()
+        return [self._consultation_candidate(row) for row in rows]
+
+    def consultation_candidate_dispositions(
+        self,
+        plan_id: str,
+    ) -> list[ConsultationCandidateDisposition]:
+        with closing(self._connect()) as db:
+            rows = db.execute(
+                """SELECT * FROM orchestration_candidate_dispositions
+                   WHERE plan_id = ? ORDER BY created_at, disposition_id""",
+                (plan_id,),
+            ).fetchall()
+        return [self._candidate_disposition(row) for row in rows]
+
     def budget_amendments(self, plan_id: str) -> list[BudgetAmendment]:
         with closing(self._connect()) as db:
             rows = db.execute(
@@ -374,6 +397,615 @@ class OrchestrationStore:
         if not row:
             raise OrchestrationNotFoundError(decision_id)
         return self._decision(row)
+
+    def register_consultation_candidate(
+        self,
+        task_id: str,
+        *,
+        consultation_id: str,
+        runtime: str,
+        title: str,
+        decision_key: str,
+        decision_value: str,
+        analysis: str,
+        source_refs: list[str],
+        expected_plan_version: int,
+        operation_key: str | None,
+        actor: str = "agora",
+    ) -> ConsultationCandidate:
+        """Persist advisory output without changing Plan, Stage, Gate, or Artifact state."""
+
+        consultation_id = consultation_id.strip()
+        runtime = runtime.strip()
+        safe_title = redact_text(title.strip())
+        safe_value = redact_text(decision_value.strip())
+        safe_analysis = redact_text(analysis.strip())
+        safe_source_refs = [item.strip() for item in source_refs]
+        actor = actor.strip()
+        operation_key = (
+            operation_key.strip()
+            if operation_key is not None
+            else "candidate-register:"
+            + canonical_sha256(
+                {
+                    "task_id": task_id,
+                    "consultation_id": consultation_id,
+                    "runtime": runtime,
+                    "title": safe_title,
+                    "decision_key": decision_key,
+                    "decision_value": safe_value,
+                    "analysis": safe_analysis,
+                    "source_refs": safe_source_refs,
+                    "expected_plan_version": expected_plan_version,
+                    "actor": actor,
+                }
+            )
+        )
+        stable_id = r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}"
+        if not re.fullmatch(stable_id, operation_key):
+            raise OrchestrationValidationError(
+                "Consultation candidate operation_key must be a stable identifier"
+            )
+        if not re.fullmatch(stable_id, consultation_id):
+            raise OrchestrationValidationError(
+                "Consultation ID must be a stable identifier"
+            )
+        if not re.fullmatch(stable_id, runtime):
+            raise OrchestrationValidationError(
+                "Consultation runtime must be a stable identifier"
+            )
+        if not re.fullmatch(r"[a-z][a-z0-9_.-]{0,127}", decision_key):
+            raise OrchestrationValidationError("Invalid candidate decision key")
+        if not safe_title or len(safe_title) > 200:
+            raise OrchestrationValidationError(
+                "Candidate title must contain 1 to 200 characters"
+            )
+        if not safe_value or len(safe_value) > 1_000:
+            raise OrchestrationValidationError(
+                "Candidate decision value must contain 1 to 1000 characters"
+            )
+        if not safe_analysis or len(safe_analysis) > 8_000:
+            raise OrchestrationValidationError(
+                "Candidate analysis must contain 1 to 8000 characters"
+            )
+        if len(safe_source_refs) > 20 or len(safe_source_refs) != len(
+            set(safe_source_refs)
+        ):
+            raise OrchestrationValidationError(
+                "Candidate source refs must be unique and contain at most 20 items"
+            )
+        if any(not re.fullmatch(stable_id, item) for item in safe_source_refs):
+            raise OrchestrationValidationError(
+                "Candidate source refs must be stable identifiers"
+            )
+        if any(redact_text(item) != item for item in safe_source_refs):
+            raise OrchestrationValidationError(
+                "Candidate source refs may not contain credential-like values"
+            )
+        if expected_plan_version < 1:
+            raise OrchestrationValidationError(
+                "Candidate expected Plan version must be positive"
+            )
+        if not actor or len(actor) > 128:
+            raise OrchestrationValidationError(
+                "Candidate actor must contain 1 to 128 characters"
+            )
+
+        candidate_id = self._id("candidate")
+        now = utc_now()
+        task = self.tasks.get(task_id)
+        if task is None:
+            raise OrchestrationNotFoundError(task_id)
+        with self._transaction() as db:
+            replay_row = db.execute(
+                """SELECT * FROM orchestration_consultation_candidates
+                   WHERE operation_key = ?""",
+                (operation_key,),
+            ).fetchone()
+            if replay_row is not None:
+                replay = self._consultation_candidate(replay_row)
+                if not (
+                    replay.task_id == task_id
+                    and replay.consultation_id == consultation_id
+                    and replay.runtime == runtime
+                    and replay.title == safe_title
+                    and replay.decision_key == decision_key
+                    and replay.decision_value == safe_value
+                    and replay.analysis == safe_analysis
+                    and replay.source_refs == safe_source_refs
+                    and replay.plan_version_observed == expected_plan_version
+                    and replay.registered_by == actor
+                ):
+                    raise OrchestrationConflictError(
+                        "Candidate operation_key was already used for different inputs"
+                    )
+                return replay
+
+            plan = db.execute(
+                "SELECT * FROM orchestration_plans WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
+            if plan is None:
+                raise OrchestrationNotFoundError(task_id)
+            if plan["version"] != expected_plan_version:
+                raise OrchestrationConflictError(
+                    "Plan version changed before candidate registration"
+                )
+            try:
+                route = ControlPlaneStore(self.tasks).stage_route_snapshot(
+                    db,
+                    task_id,
+                )
+            except ControlPlaneConflictError as exc:
+                raise OrchestrationConflictError(str(exc)) from exc
+            if route is None:
+                raise OrchestrationConflictError(
+                    "Authoritative Stage route is unavailable for consultation"
+                )
+            running = db.execute(
+                """SELECT run_id FROM orchestration_runs
+                   WHERE plan_id = ? AND state = ? LIMIT 1""",
+                (plan["plan_id"], RunState.RUNNING.value),
+            ).fetchone()
+            if running is not None:
+                raise OrchestrationConflictError(
+                    "Consultation candidate cannot be registered while a Run is active"
+                )
+            stage = db.execute(
+                """SELECT * FROM orchestration_stages
+                   WHERE plan_id = ? AND stage_key = ?""",
+                (plan["plan_id"], plan["current_stage_key"]),
+            ).fetchone()
+            valid_state = stage is not None and (
+                (
+                    plan["state"] == PlanState.ACTIVE.value
+                    and stage["state"] == StageState.PENDING.value
+                )
+                or (
+                    plan["state"] == PlanState.BLOCKED.value
+                    and stage["state"] == StageState.BLOCKED.value
+                )
+            )
+            if not valid_state:
+                raise OrchestrationConflictError(
+                    "Consultation candidates require the current pending or blocked Stage"
+                )
+            if (
+                route.task_id != task_id
+                or route.project_id != task.project_id
+                or route.stage_key != stage["stage_key"]
+                or route.runtime != stage["adapter"]
+            ):
+                raise OrchestrationConflictError(
+                    "Compatibility Plan route does not match the authoritative "
+                    "Control Plane Stage route"
+                )
+            if route.runtime != runtime:
+                raise OrchestrationConflictError(
+                    "Consultation runtime does not match the pinned current Stage runtime"
+                )
+            payload = seal_model_payload(
+                ConsultationCandidate,
+                {
+                    "schema_version": "1.0",
+                    "candidate_id": candidate_id,
+                    "consultation_id": consultation_id,
+                    "operation_key": operation_key,
+                    "project_id": task.project_id,
+                    "task_id": task_id,
+                    "plan_id": plan["plan_id"],
+                    "plan_version_observed": expected_plan_version,
+                    "inventory_id": route.inventory_id,
+                    "inventory_sha256": route.inventory_sha256,
+                    "stage_key": stage["stage_key"],
+                    "role": route.role,
+                    "runtime": runtime,
+                    "title": safe_title,
+                    "decision_key": decision_key,
+                    "decision_value": safe_value,
+                    "analysis": safe_analysis,
+                    "source_refs": safe_source_refs,
+                    "registered_by": actor,
+                    "advisory_authority": False,
+                    "formal_artifact": False,
+                    "created_at": now,
+                },
+            )
+            candidate = ConsultationCandidate.model_validate(payload)
+            db.execute(
+                """INSERT INTO orchestration_consultation_candidates (
+                       candidate_id, plan_id, task_id, stage_key, operation_key,
+                       payload, created_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    candidate.candidate_id,
+                    candidate.plan_id,
+                    candidate.task_id,
+                    candidate.stage_key,
+                    candidate.operation_key,
+                    self._json(candidate.model_dump(mode="json")),
+                    candidate.created_at.isoformat(),
+                ),
+            )
+            self.tasks._insert_event(
+                db,
+                task_id=task_id,
+                event_type="orchestration.consultation_candidate_registered",
+                actor=actor,
+                payload={
+                    "plan_id": candidate.plan_id,
+                    "stage_key": candidate.stage_key,
+                    "candidate_id": candidate.candidate_id,
+                    "consultation_id": candidate.consultation_id,
+                    "candidate_sha256": candidate.content_sha256,
+                    "inventory_id": candidate.inventory_id,
+                    "inventory_sha256": candidate.inventory_sha256,
+                    "advisory_authority": False,
+                    "formal_artifact": False,
+                },
+                created_at=now,
+            )
+        return self.require_consultation_candidate(candidate_id)
+
+    def dispose_consultation_candidate(
+        self,
+        task_id: str,
+        candidate_id: str,
+        *,
+        action: str,
+        expected_plan_version: int,
+        reason: str,
+        actor: str,
+        operation_key: str | None,
+    ) -> ConsultationCandidateDisposition:
+        """Adopt a candidate into Task decisions or reject it without formal mutation."""
+
+        if action not in {"adopted", "rejected"}:
+            raise OrchestrationValidationError(
+                "Candidate disposition must be adopted or rejected"
+            )
+        actor = actor.strip()
+        safe_reason = redact_text(reason.strip())
+        operation_key = (
+            operation_key.strip()
+            if operation_key is not None
+            else f"candidate-{action}:"
+            + canonical_sha256(
+                {
+                    "task_id": task_id,
+                    "candidate_id": candidate_id,
+                    "action": action,
+                    "expected_plan_version": expected_plan_version,
+                    "reason": safe_reason,
+                    "actor": actor,
+                }
+            )
+        )
+        stable_id = r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}"
+        if not re.fullmatch(stable_id, operation_key):
+            raise OrchestrationValidationError(
+                "Candidate disposition operation_key must be a stable identifier"
+            )
+        if not re.fullmatch(stable_id, candidate_id):
+            raise OrchestrationValidationError("Invalid consultation candidate ID")
+        if expected_plan_version < 1:
+            raise OrchestrationValidationError(
+                "Candidate disposition expected Plan version must be positive"
+            )
+        if not actor or len(actor) > 128:
+            raise OrchestrationValidationError(
+                "Candidate disposition actor must contain 1 to 128 characters"
+            )
+        if not safe_reason or len(safe_reason) > 500:
+            raise OrchestrationValidationError(
+                "Candidate disposition reason must contain 1 to 500 characters"
+            )
+
+        disposition_id = self._id("disposition")
+        now = utc_now()
+        with self._transaction() as db:
+            replay_row = db.execute(
+                """SELECT * FROM orchestration_candidate_dispositions
+                   WHERE operation_key = ?""",
+                (operation_key,),
+            ).fetchone()
+            if replay_row is not None:
+                replay = self._candidate_disposition(replay_row)
+                if not (
+                    replay.task_id == task_id
+                    and replay.candidate_id == candidate_id
+                    and replay.action == action
+                    and replay.plan_version_before == expected_plan_version
+                    and replay.actor == actor
+                    and replay.reason == safe_reason
+                ):
+                    raise OrchestrationConflictError(
+                        "Candidate disposition operation_key was already used "
+                        "for different inputs"
+                    )
+                return replay
+
+            candidate_row = db.execute(
+                """SELECT * FROM orchestration_consultation_candidates
+                   WHERE candidate_id = ?""",
+                (candidate_id,),
+            ).fetchone()
+            if candidate_row is None:
+                raise OrchestrationNotFoundError(candidate_id)
+            candidate = self._consultation_candidate(candidate_row)
+            if candidate.task_id != task_id:
+                raise OrchestrationConflictError(
+                    "Consultation candidate belongs to a different Task"
+                )
+            prior_disposition = db.execute(
+                """SELECT disposition_id
+                   FROM orchestration_candidate_dispositions
+                   WHERE candidate_id = ?""",
+                (candidate_id,),
+            ).fetchone()
+            if prior_disposition is not None:
+                raise OrchestrationConflictError(
+                    "Consultation candidate already has an explicit disposition"
+                )
+            plan = db.execute(
+                "SELECT * FROM orchestration_plans WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
+            if plan is None:
+                raise OrchestrationNotFoundError(task_id)
+            running = db.execute(
+                """SELECT run_id FROM orchestration_runs
+                   WHERE plan_id = ? AND state = ? LIMIT 1""",
+                (plan["plan_id"], RunState.RUNNING.value),
+            ).fetchone()
+            if running is not None:
+                raise OrchestrationConflictError(
+                    "Candidate disposition cannot race an active Run"
+                )
+            if (
+                plan["plan_id"] != candidate.plan_id
+                or plan["version"] != expected_plan_version
+                or candidate.plan_version_observed != expected_plan_version
+            ):
+                raise OrchestrationConflictError(
+                    "Consultation candidate is stale for the current Plan version"
+                )
+            try:
+                route = ControlPlaneStore(self.tasks).stage_route_snapshot(
+                    db,
+                    task_id,
+                )
+            except ControlPlaneConflictError as exc:
+                raise OrchestrationConflictError(str(exc)) from exc
+            if (
+                route is None
+                or route.project_id != candidate.project_id
+                or route.inventory_id != candidate.inventory_id
+                or route.inventory_sha256 != candidate.inventory_sha256
+                or route.stage_key != candidate.stage_key
+                or route.role != candidate.role
+                or route.runtime != candidate.runtime
+            ):
+                raise OrchestrationConflictError(
+                    "Consultation candidate is stale for the authoritative Stage route"
+                )
+            stage = db.execute(
+                """SELECT * FROM orchestration_stages
+                   WHERE plan_id = ? AND stage_key = ?""",
+                (plan["plan_id"], plan["current_stage_key"]),
+            ).fetchone()
+            valid_state = (
+                stage is not None
+                and stage["stage_key"] == candidate.stage_key
+                and (
+                    (
+                        plan["state"] == PlanState.ACTIVE.value
+                        and stage["state"] == StageState.PENDING.value
+                    )
+                    or (
+                        plan["state"] == PlanState.BLOCKED.value
+                        and stage["state"] == StageState.BLOCKED.value
+                    )
+                )
+            )
+            if not valid_state:
+                raise OrchestrationConflictError(
+                    "Candidate disposition requires its current pending or blocked Stage"
+                )
+            decision = None
+            if action == "adopted":
+                digest = hashlib.sha256(
+                    self._json(
+                        {
+                            "decision_key": candidate.decision_key,
+                            "decision_value": candidate.decision_value,
+                            "rationale": safe_reason,
+                        }
+                    ).encode("utf-8")
+                ).hexdigest()
+                latest = db.execute(
+                    """SELECT * FROM orchestration_decisions
+                       WHERE plan_id = ? AND decision_key = ?
+                       ORDER BY version DESC LIMIT 1""",
+                    (plan["plan_id"], candidate.decision_key),
+                ).fetchone()
+                if latest is not None and latest["decision_sha256"] == digest:
+                    decision = self._decision(latest)
+                else:
+                    version = int(latest["version"]) + 1 if latest else 1
+                    latest_rows = db.execute(
+                        """SELECT decision_key, decision_value, rationale, version, actor
+                           FROM orchestration_decisions AS decision
+                           WHERE plan_id = ? AND version = (
+                               SELECT MAX(version) FROM orchestration_decisions
+                               WHERE plan_id = decision.plan_id
+                               AND decision_key = decision.decision_key
+                           ) AND decision_key != ? ORDER BY decision_key""",
+                        (plan["plan_id"], candidate.decision_key),
+                    ).fetchall()
+                    decision_context = [dict(row) for row in latest_rows]
+                    decision_context.append(
+                        {
+                            "decision_key": candidate.decision_key,
+                            "decision_value": candidate.decision_value,
+                            "rationale": safe_reason,
+                            "version": version,
+                            "actor": actor,
+                        }
+                    )
+                    decision_context.sort(key=lambda item: item["decision_key"])
+                    if len(self._json(decision_context)) > DECISION_CONTEXT_LIMIT:
+                        raise OrchestrationValidationError(
+                            "Active Task decisions exceed the bounded prompt allocation"
+                        )
+                    decision_id = self._id("decision")
+                    db.execute(
+                        """INSERT INTO orchestration_decisions (
+                               decision_id, plan_id, task_id, decision_key,
+                               decision_value, rationale, decision_sha256,
+                               version, actor, created_at
+                           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            decision_id,
+                            plan["plan_id"],
+                            task_id,
+                            candidate.decision_key,
+                            candidate.decision_value,
+                            safe_reason,
+                            digest,
+                            version,
+                            actor,
+                            now,
+                        ),
+                    )
+                    decision = self._decision(
+                        db.execute(
+                            """SELECT * FROM orchestration_decisions
+                               WHERE decision_id = ?""",
+                            (decision_id,),
+                        ).fetchone()
+                    )
+                    self.tasks._insert_event(
+                        db,
+                        task_id=task_id,
+                        event_type="orchestration.decision_recorded",
+                        actor=actor,
+                        payload={
+                            "plan_id": plan["plan_id"],
+                            "decision_id": decision.decision_id,
+                            "decision_key": decision.decision_key,
+                            "decision_sha256": decision.decision_sha256,
+                            "version": decision.version,
+                            "candidate_id": candidate.candidate_id,
+                        },
+                        created_at=now,
+                    )
+
+            next_plan_version = (
+                expected_plan_version + 1
+                if action == "adopted"
+                else expected_plan_version
+            )
+            payload = seal_model_payload(
+                ConsultationCandidateDisposition,
+                {
+                    "schema_version": "1.0",
+                    "disposition_id": disposition_id,
+                    "operation_key": operation_key,
+                    "candidate_id": candidate.candidate_id,
+                    "candidate_sha256": candidate.content_sha256,
+                    "project_id": candidate.project_id,
+                    "task_id": task_id,
+                    "plan_id": plan["plan_id"],
+                    "stage_key": candidate.stage_key,
+                    "action": action,
+                    "plan_version_before": expected_plan_version,
+                    "plan_version_after": next_plan_version,
+                    "claim_invalidated": action == "adopted",
+                    "decision_id": decision.decision_id if decision else None,
+                    "decision_sha256": (
+                        decision.decision_sha256 if decision else None
+                    ),
+                    "decision_version": decision.version if decision else None,
+                    "actor": actor,
+                    "reason": safe_reason,
+                    "created_at": now,
+                },
+            )
+            disposition = ConsultationCandidateDisposition.model_validate(payload)
+            db.execute(
+                """INSERT INTO orchestration_candidate_dispositions (
+                       disposition_id, plan_id, task_id, candidate_id,
+                       operation_key, action, payload, created_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    disposition.disposition_id,
+                    disposition.plan_id,
+                    disposition.task_id,
+                    disposition.candidate_id,
+                    disposition.operation_key,
+                    disposition.action,
+                    self._json(disposition.model_dump(mode="json")),
+                    disposition.created_at.isoformat(),
+                ),
+            )
+            if action == "adopted":
+                cursor = db.execute(
+                    """UPDATE orchestration_plans
+                       SET version = version + 1, updated_at = ?
+                       WHERE plan_id = ? AND version = ?""",
+                    (now, plan["plan_id"], expected_plan_version),
+                )
+                if cursor.rowcount != 1:
+                    raise OrchestrationConflictError(
+                        "Plan changed while adopting the consultation candidate"
+                    )
+            self.tasks._insert_event(
+                db,
+                task_id=task_id,
+                event_type="orchestration.consultation_candidate_disposed",
+                actor=actor,
+                payload={
+                    "plan_id": plan["plan_id"],
+                    "stage_key": candidate.stage_key,
+                    "candidate_id": candidate.candidate_id,
+                    "candidate_sha256": candidate.content_sha256,
+                    "disposition_id": disposition.disposition_id,
+                    "disposition_sha256": disposition.content_sha256,
+                    "action": action,
+                    "decision_id": decision.decision_id if decision else None,
+                },
+                created_at=now,
+            )
+        return self.require_consultation_candidate_disposition(disposition_id)
+
+    def require_consultation_candidate(
+        self,
+        candidate_id: str,
+    ) -> ConsultationCandidate:
+        with closing(self._connect()) as db:
+            row = db.execute(
+                """SELECT * FROM orchestration_consultation_candidates
+                   WHERE candidate_id = ?""",
+                (candidate_id,),
+            ).fetchone()
+        if row is None:
+            raise OrchestrationNotFoundError(candidate_id)
+        return self._consultation_candidate(row)
+
+    def require_consultation_candidate_disposition(
+        self,
+        disposition_id: str,
+    ) -> ConsultationCandidateDisposition:
+        with closing(self._connect()) as db:
+            row = db.execute(
+                """SELECT * FROM orchestration_candidate_dispositions
+                   WHERE disposition_id = ?""",
+                (disposition_id,),
+            ).fetchone()
+        if row is None:
+            raise OrchestrationNotFoundError(disposition_id)
+        return self._candidate_disposition(row)
 
     def amend_budget(
         self,
@@ -2120,6 +2752,43 @@ class OrchestrationStore:
             decision_sha256=row["decision_sha256"], version=row["version"],
             actor=row["actor"], created_at=row["created_at"],
         )
+
+    @staticmethod
+    def _consultation_candidate(row: sqlite3.Row) -> ConsultationCandidate:
+        candidate = ConsultationCandidate.model_validate_json(row["payload"])
+        if (
+            candidate.candidate_id != row["candidate_id"]
+            or candidate.plan_id != row["plan_id"]
+            or candidate.task_id != row["task_id"]
+            or candidate.stage_key != row["stage_key"]
+            or candidate.operation_key != row["operation_key"]
+            or candidate.created_at.isoformat() != row["created_at"]
+        ):
+            raise OrchestrationConflictError(
+                "Consultation candidate row does not match its hash-sealed payload"
+            )
+        return candidate
+
+    @staticmethod
+    def _candidate_disposition(
+        row: sqlite3.Row,
+    ) -> ConsultationCandidateDisposition:
+        disposition = ConsultationCandidateDisposition.model_validate_json(
+            row["payload"]
+        )
+        if (
+            disposition.disposition_id != row["disposition_id"]
+            or disposition.plan_id != row["plan_id"]
+            or disposition.task_id != row["task_id"]
+            or disposition.candidate_id != row["candidate_id"]
+            or disposition.operation_key != row["operation_key"]
+            or disposition.action != row["action"]
+            or disposition.created_at.isoformat() != row["created_at"]
+        ):
+            raise OrchestrationConflictError(
+                "Candidate disposition row does not match its hash-sealed payload"
+            )
+        return disposition
 
     @staticmethod
     def _budget_amendment(row: sqlite3.Row) -> BudgetAmendment:

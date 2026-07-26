@@ -1,0 +1,178 @@
+{
+  "$id": "https://agora.local/schemas/v1/consultation-candidate.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Advisory consultation output that cannot mutate formal Task state.",
+  "properties": {
+    "advisory_authority": {
+      "const": false,
+      "default": false,
+      "title": "Advisory Authority",
+      "type": "boolean"
+    },
+    "analysis": {
+      "maxLength": 8000,
+      "minLength": 1,
+      "title": "Analysis",
+      "type": "string"
+    },
+    "candidate_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Candidate Id",
+      "type": "string"
+    },
+    "consultation_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Consultation Id",
+      "type": "string"
+    },
+    "content_sha256": {
+      "title": "Content Sha256",
+      "type": "string"
+    },
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "decision_key": {
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9_.-]*$",
+      "title": "Decision Key",
+      "type": "string"
+    },
+    "decision_value": {
+      "maxLength": 1000,
+      "minLength": 1,
+      "title": "Decision Value",
+      "type": "string"
+    },
+    "formal_artifact": {
+      "const": false,
+      "default": false,
+      "title": "Formal Artifact",
+      "type": "boolean"
+    },
+    "inventory_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Inventory Id",
+      "type": "string"
+    },
+    "inventory_sha256": {
+      "title": "Inventory Sha256",
+      "type": "string"
+    },
+    "operation_key": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Operation Key",
+      "type": "string"
+    },
+    "plan_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Plan Id",
+      "type": "string"
+    },
+    "plan_version_observed": {
+      "minimum": 1,
+      "title": "Plan Version Observed",
+      "type": "integer"
+    },
+    "project_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Project Id",
+      "type": "string"
+    },
+    "registered_by": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Registered By",
+      "type": "string"
+    },
+    "role": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Role",
+      "type": "string"
+    },
+    "runtime": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Runtime",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "source_refs": {
+      "items": {
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+        "type": "string"
+      },
+      "maxItems": 20,
+      "title": "Source Refs",
+      "type": "array"
+    },
+    "stage_key": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Stage Key",
+      "type": "string"
+    },
+    "task_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Task Id",
+      "type": "string"
+    },
+    "title": {
+      "maxLength": 200,
+      "minLength": 1,
+      "title": "Title",
+      "type": "string"
+    }
+  },
+  "required": [
+    "content_sha256",
+    "candidate_id",
+    "consultation_id",
+    "operation_key",
+    "project_id",
+    "task_id",
+    "plan_id",
+    "plan_version_observed",
+    "inventory_id",
+    "inventory_sha256",
+    "stage_key",
+    "role",
+    "runtime",
+    "title",
+    "decision_key",
+    "decision_value",
+    "analysis",
+    "registered_by",
+    "created_at"
+  ],
+  "title": "ConsultationCandidate",
+  "type": "object"
+}

@@ -31,7 +31,12 @@ from agora.protocol.hashing import (
     canonical_sha256,
     seal_model_payload,
 )
-from agora.protocol.models import NativeRuntimeCapabilityObservation, StageInventory
+from agora.protocol.models import (
+    ConsultationCandidate,
+    ConsultationCandidateDisposition,
+    NativeRuntimeCapabilityObservation,
+    StageInventory,
+)
 from agora.protocol.state_machines import StageStatus, TaskStatus
 from agora.tasks.models import CreateTaskRequest, TaskBudget, TaskManifest, TaskRisk, utc_now
 from agora.tasks.store import TaskStore
@@ -237,6 +242,75 @@ class TaskOrchestrationService:
             decision_value=decision_value,
             rationale=rationale,
             actor=actor,
+        )
+
+    def register_consultation_candidate(
+        self,
+        task_id: str,
+        *,
+        consultation_id: str,
+        runtime: str,
+        title: str,
+        decision_key: str,
+        decision_value: str,
+        analysis: str,
+        source_refs: list[str] | None = None,
+        expected_plan_version: int,
+        operation_key: str | None = None,
+        actor: str = "agora",
+    ) -> ConsultationCandidate:
+        return self.store.register_consultation_candidate(
+            task_id,
+            consultation_id=consultation_id,
+            runtime=runtime,
+            title=title,
+            decision_key=decision_key,
+            decision_value=decision_value,
+            analysis=analysis,
+            source_refs=source_refs or [],
+            expected_plan_version=expected_plan_version,
+            operation_key=operation_key,
+            actor=actor,
+        )
+
+    def adopt_candidate(
+        self,
+        task_id: str,
+        candidate_id: str,
+        *,
+        expected_plan_version: int,
+        reason: str,
+        actor: str = "user",
+        operation_key: str | None = None,
+    ) -> ConsultationCandidateDisposition:
+        return self.store.dispose_consultation_candidate(
+            task_id,
+            candidate_id,
+            action="adopted",
+            expected_plan_version=expected_plan_version,
+            reason=reason,
+            actor=actor,
+            operation_key=operation_key,
+        )
+
+    def reject_candidate(
+        self,
+        task_id: str,
+        candidate_id: str,
+        *,
+        expected_plan_version: int,
+        reason: str,
+        actor: str = "user",
+        operation_key: str | None = None,
+    ) -> ConsultationCandidateDisposition:
+        return self.store.dispose_consultation_candidate(
+            task_id,
+            candidate_id,
+            action="rejected",
+            expected_plan_version=expected_plan_version,
+            reason=reason,
+            actor=actor,
+            operation_key=operation_key,
         )
 
     def amend_budget(

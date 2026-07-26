@@ -16,6 +16,8 @@ from agora.control_plane.models import (
 from agora.protocol.models import (
     Approval,
     ArtifactVersionRef,
+    ConsultationCandidate,
+    ConsultationCandidateDisposition,
     Evidence,
     HashSealedModel,
     PinnedRuntimePreflightDecision,
@@ -620,7 +622,7 @@ class UnifiedAuditEvent(StrictModel):
 
 class RequiredHumanAction(StrictModel):
     action_id: str
-    kind: Literal["attention", "plan_approval"]
+    kind: Literal["attention", "plan_approval", "candidate_disposition"]
     title: str
     source_id: str
 
@@ -645,7 +647,7 @@ class UnifiedBudgetProjection(StrictModel):
 
 
 class UnifiedTaskProjection(StrictModel):
-    schema_version: Literal["9.0"] = "9.0"
+    schema_version: Literal["10.0"] = "10.0"
     snapshot_at: str
     task: TaskManifest
     task_state: TaskStatus | None
@@ -672,6 +674,8 @@ class UnifiedTaskProjection(StrictModel):
     attention: list[AttentionItem]
     required_human_actions: list[RequiredHumanAction]
     decisions: list[TaskDecision]
+    consultation_candidates: list[ConsultationCandidate]
+    consultation_candidate_dispositions: list[ConsultationCandidateDisposition]
     budget_amendments: list[BudgetAmendment]
     usage: list[UsageLedgerEntry]
     audit_events: list[UnifiedAuditEvent]

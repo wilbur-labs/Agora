@@ -102,6 +102,24 @@ def parser() -> argparse.ArgumentParser:
     decide.add_argument("--reason", required=True)
     decide.add_argument("--actor", default="user")
 
+    for name, help_text in (
+        (
+            "adopt",
+            "Explicitly adopt an immutable consultation candidate as a Task decision",
+        ),
+        (
+            "reject",
+            "Explicitly reject an immutable consultation candidate",
+        ),
+    ):
+        disposition = commands.add_parser(name, help=help_text)
+        disposition.add_argument("task_id")
+        disposition.add_argument("candidate_id")
+        disposition.add_argument("--expected-plan-version", type=int, required=True)
+        disposition.add_argument("--reason", required=True)
+        disposition.add_argument("--actor", default="user")
+        disposition.add_argument("--operation-key")
+
     amend_budget = commands.add_parser(
         "amend-budget",
         help="Increase the Task envelope for a protected-budget retry",
@@ -246,6 +264,29 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             print(json.dumps(decision.model_dump(mode="json"), ensure_ascii=False, indent=2))
             _print_status(service.status(args.task_id))
+            return 0
+        if args.command in {"adopt", "reject"}:
+            method = (
+                service.adopt_candidate
+                if args.command == "adopt"
+                else service.reject_candidate
+            )
+            disposition = method(
+                args.task_id,
+                args.candidate_id,
+                expected_plan_version=args.expected_plan_version,
+                reason=args.reason,
+                actor=args.actor,
+                operation_key=args.operation_key,
+            )
+            print(
+                json.dumps(
+                    disposition.model_dump(mode="json"),
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            _print_unified_status(service.unified_status(args.task_id))
             return 0
         if args.command == "amend-budget":
             amendment = service.amend_budget(
@@ -461,6 +502,19 @@ def _print_unified_status(status) -> None:
         print("Required human actions:")
         for action in status.required_human_actions:
             print(f"  {action.kind}: {action.title} ({action.source_id})")
+    if status.consultation_candidates:
+        dispositions = {
+            item.candidate_id: item
+            for item in status.consultation_candidate_dispositions
+        }
+        print("Consultation candidates:")
+        for candidate in status.consultation_candidates:
+            disposition = dispositions.get(candidate.candidate_id)
+            disposition_text = disposition.action if disposition else "pending"
+            print(
+                f"  {candidate.candidate_id} [{disposition_text}] "
+                f"{candidate.decision_key}: {candidate.title}"
+            )
     budget = status.budget
     if budget.token_measurement == Measurement.UNAVAILABLE:
         token_settled = "unavailable"

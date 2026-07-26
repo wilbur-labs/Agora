@@ -1,5 +1,78 @@
 # Agora Control Plane Development Progress
 
+## 2026-07-26 - Consultation candidate authority boundary (reviewed)
+
+### Bounded implementation
+
+- [x] Added hash-sealed `ConsultationCandidate@1.0` and
+  `ConsultationCandidateDisposition@1.0` contracts plus checked-in JSON
+  Schemas. Candidate records bind the current authoritative grouped-inventory
+  Stage route, its pinned runtime, and the exact observed Plan version while
+  carrying explicit `advisory_authority=false` and `formal_artifact=false`
+  markers.
+- [x] Added append-only candidate/disposition persistence. Registration is
+  idempotent, redacted, bounded, and cannot change Task, Plan, Stage, Gate,
+  Run, Artifact, Evidence, Approval, or decision state. It fails closed for a
+  stale Plan, a compatibility/Control Plane route mismatch, runtime
+  substitution, or an active Run.
+- [x] Added explicit `agora task adopt` and `agora task reject` actions.
+  Adoption atomically creates or reuses the bounded versioned TaskDecision and
+  increments the Plan version once to invalidate stale claims. Rejection
+  creates no decision and does not change the Plan version. Both actions are
+  exact-operation-key idempotent and one candidate may receive only one
+  disposition.
+- [x] Unified Task projection schema `10.0` exposes paginated, hash-verified
+  candidates and dispositions, true totals/pages, pending candidate human
+  actions, and CLI disposition labels. Candidate content remains separate from
+  formal Artifact/Evidence/Approval and Gate-derived next-safe-action truth.
+- [x] Added the architecture boundary in
+  `docs/architecture/task-consultation-candidate-v1.md`. Native provider
+  `consult` dispatch and parsing remain deliberately separate so provider
+  output cannot become authoritative by accident.
+
+### Verification and review state
+
+- [x] Focused protocol, orchestration, and candidate suite: 158 passed.
+- [x] Initial complete non-integration backend suite: 535 passed, 18
+  deselected. After the Claude-requested fixes, the final complete suite passed
+  537 tests with 18 deselected and
+  only the existing Starlette/httpx and Windows Proactor cleanup warnings.
+  Protocol Schema export/check, `compileall`, and `git diff --check` passed.
+- [x] Initial Kiro methodology/protocol review returned `VERDICT: APPROVE`
+  with no high/medium findings. It used 14.82 credits and independently reran
+  6 focused and 125 broader orchestration tests with the correct isolated
+  Windows temp boundary.
+- [x] Initial Claude review returned `VERDICT: CHANGES_REQUESTED` with two
+  medium findings: omitted operation keys were random rather than
+  deterministic, and documented fail-closed conflict paths lacked direct
+  regressions. The review session
+  `b0a05865-7b1e-4c0e-9121-4ae330373e39` used `$1.635861`.
+- [x] Replaced random default candidate/disposition operation keys with
+  canonical hashes of the complete redacted/normalized request and bound the
+  registration actor into the sealed candidate. Identical CLI retries now
+  return the original receipt.
+- [x] Added direct active-Run, changed-input operation replay, different-Task,
+  single-disposition, default-key replay, stale Plan, and wrong-runtime
+  regressions. The post-fix focused consultation suite passed 8 tests.
+- [x] Final Kiro post-fix re-review inspected the complete current diff,
+  independently reran 6 focused tests and both changed suites (127 passed),
+  and returned `VERDICT: APPROVE` with no high/medium findings. It used 11.38
+  credits.
+- [x] Final Claude post-fix re-review verified both requested fixes and all
+  authority, transaction, hash, route, and projection invariants, then returned
+  `VERDICT: APPROVE` with no remaining high/medium findings. Review session
+  `6301006c-606a-4b17-9eef-cbfc942ac519` used `$1.741692`.
+
+### Current checkpoint and next safe action
+
+Both independent review gates approve the current implementation diff, so this
+bounded persistence and explicit-disposition increment is ready to commit and
+push. The next independent backend slice is native
+`agora task consult` dispatch with candidate-only result parsing and truthful
+provider usage settlement. The missing authoritative complete AI-DLC source
+still blocks formal method-graph freeze, but does not block this consultation
+path.
+
 ## 2026-07-26 - Formal Kiro chat transport and settlement recheck (reviewed)
 
 ### Live acceptance evidence and bounded implementation

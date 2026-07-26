@@ -104,6 +104,13 @@ hash-sealed `runtime_preflight`. Historical Runs may omit it. Projection reads
 verify the decision's Run and routing-policy bindings without collecting new
 native observations or mutating dispatch state.
 
+Unified projection schema `10.0` adds paginated, hash-verified consultation
+candidates and their explicit adoption/rejection receipts. Candidate output
+retains `advisory_authority=false` and is separate from formal Artifacts,
+Evidence, and Task decisions. Only an adopted receipt binds a versioned
+TaskDecision and increments the Plan version; a rejection creates no decision
+and leaves Plan state unchanged. See `task-consultation-candidate-v1.md`.
+
 Formal progress counts only Control Plane Stages in `completed` state. A passed
 process, compatibility Run, or Gate cannot increase the completed count by
 itself. Operational Stages not yet configured in the Control Plane remain

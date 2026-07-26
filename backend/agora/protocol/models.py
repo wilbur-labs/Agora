@@ -79,6 +79,98 @@ class HashSealedModel(ProtocolModel):
         return self
 
 
+class ConsultationCandidate(HashSealedModel):
+    """Advisory consultation output that cannot mutate formal Task state."""
+
+    schema_version: Literal["1.0"] = "1.0"
+    candidate_id: StableId
+    consultation_id: StableId
+    operation_key: StableId
+    project_id: StableId
+    task_id: StableId
+    plan_id: StableId
+    plan_version_observed: int = Field(ge=1)
+    inventory_id: StableId
+    inventory_sha256: Sha256Hex
+    stage_key: StableId
+    role: StableId
+    runtime: StableId
+    title: Annotated[str, Field(min_length=1, max_length=200)]
+    decision_key: Annotated[
+        str,
+        Field(pattern=r"^[a-z][a-z0-9_.-]*$", max_length=128),
+    ]
+    decision_value: Annotated[str, Field(min_length=1, max_length=1_000)]
+    analysis: Annotated[str, Field(min_length=1, max_length=8_000)]
+    source_refs: list[StableId] = Field(default_factory=list, max_length=20)
+    registered_by: Annotated[str, Field(min_length=1, max_length=128)]
+    advisory_authority: Literal[False] = False
+    formal_artifact: Literal[False] = False
+    created_at: AwareDatetime
+
+    @field_validator("source_refs")
+    @classmethod
+    def validate_source_refs(cls, value: list[str]):
+        if len(value) != len(set(value)):
+            raise ValueError("Consultation candidate source refs must be unique")
+        return value
+
+
+class ConsultationCandidateDisposition(HashSealedModel):
+    """Explicit human disposition of one immutable consultation candidate."""
+
+    schema_version: Literal["1.0"] = "1.0"
+    disposition_id: StableId
+    operation_key: StableId
+    candidate_id: StableId
+    candidate_sha256: Sha256Hex
+    project_id: StableId
+    task_id: StableId
+    plan_id: StableId
+    stage_key: StableId
+    action: Literal["adopted", "rejected"]
+    plan_version_before: int = Field(ge=1)
+    plan_version_after: int = Field(ge=1)
+    claim_invalidated: bool
+    decision_id: StableId | None = None
+    decision_sha256: Sha256Hex | None = None
+    decision_version: int | None = Field(default=None, ge=1)
+    actor: Annotated[str, Field(min_length=1, max_length=128)]
+    reason: Annotated[str, Field(min_length=1, max_length=500)]
+    created_at: AwareDatetime
+
+    @model_validator(mode="after")
+    def validate_disposition(self):
+        decision_fields = (
+            self.decision_id,
+            self.decision_sha256,
+            self.decision_version,
+        )
+        if self.action == "adopted":
+            if any(item is None for item in decision_fields):
+                raise ValueError(
+                    "Adopted consultation candidates require a bound Task decision"
+                )
+            if self.plan_version_after != self.plan_version_before + 1:
+                raise ValueError(
+                    "Candidate adoption must increment the Plan version once"
+                )
+            if not self.claim_invalidated:
+                raise ValueError("Candidate adoption must invalidate stale claims")
+        else:
+            if any(item is not None for item in decision_fields):
+                raise ValueError(
+                    "Rejected consultation candidates may not create a Task decision"
+                )
+            if self.plan_version_after != self.plan_version_before:
+                raise ValueError(
+                    "Candidate rejection may not change the Plan version"
+                )
+            if self.claim_invalidated:
+                raise ValueError("Candidate rejection may not invalidate Run claims")
+        return self
+
+
 class ProviderUsageObservation(HashSealedModel):
     """Read-only, Run-bound usage facts observed at a native CLI boundary."""
 

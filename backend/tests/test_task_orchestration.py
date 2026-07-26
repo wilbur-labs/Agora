@@ -1208,6 +1208,334 @@ def test_human_decisions_require_a_blocked_stage_and_bounded_active_context(tmp_
         )
 
 
+def test_consultation_candidate_is_advisory_until_explicit_adoption(tmp_path):
+    tasks, service, _, task = _system(tmp_path)
+    before = service.status(task.task_id)
+    secret = "sk-abcdefghijklmnopqrst"
+
+    candidate = service.register_consultation_candidate(
+        task.task_id,
+        consultation_id="consultation:architecture:1",
+        runtime="codex",
+        title="Adopt fail-closed authentication",
+        decision_key="authentication_policy",
+        decision_value=f"Use Bearer authentication token={secret}",
+        analysis=f"The credential password={secret} must never be persisted.",
+        source_refs=["requirement:authenticated-api"],
+        expected_plan_version=before.plan.version,
+    )
+    replay = service.register_consultation_candidate(
+        task.task_id,
+        consultation_id="consultation:architecture:1",
+        runtime="codex",
+        title="Adopt fail-closed authentication",
+        decision_key="authentication_policy",
+        decision_value=f"Use Bearer authentication token={secret}",
+        analysis=f"The credential password={secret} must never be persisted.",
+        source_refs=["requirement:authenticated-api"],
+        expected_plan_version=before.plan.version,
+    )
+
+    assert replay == candidate
+    assert candidate.advisory_authority is False
+    assert candidate.formal_artifact is False
+    assert candidate.registered_by == "agora"
+    assert secret not in candidate.model_dump_json()
+    assert "[REDACTED]" in candidate.decision_value
+    unchanged = service.status(task.task_id)
+    assert unchanged.plan.version == before.plan.version
+    assert unchanged.decisions == []
+    projection = service.unified_status(task.task_id)
+    assert projection.schema_version == "10.0"
+    assert projection.consultation_candidates == [candidate]
+    assert projection.consultation_candidate_dispositions == []
+    assert projection.artifacts == []
+    assert any(
+        item.kind == "candidate_disposition"
+        and item.source_id == candidate.candidate_id
+        for item in projection.required_human_actions
+    )
+
+    disposition = service.adopt_candidate(
+        task.task_id,
+        candidate.candidate_id,
+        expected_plan_version=before.plan.version,
+        reason="Owner accepts the bounded fail-closed policy",
+        actor="owner",
+    )
+    adoption_replay = service.adopt_candidate(
+        task.task_id,
+        candidate.candidate_id,
+        expected_plan_version=before.plan.version,
+        reason="Owner accepts the bounded fail-closed policy",
+        actor="owner",
+    )
+
+    assert adoption_replay == disposition
+    assert disposition.action == "adopted"
+    assert disposition.claim_invalidated is True
+    assert disposition.candidate_sha256 == candidate.content_sha256
+    assert disposition.decision_id is not None
+    after = service.status(task.task_id)
+    assert after.plan.version == before.plan.version + 1
+    assert len(after.decisions) == 1
+    assert after.decisions[0].decision_id == disposition.decision_id
+    assert after.decisions[0].decision_value == candidate.decision_value
+    projection = service.unified_status(task.task_id)
+    assert projection.consultation_candidate_dispositions == [disposition]
+    assert all(
+        item.source_id != candidate.candidate_id
+        for item in projection.required_human_actions
+    )
+    event_types = [item.event_type for item in tasks.events(task.task_id)]
+    assert "orchestration.consultation_candidate_registered" in event_types
+    assert "orchestration.consultation_candidate_disposed" in event_types
+    serialized_events = json.dumps(
+        [item.payload for item in tasks.events(task.task_id)]
+    )
+    assert secret not in serialized_events
+
+
+def test_candidate_rejection_creates_no_decision_or_plan_mutation(tmp_path):
+    _, service, _, task = _system(tmp_path)
+    version = service.status(task.task_id).plan.version
+    candidate = service.register_consultation_candidate(
+        task.task_id,
+        consultation_id="consultation:security:1",
+        runtime="codex",
+        title="Consider optional authentication",
+        decision_key="authentication_policy",
+        decision_value="Allow anonymous requests",
+        analysis="This conflicts with the fail-closed boundary.",
+        source_refs=[],
+        expected_plan_version=version,
+        operation_key="candidate:test:reject-source",
+    )
+
+    disposition = service.reject_candidate(
+        task.task_id,
+        candidate.candidate_id,
+        expected_plan_version=version,
+        reason="Anonymous access violates the Task contract",
+        actor="owner",
+        operation_key="candidate:test:reject",
+    )
+
+    assert disposition.action == "rejected"
+    assert disposition.claim_invalidated is False
+    assert disposition.plan_version_after == version
+    assert disposition.decision_id is None
+    status = service.status(task.task_id)
+    assert status.plan.version == version
+    assert status.decisions == []
+
+
+def test_candidate_registration_and_adoption_fail_closed_on_stale_or_wrong_context(
+    tmp_path,
+):
+    _, service, _, task = _system(tmp_path)
+    version = service.status(task.task_id).plan.version
+    with pytest.raises(OrchestrationConflictError, match="pinned current Stage runtime"):
+        service.register_consultation_candidate(
+            task.task_id,
+            consultation_id="consultation:wrong-runtime",
+            runtime="claude",
+            title="Wrong runtime",
+            decision_key="runtime_policy",
+            decision_value="Substitute Claude",
+            analysis="The Stage is pinned to Codex.",
+            expected_plan_version=version,
+            operation_key="candidate:test:wrong-runtime",
+        )
+
+    first = service.register_consultation_candidate(
+        task.task_id,
+        consultation_id="consultation:alternatives",
+        runtime="codex",
+        title="First candidate",
+        decision_key="policy_choice",
+        decision_value="Choice A",
+        analysis="First bounded option.",
+        expected_plan_version=version,
+        operation_key="candidate:test:first",
+    )
+    stale = service.register_consultation_candidate(
+        task.task_id,
+        consultation_id="consultation:alternatives",
+        runtime="codex",
+        title="Second candidate",
+        decision_key="policy_choice",
+        decision_value="Choice B",
+        analysis="Second bounded option.",
+        expected_plan_version=version,
+        operation_key="candidate:test:second",
+    )
+    service.adopt_candidate(
+        task.task_id,
+        first.candidate_id,
+        expected_plan_version=version,
+        reason="Select A",
+        operation_key="candidate:test:first-adopt",
+    )
+    with pytest.raises(OrchestrationConflictError, match="stale"):
+        service.adopt_candidate(
+            task.task_id,
+            stale.candidate_id,
+            expected_plan_version=version + 1,
+            reason="Attempt stale selection",
+            operation_key="candidate:test:stale-adopt",
+        )
+
+
+def test_candidate_operations_reject_active_runs_and_conflicting_replays(tmp_path):
+    _, service, _, task = _system(tmp_path)
+    version = service.status(task.task_id).plan.version
+    candidate = service.register_consultation_candidate(
+        task.task_id,
+        consultation_id="consultation:conflicts",
+        runtime="codex",
+        title="Original candidate",
+        decision_key="conflict_policy",
+        decision_value="Original value",
+        analysis="Original analysis.",
+        expected_plan_version=version,
+        operation_key="candidate:test:conflicting-registration",
+    )
+    with pytest.raises(OrchestrationConflictError, match="different inputs"):
+        service.register_consultation_candidate(
+            task.task_id,
+            consultation_id="consultation:conflicts",
+            runtime="codex",
+            title="Changed candidate",
+            decision_key="conflict_policy",
+            decision_value="Changed value",
+            analysis="Changed analysis.",
+            expected_plan_version=version,
+            operation_key="candidate:test:conflicting-registration",
+        )
+
+    run = service.store.claim_current_stage(
+        task.task_id,
+        prompt_sha256="f" * 64,
+        operation_key="candidate:test:active-run",
+    )
+    running_version = service.status(task.task_id).plan.version
+    with pytest.raises(OrchestrationConflictError, match="while a Run is active"):
+        service.register_consultation_candidate(
+            task.task_id,
+            consultation_id="consultation:active-run",
+            runtime="codex",
+            title="Racing candidate",
+            decision_key="race_policy",
+            decision_value="Do not race",
+            analysis="Registration must stop before a running Stage check.",
+            expected_plan_version=running_version,
+        )
+    with pytest.raises(OrchestrationConflictError, match="race an active Run"):
+        service.adopt_candidate(
+            task.task_id,
+            candidate.candidate_id,
+            expected_plan_version=running_version,
+            reason="Do not race the active Run",
+        )
+    service.store.mark_interrupted(run.run_id, reason="finish conflict test")
+
+
+def test_candidate_disposition_rejects_other_tasks_and_second_actions(tmp_path):
+    _, service, _, task = _system(tmp_path)
+    version = service.status(task.task_id).plan.version
+    candidate = service.register_consultation_candidate(
+        task.task_id,
+        consultation_id="consultation:single-disposition",
+        runtime="codex",
+        title="Single disposition candidate",
+        decision_key="single_disposition_policy",
+        decision_value="One explicit action",
+        analysis="A candidate cannot be disposed twice.",
+        expected_plan_version=version,
+    )
+    other_task = service.create(
+        project_id="alpha",
+        title="Other Task",
+        description="Must not own the first Task candidate",
+        total_token_budget=30_000,
+        total_cost_budget_usd=12,
+    )
+    other_version = service.status(other_task.task_id).plan.version
+    with pytest.raises(OrchestrationConflictError, match="different Task"):
+        service.reject_candidate(
+            other_task.task_id,
+            candidate.candidate_id,
+            expected_plan_version=other_version,
+            reason="Wrong Task",
+            operation_key="candidate:test:wrong-task",
+        )
+
+    disposition = service.reject_candidate(
+        task.task_id,
+        candidate.candidate_id,
+        expected_plan_version=version,
+        reason="Reject once",
+        operation_key="candidate:test:one-disposition",
+    )
+    with pytest.raises(OrchestrationConflictError, match="different inputs"):
+        service.reject_candidate(
+            task.task_id,
+            candidate.candidate_id,
+            expected_plan_version=version,
+            reason="Changed replay input",
+            operation_key="candidate:test:one-disposition",
+        )
+    with pytest.raises(OrchestrationConflictError, match="already has"):
+        service.reject_candidate(
+            task.task_id,
+            candidate.candidate_id,
+            expected_plan_version=version,
+            reason="Reject twice",
+            operation_key="candidate:test:second-disposition",
+        )
+    assert service.store.consultation_candidate_dispositions(
+        disposition.plan_id
+    ) == [disposition]
+
+
+def test_cli_explicitly_adopts_a_consultation_candidate(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    _, service, _, task = _system(tmp_path)
+    version = service.status(task.task_id).plan.version
+    candidate = service.register_consultation_candidate(
+        task.task_id,
+        consultation_id="consultation:cli",
+        runtime="codex",
+        title="CLI candidate",
+        decision_key="cli_policy",
+        decision_value="Use explicit adoption",
+        analysis="The CLI must not imply adoption from provider output.",
+        expected_plan_version=version,
+        operation_key="candidate:test:cli-source",
+    )
+    monkeypatch.setattr(orchestration_cli, "build_service", lambda: service)
+
+    command = [
+        "adopt",
+        task.task_id,
+        candidate.candidate_id,
+        "--expected-plan-version",
+        str(version),
+        "--reason",
+        "Owner approves the explicit CLI action",
+    ]
+    assert orchestration_cli.main(command) == 0
+    assert orchestration_cli.main(command) == 0
+    output = capsys.readouterr().out
+    assert '"action": "adopted"' in output
+    assert candidate.candidate_id in output
+    assert "[adopted]" in output
+
+
 @pytest.mark.asyncio
 async def test_human_decision_text_is_redacted_before_persistence(tmp_path):
     secret = "sk-abcdefghijklmnopqrst"

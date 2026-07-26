@@ -118,6 +118,34 @@ def initialize_orchestration_schema(db: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_orchestration_decisions_plan_key_version
             ON orchestration_decisions(plan_id, decision_key, version DESC);
 
+        CREATE TABLE IF NOT EXISTS orchestration_consultation_candidates (
+            candidate_id TEXT PRIMARY KEY,
+            plan_id TEXT NOT NULL REFERENCES orchestration_plans(plan_id),
+            task_id TEXT NOT NULL REFERENCES tasks(task_id),
+            stage_key TEXT NOT NULL,
+            operation_key TEXT NOT NULL UNIQUE,
+            payload TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_orchestration_candidates_plan_created
+            ON orchestration_consultation_candidates(plan_id, created_at, candidate_id);
+
+        CREATE TABLE IF NOT EXISTS orchestration_candidate_dispositions (
+            disposition_id TEXT PRIMARY KEY,
+            plan_id TEXT NOT NULL REFERENCES orchestration_plans(plan_id),
+            task_id TEXT NOT NULL REFERENCES tasks(task_id),
+            candidate_id TEXT NOT NULL UNIQUE
+                REFERENCES orchestration_consultation_candidates(candidate_id),
+            operation_key TEXT NOT NULL UNIQUE,
+            action TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_orchestration_dispositions_plan_created
+            ON orchestration_candidate_dispositions(
+                plan_id, created_at, disposition_id
+            );
+
         CREATE TABLE IF NOT EXISTS orchestration_budget_amendments (
             amendment_id TEXT PRIMARY KEY,
             plan_id TEXT NOT NULL REFERENCES orchestration_plans(plan_id),

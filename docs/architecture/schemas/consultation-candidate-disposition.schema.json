@@ -1,0 +1,170 @@
+{
+  "$id": "https://agora.local/schemas/v1/consultation-candidate-disposition.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Explicit human disposition of one immutable consultation candidate.",
+  "properties": {
+    "action": {
+      "enum": [
+        "adopted",
+        "rejected"
+      ],
+      "title": "Action",
+      "type": "string"
+    },
+    "actor": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Actor",
+      "type": "string"
+    },
+    "candidate_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Candidate Id",
+      "type": "string"
+    },
+    "candidate_sha256": {
+      "title": "Candidate Sha256",
+      "type": "string"
+    },
+    "claim_invalidated": {
+      "title": "Claim Invalidated",
+      "type": "boolean"
+    },
+    "content_sha256": {
+      "title": "Content Sha256",
+      "type": "string"
+    },
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "decision_id": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Decision Id"
+    },
+    "decision_sha256": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Decision Sha256"
+    },
+    "decision_version": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Decision Version"
+    },
+    "disposition_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Disposition Id",
+      "type": "string"
+    },
+    "operation_key": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Operation Key",
+      "type": "string"
+    },
+    "plan_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Plan Id",
+      "type": "string"
+    },
+    "plan_version_after": {
+      "minimum": 1,
+      "title": "Plan Version After",
+      "type": "integer"
+    },
+    "plan_version_before": {
+      "minimum": 1,
+      "title": "Plan Version Before",
+      "type": "integer"
+    },
+    "project_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Project Id",
+      "type": "string"
+    },
+    "reason": {
+      "maxLength": 500,
+      "minLength": 1,
+      "title": "Reason",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "stage_key": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Stage Key",
+      "type": "string"
+    },
+    "task_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Task Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "content_sha256",
+    "disposition_id",
+    "operation_key",
+    "candidate_id",
+    "candidate_sha256",
+    "project_id",
+    "task_id",
+    "plan_id",
+    "stage_key",
+    "action",
+    "plan_version_before",
+    "plan_version_after",
+    "claim_invalidated",
+    "actor",
+    "reason",
+    "created_at"
+  ],
+  "title": "ConsultationCandidateDisposition",
+  "type": "object"
+}
