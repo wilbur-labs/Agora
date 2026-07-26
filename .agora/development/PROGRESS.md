@@ -1,5 +1,52 @@
 # Agora Control Plane Development Progress
 
+## 2026-07-26 - Memory source-reference guidance (reviewed)
+
+### Seventh Claude attempt and final remaining schema class
+
+- [x] Used the reviewed nested-object guide for formal Claude
+  `correctness_review` attempt 7. Run
+  `orun_cb8dc38e1aa7427884159af9c716abdd` completed in 471.022849
+  seconds and settled 698,516 exact Tokens plus `$1.6727375`.
+- [x] Every previously observed structural issue was corrected: raw JSON,
+  managed Artifact, nested ProducerRefs, structured Evidence details, null
+  NativeStateSnapshot, and complete MemoryCandidate objects. The parser still
+  failed closed with `handoff_schema_invalid` only because the two non-empty
+  MemoryCandidate `source_refs` contained file-path `/` and `#` characters
+  outside frozen StableId. Attention
+  `attn_protocol_938a858b707eb190aae994073c6882fc` remains open until formal
+  retry.
+- [x] Added a bounded instruction that memory source references are non-empty
+  StableIds using only `A-Z a-z 0-9 _ . : -`. Legitimate memory suggestions
+  remain allowed, no output was rewritten, and no parser, schema, repair,
+  Evidence, Gate, or state behavior changed.
+- [x] A copied authoritative database produced a 24,499-byte prompt with the
+  source-reference rule, leaving 77 bytes below the frozen 24 KiB bound. The
+  diagnostic Runner spawned no provider.
+
+### Verification and review state
+
+- [x] Complete protocol orchestration file: 63 passed. The first complete
+  backend attempt was invalidated after an infrastructure timeout returned no
+  result and left no matching pytest/python process. A fresh isolated rerun
+  completed with 527 passed, 18 deselected and only the existing
+  Starlette/httpx and Windows Proactor cleanup warnings. Schema export/check,
+  isolated `compileall`, and `git diff --check` passed.
+- [x] Kiro verified the source-reference type, minimum length, frozen regex,
+  memory/state separation, tight but enforced prompt bound, docs, and tests,
+  then returned `KIRO_APPROVE`; the review used 3.25 credits. It noted only
+  that the compact instruction does not separately state the leading
+  alphanumeric constraint, which remains fail-closed in the schema.
+- [x] Claude independently checked the same frozen regex, authority boundary,
+  77-byte actual margin, docs, and tests with tools and customizations
+  disabled, then returned `CLAUDE_APPROVE`. It made the same non-blocking
+  leading-character observation; the invocation exposed no cost field.
+- [ ] Commit and push this reviewed prompt-only increment. Then cancel only
+  the latest matching Attention through formal retry, amend the Task envelope
+  to the conservative settled debit plus the sealed 9,000 Claude and 7,500
+  Kiro reservations (currently 6,316,525 Tokens), and dispatch one Claude
+  attempt before Kiro.
+
 ## 2026-07-26 - Nested Handoff object guidance (reviewed)
 
 ### Sixth Claude attempt and exact failure
@@ -37,11 +84,12 @@
   error evidence, actual prompt size, docs, and tests with tools and
   customizations disabled, then returned `CLAUDE_APPROVE`. The invocation did
   not expose a cost field.
-- [ ] Commit and push this reviewed prompt-only increment. Then cancel only
-  the latest matching Attention through formal retry, amend the Task envelope
-  to the conservative settled debit plus the sealed 9,000 Claude and 7,500
-  Kiro reservations (currently 5,618,009 Tokens), and dispatch one Claude
-  attempt before Kiro.
+- [x] Committed and pushed the reviewed prompt-only increment as `4fe4458`,
+  then cancelled only the latest matching Attention through formal retry.
+  Budget amendment `budget_fd0950e826a14e0299e007d38f8c9ab1` set the
+  envelope to 5,618,009 Tokens from the conservative settled debit plus the
+  sealed 9,000 Claude and 7,500 Kiro reservations before dispatching one
+  Claude attempt.
 
 ## 2026-07-26 - Optional Handoff extension shape guidance (reviewed)
 

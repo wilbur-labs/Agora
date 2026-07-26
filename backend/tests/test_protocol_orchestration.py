@@ -397,6 +397,11 @@ async def test_protocol_v1_runs_all_stages_through_authoritative_gates(tmp_path)
         for prompt in runner.prompts
     )
     assert all(
+        "Memory source_refs are nonempty stable IDs using only A-Z a-z 0-9 _ . : -."
+        in prompt
+        for prompt in runner.prompts
+    )
+    assert all(
         "All producer fields use producer object; Evidence.details is a JSON object."
         in prompt
         for prompt in runner.prompts

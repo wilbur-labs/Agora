@@ -42,6 +42,7 @@ memory_candidate=[candidate_id,kind,title,content,source_refs]
 Use pack_id="handoff:"+run_id and RFC3339 timestamps. Evidence status is passed|failed_product|failed_external|missing|stale.
 Generated Artifacts: storage="managed", UTF-8 content, location=null; storage is managed|referenced.
 native_state_snapshot=null unless Context supplies a complete frozen object. memory_candidates use objects above, never strings; [] when none.
+Memory source_refs are nonempty stable IDs using only A-Z a-z 0-9 _ . : -.
 All producer fields use producer object; Evidence.details is a JSON object.
 Never emit pack_type, blockers, repository, commit, requirement, result, or output_id as aliases."""
 

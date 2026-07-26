@@ -242,7 +242,8 @@ required fields, invent Evidence, or alter the one format-only repair limit.
 When the Context does not supply a complete frozen native snapshot, the guide
 may require its schema-valid null form rather than allowing an Agent to invent
 native state. Memory candidates remain Agent suggestions but must use exact
-frozen MemoryCandidate objects rather than strings or ad hoc shapes.
+frozen MemoryCandidate objects rather than strings or ad hoc shapes; their
+non-empty source references are StableIds, not arbitrary file paths.
 Nested producer fields remain ProducerRef objects and Evidence details remains
 structured JSON; the guide cannot flatten either field or repair an Agent
 result that does.
