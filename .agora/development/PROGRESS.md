@@ -1,5 +1,56 @@
 # Agora Control Plane Development Progress
 
+## 2026-07-26 - Optional Handoff extension shape guidance (reviewed)
+
+### Safe-mode Claude evidence and bounded fix
+
+- [x] Committed native customization isolation was used for formal Claude
+  `correctness_review` attempt 5. Run
+  `orun_fb7329ad13804d7e94e72402692c43a9` completed in 524.519498
+  seconds and settled 853,543 exact Tokens plus `$1.8793085`.
+- [x] Safe mode removed the previous SessionEnd/memory stdout replacement.
+  Claude returned an 8,858-character raw JSON object whose first and last
+  non-whitespace characters were `{` and `}`, with no Markdown fences. Core
+  Handoff, required Artifact, and Gate Evidence shapes were correct.
+- [x] The parser still failed closed with `handoff_schema_invalid`. The only
+  validation errors were optional extensions: an invented ad hoc
+  `native_state_snapshot` lacked the frozen snapshot fields and contained
+  extras, while two `memory_candidates` were strings instead of frozen
+  `MemoryCandidate` objects. Attention
+  `attn_protocol_47576b9f9cdb4f76c437e07cb32e9f09` remains open until formal
+  retry.
+- [x] Added the exact MemoryCandidate keys
+  `[candidate_id,kind,title,content,source_refs]`, forbade string candidates,
+  and required `native_state_snapshot=null` unless the Context supplies a
+  complete frozen object. Legitimate Agent-suggested MemoryCandidate objects
+  remain allowed; native state, memory, Evidence, and authoritative state
+  remain separate. No parser, schema, repair, Gate, or state mutation changed.
+
+### Verification and review state
+
+- [x] A copied authoritative database was retried and budget-amended only in
+  the copy. It generated a 24,410-byte Claude prompt containing both optional
+  extension rules, remained 166 bytes below the frozen 24 KiB bound, and used
+  a no-spawn diagnostic Runner.
+- [x] Complete protocol orchestration file: 63 passed. Complete
+  non-integration backend suite: 527 passed, 18 deselected, with only the
+  existing Starlette/httpx and Windows Proactor cleanup warnings. Schema
+  export/check, isolated `compileall`, and `git diff --check` passed.
+- [x] Kiro independently verified schema fidelity, memory-versus-authority
+  separation, legitimate candidate preservation, prompt bound, docs, and
+  tests, then returned `KIRO_APPROVE`; the review used 2.27 credits. It noted
+  only that MemoryCandidate `source_refs` is non-empty in the model, which was
+  non-blocking for this exact-key guide.
+- [x] Claude independently reviewed the supplied diff, frozen model excerpt,
+  live failure evidence, and prompt-bound result with tools and customizations
+  disabled, then returned `CLAUDE_APPROVE`. The invocation did not expose a
+  cost field.
+- [ ] Commit and push this reviewed prompt-only increment. Then cancel only
+  the latest matching Attention through formal retry, amend the envelope to
+  the routing policy's conservative settled debit plus the sealed 9,000 Claude
+  and 7,500 Kiro reservations (currently 5,327,416 Tokens), and dispatch one
+  Claude attempt before Kiro.
+
 ## 2026-07-26 - Native Claude customization isolation (reviewed)
 
 ### Live runtime-boundary evidence and fix
@@ -47,11 +98,13 @@
 - [x] Claude independently reviewed the supplied diff and live failure
   evidence with tools and customizations disabled, found no discrepancy, and
   returned `CLAUDE_APPROVE`. The invocation did not expose a cost field.
-- [ ] Commit and push this reviewed runtime-isolation increment. Then cancel
-  only the latest protocol Attention through formal retry, derive the next
-  envelope from exact settlements plus the timed-out Run's conservative
-  reservation and both remaining reviewer reservations, and dispatch one
-  safe-mode Claude attempt before Kiro.
+- [x] Committed and pushed the reviewed runtime-isolation increment as
+  `6583b92`, then cancelled only the matching protocol Attention through
+  formal retry. Budget amendment
+  `budget_f6f87eb8b0b146899f804534d9b87e97` set the envelope to 4,473,873
+  Tokens from exact settlements plus the timed-out Run's conservative
+  reservation and both remaining reviewer reservations before dispatching one
+  safe-mode Claude attempt.
 
 ## 2026-07-26 - Raw managed Handoff output guidance (reviewed)
 

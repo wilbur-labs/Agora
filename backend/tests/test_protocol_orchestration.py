@@ -386,6 +386,18 @@ async def test_protocol_v1_runs_all_stages_through_authoritative_gates(tmp_path)
         for prompt in runner.prompts
     )
     assert all(
+        "Use native_state_snapshot=null unless the Context supplies a complete frozen "
+        "object"
+        in prompt
+        for prompt in runner.prompts
+    )
+    assert all(
+        "memory_candidate=[candidate_id,kind,title,content,source_refs]" in prompt
+        and "Memory candidates must use exact memory_candidate objects, never strings"
+        in prompt
+        for prompt in runner.prompts
+    )
+    assert all(
         "Never emit pack_type, blockers, repository, commit, requirement, result, "
         "or output_id as aliases."
         in prompt

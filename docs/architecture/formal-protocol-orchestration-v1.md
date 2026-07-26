@@ -77,8 +77,12 @@ The prompt contains the canonical sealed Context Pack and exact Gate Evidence
 bindings. A bounded exact-key guide names the Handoff, Artifact, Evidence,
 Artifact-version, and producer fields and rejects common non-protocol aliases;
 it also states the frozen Artifact storage values and requires raw JSON without
-prose or Markdown fences. The guide does not map aliases, fill missing fields,
-or synthesize Evidence. The parser still permits only the existing
+prose or Markdown fences. Optional NativeStateSnapshot and MemoryCandidate
+values use their frozen distinction: a NativeStateSnapshot remains null unless
+the Context supplies a complete frozen object, while generated memory
+candidates remain allowed only as exact MemoryCandidate objects rather than
+strings. The guide does not map aliases, fill missing fields, or synthesize
+Evidence. The parser still permits only the existing
 whole-document fence repair; prefixed prose plus a fenced object remains a
 protocol failure. A process exit code, Agent suggestion, or legacy semantic
 JSON cannot advance the Stage. Evidence that claims a configured Gate
