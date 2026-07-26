@@ -243,6 +243,9 @@ When the Context does not supply a complete frozen native snapshot, the guide
 may require its schema-valid null form rather than allowing an Agent to invent
 native state. Memory candidates remain Agent suggestions but must use exact
 frozen MemoryCandidate objects rather than strings or ad hoc shapes.
+Nested producer fields remain ProducerRef objects and Evidence details remains
+structured JSON; the guide cannot flatten either field or repair an Agent
+result that does.
 
 A formal runtime invocation must isolate the Handoff transport from unbound
 native customizations that can replace or post-process stdout. Isolation is a

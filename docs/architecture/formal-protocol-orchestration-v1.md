@@ -81,8 +81,10 @@ prose or Markdown fences. Optional NativeStateSnapshot and MemoryCandidate
 values use their frozen distinction: a NativeStateSnapshot remains null unless
 the Context supplies a complete frozen object, while generated memory
 candidates remain allowed only as exact MemoryCandidate objects rather than
-strings. The guide does not map aliases, fill missing fields, or synthesize
-Evidence. The parser still permits only the existing
+strings. Every nested producer remains the exact ProducerRef object, and
+Evidence details remains a JSON object rather than free-form transport text.
+The guide does not map aliases, fill missing fields, or synthesize Evidence.
+The parser still permits only the existing
 whole-document fence repair; prefixed prose plus a fenced object remains a
 protocol failure. A process exit code, Agent suggestion, or legacy semantic
 JSON cannot advance the Stage. Evidence that claims a configured Gate

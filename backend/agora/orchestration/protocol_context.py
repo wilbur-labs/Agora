@@ -40,8 +40,9 @@ evidence=[schema_version,evidence_id,project_id,task_id,stage_key,producer,repos
 artifact_version=[artifact_id,version,sha256,kind,location]
 memory_candidate=[candidate_id,kind,title,content,source_refs]
 Use pack_id="handoff:"+run_id and RFC3339 timestamps. Evidence status is passed|failed_product|failed_external|missing|stale.
-Generated output Artifacts use storage="managed", a UTF-8 content string, and location=null; storage is only managed|referenced.
-Use native_state_snapshot=null unless the Context supplies a complete frozen object. Memory candidates must use exact memory_candidate objects, never strings; use [] when none.
+Generated Artifacts: storage="managed", UTF-8 content, location=null; storage is managed|referenced.
+native_state_snapshot=null unless Context supplies a complete frozen object. memory_candidates use objects above, never strings; [] when none.
+All producer fields use producer object; Evidence.details is a JSON object.
 Never emit pack_type, blockers, repository, commit, requirement, result, or output_id as aliases."""
 
 

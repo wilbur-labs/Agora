@@ -1,5 +1,48 @@
 # Agora Control Plane Development Progress
 
+## 2026-07-26 - Nested Handoff object guidance (reviewed)
+
+### Sixth Claude attempt and exact failure
+
+- [x] Used the reviewed optional-extension guide for formal Claude
+  `correctness_review` attempt 6. Run
+  `orun_82dfc3f762ec4fe3bd8e6c1589fb19c9` completed in 227.825901
+  seconds and settled 290,593 exact Tokens plus `$0.9153835`.
+- [x] Claude correctly returned raw JSON, set `native_state_snapshot=null`,
+  and used an empty `memory_candidates` list. The parser still failed closed
+  with `handoff_schema_invalid`: the output Artifact and Evidence flattened
+  their nested `producer` values to `"claude"` strings, and Evidence
+  `details` was free-form text instead of a JSON object. Attention
+  `attn_protocol_a57b1c0712a1f75b0df502ee93969264` remains open until formal
+  retry.
+- [x] Added one bounded instruction that every producer field uses the already
+  declared `[runtime,run_id,stage_key]` ProducerRef object and that
+  `Evidence.details` is a JSON object. No output was reinterpreted and no
+  parser, schema, repair, Gate, Evidence, or state mutation changed.
+- [x] Compressed adjacent reviewed guidance without semantic change so the
+  actual copied-database prompt is 24,424 bytes, leaving 152 bytes below the
+  frozen 24 KiB argv bound. The diagnostic Runner spawned no provider.
+
+### Verification and review state
+
+- [x] Complete protocol orchestration file: 63 passed. Complete
+  non-integration backend suite: 527 passed, 18 deselected, with only the
+  existing Starlette/httpx and Windows Proactor cleanup warnings. Schema
+  export/check, isolated `compileall`, and `git diff --check` passed.
+- [x] Kiro independently verified every producer field is a ProducerRef,
+  Evidence details is a JSON object, the compact wording is unambiguous, the
+  fail-closed authority boundary is unchanged, and the prompt remains bounded,
+  then returned `KIRO_APPROVE`; the review used 3.18 credits.
+- [x] Claude independently reviewed the supplied diff, frozen models, live
+  error evidence, actual prompt size, docs, and tests with tools and
+  customizations disabled, then returned `CLAUDE_APPROVE`. The invocation did
+  not expose a cost field.
+- [ ] Commit and push this reviewed prompt-only increment. Then cancel only
+  the latest matching Attention through formal retry, amend the Task envelope
+  to the conservative settled debit plus the sealed 9,000 Claude and 7,500
+  Kiro reservations (currently 5,618,009 Tokens), and dispatch one Claude
+  attempt before Kiro.
+
 ## 2026-07-26 - Optional Handoff extension shape guidance (reviewed)
 
 ### Safe-mode Claude evidence and bounded fix
@@ -45,11 +88,12 @@
   live failure evidence, and prompt-bound result with tools and customizations
   disabled, then returned `CLAUDE_APPROVE`. The invocation did not expose a
   cost field.
-- [ ] Commit and push this reviewed prompt-only increment. Then cancel only
-  the latest matching Attention through formal retry, amend the envelope to
-  the routing policy's conservative settled debit plus the sealed 9,000 Claude
-  and 7,500 Kiro reservations (currently 5,327,416 Tokens), and dispatch one
-  Claude attempt before Kiro.
+- [x] Committed and pushed the reviewed prompt-only increment as `4f72068`,
+  then cancelled only the latest matching Attention through formal retry.
+  Budget amendment `budget_3b34f78520e94632b8afd0c04341451a` set the
+  envelope to 5,327,416 Tokens from the conservative settled debit plus the
+  sealed 9,000 Claude and 7,500 Kiro reservations before dispatching one
+  Claude attempt.
 
 ## 2026-07-26 - Native Claude customization isolation (reviewed)
 

@@ -372,7 +372,7 @@ async def test_protocol_v1_runs_all_stages_through_authoritative_gates(tmp_path)
     assert all(len(prompt.encode("utf-8")) <= 24 * 1024 for prompt in runner.prompts)
     assert all("EXACT HANDOFF KEYS (no aliases)" in prompt for prompt in runner.prompts)
     assert all(
-        'Generated output Artifacts use storage="managed"' in prompt
+        'Generated Artifacts: storage="managed"' in prompt
         for prompt in runner.prompts
     )
     assert all(
@@ -386,14 +386,18 @@ async def test_protocol_v1_runs_all_stages_through_authoritative_gates(tmp_path)
         for prompt in runner.prompts
     )
     assert all(
-        "Use native_state_snapshot=null unless the Context supplies a complete frozen "
-        "object"
+        "native_state_snapshot=null unless Context supplies a complete frozen object"
         in prompt
         for prompt in runner.prompts
     )
     assert all(
         "memory_candidate=[candidate_id,kind,title,content,source_refs]" in prompt
-        and "Memory candidates must use exact memory_candidate objects, never strings"
+        and "memory_candidates use objects above, never strings"
+        in prompt
+        for prompt in runner.prompts
+    )
+    assert all(
+        "All producer fields use producer object; Evidence.details is a JSON object."
         in prompt
         for prompt in runner.prompts
     )
