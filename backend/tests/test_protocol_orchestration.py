@@ -370,6 +370,13 @@ async def test_protocol_v1_runs_all_stages_through_authoritative_gates(tmp_path)
     assert len(status.usage) == 6
     assert all("SEALED CONTEXT PACK" in prompt for prompt in runner.prompts)
     assert all(len(prompt.encode("utf-8")) <= 24 * 1024 for prompt in runner.prompts)
+    assert all("EXACT HANDOFF KEYS (no aliases)" in prompt for prompt in runner.prompts)
+    assert all(
+        "Never emit pack_type, blockers, repository, commit, requirement, result, "
+        "or output_id as aliases."
+        in prompt
+        for prompt in runner.prompts
+    )
     assert runner.contexts[0].input_artifacts == []
     first_policy = status.runs[0].routing_policy
     assert first_policy.pinned_runtime == "codex"

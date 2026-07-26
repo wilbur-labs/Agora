@@ -234,6 +234,11 @@ A Handoff Pack is immutable output from one Run. It includes:
 The authoritative `next_safe_action` is derived by the Gate evaluator, not
 copied blindly from the Agent suggestion.
 
+Dispatch prompts may include a bounded exact-key guide for frozen Handoff,
+Artifact, Evidence, Artifact-version, and producer shapes. The guide is
+instructional only: it cannot repair aliases, fill missing required fields,
+invent Evidence, or alter the one format-only repair limit.
+
 ## 6. Evidence and Gate evaluation
 
 Evidence statuses are:

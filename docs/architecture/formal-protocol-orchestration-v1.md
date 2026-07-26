@@ -74,7 +74,10 @@ IDs remain templates, avoiding cross-Task collisions in the global immutable
 Artifact registry.
 
 The prompt contains the canonical sealed Context Pack and exact Gate Evidence
-bindings. The runtime may return only an exact Handoff Pack or the one permitted
+bindings. A bounded exact-key guide names the Handoff, Artifact, Evidence,
+Artifact-version, and producer fields and rejects common non-protocol aliases;
+it does not map aliases, fill missing fields, or synthesize Evidence. The
+runtime may return only an exact Handoff Pack or the one permitted
 whole-document fence repair. A process exit code, Agent suggestion, or legacy
 semantic JSON cannot advance the Stage. Evidence that claims a configured Gate
 requirement with the wrong repository, ref, commit, or kind is converted to a

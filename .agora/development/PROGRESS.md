@@ -1,5 +1,52 @@
 # Agora Control Plane Development Progress
 
+## 2026-07-26 - Exact formal Handoff key guidance (reviewed)
+
+### Live failure evidence and bounded fix
+
+- [x] Resumed formal Task `task_f67b410c5aea4133bd7c1316a3e485f7`
+  with the reviewed Context-materialization engine and dispatched only the
+  authoritative Claude `correctness_review` Stage. Kiro was not started.
+- [x] Claude Run `orun_1c1e67a1de7a499d83d07a6ecc38316c` exited zero and
+  settled 1,112,330 exact Tokens plus `$2.09025925`. Its semantic content
+  reported no high or medium finding, but the returned object used
+  non-protocol aliases including `pack_type`, `blockers`, `repository`,
+  `commit`, `requirement`, and `result`, and omitted required Handoff,
+  Artifact, and Evidence fields.
+- [x] The one allowed format repair did not invent the missing fields or map
+  aliases. Schema remained `protocol_failed` with
+  `handoff_schema_invalid`, so the Stage and Task blocked and Attention
+  `attn_protocol_b68f3f06d9ce462150baa96d4b4af2ad` remained open. Exit zero
+  was not treated as semantic or Gate success.
+- [x] Added a fixed bounded exact-key guide for `HandoffPack`, `ProducerRef`,
+  `Artifact`, `Evidence`, and `ArtifactVersionRef`, plus the exact Evidence
+  statuses and `handoff:<run_id>` pack identity convention. The guide
+  explicitly rejects the observed aliases; it performs no parser mapping,
+  schema repair, Evidence creation, state mutation, or semantic inference.
+- [x] A copied authoritative database was retried and budget-amended only
+  inside the diagnostic copy. It generated a 23,993-byte Claude prompt with
+  the exact-key guide and observed-alias prohibition, remained below the
+  frozen 24 KiB bound, and used a no-spawn diagnostic Runner.
+
+### Verification and review state
+
+- [x] Focused prompt/large-Artifact regressions: 4 passed. Complete protocol
+  orchestration file: 63 passed. Complete non-integration backend suite:
+  527 passed, 18 deselected, with only the existing Starlette/httpx and
+  Windows Proactor cleanup warnings.
+- [x] Schema export/check, isolated `compileall`, and `git diff --check`
+  passed.
+- [x] Kiro independently cross-checked every guide field against the frozen
+  models, verified authority and repair boundaries, and returned
+  `KIRO_APPROVE`; the review used 3.96 credits.
+- [x] Claude independently reviewed the supplied diff and frozen model
+  excerpts, found no high or medium issue, and returned `CLAUDE_APPROVE`.
+  The tool-disabled text invocation did not expose a cost field.
+- [ ] Commit and push the reviewed guide. Then cancel only the failed Run's
+  Attention through formal `retry`, increase the Task budget to exactly cover
+  the 2,829,114 settled Tokens plus the sealed 9,000 Claude and 7,500 Kiro
+  reservations, and dispatch one new Claude attempt before Kiro.
+
 ## 2026-07-26 - Bounded formal Context materialization (reviewed)
 
 ### Failure evidence and implementation

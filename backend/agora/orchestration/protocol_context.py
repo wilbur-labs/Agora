@@ -32,6 +32,14 @@ from .models import OrchestrationStage, RoutingPolicyDecision, TaskDecision
 
 PROTOCOL_PROMPT_LIMIT = 24 * 1024
 CONTEXT_ENTRY_CONTENT_LIMIT = 20_000
+HANDOFF_SHAPE_GUIDANCE = """EXACT HANDOFF KEYS (no aliases):
+top=[schema_version,content_sha256,pack_id,project_id,task_id,stage_key,run_id,producer,input_artifacts,required_outputs,forbidden_constraints,stage_result,output_artifacts,evidence,unresolved_questions,native_state_snapshot,memory_candidates,blocker_requirement_ids,suggested_next_action]
+producer=[runtime,run_id,stage_key]
+artifact=[schema_version,artifact_id,project_id,task_id,stage_key,producer,kind,storage,version,sha256,media_type,content,location,created_at]
+evidence=[schema_version,evidence_id,project_id,task_id,stage_key,producer,repository_id,ref,commit_sha,requirement_id,kind,status,artifact_versions,summary,observed_at,details]
+artifact_version=[artifact_id,version,sha256,kind,location]
+Use pack_id="handoff:"+run_id and RFC3339 timestamps. Evidence status is passed|failed_product|failed_external|missing|stale.
+Never emit pack_type, blockers, repository, commit, requirement, result, or output_id as aliases."""
 
 
 class RepositoryRevision(ProtocolModel):
@@ -629,6 +637,8 @@ must use the exact repository/ref/commit/requirement/kind binding listed below.
 Unknowns or unmet requirements must be represented as blockers; exit code zero is not success.
 Compute Handoff content_sha256 over canonical JSON (UTF-8, sorted keys, compact separators),
 excluding only the top-level content_sha256 field.
+
+{HANDOFF_SHAPE_GUIDANCE}
 
 FORMAL GATE REQUIREMENTS:
 {requirement_json}
