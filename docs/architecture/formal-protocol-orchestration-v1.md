@@ -105,6 +105,14 @@ must still be valid JSON, and exactly one final usage event plus a valid agent
 message remain mandatory. This is format-only recovery; it cannot change or
 invent Handoff semantics, Evidence, blockers, or usage.
 
+The default Claude process also starts with the native `--safe-mode` boundary
+in addition to plan permissions and disabled session persistence. This prevents
+unbound user or project customizations such as hooks, skills, plugins, MCP
+servers, output styles, and session-memory handlers from replacing or
+post-processing the Handoff stdout. Agora does not modify those native files;
+it isolates the formal subprocess and still validates the returned Handoff
+fail-closed.
+
 The Task-scoped `preflight` command is a read-only preview over an already
 initialized formal route. It returns the exact sealed decision used by the
 dispatch derivation together with explicit no-claim/no-persistence/no-spawn

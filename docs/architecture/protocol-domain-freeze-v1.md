@@ -240,6 +240,11 @@ instructional only and may require raw JSON output plus exact frozen enum
 values. It cannot repair aliases, strip surrounding prose, fill missing
 required fields, invent Evidence, or alter the one format-only repair limit.
 
+A formal runtime invocation must isolate the Handoff transport from unbound
+native customizations that can replace or post-process stdout. Isolation is a
+process-launch boundary, not permission to modify native runtime files, and it
+does not weaken the Handoff parser or make native runtime state authoritative.
+
 ## 6. Evidence and Gate evaluation
 
 Evidence statuses are:

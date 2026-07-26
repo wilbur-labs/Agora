@@ -1,5 +1,58 @@
 # Agora Control Plane Development Progress
 
+## 2026-07-26 - Native Claude customization isolation (reviewed)
+
+### Live runtime-boundary evidence and fix
+
+- [x] After the raw-managed-Handoff increment, formally retried only Claude
+  `correctness_review`. Run `orun_c1be84aef72642a2b9619461ef960171`
+  reached the configured 600-second process limit with no stdout or provider
+  usage observation. It settled `process_timed_out` with unavailable Token and
+  cost measurements; no Handoff, Artifact, Evidence, or Gate success was
+  inferred.
+- [x] Verified that the timed-out subprocess was stopped and left no matching
+  child process. Formal retry restored the same immutable Stage. Routing
+  conservatively debited the unavailable Run at its sealed 9,000-Token
+  reservation rather than treating unknown usage as zero, so budget amendment
+  `budget_567db27ed6844983a706e58559e629a8` increased the envelope to
+  3,680,347 Tokens and preserved both remaining reviewer reservations.
+- [x] Re-ran the same Stage with the supported service timeout raised to 1,800
+  seconds. Run `orun_106c2a04e650460a865d93d139bfff47` completed in
+  432.369399 seconds and settled 793,526 exact Tokens plus `$1.810576`.
+  Exit zero still did not advance the Stage: its 1,143-character normalized
+  stdout was a `Session memory saved` summary with no JSON braces, so
+  `handoff_json_invalid` blocked the Stage and opened Attention
+  `attn_protocol_d31c6d09b632cd0a0e5ed99acd7a6b96`.
+- [x] The captured summary states that Claude had emitted a valid Handoff
+  before a native SessionEnd/memory customization replaced the final stdout.
+  Added Claude CLI's native `--safe-mode` to the audited default command while
+  retaining print mode, JSON transport, plan permissions, and disabled session
+  persistence. This isolates hooks, skills, plugins, MCP servers, output
+  styles, and other unbound customizations without editing native Claude files
+  or weakening parser, repair, Gate, or state authority.
+
+### Verification and review state
+
+- [x] Focused provider-usage and runtime-orchestration tests: 63 passed.
+  Complete non-integration backend suite: 527 passed, 18 deselected, with only
+  the existing Starlette/httpx and Windows Proactor cleanup warnings.
+- [x] Installed Claude Code `2.1.220` accepts `--safe-mode`; the resolved
+  default tuple includes it alongside `--permission-mode plan` and
+  `--no-session-persistence`. Schema export/check, isolated `compileall`, and
+  `git diff --check` passed.
+- [x] Kiro independently verified the protocol/AI-DLC authority boundary,
+  native-file non-mutation, CLI flag support and ordering, custom-command
+  scope, documentation, and tests, then returned `KIRO_APPROVE`; the review
+  used 1.65 credits.
+- [x] Claude independently reviewed the supplied diff and live failure
+  evidence with tools and customizations disabled, found no discrepancy, and
+  returned `CLAUDE_APPROVE`. The invocation did not expose a cost field.
+- [ ] Commit and push this reviewed runtime-isolation increment. Then cancel
+  only the latest protocol Attention through formal retry, derive the next
+  envelope from exact settlements plus the timed-out Run's conservative
+  reservation and both remaining reviewer reservations, and dispatch one
+  safe-mode Claude attempt before Kiro.
+
 ## 2026-07-26 - Raw managed Handoff output guidance (reviewed)
 
 ### Second live Claude failure and bounded fix
@@ -43,10 +96,11 @@
 - [x] Claude independently reviewed the complete supplied diff and frozen
   models with tools disabled, found no discrepancy, and returned
   `CLAUDE_APPROVE`. The invocation did not expose a cost field.
-- [ ] Commit and push this reviewed prompt-only increment. Then formally retry
-  only the blocked Claude Stage, cancel only its matching Attention, amend the
-  Task envelope to exactly the 3,654,847 settled Tokens plus the sealed 9,000
-  Claude and 7,500 Kiro reservations, and dispatch the next Claude attempt.
+- [x] Committed and pushed the reviewed prompt-only increment as `4168fb2`,
+  then formally retried only the blocked Claude Stage, cancelled only its
+  matching Attention, amended the envelope to exactly the 3,654,847 settled
+  Tokens plus the sealed 9,000 Claude and 7,500 Kiro reservations, and
+  dispatched the next Claude attempt.
 
 ## 2026-07-26 - Exact formal Handoff key guidance (reviewed)
 

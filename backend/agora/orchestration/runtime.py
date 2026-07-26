@@ -64,7 +64,7 @@ DEFAULT_RUNTIME_COMMANDS = {
     ),
     "claude": (
         "claude", "-p", "{prompt}", "--output-format", "json",
-        "--permission-mode", "plan", "--no-session-persistence",
+        "--permission-mode", "plan", "--safe-mode", "--no-session-persistence",
     ),
     "kiro": (
         "kiro-cli", "chat", "--no-interactive", "--trust-tools=", "{prompt}",

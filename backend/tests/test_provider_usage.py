@@ -25,6 +25,7 @@ def test_default_structured_formats_are_explicit_and_custom_commands_fail_safe()
             defaults["claude"].command_template[1:],
         )
     )
+    assert "--safe-mode" in defaults["claude"].command_template
     assert defaults["kiro"].result_format == RuntimeResultFormat.PLAIN_TEXT
 
     custom = build_runtime_registry({
