@@ -1,5 +1,53 @@
 # Agora Control Plane Development Progress
 
+## 2026-07-26 - Raw managed Handoff output guidance (reviewed)
+
+### Second live Claude failure and bounded fix
+
+- [x] Retried only the authoritative Claude `correctness_review` Stage after
+  the exact-key increment. Run `orun_7741de8eba3c48a598c67a9f5e2b5d66`
+  exited zero and settled 825,733 exact Tokens plus `$2.12133425`, but its
+  response placed prose before a fenced JSON object. The one permitted
+  whole-document-fence repair therefore rejected it as `handoff_json_invalid`;
+  Stage and Task remained blocked with Attention
+  `attn_protocol_4b3f55ab5ab727d34514fe0479d49a3e`.
+- [x] A read-only diagnostic extracted the fenced object without mutating
+  authoritative state. It was structurally complete and became fully
+  `HandoffPack@1.0`-valid only after changing the non-frozen Artifact storage
+  alias `inline` to the frozen `managed` value. This diagnostic substitution
+  was not used as a repair or accepted result.
+- [x] Strengthened only the dispatch guidance: the first byte must be `{`, the
+  last non-whitespace byte must be `}`, prose and Markdown fences are
+  forbidden, and generated output Artifacts must use `storage="managed"` with
+  UTF-8 `content` and `location=null`. No parser, schema, repair, Evidence,
+  Gate, or authoritative-state behavior changed.
+- [x] Retried and budget-amended only a copied authoritative database. It
+  generated a 24,169-byte Claude prompt containing the raw-JSON and managed
+  storage requirements, remained below the frozen 24 KiB bound, and used a
+  no-spawn diagnostic Runner.
+
+### Verification and review state
+
+- [x] Focused rendered-prompt regressions: 3 passed. Complete protocol
+  orchestration file: 63 passed. Complete non-integration backend suite:
+  527 passed, 18 deselected, with only the existing Starlette/httpx and
+  Windows Proactor cleanup warnings.
+- [x] Schema export/check, isolated `compileall`, and `git diff --check`
+  passed.
+- [x] Kiro independently verified the prompt-only authority boundary, frozen
+  `managed|referenced` enum, unchanged whole-document-fence repair, rendered
+  brace escaping, 24 KiB bound, and regressions, then returned
+  `KIRO_APPROVE`. The substantive review used 6.73 credits; a 0.45-credit
+  resumed response restated the machine-readable verdict after terminal
+  truncation.
+- [x] Claude independently reviewed the complete supplied diff and frozen
+  models with tools disabled, found no discrepancy, and returned
+  `CLAUDE_APPROVE`. The invocation did not expose a cost field.
+- [ ] Commit and push this reviewed prompt-only increment. Then formally retry
+  only the blocked Claude Stage, cancel only its matching Attention, amend the
+  Task envelope to exactly the 3,654,847 settled Tokens plus the sealed 9,000
+  Claude and 7,500 Kiro reservations, and dispatch the next Claude attempt.
+
 ## 2026-07-26 - Exact formal Handoff key guidance (reviewed)
 
 ### Live failure evidence and bounded fix
@@ -42,10 +90,11 @@
 - [x] Claude independently reviewed the supplied diff and frozen model
   excerpts, found no high or medium issue, and returned `CLAUDE_APPROVE`.
   The tool-disabled text invocation did not expose a cost field.
-- [ ] Commit and push the reviewed guide. Then cancel only the failed Run's
-  Attention through formal `retry`, increase the Task budget to exactly cover
-  the 2,829,114 settled Tokens plus the sealed 9,000 Claude and 7,500 Kiro
-  reservations, and dispatch one new Claude attempt before Kiro.
+- [x] Committed and pushed the reviewed guide as `bb8067e`, then cancelled
+  only the failed Run's Attention through formal `retry`, increased the Task
+  budget to exactly cover the 2,829,114 settled Tokens plus the sealed 9,000
+  Claude and 7,500 Kiro reservations, and dispatched one new Claude attempt
+  before Kiro.
 
 ## 2026-07-26 - Bounded formal Context materialization (reviewed)
 
@@ -102,10 +151,10 @@
   inspected the complete tracked diff and returned `CLAUDE_APPROVE`; that
   invocation did not expose a cost field. Both mandatory review gates are
   complete.
-- [ ] Commit and push the reviewed increment, then resume the same immutable
-  acceptance Task with the reviewed orchestration engine. Run Claude and Kiro
-  one Stage at a time, amend only for exact settled overruns, require every
-  formal Gate to pass, and finish with explicit human Task approval.
+- [x] Committed and pushed the reviewed increment as `3becee0`, then resumed
+  the same immutable acceptance Task with the reviewed orchestration engine.
+  Provider Stages continue one at a time with exact settled-overrun amendments
+  and formal Gates preserved.
 
 ## 2026-07-26 - Current-commit formal acceptance preparation
 

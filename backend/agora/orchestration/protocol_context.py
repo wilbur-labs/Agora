@@ -39,6 +39,7 @@ artifact=[schema_version,artifact_id,project_id,task_id,stage_key,producer,kind,
 evidence=[schema_version,evidence_id,project_id,task_id,stage_key,producer,repository_id,ref,commit_sha,requirement_id,kind,status,artifact_versions,summary,observed_at,details]
 artifact_version=[artifact_id,version,sha256,kind,location]
 Use pack_id="handoff:"+run_id and RFC3339 timestamps. Evidence status is passed|failed_product|failed_external|missing|stale.
+Generated output Artifacts use storage="managed", a UTF-8 content string, and location=null; storage is only managed|referenced.
 Never emit pack_type, blockers, repository, commit, requirement, result, or output_id as aliases."""
 
 
@@ -626,7 +627,8 @@ not a transcript. Work read-only unless that Context explicitly authorizes mutat
 Agora alone writes authoritative Task, Stage, Gate, Artifact, Evidence, and Approval state.
 
 Return ONLY one UTF-8 JSON object matching Agora HandoffPack schema version 1.0.
-Do not add prose. One whole-document ```json fence is repairable but exact JSON is preferred.
+The first byte must be {{ and the last non-whitespace byte must be }}.
+Never use Markdown fences or put prose before or after the JSON object.
 
 The Handoff must exactly echo project_id, task_id, stage_key, run_id,
 input_artifacts, required_outputs, and forbidden_constraints from the Context Pack.

@@ -372,6 +372,20 @@ async def test_protocol_v1_runs_all_stages_through_authoritative_gates(tmp_path)
     assert all(len(prompt.encode("utf-8")) <= 24 * 1024 for prompt in runner.prompts)
     assert all("EXACT HANDOFF KEYS (no aliases)" in prompt for prompt in runner.prompts)
     assert all(
+        'Generated output Artifacts use storage="managed"' in prompt
+        for prompt in runner.prompts
+    )
+    assert all(
+        "The first byte must be { and the last non-whitespace byte must be }."
+        in prompt
+        for prompt in runner.prompts
+    )
+    assert all(
+        "Never use Markdown fences or put prose before or after the JSON object."
+        in prompt
+        for prompt in runner.prompts
+    )
+    assert all(
         "Never emit pack_type, blockers, repository, commit, requirement, result, "
         "or output_id as aliases."
         in prompt

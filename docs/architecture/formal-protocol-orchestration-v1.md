@@ -76,10 +76,12 @@ Artifact registry.
 The prompt contains the canonical sealed Context Pack and exact Gate Evidence
 bindings. A bounded exact-key guide names the Handoff, Artifact, Evidence,
 Artifact-version, and producer fields and rejects common non-protocol aliases;
-it does not map aliases, fill missing fields, or synthesize Evidence. The
-runtime may return only an exact Handoff Pack or the one permitted
-whole-document fence repair. A process exit code, Agent suggestion, or legacy
-semantic JSON cannot advance the Stage. Evidence that claims a configured Gate
+it also states the frozen Artifact storage values and requires raw JSON without
+prose or Markdown fences. The guide does not map aliases, fill missing fields,
+or synthesize Evidence. The parser still permits only the existing
+whole-document fence repair; prefixed prose plus a fenced object remains a
+protocol failure. A process exit code, Agent suggestion, or legacy semantic
+JSON cannot advance the Stage. Evidence that claims a configured Gate
 requirement with the wrong repository, ref, commit, or kind is converted to a
 protocol failure and Attention before Registry mutation.
 
