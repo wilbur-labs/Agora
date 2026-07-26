@@ -56,10 +56,18 @@ pinned Task Contract + current Git revision + formal prior Artifacts
 The Context builder maps the current Stage contract, role, acceptance criteria,
 latest explicit Task decisions, prior versioned Artifact references, forbidden
 constraints, and Run budget into the frozen Context Pack. Managed prior
-Artifact content is carried only as a hash-verified materialization with an
-authoritative Artifact source reference; the Artifact reference remains in
-`input_artifacts` and the materialization is not authoritative state or new
-Evidence. Full transcripts are never supplied.
+Artifact content is carried only as an exact hash-verified materialization with
+an authoritative Artifact source reference; the Artifact reference always
+remains in `input_artifacts` and the materialization is not authoritative state
+or new Evidence. To preserve the Windows 24 KiB argv bound, policy entries are
+bounded projections whose source references retain the full sealed decision
+hashes. Prior Artifact contents are then considered deterministically from the
+newest Stage backward and materialized only when the complete prompt still
+fits. A candidate that does not fit remains reference-only, while smaller
+older candidates may still be considered in the same deterministic pass.
+Reference-only entries retain version, hash, byte count, and omission reason;
+Agora never invents a summary or changes the authoritative Artifact. Full
+transcripts are never supplied.
 
 Required output identities are unique to the Task and Run. Contract Artifact
 IDs remain templates, avoiding cross-Task collisions in the global immutable

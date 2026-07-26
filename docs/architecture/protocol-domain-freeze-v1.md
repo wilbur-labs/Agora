@@ -211,6 +211,15 @@ A Context Pack is immutable input for one Run. It includes:
 - versioned input Artifact references;
 - forbidden constraints and budget.
 
+A native dispatch may carry bounded projections of sealed policy and preflight
+decisions when their entries retain the authoritative object hashes. Every
+prior Artifact remains an exact version/hash reference. Managed Artifact
+content may additionally be considered newest-first and materialized only
+while the complete Windows argv prompt remains within its frozen bound. Each
+candidate is considered independently, so a non-fitting item stays explicitly
+reference-only while a smaller older item may still fit; content is never
+truncated, summarized, or silently dropped.
+
 A Handoff Pack is immutable output from one Run. It includes:
 
 - semantic Stage result;

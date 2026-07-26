@@ -26,7 +26,7 @@ from agora.protocol.models import (
 )
 from agora.tasks.models import TaskManifest
 
-from .contracts import StageTaskContract, TaskContract, contract_sha256
+from .contracts import RoleAssignment, StageTaskContract, TaskContract, contract_sha256
 from .models import OrchestrationStage, RoutingPolicyDecision, TaskDecision
 
 
@@ -166,19 +166,12 @@ def build_protocol_run_definition(
         _context_entry(
             prefix="policy",
             title="Pinned Task and Stage contract",
-            content=json.dumps(
-                {
-                    "task_contract_id": contract.contract_id,
-                    "task_contract_schema_version": contract.schema_version,
-                    "task_contract_sha256": contract_hash,
-                    "task_goal": contract.goal,
-                    "role": role.model_dump(mode="json"),
-                    "stage": stage_contract.model_dump(mode="json"),
-                    "acceptance_criteria": contract.acceptance_criteria,
-                },
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
+            content=_compact_json(
+                _task_contract_projection(
+                    contract=contract,
+                    contract_hash=contract_hash,
+                    role=role,
+                )
             ),
             source_ref=f"task-contract:{contract.contract_id}:{contract_hash}",
         ),
@@ -205,12 +198,7 @@ def build_protocol_run_definition(
         _context_entry(
             prefix="policy",
             title="Explainable pinned runtime and protected review budget",
-            content=json.dumps(
-                routing_policy.model_dump(mode="json"),
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            ),
+            content=_compact_json(_routing_policy_projection(routing_policy)),
             source_ref=(
                 f"routing-policy:{routing_policy.decision_id}:"
                 f"{routing_policy.content_sha256}"
@@ -219,19 +207,14 @@ def build_protocol_run_definition(
         _context_entry(
             prefix="policy",
             title="Fresh pinned native runtime preflight",
-            content=json.dumps(
-                runtime_preflight.model_dump(mode="json"),
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            ),
+            content=_compact_json(_runtime_preflight_projection(runtime_preflight)),
             source_ref=(
                 f"runtime-preflight:{runtime_preflight.decision_id}:"
                 f"{runtime_preflight.content_sha256}"
             ),
         ),
     ]
-    task_memory = [
+    decision_memory = [
         _context_entry(
             prefix="decision",
             title=f"Task decision {item.decision_key}@{item.version}",
@@ -251,7 +234,17 @@ def build_protocol_run_definition(
         )
         for item in decisions
     ]
-    task_memory.extend(_artifact_context(item) for item in inputs)
+    artifact_memory = {
+        item.artifact_id: _artifact_reference_context(
+            item,
+            reason=(
+                "external_reference"
+                if item.content is None
+                else "prompt_bound"
+            ),
+        )
+        for item in inputs
+    }
 
     stage_contract_id = canonical_sha256(
         {"contract_sha256": contract_hash, "stage_key": stage.stage_key}
@@ -279,7 +272,6 @@ def build_protocol_run_definition(
             "Do not return a full prior transcript as the Handoff contract.",
         ],
         "policies": policies,
-        "task_memory": task_memory,
         "project_knowledge": [],
         "user_preferences": [],
         "budget": RunBudget(
@@ -289,8 +281,57 @@ def build_protocol_run_definition(
             max_cost_usd=routing_policy.current_run_cost_reservation_usd,
         ),
     }
-    context_pack = ContextPack.model_validate(seal_model_payload(ContextPack, payload))
     gate_key = f"gate:{stage.stage_key}"
+
+    def build_context_pack() -> ContextPack:
+        task_memory = [
+            *decision_memory,
+            *(artifact_memory[item.artifact_id] for item in inputs),
+        ]
+        return ContextPack.model_validate(
+            seal_model_payload(
+                ContextPack,
+                {**payload, "task_memory": task_memory},
+            )
+        )
+
+    context_pack = build_context_pack()
+    stage_sequence = {
+        item.stage_key: index
+        for index, item in enumerate(contract.workflow)
+    }
+    materialization_order = sorted(
+        inputs,
+        key=lambda item: (
+            -stage_sequence[item.stage_key],
+            item.artifact_id,
+        ),
+    )
+    for artifact in materialization_order:
+        if artifact.content is None:
+            continue
+        if len(artifact.content.encode("utf-8")) > CONTEXT_ENTRY_CONTENT_LIMIT:
+            artifact_memory[artifact.artifact_id] = _artifact_reference_context(
+                artifact,
+                reason="content_entry_bound",
+            )
+            context_pack = build_context_pack()
+            continue
+        materialized = _artifact_context(artifact)
+        artifact_memory[artifact.artifact_id] = materialized
+        candidate = build_context_pack()
+        if not _protocol_prompt_fits(
+            context_pack=candidate,
+            runtime=role.runtime,
+            requirements=requirements,
+        ):
+            artifact_memory[artifact.artifact_id] = _artifact_reference_context(
+                artifact,
+                reason="prompt_bound",
+            )
+            continue
+        context_pack = candidate
+
     prompt = _build_protocol_prompt(
         context_pack=context_pack,
         runtime=role.runtime,
@@ -327,22 +368,40 @@ def _latest_prior_artifacts(
 
 def _artifact_context(artifact: Artifact) -> ContextEntry:
     if artifact.content is None:
-        content = json.dumps(
-            {"artifact_version": artifact.version_ref().model_dump(mode="json")},
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-    else:
-        content = artifact.content
-    if len(content) > CONTEXT_ENTRY_CONTENT_LIMIT:
-        raise ValueError(
-            f"Prior Artifact {artifact.artifact_id}@{artifact.version} exceeds the "
-            "bounded Context entry; publish a smaller formal handoff Artifact"
-        )
+        return _artifact_reference_context(artifact, reason="external_reference")
+    content = artifact.content
     return _context_entry(
         prefix="artifact",
         title=f"Prior formal Artifact {artifact.artifact_id}@{artifact.version}",
+        content=content,
+        source_ref=(
+            f"artifact:{artifact.artifact_id}:{artifact.version}:{artifact.sha256}"
+        ),
+    )
+
+
+def _artifact_reference_context(
+    artifact: Artifact,
+    *,
+    reason: str = "prompt_bound",
+) -> ContextEntry:
+    content = _compact_json(
+        {
+            "artifact_version": artifact.version_ref().model_dump(mode="json"),
+            "materialization": {
+                "status": "reference_only",
+                "reason": reason,
+                "content_utf8_bytes": (
+                    len(artifact.content.encode("utf-8"))
+                    if artifact.content is not None
+                    else None
+                ),
+            },
+        }
+    )
+    return _context_entry(
+        prefix="artifact",
+        title=f"Prior formal Artifact reference {artifact.artifact_id}@{artifact.version}",
         content=content,
         source_ref=(
             f"artifact:{artifact.artifact_id}:{artifact.version}:{artifact.sha256}"
@@ -362,6 +421,144 @@ def _context_entry(*, prefix: str, title: str, content: str, source_ref: str) ->
         content=content,
         source_ref=source_ref,
     )
+
+
+def _compact_json(value: object) -> str:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _task_contract_projection(
+    *,
+    contract: TaskContract,
+    contract_hash: str,
+    role: RoleAssignment,
+) -> dict[str, object]:
+    return {
+        "task_contract_id": contract.contract_id,
+        "task_contract_schema_version": contract.schema_version,
+        "task_contract_sha256": contract_hash,
+        "task_goal": contract.goal,
+        "role": {
+            "role_id": role.role_id,
+            "runtime": role.runtime,
+            "responsibilities": role.responsibilities,
+            "independent_from": role.independent_from,
+        },
+    }
+
+
+def _routing_policy_projection(
+    policy: RoutingPolicyDecision,
+) -> dict[str, object]:
+    cost_budget = {
+        "task_cost_budget_usd": policy.task_cost_budget_usd,
+        "settled_cost_debit_usd": policy.settled_cost_debit_usd,
+        "active_cost_reservations_usd": policy.active_cost_reservations_usd,
+        "available_cost_before_dispatch_usd": (
+            policy.available_cost_before_dispatch_usd
+        ),
+        "current_run_cost_reservation_usd": (
+            policy.current_run_cost_reservation_usd
+        ),
+        "protected_future_reviewer_cost_usd": (
+            policy.protected_future_reviewer_cost_usd
+        ),
+    }
+    projection = {
+        "schema_version": policy.schema_version,
+        "decision_id": policy.decision_id,
+        "content_sha256": policy.content_sha256,
+        "policy_sha256": policy.policy_sha256,
+        "route": {
+            "stage_key": policy.stage_key,
+            "role": policy.role,
+            "pinned_runtime": policy.pinned_runtime,
+        },
+        "task_risk": policy.task_risk,
+        "required_capabilities": policy.required_capabilities,
+        "runtime_capabilities": policy.runtime_capabilities,
+        "required_reviewers": policy.required_reviewers,
+        "reviewers": [
+            {
+                "runtime": item.runtime,
+                "role": item.role,
+                "stage_key": item.stage_key,
+                "independent_from_roles": item.independent_from_roles,
+            }
+            for item in policy.reviewer_assignments
+        ],
+        "token_budget": {
+            "task_token_budget": policy.task_token_budget,
+            "settled_token_debit": policy.settled_token_debit,
+            "available_tokens_before_dispatch": (
+                policy.available_tokens_before_dispatch
+            ),
+            "current_run_token_reservation": policy.current_run_token_reservation,
+            "protected_future_reviewer_tokens": (
+                policy.protected_future_reviewer_tokens
+            ),
+        },
+        "dispatchable": policy.dispatchable,
+        "blockers": policy.blockers,
+    }
+    if any(value is not None for value in cost_budget.values()):
+        projection["cost_budget"] = cost_budget
+    else:
+        projection["cost_measurement"] = "unavailable"
+    return projection
+
+
+def _runtime_preflight_projection(
+    decision: PinnedRuntimePreflightDecision,
+) -> dict[str, object]:
+    return {
+        "schema_version": decision.schema_version,
+        "decision_id": decision.decision_id,
+        "content_sha256": decision.content_sha256,
+        "route": {
+            "stage_key": decision.stage_key,
+            "role": decision.role,
+            "pinned_runtime": decision.pinned_runtime,
+        },
+        "routing_policy": {
+            "decision_id": decision.routing_policy_decision_id,
+            "content_sha256": decision.routing_policy_decision_sha256,
+        },
+        "observation": {
+            "content_sha256": decision.capability_observation_sha256,
+            "runtime_registry_sha256": decision.runtime_registry_sha256,
+            "runtime_command_sha256": decision.runtime_command_sha256,
+            "resolved_runtime_command_sha256": (
+                decision.resolved_runtime_command_sha256
+            ),
+            "capability_declaration_sha256": (
+                decision.capability_declaration_sha256
+            ),
+            "installation_status": decision.installation_status,
+            "version": decision.version,
+            "version_status": decision.version_status,
+            "model_availability": decision.model_availability,
+            "routing_authority": (
+                decision.capability_observation.routing_authority
+            ),
+        },
+        "checks": {
+            item.check: item.satisfied
+            for item in decision.checks
+        },
+        "allowed": decision.allowed,
+        "blockers": decision.blockers,
+        "route_selection_authority": decision.route_selection_authority,
+        "runtime_substitution_allowed": decision.runtime_substitution_allowed,
+        "provider_serviceability_verified": (
+            decision.provider_serviceability_verified
+        ),
+    }
 
 
 def _gate_requirements(
@@ -386,6 +583,22 @@ def _gate_requirements(
 
 
 def _build_protocol_prompt(
+    *,
+    context_pack: ContextPack,
+    runtime: str,
+    requirements: Sequence[GateRequirement],
+) -> str:
+    prompt = _render_protocol_prompt(
+        context_pack=context_pack,
+        runtime=runtime,
+        requirements=requirements,
+    )
+    if len(prompt.encode("utf-8")) > PROTOCOL_PROMPT_LIMIT:
+        raise ValueError("Formal protocol prompt exceeds the 24 KiB dispatch bound")
+    return prompt
+
+
+def _render_protocol_prompt(
     *,
     context_pack: ContextPack,
     runtime: str,
@@ -424,6 +637,18 @@ SEALED CONTEXT PACK (canonical JSON):
 {context_json}
 END SEALED CONTEXT PACK
 """
-    if len(prompt.encode("utf-8")) > PROTOCOL_PROMPT_LIMIT:
-        raise ValueError("Formal protocol prompt exceeds the 24 KiB dispatch bound")
     return prompt
+
+
+def _protocol_prompt_fits(
+    *,
+    context_pack: ContextPack,
+    runtime: str,
+    requirements: Sequence[GateRequirement],
+) -> bool:
+    prompt = _render_protocol_prompt(
+        context_pack=context_pack,
+        runtime=runtime,
+        requirements=requirements,
+    )
+    return len(prompt.encode("utf-8")) <= PROTOCOL_PROMPT_LIMIT

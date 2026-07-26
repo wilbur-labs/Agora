@@ -1,5 +1,65 @@
 # Agora Control Plane Development Progress
 
+## 2026-07-26 - Bounded formal Context materialization (reviewed)
+
+### Failure evidence and implementation
+
+- [x] Ran the authorized `solution_design` Stage for formal Task
+  `task_f67b410c5aea4133bd7c1316a3e485f7`. Codex returned a schema-valid
+  Handoff, the formal Gate passed, and usage settled exactly at 1,716,784
+  Tokens, including 1,553,664 cached input Tokens. The 13,500-Token Stage
+  reservation was admission control rather than a provider hard cap.
+- [x] Increased the versioned Task envelope from 30,000 to 1,733,284 Tokens,
+  exactly preserving the settled debit plus the sealed 9,000 Claude and 7,500
+  Kiro reviewer reservations. The amendment retained the Stage allocations,
+  reviewer set, and methodology graph.
+- [x] The first Claude dispatch attempt failed before Run claim or process
+  spawn because the valid 12,697-byte prior Artifact plus duplicated full
+  routing and preflight objects exceeded the frozen 24 KiB Windows argv
+  prompt bound. Authoritative state remained at one completed Run with the
+  Claude Stage `ready`.
+- [x] Replaced full policy/preflight prompt duplication with bounded
+  projections whose source references retain the complete sealed decision
+  hashes. Every prior Artifact remains an exact `input_artifacts`
+  version/hash reference.
+- [x] Managed Artifact content is now considered deterministically from the
+  newest Stage backward and materialized exactly only when the fully rendered
+  UTF-8 prompt still fits. Non-fitting, over-20,000-byte, and external content
+  becomes explicit reference-only metadata with version, hash, location,
+  byte count, and omission reason; content is never truncated or summarized.
+  The final 24 KiB check remains fail-closed.
+- [x] A copied real acceptance database produced a 23,028-byte Claude prompt
+  with the exact 12,697-byte prior Artifact materialized. The diagnostic
+  Runner spawned no provider and did not mutate the authoritative Task.
+
+### Verification and review state
+
+- [x] Focused prompt-bound regressions: 4 passed. Complete protocol
+  orchestration file: 63 passed. Related orchestration, preflight,
+  capabilities, adapter, and Control Plane group before review: 174 passed.
+- [x] Pre-review complete backend suite: 525 passed, 18 deselected. Final
+  post-review suite after the two additional Kiro-requested regressions:
+  527 passed, 18 deselected, with the existing Starlette/httpx and Windows
+  Proactor cleanup warnings.
+- [x] Schema export/check, isolated `compileall`, CLI smoke, and
+  `git diff --check` passed.
+- [x] Kiro's initial review found only Low observations. Added explicit greedy
+  ordering documentation, regressions for over-20,000-byte and external
+  Artifact references, and a shared renderer that removes exception-message
+  matching. Initial and follow-up reviews returned `KIRO_APPROVE`; they used
+  9.19 and 3.03 credits.
+- [x] Claude's first native review was invalidated by a broken user
+  SessionEnd hook. Two subsequent tool-driven reviews exhausted their native
+  budget before returning a verdict and reported `$0.5609395` and
+  `$0.595759` respectively. A final tool-disabled, stdin-bound Sonnet review
+  inspected the complete tracked diff and returned `CLAUDE_APPROVE`; that
+  invocation did not expose a cost field. Both mandatory review gates are
+  complete.
+- [ ] Commit and push the reviewed increment, then resume the same immutable
+  acceptance Task with the reviewed orchestration engine. Run Claude and Kiro
+  one Stage at a time, amend only for exact settled overruns, require every
+  formal Gate to pass, and finish with explicit human Task approval.
+
 ## 2026-07-26 - Current-commit formal acceptance preparation
 
 ### Isolated acceptance state

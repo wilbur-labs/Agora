@@ -22,7 +22,11 @@ from agora.orchestration.models import (
     RuntimePreflightPreview,
     StageState,
 )
-from agora.orchestration.protocol_context import RepositoryRevision, resolve_git_revision
+from agora.orchestration.protocol_context import (
+    RepositoryRevision,
+    _artifact_context,
+    resolve_git_revision,
+)
 from agora.orchestration.runtime import RuntimeCommand, RuntimeResult
 from agora.orchestration.runtime_capabilities import (
     collect_native_runtime_capabilities,
@@ -35,7 +39,7 @@ from agora.orchestration.store import (
 from agora.projects import ProjectRegistry
 from agora.protocol.agent_adapter import AgentAdapterResult
 from agora.protocol.hashing import seal_model_payload, seal_payload
-from agora.protocol.models import ContextPack, HandoffPack
+from agora.protocol.models import Artifact, ContextPack, HandoffPack
 from agora.protocol.state_machines import GateStatus, StageStatus, TaskStatus
 from agora.tasks.models import (
     AppendEventRequest,
@@ -68,13 +72,17 @@ class ProtocolRunner:
         invalid_outputs: int = 0,
         blocked_outputs: int = 0,
         wrong_ref: bool = False,
+        artifact_content_chars: int = 0,
     ):
         self.contract = contract
         self.invalid_outputs = invalid_outputs
         self.blocked_outputs = blocked_outputs
         self.wrong_ref = wrong_ref
+        self.artifact_content_chars = artifact_content_chars
         self.prompts: list[str] = []
         self.contexts: list[ContextPack] = []
+        self.artifact_contents: dict[str, str] = {}
+        self.artifact_ids: dict[str, str] = {}
         self.pid = 424_242
 
     async def run(self, runtime, prompt, **kwargs):
@@ -88,11 +96,18 @@ class ProtocolRunner:
         stage = next(
             item for item in self.contract.workflow if item.stage_key == context.stage_key
         )
+        content_payload = {
+            "stage": stage.stage_key,
+            "result": "reviewed formal output",
+        }
+        if self.artifact_content_chars:
+            content_payload["analysis"] = "x" * self.artifact_content_chars
         content = json.dumps(
-            {"stage": stage.stage_key, "result": "reviewed formal output"},
+            content_payload,
             ensure_ascii=False,
             sort_keys=True,
         )
+        self.artifact_contents[stage.stage_key] = content
         existing_versions = [
             item.version
             for item in context.input_artifacts
@@ -118,6 +133,7 @@ class ProtocolRunner:
             "location": None,
             "created_at": utc_now(),
         }
+        self.artifact_ids[stage.stage_key] = artifact["artifact_id"]
         artifact_ref = {
             key: artifact[key]
             for key in ("artifact_id", "version", "sha256", "kind", "location")
@@ -196,6 +212,7 @@ def _system(
     wrong_ref: bool = False,
     risk: TaskRisk = TaskRisk.MEDIUM,
     cost_budget_usd: float | None = 12,
+    artifact_content_chars: int = 0,
 ):
     root = tmp_path / "repo"
     root.mkdir(parents=True)
@@ -222,6 +239,7 @@ def _system(
         invalid_outputs=invalid_outputs,
         blocked_outputs=blocked_outputs,
         wrong_ref=wrong_ref,
+        artifact_content_chars=artifact_content_chars,
     )
     service = TaskOrchestrationService(
         tasks,
@@ -369,6 +387,16 @@ async def test_protocol_v1_runs_all_stages_through_authoritative_gates(tmp_path)
         == f"routing-policy:{first_policy.decision_id}:{first_policy.content_sha256}"
         for item in runner.contexts[0].policies
     )
+    routing_entry = next(
+        item
+        for item in runner.contexts[0].policies
+        if item.source_ref
+        == f"routing-policy:{first_policy.decision_id}:{first_policy.content_sha256}"
+    )
+    routing_projection = json.loads(routing_entry.content)
+    assert routing_projection["content_sha256"] == first_policy.content_sha256
+    assert routing_projection["route"]["pinned_runtime"] == "codex"
+    assert "checks" not in routing_projection
     first_preflight = status.runs[0].runtime_preflight
     assert first_preflight.routing_policy_decision_sha256 == (
         first_policy.content_sha256
@@ -384,6 +412,22 @@ async def test_protocol_v1_runs_all_stages_through_authoritative_gates(tmp_path)
         )
         for item in runner.contexts[0].policies
     )
+    preflight_entry = next(
+        item
+        for item in runner.contexts[0].policies
+        if item.source_ref
+        == (
+            f"runtime-preflight:{first_preflight.decision_id}:"
+            f"{first_preflight.content_sha256}"
+        )
+    )
+    preflight_projection = json.loads(preflight_entry.content)
+    assert preflight_projection["content_sha256"] == first_preflight.content_sha256
+    assert preflight_projection["observation"]["content_sha256"] == (
+        first_preflight.capability_observation_sha256
+    )
+    assert preflight_projection["observation"]["routing_authority"] is False
+    assert "capability_observation" not in preflight_projection
     assert [item.artifact_id for item in runner.contexts[1].input_artifacts] == [
         runner.contexts[0].required_outputs[0].output_id
     ]
@@ -435,6 +479,125 @@ async def test_protocol_v1_runs_all_stages_through_authoritative_gates(tmp_path)
             if event.event_type == "stage.activated"
         ]
     ) == 3
+
+
+@pytest.mark.asyncio
+async def test_protocol_prompt_materializes_latest_artifacts_within_bound(tmp_path):
+    _, service, runner, task = _system(
+        tmp_path,
+        artifact_content_chars=11_000,
+    )
+
+    status = await service.run_until_blocked(task.task_id, protocol_v1=True)
+
+    assert status.plan.state == PlanState.AWAITING_APPROVAL
+    assert [stage.state for stage in status.stages] == [StageState.PASSED] * 3
+    assert all(len(prompt.encode("utf-8")) <= 24 * 1024 for prompt in runner.prompts)
+
+    second_context = runner.contexts[1]
+    second_artifact_entry = next(
+        item
+        for item in second_context.task_memory
+        if runner.artifact_ids["solution_design"] in item.source_ref
+    )
+    assert second_artifact_entry.content == runner.artifact_contents["solution_design"]
+
+    third_context = runner.contexts[2]
+    assert sorted(item.artifact_id for item in third_context.input_artifacts) == sorted(
+        [
+            runner.artifact_ids["solution_design"],
+            runner.artifact_ids["correctness_review"],
+        ]
+    )
+    latest_entry = next(
+        item
+        for item in third_context.task_memory
+        if runner.artifact_ids["correctness_review"] in item.source_ref
+    )
+    assert latest_entry.content == runner.artifact_contents["correctness_review"]
+    older_entry = next(
+        item
+        for item in third_context.task_memory
+        if runner.artifact_ids["solution_design"] in item.source_ref
+    )
+    older_reference = json.loads(older_entry.content)
+    assert older_reference["artifact_version"]["artifact_id"] == (
+        runner.artifact_ids["solution_design"]
+    )
+    assert older_reference["materialization"] == {
+        "status": "reference_only",
+        "reason": "prompt_bound",
+        "content_utf8_bytes": len(
+            runner.artifact_contents["solution_design"].encode("utf-8")
+        ),
+    }
+
+
+@pytest.mark.asyncio
+async def test_protocol_prompt_references_artifacts_over_content_entry_bound(tmp_path):
+    _, service, runner, task = _system(
+        tmp_path,
+        artifact_content_chars=20_100,
+    )
+
+    status = await service.run_until_blocked(task.task_id, protocol_v1=True)
+
+    assert status.plan.state == PlanState.AWAITING_APPROVAL
+    assert [stage.state for stage in status.stages] == [StageState.PASSED] * 3
+    assert all(len(prompt.encode("utf-8")) <= 24 * 1024 for prompt in runner.prompts)
+    for context in runner.contexts[1:]:
+        for entry in (
+            item
+            for item in context.task_memory
+            if item.source_ref.startswith("artifact:")
+        ):
+            reference = json.loads(entry.content)
+            assert reference["materialization"]["status"] == "reference_only"
+            assert reference["materialization"]["reason"] == "content_entry_bound"
+            assert reference["materialization"]["content_utf8_bytes"] > 20_000
+
+
+def test_external_prior_artifact_is_an_explicit_reference_only_entry():
+    artifact = Artifact(
+        schema_version="1.0",
+        artifact_id="artifact:external-reference",
+        project_id="alpha",
+        task_id="task_external_reference",
+        stage_key="solution_design",
+        producer={
+            "runtime": "codex",
+            "run_id": "run_external_reference",
+            "stage_key": "solution_design",
+        },
+        kind="design",
+        storage="referenced",
+        version=1,
+        sha256="d" * 64,
+        media_type="text/markdown",
+        content=None,
+        location={
+            "repository_id": REVISION.repository_id,
+            "ref": REVISION.ref,
+            "commit_sha": REVISION.commit_sha,
+            "path": "docs/external-review.md",
+        },
+        created_at=utc_now(),
+    )
+
+    entry = _artifact_context(artifact)
+    reference = json.loads(entry.content)
+
+    assert entry.source_ref == (
+        f"artifact:{artifact.artifact_id}:{artifact.version}:{artifact.sha256}"
+    )
+    assert reference["artifact_version"] == artifact.version_ref().model_dump(
+        mode="json"
+    )
+    assert reference["materialization"] == {
+        "status": "reference_only",
+        "reason": "external_reference",
+        "content_utf8_bytes": None,
+    }
 
 
 @pytest.mark.asyncio
