@@ -112,6 +112,24 @@ must still be valid JSON, and exactly one final usage event plus a valid agent
 message remain mandatory. This is format-only recovery; it cannot change or
 invent Handoff semantics, Evidence, blockers, or usage.
 
+The default Kiro command trusts only its command-execution tool so it can
+calculate the frozen Handoff and Artifact hashes; the sealed Context still
+forbids repository mutation. Agora's versioned Kiro chat normalizer selects
+only the final explicitly marked assistant turn and removes the UI trailer.
+Missing turn markers or a non-Handoff final turn remain protocol failures; tool
+arguments and intermediate transcript JSON are never searched for or accepted.
+After every started native process, Agora resolves the repository again before
+settlement. A dirty worktree or changed ref/commit invalidates the Handoff as a
+Context mismatch and blocks the Stage before any Gate can pass, while preserving
+the actual process and transport observations.
+
+`execute_bash` is not an operating-system sandbox. The desktop self-hosted
+default is therefore for a trusted local reviewer: deployments that treat the
+native runtime as hostile MUST place the whole runtime process inside an
+external container or VM boundary that restricts network and out-of-repository
+side effects. The repository recheck is a settlement invariant, not a substitute
+for that isolation boundary.
+
 The default Claude process also starts with the native `--safe-mode` boundary
 in addition to plan permissions and disabled session persistence. This prevents
 unbound user or project customizations such as hooks, skills, plugins, MCP

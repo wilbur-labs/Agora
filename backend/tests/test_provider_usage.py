@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 
 import pytest
 from pydantic import ValidationError
@@ -26,7 +27,14 @@ def test_default_structured_formats_are_explicit_and_custom_commands_fail_safe()
         )
     )
     assert "--safe-mode" in defaults["claude"].command_template
-    assert defaults["kiro"].result_format == RuntimeResultFormat.PLAIN_TEXT
+    assert defaults["kiro"].result_format == RuntimeResultFormat.KIRO_CHAT_V1
+    assert "--trust-tools=execute_bash" in defaults["kiro"].command_template
+    assert ("--wrap", "never") in tuple(
+        zip(
+            defaults["kiro"].command_template,
+            defaults["kiro"].command_template[1:],
+        )
+    )
 
     custom = build_runtime_registry({
         "orchestration": {
@@ -240,6 +248,68 @@ def test_plain_kiro_is_estimated_but_process_launch_failure_is_exact_zero():
     assert launch_failed.token_measurement == "exact"
     assert launch_failed.cost_usd == 0
     assert launch_failed.cost_measurement == "exact"
+
+
+def test_kiro_chat_extracts_only_the_last_marked_assistant_turn():
+    stdout = (
+        "\x1b[38;5;141m> \x1b[0mI need a hash.\x1b[0m\n"
+        "I will run the following command: python hash.py\n"
+        '{"tool_output":"not the handoff"}\n'
+        "\x1b[38;5;141m> \x1b[0m"
+        '{"schema_version":"1.0","stage_result":"succeeded"}'
+        "\x1b[38;5;252m\x1b[0m\n"
+        "\x1b[38;5;8m ▸ Credits: 1.25 • Time: 3s\x1b[0m"
+    )
+
+    output, observation = normalize_native_output(
+        adapter="kiro",
+        result_format=RuntimeResultFormat.KIRO_CHAT_V1,
+        stdout=stdout,
+        run_id="orun_kiro_chat",
+    )
+
+    assert output == '{"schema_version":"1.0","stage_result":"succeeded"}'
+    assert observation is None
+
+    output, observation = normalize_native_output(
+        adapter="kiro",
+        result_format=RuntimeResultFormat.KIRO_CHAT_V1,
+        stdout=stdout,
+        run_id="orun_kiro_chat",
+        prompt="sealed prompt",
+    )
+    assert output == '{"schema_version":"1.0","stage_result":"succeeded"}'
+    assert observation is not None
+    assert observation.total_tokens == math.ceil(
+        len(("sealed prompt" + stdout).encode("utf-8")) / 4
+    )
+    assert observation.token_measurement == "estimated"
+
+    unmarked = "tool output with no assistant boundary"
+    output, observation = normalize_native_output(
+        adapter="kiro",
+        result_format=RuntimeResultFormat.KIRO_CHAT_V1,
+        stdout=unmarked,
+        run_id="orun_kiro_unmarked",
+    )
+    assert output == unmarked
+    assert observation is None
+
+
+def test_normalized_kiro_chat_usage_remains_estimated():
+    estimated = settlement_observation(
+        run_id="orun_kiro_normalized",
+        adapter="kiro",
+        prompt="abcd",
+        output="efgh",
+        process_started=True,
+        exit_code=0,
+        result_format=RuntimeResultFormat.KIRO_CHAT_V1,
+        native_observation=None,
+    )
+    assert estimated.total_tokens == 2
+    assert estimated.token_measurement == "estimated"
+    assert estimated.source == "kiro_cli_text"
 
 
 def test_observation_hash_and_run_binding_are_tamper_evident():

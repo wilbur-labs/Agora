@@ -67,14 +67,15 @@ DEFAULT_RUNTIME_COMMANDS = {
         "--permission-mode", "plan", "--safe-mode", "--no-session-persistence",
     ),
     "kiro": (
-        "kiro-cli", "chat", "--no-interactive", "--trust-tools=", "{prompt}",
+        "kiro-cli", "chat", "--no-interactive", "--trust-tools=execute_bash",
+        "--wrap", "never", "{prompt}",
     ),
 }
 
 DEFAULT_RESULT_FORMATS = {
     "codex": RuntimeResultFormat.CODEX_JSONL_V1,
     "claude": RuntimeResultFormat.CLAUDE_JSON_V1,
-    "kiro": RuntimeResultFormat.PLAIN_TEXT,
+    "kiro": RuntimeResultFormat.KIRO_CHAT_V1,
 }
 
 DEFAULT_VERSION_COMMANDS = {
@@ -184,6 +185,9 @@ def build_runtime_registry(config: dict) -> dict[str, RuntimeCommand]:
         ) or (
             result_format == RuntimeResultFormat.CLAUDE_JSON_V1
             and adapter != "claude"
+        ) or (
+            result_format == RuntimeResultFormat.KIRO_CHAT_V1
+            and adapter != "kiro"
         ):
             raise ValueError(
                 f"orchestration.runtimes.{adapter}.result_format does not match its adapter"
@@ -300,6 +304,7 @@ class ReadOnlyCliRunner:
                     stdout,
                     run_id=run_id,
                     stdout_prefix_truncated=stdout_prefix_truncated,
+                    prompt=prompt,
                 )
                 return RuntimeResult(
                     exit_code=proc.returncode,
@@ -313,6 +318,7 @@ class ReadOnlyCliRunner:
                 stdout,
                 run_id=run_id,
                 stdout_prefix_truncated=stdout_prefix_truncated,
+                prompt=prompt,
             )
             return RuntimeResult(
                 exit_code=proc.returncode,
@@ -419,6 +425,7 @@ class ReadOnlyCliRunner:
         *,
         run_id: str,
         stdout_prefix_truncated: bool = False,
+        prompt: str | None = None,
     ) -> tuple[str, ProviderUsageObservation | None]:
         semantic, observation = normalize_native_output(
             adapter=runtime.adapter,
@@ -426,6 +433,7 @@ class ReadOnlyCliRunner:
             stdout=stdout,
             run_id=run_id,
             stdout_prefix_truncated=stdout_prefix_truncated,
+            prompt=prompt,
         )
         return semantic[-OUTPUT_LIMIT:], observation
 

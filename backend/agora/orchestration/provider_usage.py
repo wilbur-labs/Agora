@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from enum import Enum
 from typing import Any
 
@@ -14,6 +15,13 @@ class RuntimeResultFormat(str, Enum):
     PLAIN_TEXT = "plain_text"
     CODEX_JSONL_V1 = "codex_jsonl_v1"
     CLAUDE_JSON_V1 = "claude_json_v1"
+    KIRO_CHAT_V1 = "kiro_chat_v1"
+
+
+_KIRO_ASSISTANT_MARKER = "\x1b[38;5;141m> \x1b[0m"
+_KIRO_TRAILER_MARKER = "\x1b[38;5;252m"
+_ANSI_ESCAPE_RE = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 
 def normalize_native_output(
@@ -23,6 +31,7 @@ def normalize_native_output(
     stdout: str,
     run_id: str,
     stdout_prefix_truncated: bool = False,
+    prompt: str | None = None,
 ) -> tuple[str, ProviderUsageObservation | None]:
     """Return semantic stdout and provider facts without mutating native state."""
 
@@ -35,6 +44,13 @@ def normalize_native_output(
         )
     if result_format == RuntimeResultFormat.CLAUDE_JSON_V1:
         return _normalize_claude_json(stdout, run_id=run_id, adapter=adapter)
+    if result_format == RuntimeResultFormat.KIRO_CHAT_V1:
+        return _normalize_kiro_chat(
+            stdout,
+            run_id=run_id,
+            adapter=adapter,
+            prompt=prompt,
+        )
     return stdout, None
 
 
@@ -80,7 +96,10 @@ def settlement_observation(
             "native_credit_measurement": "exact",
             "native_credit_method": "process_not_started",
         })
-    if exit_code is None or result_format != RuntimeResultFormat.PLAIN_TEXT:
+    if exit_code is None or result_format not in {
+        RuntimeResultFormat.PLAIN_TEXT,
+        RuntimeResultFormat.KIRO_CHAT_V1,
+    }:
         return _unavailable(run_id, adapter)
 
     estimated = max(1, math.ceil(len((prompt + output).encode("utf-8")) / 4))
@@ -250,6 +269,49 @@ def _normalize_claude_json(
             "token_method": "unavailable",
         })
     return result, _sealed(payload)
+
+
+def _normalize_kiro_chat(
+    stdout: str,
+    *,
+    run_id: str,
+    adapter: str,
+    prompt: str | None,
+) -> tuple[str, ProviderUsageObservation | None]:
+    """Extract only the final explicitly marked assistant turn from Kiro chat UI."""
+
+    if _KIRO_ASSISTANT_MARKER not in stdout:
+        return stdout, None
+    observation = None
+    if prompt is not None:
+        estimated = max(
+            1,
+            math.ceil(len((prompt + stdout).encode("utf-8")) / 4),
+        )
+        observation = _sealed({
+            "schema_version": "1.0",
+            "run_id": run_id,
+            "adapter": adapter,
+            "provider": _provider(adapter),
+            "source": "kiro_cli_text",
+            "total_tokens": estimated,
+            "token_measurement": "estimated",
+            "token_method": "utf8_bytes_divided_by_four_ceil",
+            "cost_measurement": "unavailable",
+            "cost_method": "unavailable",
+        })
+    final_turn = stdout.rsplit(_KIRO_ASSISTANT_MARKER, 1)[1]
+    if _KIRO_TRAILER_MARKER in final_turn:
+        final_turn = final_turn.split(_KIRO_TRAILER_MARKER, 1)[0]
+    final_turn = _ANSI_ESCAPE_RE.sub("", final_turn)
+    final_turn = _CONTROL_RE.sub("", final_turn)
+    lines: list[str] = []
+    for line in final_turn.splitlines():
+        if line.strip().startswith("▸ Credits:"):
+            break
+        lines.append(line)
+    semantic = "\n".join(lines).strip()
+    return (semantic, observation) if semantic else (stdout, None)
 
 
 def _unavailable(run_id: str, adapter: str) -> ProviderUsageObservation:

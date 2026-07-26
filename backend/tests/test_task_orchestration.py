@@ -317,6 +317,7 @@ def test_runtime_defaults_are_read_only_and_bounded():
     assert "plan" in runtimes["claude"].command_template
     assert "--safe-mode" in runtimes["claude"].command_template
     assert "--no-session-persistence" in runtimes["claude"].command_template
+    assert "--trust-tools=execute_bash" in runtimes["kiro"].command_template
     assert "--trust-all-tools" not in runtimes["kiro"].command_template
     with pytest.raises(ValueError, match="exactly one"):
         build_runtime_registry({

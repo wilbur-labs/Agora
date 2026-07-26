@@ -503,7 +503,11 @@ class TaskOrchestrationService:
                     f"Formal protocol Run could not start: {detail}"
                 ) from exc
 
+        process_started = False
+
         async def attach_pid(pid: int) -> None:
+            nonlocal process_started
+            process_started = True
             self.store.attach_pid(run_id, pid)
 
         def before_spawn(
@@ -560,7 +564,43 @@ class TaskOrchestrationService:
                 stderr=f"runtime boundary failed: {type(exc).__name__}: {exc}",
                 process_started=False,
             )
-        return self._settle_protocol_result(run, definition, result)
+        repository_revision_mismatch = False
+        if result.process_started or process_started:
+            try:
+                settled_revision = self.revision_resolver(
+                    project.root,
+                    task.project_id,
+                )
+            except (TypeError, ValueError):
+                revision_error = (
+                    "formal runtime left the repository revision unavailable or dirty"
+                )
+            else:
+                revision_error = (
+                    None
+                    if settled_revision == revision
+                    else "formal runtime changed the repository revision"
+                )
+            if revision_error is not None:
+                repository_revision_mismatch = True
+                result = RuntimeResult(
+                    exit_code=(
+                        result.exit_code
+                        if result.exit_code not in {None, 0}
+                        else 1
+                    ),
+                    stdout=result.stdout,
+                    stderr=revision_error,
+                    timed_out=result.timed_out,
+                    process_started=result.process_started or process_started,
+                    usage_observation=result.usage_observation,
+                )
+        return self._settle_protocol_result(
+            run,
+            definition,
+            result,
+            repository_revision_mismatch=repository_revision_mismatch,
+        )
 
     def _settle_protocol_result(
         self,
@@ -569,12 +609,14 @@ class TaskOrchestrationService:
         result: RuntimeResult,
         *,
         cancelled: bool = False,
+        repository_revision_mismatch: bool = False,
     ) -> OrchestrationRun:
         adapted = adapt_runtime_result(
             definition.context_pack,
             result,
             gate_requirements=definition.gate_requirements,
             cancelled=cancelled,
+            repository_revision_mismatch=repository_revision_mismatch,
         )
         receipt = self.control_plane.settle_protocol_run(
             adapted,

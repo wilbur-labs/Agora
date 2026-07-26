@@ -25,6 +25,7 @@ def adapt_runtime_result(
     *,
     gate_requirements: list[GateRequirement] | None = None,
     cancelled: bool = False,
+    repository_revision_mismatch: bool = False,
 ) -> AgentAdapterResult:
     """Preserve terminal runner facts and validate stdout as a Handoff Pack.
 
@@ -59,6 +60,20 @@ def adapt_runtime_result(
         transport_status=transport_status,
     )
     adapted = adapt_agent_output(context_pack, observation, result.stdout)
+    if repository_revision_mismatch and adapted.handoff_pack is not None:
+        return AgentAdapterResult(
+            protocol_state=RunProtocolState(
+                run_id=adapted.protocol_state.run_id,
+                process_status=adapted.protocol_state.process_status,
+                transport_status=adapted.protocol_state.transport_status,
+                schema_status=SchemaStatus.PROTOCOL_FAILED,
+                semantic_stage_result=SemanticStageResult.BLOCKED,
+                process_exit_code=adapted.protocol_state.process_exit_code,
+                repair_attempts=adapted.protocol_state.repair_attempts,
+            ),
+            error_code=AdapterErrorCode.HANDOFF_CONTEXT_MISMATCH,
+            attention_required=True,
+        )
     if adapted.handoff_pack is None or gate_requirements is None:
         return adapted
     requirements = {item.requirement_id: item for item in gate_requirements}

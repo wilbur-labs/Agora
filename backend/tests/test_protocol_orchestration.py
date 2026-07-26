@@ -523,6 +523,54 @@ async def test_protocol_v1_runs_all_stages_through_authoritative_gates(tmp_path)
     ) == 3
 
 
+@pytest.mark.parametrize(
+    ("settled_revision", "expected_message"),
+    [
+        (
+            None,
+            "formal runtime left the repository revision unavailable or dirty",
+        ),
+        (
+            REVISION.model_copy(update={"commit_sha": "b" * 40}),
+            "formal runtime changed the repository revision",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_protocol_runtime_repository_drift_fails_before_gate_settlement(
+    tmp_path,
+    settled_revision,
+    expected_message,
+):
+    _, service, _, task = _system(tmp_path)
+    calls = 0
+
+    def revision_after_runtime(_root, _repository_id):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return REVISION
+        if settled_revision is None:
+            raise ValueError(
+                "Formal protocol orchestration requires a clean Git worktree"
+            )
+        return settled_revision
+
+    service.revision_resolver = revision_after_runtime
+    run = await service.run_next(task.task_id, protocol_v1=True)
+
+    assert run.state == RunState.BLOCKED
+    assert run.error_message == expected_message
+    assert service.control_plane.get_gate(
+        task.task_id,
+        "gate:solution_design",
+    ).status == GateStatus.PENDING
+    assert json.loads(run.output)["schema_version"] == "1.0"
+    protocol_run = service.control_plane.get_protocol_run(run.run_id)
+    assert protocol_run is not None
+    assert protocol_run.adapter_error_code.value == "handoff_context_mismatch"
+
+
 @pytest.mark.asyncio
 async def test_protocol_prompt_materializes_latest_artifacts_within_bound(tmp_path):
     _, service, runner, task = _system(

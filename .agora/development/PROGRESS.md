@@ -1,5 +1,78 @@
 # Agora Control Plane Development Progress
 
+## 2026-07-26 - Formal Kiro chat transport and settlement recheck (reviewed)
+
+### Live acceptance evidence and bounded implementation
+
+- [x] The eighth formal Claude `correctness_review` attempt passed. Run
+  `orun_b6a00651f8b54a738d8e99a5c29ea6c2` completed with a schema-valid,
+  semantically successful Handoff, passed its Gate, and settled 681,411 exact
+  Tokens plus `$3.740426`. The accepted Handoff hash is
+  `edadcba737d3df9199f6b72b0fa86aff2f95503953a731b9ea445dd453055c27`.
+- [x] Budget amendment `budget_7132f9f2986c47c88dfd030e1c825e08`
+  raised the Task envelope to 6,988,936 Tokens, exactly preserving the
+  conservative settled debit plus the final sealed 7,500-Token Kiro
+  reservation. The first Kiro `methodology_review` Run
+  `orun_6a87f8f54bbe4c2eae8f66587f48f3c7` exited zero but emitted its ANSI chat
+  transcript rather than a Handoff. It settled `handoff_json_invalid` with
+  11,285 estimated Tokens and unavailable cost; Gate and Stage remained
+  blocked with Attention `attn_protocol_bd5ad70fc70b88b1fc4952c90bba06a3`.
+- [x] Added the versioned `KIRO_CHAT_V1` result format. It selects only the
+  final exact Kiro assistant-turn marker, removes the UI trailer, and never
+  searches tool arguments or intermediate transcript JSON. Missing markers,
+  empty final turns, and non-Handoff final turns remain fail-closed.
+- [x] The default Kiro command now uses `--wrap never` and trusts only
+  `execute_bash`, which is required to calculate frozen Artifact and Handoff
+  hashes. It does not trust all tools. The sealed Context still forbids
+  repository mutation.
+- [x] Added a post-process repository recheck before settlement. Dirty or
+  unavailable repositories and clean ref/commit changes invalidate an
+  otherwise valid Handoff as `handoff_context_mismatch`, preserve the actual
+  process, transport, raw output, and usage observations, and cannot pass a
+  Gate. The documentation now states that this recheck is not an OS sandbox:
+  hostile-runtime deployments require an external container or VM boundary
+  for network and out-of-repository effects.
+- [x] Kiro usage remains explicitly estimated, now from the sealed prompt plus
+  the raw captured UI transcript before semantic extraction rather than the
+  shorter normalized Handoff candidate.
+- [x] Replayed the saved 25,601-character failed Kiro transcript through the
+  new normalizer. It selected the 13,086-character final assistant turn ending
+  in a request for tool approval, did not harvest the intermediate JSON
+  script, and remained non-JSON. A direct Kiro CLI 2.14.2 non-interactive
+  probe verified the exact ANSI markers; `--format json` still emitted the UI
+  transcript, so transport normalization remains necessary.
+
+### Verification and review state
+
+- [x] Focused provider-usage, runtime, and protocol orchestration suite:
+  129 passed. Kiro-review fixes added the clean changed-revision regression;
+  the focused review-fix suite passed 67 tests.
+- [x] Final complete non-integration backend suite:
+  531 passed, 18 deselected, with only the existing Starlette/httpx and
+  Windows Proactor cleanup warnings. Protocol Schema export/check,
+  `compileall`, and `git diff --check` passed.
+- [x] Kiro independently inspected the implementation, surrounding authority
+  code, tests, and docs, then returned `VERDICT: APPROVE` using 8.04 credits.
+  Its actionable recommendations were addressed by adding the second
+  repository-drift regression and documenting the required external isolation
+  boundary. The real CLI marker probe satisfied its remaining compatibility
+  recommendation.
+- [x] Claude independently reviewed the final post-Kiro-fix diff in safe mode,
+  found no actionable correctness, safety, or regression defects, and returned
+  `VERDICT: APPROVE`. Review session
+  `1353385b-678c-4b81-b808-c9622ed149f2` used `$1.704422`.
+
+### Current checkpoint and next safe action
+
+The acceptance Task remains durably blocked at 2/3 Stages only because the
+pre-fix Kiro Run's Attention is still open. Commit and push the reviewed
+transport increment, then use formal `retry` to cancel only
+`attn_protocol_bd5ad70fc70b88b1fc4952c90bba06a3`, derive a fresh exact budget
+envelope from the conservative settled debit plus the 7,500-Token reservation,
+and dispatch only the final Kiro Stage. If all three Gates pass, record the
+user's explicit instruction to continue through completion as the final human
+approval and persist the terminal Task/Plan checkpoint.
+
 ## 2026-07-26 - Memory source-reference guidance (reviewed)
 
 ### Seventh Claude attempt and final remaining schema class
@@ -41,11 +114,12 @@
   77-byte actual margin, docs, and tests with tools and customizations
   disabled, then returned `CLAUDE_APPROVE`. It made the same non-blocking
   leading-character observation; the invocation exposed no cost field.
-- [ ] Commit and push this reviewed prompt-only increment. Then cancel only
-  the latest matching Attention through formal retry, amend the Task envelope
-  to the conservative settled debit plus the sealed 9,000 Claude and 7,500
-  Kiro reservations (currently 6,316,525 Tokens), and dispatch one Claude
-  attempt before Kiro.
+- [x] Committed and pushed this reviewed prompt-only increment as `42f728d`.
+  Budget amendment `budget_43cd01c5a81d4b8a8f2232222524db7f`
+  set the envelope to 6,316,525 Tokens before Claude attempt 8. That attempt
+  passed as Run `orun_b6a00651f8b54a738d8e99a5c29ea6c2`; the subsequent
+  final-Kiro amendment and first Kiro result are recorded in the current
+  checkpoint above.
 
 ## 2026-07-26 - Nested Handoff object guidance (reviewed)
 

@@ -252,6 +252,12 @@ A formal runtime invocation must isolate the Handoff transport from unbound
 native customizations that can replace or post-process stdout. Isolation is a
 process-launch boundary, not permission to modify native runtime files, and it
 does not weaken the Handoff parser or make native runtime state authoritative.
+When a native CLI emits a chat transcript, its versioned transport normalizer
+may select only an explicitly marked final assistant turn. It may not search
+tool arguments or intermediate transcript content for a convenient JSON
+object. A runtime granted a bounded execution tool remains prohibited from
+mutating the repository, and repository/ref/commit cleanliness is rechecked
+before settlement.
 
 ## 6. Evidence and Gate evaluation
 
