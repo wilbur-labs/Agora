@@ -1,5 +1,68 @@
 # Agora Control Plane Development Progress
 
+## 2026-07-27 - Native Task consultation dispatch (reviewed)
+
+### Bounded implementation
+
+- [x] Added strict `ConsultationCandidateDraft@1.0` output and a separate
+  append-only consultation execution ledger. Every claim binds the observed
+  Plan version, authoritative grouped-inventory Stage route, pinned runtime,
+  clean repository ID/ref/commit, prompt hash, exact-input operation key, and
+  Token/cost admission reservation.
+- [x] Added `agora task consult`. It requires explicit unbounded-native-usage
+  acknowledgement, dispatches only the already pinned Stage runtime, supplies
+  a bounded read-only advisory context instead of a transcript, and accepts
+  only exact draft JSON or one whole-document fence repair.
+- [x] Kept process, transport, schema, repository, and provider-usage results
+  independent. Settlement rechecks repository revision and transactionally
+  revalidates Plan/route bindings. Only a valid current result creates one
+  redacted hash-sealed candidate; failures still settle usage and cannot
+  mutate Task, Stage, Gate, formal Run, Artifact, Evidence, or decision state.
+  Repository drift preserves an interrupted process dimension, and
+  cancellation before PID attachment settles as provable exact-zero usage.
+- [x] Protected every unfinished reviewer Stage allocation, blocked concurrent
+  formal Run/consultation claims, made exact-input retries non-dispatching, and
+  added crash recovery that refuses live/uninspectable PIDs and settles dead or
+  never-attached processes without duplicate execution. Formal and consultation
+  admission now share the same conservative cross-ledger Token/cost snapshot.
+- [x] Unified Task projection schema `11.0` adds paginated consultation
+  executions and includes their active reservations and terminal usage in
+  truthful aggregate budget state. Prompts and raw native output remain
+  omitted.
+- [x] Documented the boundary in
+  `docs/architecture/native-task-consultation-v1.md` and updated the protocol,
+  candidate, and unified projection baselines.
+
+### Verification and review state
+
+- [x] New native consultation suite: 14 passed.
+- [x] Related Task orchestration: 62 passed; formal protocol orchestration:
+  65 passed; protocol freeze: 33 passed.
+- [x] Complete non-integration backend suite: 551 passed, 18 deselected, with
+  only the existing Starlette/httpx and Windows Proactor cleanup warnings.
+  Protocol Schema export/check, `compileall`, CLI help smoke, and
+  `git diff --check` passed.
+- [x] Kiro initial review: `CHANGES_REQUESTED` for symmetric formal/
+  consultation budget accounting, interrupted-process truth under repository
+  drift, missing bidirectional concurrency/budget regressions, and the stale
+  verification record. Targeted code re-review confirmed every implementation
+  finding fixed.
+- [x] Kiro final targeted re-review: `APPROVE`; the corrected verification
+  record resolved the sole remaining persistence-gate blocker.
+- [x] Independent Claude Code review: `APPROVE`, with one optional
+  cancellation-before-PID truthfulness observation subsequently fixed.
+- [x] Claude targeted re-review: `APPROVE`; pre-attach cancellation settles
+  exact-zero usage and post-attach interruption accounting remains intact.
+
+### Current next safe action
+
+After committing and pushing this reviewed increment, do not invent the next
+methodology graph. The next product slice remains the authoritative full
+AI-DLC method graph and branch/rework/DAG semantics, but its formal freeze must
+wait for the missing complete authoritative source. Until that source is
+available, preserve this clean checkpoint rather than widening native
+consultation, dynamic routing/model selection, HTTP, or UI scope.
+
 ## 2026-07-26 - Consultation candidate authority boundary (reviewed)
 
 ### Bounded implementation

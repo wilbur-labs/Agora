@@ -18,6 +18,7 @@ from agora.tasks.store import TaskStore
 
 from .models import (
     ArtifactSummary,
+    ConsultationState,
     GateDerivedNextSafeAction,
     PlanState,
     ProjectionPage,
@@ -273,6 +274,12 @@ class TaskProjectionStore:
             history_limit,
             history_offset,
         )
+        consultation_runs, consultation_run_total = self._consultations(
+            db,
+            plan.plan_id,
+            history_limit,
+            history_offset,
+        )
         consultation_candidates, consultation_candidate_total = (
             self._consultation_candidates(
                 db,
@@ -409,6 +416,7 @@ class TaskProjectionStore:
             "approvals": approval_total,
             "attention": attention_total,
             "decisions": decision_total,
+            "consultation_runs": consultation_run_total,
             "consultation_candidates": consultation_candidate_total,
             "consultation_candidate_dispositions": candidate_disposition_total,
             "budget_amendments": budget_amendment_total,
@@ -439,6 +447,7 @@ class TaskProjectionStore:
                     "evidence",
                     "approvals",
                     "decisions",
+                    "consultation_runs",
                     "consultation_candidates",
                     "consultation_candidate_dispositions",
                     "budget_amendments",
@@ -499,6 +508,7 @@ class TaskProjectionStore:
             attention=attention,
             required_human_actions=required_actions,
             decisions=decisions,
+            consultation_runs=consultation_runs,
             consultation_candidates=consultation_candidates,
             consultation_candidate_dispositions=candidate_dispositions,
             budget_amendments=budget_amendments,
@@ -815,6 +825,20 @@ class TaskProjectionStore:
             self.orchestration._consultation_candidate(row) for row in rows
         ], total
 
+    def _consultations(self, db, plan_id, limit, offset):
+        rows = db.execute(
+            """SELECT * FROM orchestration_consultations
+               WHERE plan_id = ?
+               ORDER BY started_at, consultation_id LIMIT ? OFFSET ?""",
+            (plan_id, limit, offset),
+        ).fetchall()
+        total = db.execute(
+            """SELECT COUNT(*) AS count FROM orchestration_consultations
+               WHERE plan_id = ?""",
+            (plan_id,),
+        ).fetchone()["count"]
+        return [self.orchestration._consultation(row) for row in rows], total
+
     def _consultation_candidate_dispositions(self, db, plan_id, limit, offset):
         rows = db.execute(
             """SELECT * FROM orchestration_candidate_dispositions
@@ -928,7 +952,7 @@ class TaskProjectionStore:
 
     @staticmethod
     def _budget_projection(db, plan):
-        active = db.execute(
+        active_runs = db.execute(
             """SELECT COUNT(*) AS count,
                       COALESCE(SUM(token_reserved), 0) AS token_reserved,
                       SUM(CASE WHEN cost_reserved_usd IS NULL THEN 1 ELSE 0 END)
@@ -937,7 +961,17 @@ class TaskProjectionStore:
                FROM orchestration_runs WHERE plan_id = ? AND state = ?""",
             (plan.plan_id, RunState.RUNNING.value),
         ).fetchone()
-        settled = db.execute(
+        active_consultations = db.execute(
+            """SELECT COUNT(*) AS count,
+                      COALESCE(SUM(token_reserved), 0) AS token_reserved,
+                      SUM(CASE WHEN cost_reserved_usd IS NULL THEN 1 ELSE 0 END)
+                          AS unavailable_costs,
+                      COALESCE(SUM(cost_reserved_usd), 0) AS cost_reserved
+               FROM orchestration_consultations
+               WHERE plan_id = ? AND state = ?""",
+            (plan.plan_id, ConsultationState.RUNNING.value),
+        ).fetchone()
+        settled_runs = db.execute(
             """SELECT COUNT(*) AS count,
                       COALESCE(SUM(CASE WHEN tokens IS NOT NULL THEN tokens ELSE 0 END), 0)
                           AS known_tokens,
@@ -955,37 +989,99 @@ class TaskProjectionStore:
                WHERE plan_id = ? AND entry_type = 'settlement'""",
             (plan.plan_id,),
         ).fetchone()
-        if settled["unavailable_tokens"]:
+        settled_consultations = db.execute(
+            """SELECT COUNT(*) AS count,
+                      COALESCE(SUM(CASE WHEN token_used IS NOT NULL
+                                        THEN token_used ELSE 0 END), 0)
+                          AS known_tokens,
+                      SUM(CASE WHEN token_measurement = 'unavailable'
+                               THEN 1 ELSE 0 END) AS unavailable_tokens,
+                      SUM(CASE WHEN token_measurement = 'estimated'
+                               THEN 1 ELSE 0 END) AS estimated_tokens,
+                      SUM(CASE WHEN cost_used_usd IS NOT NULL
+                               THEN 1 ELSE 0 END) AS cost_count,
+                      COALESCE(SUM(cost_used_usd), 0) AS known_cost,
+                      SUM(CASE WHEN cost_used_usd IS NOT NULL
+                               AND cost_measurement != 'exact'
+                               THEN 1 ELSE 0 END) AS inexact_costs
+               FROM orchestration_consultations
+               WHERE plan_id = ? AND state != ?""",
+            (plan.plan_id, ConsultationState.RUNNING.value),
+        ).fetchone()
+        active_token_reserved = (
+            active_runs["token_reserved"]
+            + active_consultations["token_reserved"]
+        )
+        active_unavailable_costs = (
+            (active_runs["unavailable_costs"] or 0)
+            + (active_consultations["unavailable_costs"] or 0)
+        )
+        active_cost_reserved = (
+            active_runs["cost_reserved"]
+            + active_consultations["cost_reserved"]
+        )
+        settled_count = (
+            settled_runs["count"] + settled_consultations["count"]
+        )
+        known_tokens = (
+            settled_runs["known_tokens"]
+            + settled_consultations["known_tokens"]
+        )
+        unavailable_tokens = (
+            (settled_runs["unavailable_tokens"] or 0)
+            + (settled_consultations["unavailable_tokens"] or 0)
+        )
+        estimated_tokens = (
+            (settled_runs["estimated_tokens"] or 0)
+            + (settled_consultations["estimated_tokens"] or 0)
+        )
+        if unavailable_tokens:
             token_measurement = "unavailable"
             token_settled = None
-        elif settled["estimated_tokens"]:
+        elif estimated_tokens:
             token_measurement = "estimated"
-            token_settled = settled["known_tokens"]
+            token_settled = known_tokens
         else:
             token_measurement = "exact"
-            token_settled = settled["known_tokens"]
+            token_settled = known_tokens
         token_remaining = (
             None
             if token_settled is None
-            else max(0, plan.total_token_budget - active["token_reserved"] - token_settled)
+            else max(
+                0,
+                plan.total_token_budget
+                - active_token_reserved
+                - token_settled,
+            )
         )
-        if settled["count"] == 0:
+        cost_count = (
+            (settled_runs["cost_count"] or 0)
+            + (settled_consultations["cost_count"] or 0)
+        )
+        known_cost = (
+            settled_runs["known_cost"] + settled_consultations["known_cost"]
+        )
+        inexact_costs = (
+            (settled_runs["inexact_costs"] or 0)
+            + (settled_consultations["inexact_costs"] or 0)
+        )
+        if settled_count == 0:
             cost_settled = 0.0
             cost_measurement = "exact"
-        elif settled["cost_count"] != settled["count"]:
+        elif cost_count != settled_count:
             cost_settled = None
             cost_measurement = "unavailable"
         else:
-            cost_settled = settled["known_cost"]
+            cost_settled = known_cost
             cost_measurement = (
-                "estimated" if settled["inexact_costs"] else "exact"
+                "estimated" if inexact_costs else "exact"
             )
         if plan.total_cost_budget_usd is None:
             cost_reserved = None
-        elif active["unavailable_costs"]:
+        elif active_unavailable_costs:
             cost_reserved = None
         else:
-            cost_reserved = active["cost_reserved"]
+            cost_reserved = active_cost_reserved
         if (
             plan.total_cost_budget_usd is None
             or cost_settled is None
@@ -1001,7 +1097,7 @@ class TaskProjectionStore:
             )
         return UnifiedBudgetProjection(
             token_allocated=plan.total_token_budget,
-            token_reserved=active["token_reserved"],
+            token_reserved=active_token_reserved,
             token_settled=token_settled,
             token_measurement=token_measurement,
             token_remaining=token_remaining,

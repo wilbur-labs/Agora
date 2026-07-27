@@ -42,6 +42,7 @@ from agora.tasks.models import CreateTaskRequest, TaskBudget, TaskManifest, Task
 from agora.tasks.store import TaskStore
 
 from .contracts import TaskContract, canonical_contract_json, contract_sha256
+from .consultation import adapt_consultation_output
 from .methodology import (
     FOUNDATION_METHODOLOGY,
     MethodologyDefinition,
@@ -49,6 +50,8 @@ from .methodology import (
 )
 from .models import (
     BudgetAmendment,
+    ConsultationRun,
+    ConsultationState,
     Measurement,
     OrchestrationRun,
     OrchestrationStage,
@@ -93,6 +96,7 @@ from .store import (
 
 PRIOR_RESULTS_CONTEXT_LIMIT = 7_000
 STAGE_CONTRACT_CONTEXT_LIMIT = 6_000
+CONSULTATION_PROMPT_LIMIT = 16_000
 
 
 class TaskOrchestrationService:
@@ -311,6 +315,237 @@ class TaskOrchestrationService:
             reason=reason,
             actor=actor,
             operation_key=operation_key,
+        )
+
+    async def consult(
+        self,
+        task_id: str,
+        *,
+        decision_key: str,
+        question: str,
+        token_reserved: int,
+        cost_reserved_usd: float | None,
+        operation_key: str | None = None,
+    ) -> ConsultationRun:
+        """Run one pinned native advisor without claiming or advancing a Stage."""
+
+        safe_question = question.strip()
+        if not safe_question or len(safe_question) > 2_000:
+            raise OrchestrationValidationError(
+                "Consultation question must contain 1 to 2000 characters"
+            )
+        if not re.fullmatch(r"[a-z][a-z0-9_.-]{0,127}", decision_key):
+            raise OrchestrationValidationError("Invalid consultation decision key")
+        task = self.tasks.get(task_id)
+        if task is None:
+            raise OrchestrationConflictError("Task not found")
+        status = self.store.status(task_id)
+        if status.plan.state not in {PlanState.ACTIVE, PlanState.BLOCKED}:
+            raise OrchestrationConflictError(
+                "Consultation requires an active or blocked Plan"
+            )
+        route = self.control_plane.get_stage_route(task_id)
+        if route is None:
+            raise OrchestrationConflictError(
+                "Authoritative Stage route is unavailable for consultation"
+            )
+        stage = next(
+            (
+                item
+                for item in status.stages
+                if item.stage_key == status.plan.current_stage_key
+            ),
+            None,
+        )
+        if (
+            stage is None
+            or stage.stage_key != route.stage_key
+            or stage.role != route.role
+            or stage.adapter != route.runtime
+        ):
+            raise OrchestrationConflictError(
+                "Compatibility Stage does not match the authoritative "
+                "consultation route"
+            )
+        runtime = self.runtimes.get(route.runtime)
+        if runtime is None:
+            raise OrchestrationConflictError(
+                f"Runtime is unavailable: {route.runtime}"
+            )
+        project = self.projects.get(task.project_id)
+        try:
+            revision = self.revision_resolver(project.root, task.project_id)
+        except (TypeError, ValueError) as exc:
+            raise OrchestrationConflictError(
+                "Consultation requires a clean, readable repository revision"
+            ) from exc
+        prompt = self._build_consultation_prompt(
+            task,
+            status,
+            route,
+            revision,
+            decision_key=decision_key,
+            question=safe_question,
+            token_reserved=token_reserved,
+        )
+        prompt_sha256 = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+        key = operation_key or "consult:" + canonical_sha256(
+            {
+                "task_id": task_id,
+                "plan_id": status.plan.plan_id,
+                "plan_version": status.plan.version,
+                "inventory_sha256": route.inventory_sha256,
+                "stage_key": route.stage_key,
+                "runtime": route.runtime,
+                "repository_id": revision.repository_id,
+                "repository_ref": revision.ref,
+                "repository_commit": revision.commit_sha,
+                "decision_key": decision_key,
+                "prompt_sha256": prompt_sha256,
+                "token_reserved": token_reserved,
+                "cost_reserved_usd": cost_reserved_usd,
+            }
+        )
+        consultation, replayed = self.store.claim_consultation(
+            task_id,
+            route=route,
+            repository_id=revision.repository_id,
+            repository_ref=revision.ref,
+            repository_commit=revision.commit_sha,
+            expected_plan_version=status.plan.version,
+            decision_key=decision_key,
+            prompt_sha256=prompt_sha256,
+            token_reserved=token_reserved,
+            cost_reserved_usd=cost_reserved_usd,
+            operation_key=key,
+        )
+        if replayed:
+            if consultation.state == ConsultationState.RUNNING:
+                raise OrchestrationConflictError(
+                    "Consultation operation is already running; use task resume"
+                )
+            return consultation
+
+        process_started = False
+
+        async def attach_pid(pid: int) -> None:
+            nonlocal process_started
+            process_started = True
+            self.store.attach_consultation_pid(
+                consultation.consultation_id,
+                pid,
+            )
+
+        try:
+            result = await self.runner.run(
+                runtime,
+                prompt,
+                cwd=project.root,
+                task_id=task_id,
+                run_id=consultation.consultation_id,
+                stage_key=route.stage_key,
+                timeout_seconds=self.timeout_seconds,
+                on_process=attach_pid,
+            )
+        except RuntimeInterrupted as exc:
+            result = RuntimeResult(
+                exit_code=None,
+                stdout="",
+                stderr=str(exc),
+                process_started=True,
+            )
+        except asyncio.CancelledError:  # pragma: no cover - defensive boundary
+            result = RuntimeResult(
+                exit_code=None,
+                stdout="",
+                stderr="Consultation task was cancelled",
+                process_started=process_started,
+            )
+            self._settle_consultation(
+                consultation,
+                runtime,
+                prompt,
+                result,
+            )
+            raise
+        except Exception as exc:
+            result = RuntimeResult(
+                exit_code=None,
+                stdout="",
+                stderr=f"runtime boundary failed: {type(exc).__name__}: {exc}",
+                process_started=process_started,
+            )
+
+        if result.process_started or process_started:
+            try:
+                settled_revision = self.revision_resolver(
+                    project.root,
+                    task.project_id,
+                )
+            except (TypeError, ValueError):
+                revision_error = (
+                    "consultation runtime left the repository revision "
+                    "unavailable or dirty"
+                )
+            else:
+                revision_error = (
+                    None
+                    if settled_revision == revision
+                    else "consultation runtime changed the repository revision"
+                )
+            if revision_error is not None:
+                result = RuntimeResult(
+                    exit_code=(
+                        1 if result.exit_code == 0 else result.exit_code
+                    ),
+                    stdout=result.stdout,
+                    stderr=revision_error,
+                    timed_out=result.timed_out,
+                    process_started=result.process_started or process_started,
+                    usage_observation=result.usage_observation,
+                )
+        return self._settle_consultation(
+            consultation,
+            runtime,
+            prompt,
+            result,
+        )
+
+    def _settle_consultation(
+        self,
+        consultation: ConsultationRun,
+        runtime: RuntimeCommand,
+        prompt: str,
+        result: RuntimeResult,
+    ) -> ConsultationRun:
+        adapted = adapt_consultation_output(
+            result,
+            expected_decision_key=consultation.decision_key,
+        )
+        observation = settlement_observation(
+            run_id=consultation.consultation_id,
+            adapter=runtime.adapter,
+            prompt=prompt,
+            output=result.stdout,
+            process_started=result.process_started,
+            exit_code=result.exit_code,
+            result_format=runtime.result_format,
+            native_observation=result.usage_observation,
+        )
+        if result.timed_out:
+            failure = f"timeout after {self.timeout_seconds}s"
+        elif result.exit_code != 0:
+            failure = result.stderr.strip() or adapted.error_code
+        else:
+            failure = adapted.error_code
+        return self.store.settle_consultation(
+            consultation.consultation_id,
+            adapted=adapted,
+            output_sha256=hashlib.sha256(
+                result.stdout.encode("utf-8")
+            ).hexdigest(),
+            error_message=failure,
+            usage_observation=observation,
         )
 
     def amend_budget(
@@ -779,6 +1014,50 @@ class TaskOrchestrationService:
         self.control_plane.ensure_task_state(task_id, actor="reconciler")
         self._ensure_grouped_stage_inventory(task_id, actor="reconciler")
         status = self.store.status(task_id)
+        consultations = [
+            item
+            for item in self.store.consultations(status.plan.plan_id)
+            if item.state == ConsultationState.RUNNING
+        ]
+        for consultation in consultations:
+            runtime = self.runtimes.get(consultation.runtime)
+            if runtime is None:
+                raise OrchestrationConflictError(
+                    "Cannot recover consultation because its pinned runtime "
+                    f"is unavailable: {consultation.runtime}"
+                )
+            if consultation.pid is None:
+                result = RuntimeResult(
+                    exit_code=None,
+                    stdout="",
+                    stderr=(
+                        "Recovered a consultation whose process never attached"
+                    ),
+                    process_started=False,
+                )
+            else:
+                process_state = self.process_inspector(consultation.pid)
+                if process_state != ProcessState.DEAD:
+                    raise OrchestrationConflictError(
+                        f"Consultation {consultation.consultation_id} process "
+                        f"{consultation.pid} is {process_state.value}; "
+                        "refusing duplicate dispatch"
+                    )
+                result = RuntimeResult(
+                    exit_code=None,
+                    stdout="",
+                    stderr=(
+                        "Recovered a consultation whose process was no longer active"
+                    ),
+                    process_started=True,
+                )
+            self._settle_consultation(
+                consultation,
+                runtime,
+                "",
+                result,
+            )
+        status = self.store.status(task_id)
         running = [run for run in status.runs if run.state == RunState.RUNNING]
         for run in running:
             protocol_run = self.control_plane.get_protocol_run(run.run_id)
@@ -1139,6 +1418,112 @@ or unreviewable assumptions must be explicit. Process success alone is not seman
 """
         if len(prompt) > 16_000:
             raise OrchestrationConflictError("Context for the next stage exceeds the bounded prompt size")
+        return prompt
+
+    def _build_consultation_prompt(
+        self,
+        task: TaskManifest,
+        status: TaskOrchestrationStatus,
+        route: StageRouteDecision,
+        revision: RepositoryRevision,
+        *,
+        decision_key: str,
+        question: str,
+        token_reserved: int,
+    ) -> str:
+        """Build a bounded advisory context without handing over prior transcripts."""
+
+        decisions = [
+            {
+                "decision_key": item.decision_key,
+                "decision_value": item.decision_value,
+                "rationale": item.rationale,
+                "version": item.version,
+            }
+            for item in self.store.latest_decisions(status.plan.plan_id)
+        ]
+        contract_binding = None
+        if task.metadata.get("task_contract") is not None:
+            contract_binding = {
+                "contract_id": task.metadata.get("task_contract_id"),
+                "schema_version": task.metadata.get(
+                    "task_contract_schema_version"
+                ),
+                "sha256": task.metadata.get("task_contract_sha256"),
+            }
+        context = {
+            "task": {
+                "task_id": task.task_id,
+                "project_id": task.project_id,
+                "title": task.title,
+                "description": self._truncate(task.description or "", 2_000),
+                "acceptance": [
+                    self._truncate(item, 500) for item in task.acceptance[:20]
+                ],
+                "risk": task.risk.value,
+                "contract": contract_binding,
+            },
+            "plan": {
+                "plan_id": status.plan.plan_id,
+                "version": status.plan.version,
+                "state": status.plan.state.value,
+                "methodology_id": status.plan.methodology_id,
+                "methodology_version": status.plan.methodology_version,
+                "methodology_sha256": status.plan.methodology_sha256,
+            },
+            "authoritative_route": {
+                "inventory_id": route.inventory_id,
+                "inventory_sha256": route.inventory_sha256,
+                "stage_key": route.stage_key,
+                "role": route.role,
+                "runtime": route.runtime,
+            },
+            "repository": {
+                "repository_id": revision.repository_id,
+                "ref": revision.ref,
+                "commit_sha": revision.commit_sha,
+            },
+            "latest_human_decisions": decisions,
+            "consultation": {
+                "decision_key": decision_key,
+                "question": question,
+                "token_reservation": token_reserved,
+            },
+        }
+        context_json = json.dumps(
+            context,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        prompt = f"""You are the pinned {route.role} advisor for one Agora Task consultation.
+
+This consultation is READ-ONLY and ADVISORY. Do not modify files, create commits,
+change native AI-DLC state, claim or advance a Stage, satisfy a Gate, create a
+formal Artifact or Evidence record, or claim that the Task has been delivered.
+Agora alone owns Task, Stage, Run, Gate, decision, and candidate authority.
+
+Versioned bounded consultation context (not a prior transcript):
+{context_json}
+
+Answer only the requested decision key. Return ONLY one JSON object with exactly
+these fields:
+{{
+  "schema_version": "1.0",
+  "title": "concise candidate title",
+  "decision_key": "{decision_key}",
+  "decision_value": "one bounded proposed value",
+  "analysis": "reasoning, tradeoffs, uncertainties, and blockers",
+  "source_refs": ["stable requirement, evidence, or colon-normalized path identifier"]
+}}
+
+The decision_key must match exactly. Source references must be stable identifiers,
+not secrets or credentials. The result remains non-authoritative until a human
+explicitly adopts or rejects the immutable candidate.
+"""
+        if len(prompt.encode("utf-8")) > CONSULTATION_PROMPT_LIMIT:
+            raise OrchestrationConflictError(
+                "Consultation context exceeds the bounded prompt allocation"
+            )
         return prompt
 
     @staticmethod

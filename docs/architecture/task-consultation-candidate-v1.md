@@ -23,6 +23,12 @@ authoritative Task decision ledger.
 binds the exact candidate hash, action, actor, reason, Plan version boundary,
 and optional TaskDecision identity/hash/version.
 
+`ConsultationCandidateDraft@1.0` is the strict, untrusted provider result
+shape. It contains only the bounded title, decision key/value, analysis, and
+stable source references. It contains no Project, Task, Plan, Stage, runtime,
+repository, authority, Artifact, Evidence, or Gate fields; Agora supplies and
+validates those bindings after the native process returns.
+
 The executable models and checked-in JSON Schemas reject unknown fields and
 verify canonical content hashes on every read.
 
@@ -78,12 +84,55 @@ The CLI projection labels each visible candidate `pending`, `adopted`, or
 `rejected`. Existing formal Artifacts, Evidence, approvals, Gates, and
 authoritative next-safe-action derivation remain unchanged.
 
+Unified Task projection schema `11.0` adds paginated
+`consultation_runs`. Each execution exposes its exact Plan/inventory/Stage/
+runtime/repository binding, independent process/transport/schema dimensions,
+repair count, terminal candidate identity, and hash-sealed usage observation.
+Active and settled consultation reservations are included in aggregate budget
+truth; unavailable usage is never recorded as zero.
+
+## Native dispatch and settlement
+
+`agora task consult TASK_ID DECISION_KEY --question ... --tokens ...` dispatches
+only the runtime already pinned by the authoritative current Stage route. It
+requires the same explicit `--allow-unbounded-native-usage` acknowledgement as
+other provider-backed commands because the reservation is admission control,
+not a provider hard cap. A cost-bounded Task also requires a bounded
+consultation cost reservation.
+
+The claim transaction:
+
+- requires an active/pending or blocked/blocked compatibility Stage that
+  exactly matches the authoritative route;
+- binds the current Plan version and clean repository ID/ref/commit;
+- refuses a concurrent formal Run or consultation;
+- debits earlier formal and consultation settlements conservatively;
+- protects every unfinished required reviewer Stage allocation; and
+- records a deterministic exact-input operation key before process spawn.
+
+The native runtime receives a bounded Task/Plan/route/repository/decision
+context, never a prior transcript. It is explicitly prohibited from changing
+files or native AI-DLC state and from claiming formal Artifact, Evidence,
+Stage, Gate, or Task authority. Its output must be exact draft JSON; one
+whole-document `json` fence removal is the only format repair.
+
+Settlement records process, transport, schema, output hash, error, and native
+usage independently. Before candidate creation, Agora rechecks the clean
+repository revision and transactionally revalidates the exact Plan version and
+authoritative route. A valid candidate is redacted, hash sealed, and registered
+in the same transaction as terminal consultation settlement. Failed,
+interrupted, malformed, stale, sensitive, or repository-drifting results still
+settle usage but create no candidate.
+
+`task resume` never redispatches a running consultation. A live or
+uninspectable persisted PID blocks recovery. A missing PID settles as a
+provable launch failure; a dead persisted PID settles as interrupted with
+usage unavailable.
+
 ## Deferred boundaries
 
-Native `agora task consult` dispatch and response parsing, consultation-specific
-usage settlement, multiple candidate generation, authenticated HTTP exposure,
+Multiple candidates from one native execution, authenticated HTTP exposure,
 dynamic runtime/model routing, the missing authoritative AI-DLC graph,
 parallel/DAG routing, and Task Workbench UI remain separate reviewed
-increments. The persistence and disposition boundary is intentionally usable
-by that later provider-dispatch increment without making provider output
-authoritative.
+increments. Consultation execution does not turn machine-local capability
+observation into routing authority or substitute another runtime/model.

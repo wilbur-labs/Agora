@@ -19,7 +19,9 @@ from agora.protocol.models import (
     ConsultationCandidate,
     ConsultationCandidateDisposition,
     PinnedRuntimePreflightDecision,
+    ProcessStatus,
     ProviderUsageObservation,
+    SchemaStatus,
     SemanticStageResult,
     StageInventory,
 )
@@ -28,9 +30,12 @@ from agora.tasks.models import TaskBudget, utc_now
 from agora.tasks.store import TaskNotFoundError, TaskStore
 
 from .contracts import TaskContract, contract_sha256
+from .consultation import ConsultationAdapterResult
 from .methodology import MethodologyDefinition, methodology_sha256
 from .models import (
     BudgetAmendment,
+    ConsultationRun,
+    ConsultationState,
     LedgerEntryType,
     Measurement,
     OrchestrationPlan,
@@ -45,7 +50,11 @@ from .models import (
     TaskOrchestrationStatus,
     UsageLedgerEntry,
 )
-from .routing_policy import RoutingStageBudget, derive_routing_policy_decision
+from .routing_policy import (
+    REVIEWER_ROLES,
+    RoutingStageBudget,
+    derive_routing_policy_decision,
+)
 
 
 DECISION_CONTEXT_LIMIT = 2_000
@@ -231,6 +240,15 @@ class OrchestrationStore:
             ).fetchall()
         return [self._decision(row) for row in rows]
 
+    def consultations(self, plan_id: str) -> list[ConsultationRun]:
+        with closing(self._connect()) as db:
+            rows = db.execute(
+                """SELECT * FROM orchestration_consultations
+                   WHERE plan_id = ? ORDER BY started_at, consultation_id""",
+                (plan_id,),
+            ).fetchall()
+        return [self._consultation(row) for row in rows]
+
     def consultation_candidates(self, plan_id: str) -> list[ConsultationCandidate]:
         with closing(self._connect()) as db:
             rows = db.execute(
@@ -397,6 +415,516 @@ class OrchestrationStore:
         if not row:
             raise OrchestrationNotFoundError(decision_id)
         return self._decision(row)
+
+    def claim_consultation(
+        self,
+        task_id: str,
+        *,
+        route: StageRouteDecision,
+        repository_id: str,
+        repository_ref: str,
+        repository_commit: str,
+        expected_plan_version: int,
+        decision_key: str,
+        prompt_sha256: str,
+        token_reserved: int,
+        cost_reserved_usd: float | None,
+        operation_key: str,
+        actor: str = "orchestrator",
+    ) -> tuple[ConsultationRun, bool]:
+        """Reserve one advisory native consultation without claiming a Stage."""
+
+        operation_key = operation_key.strip()
+        actor = actor.strip()
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", operation_key):
+            raise OrchestrationValidationError(
+                "Consultation operation_key must be a stable identifier"
+            )
+        if not re.fullmatch(r"[a-z][a-z0-9_.-]{0,127}", decision_key):
+            raise OrchestrationValidationError("Invalid consultation decision key")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", repository_id):
+            raise OrchestrationValidationError(
+                "Consultation repository ID must be a stable identifier"
+            )
+        if not repository_ref or len(repository_ref) > 20_000:
+            raise OrchestrationValidationError(
+                "Consultation repository ref must be bounded and non-empty"
+            )
+        if not re.fullmatch(r"[0-9a-f]{7,64}", repository_commit):
+            raise OrchestrationValidationError(
+                "Consultation repository commit must be lowercase Git hex"
+            )
+        if not re.fullmatch(r"[0-9a-f]{64}", prompt_sha256):
+            raise OrchestrationValidationError(
+                "Consultation prompt hash must be lowercase SHA-256"
+            )
+        if expected_plan_version < 1:
+            raise OrchestrationValidationError(
+                "Consultation expected Plan version must be positive"
+            )
+        if not 1 <= token_reserved <= 1_000_000:
+            raise OrchestrationValidationError(
+                "Consultation Token reservation must be between 1 and 1000000"
+            )
+        if cost_reserved_usd is not None and (
+            not math.isfinite(cost_reserved_usd) or cost_reserved_usd < 0
+        ):
+            raise OrchestrationValidationError(
+                "Consultation cost reservation must be finite and nonnegative"
+            )
+        if not actor or len(actor) > 128:
+            raise OrchestrationValidationError(
+                "Consultation actor must contain 1 to 128 characters"
+            )
+
+        consultation_id = self._id("consultation")
+        now = utc_now()
+        with self._transaction() as db:
+            replay_row = db.execute(
+                """SELECT * FROM orchestration_consultations
+                   WHERE operation_key = ?""",
+                (operation_key,),
+            ).fetchone()
+            if replay_row is not None:
+                replay = self._consultation(replay_row)
+                if not (
+                    replay.task_id == task_id
+                    and replay.plan_version_observed == expected_plan_version
+                    and replay.inventory_id == route.inventory_id
+                    and replay.inventory_sha256 == route.inventory_sha256
+                    and replay.stage_key == route.stage_key
+                    and replay.role == route.role
+                    and replay.runtime == route.runtime
+                    and replay.repository_id == repository_id
+                    and replay.repository_ref == repository_ref
+                    and replay.repository_commit == repository_commit
+                    and replay.decision_key == decision_key
+                    and replay.prompt_sha256 == prompt_sha256
+                    and replay.token_reserved == token_reserved
+                    and replay.cost_reserved_usd == cost_reserved_usd
+                ):
+                    raise OrchestrationConflictError(
+                        "Consultation operation_key was already used for different inputs"
+                    )
+                return replay, True
+
+            plan = db.execute(
+                "SELECT * FROM orchestration_plans WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
+            if plan is None:
+                raise OrchestrationNotFoundError(task_id)
+            if plan["version"] != expected_plan_version:
+                raise OrchestrationConflictError(
+                    "Plan version changed before consultation claim"
+                )
+            if plan["state"] not in {
+                PlanState.ACTIVE.value,
+                PlanState.BLOCKED.value,
+            }:
+                raise OrchestrationConflictError(
+                    "Consultation requires an active or blocked Plan"
+                )
+            try:
+                current_route = ControlPlaneStore(self.tasks).stage_route_snapshot(
+                    db,
+                    task_id,
+                )
+            except ControlPlaneConflictError as exc:
+                raise OrchestrationConflictError(str(exc)) from exc
+            if current_route != route:
+                raise OrchestrationConflictError(
+                    "Authoritative Stage route changed before consultation claim"
+                )
+            active_formal = db.execute(
+                """SELECT run_id FROM orchestration_runs
+                   WHERE plan_id = ? AND state = ? LIMIT 1""",
+                (plan["plan_id"], RunState.RUNNING.value),
+            ).fetchone()
+            active_consultation = db.execute(
+                """SELECT consultation_id FROM orchestration_consultations
+                   WHERE plan_id = ? AND state = ? LIMIT 1""",
+                (plan["plan_id"], ConsultationState.RUNNING.value),
+            ).fetchone()
+            if active_formal is not None or active_consultation is not None:
+                raise OrchestrationConflictError(
+                    "A formal Run or consultation is already active for this Plan"
+                )
+
+            stage = db.execute(
+                """SELECT * FROM orchestration_stages
+                   WHERE plan_id = ? AND stage_key = ?""",
+                (plan["plan_id"], plan["current_stage_key"]),
+            ).fetchone()
+            valid_stage = stage is not None and (
+                (
+                    plan["state"] == PlanState.ACTIVE.value
+                    and stage["state"] == StageState.PENDING.value
+                )
+                or (
+                    plan["state"] == PlanState.BLOCKED.value
+                    and stage["state"] == StageState.BLOCKED.value
+                )
+            )
+            if not valid_stage or (
+                stage["stage_key"] != route.stage_key
+                or stage["role"] != route.role
+                or stage["adapter"] != route.runtime
+            ):
+                raise OrchestrationConflictError(
+                    "Compatibility Stage does not match the consultation route"
+                )
+            budget = self._provider_budget_snapshot(db, plan["plan_id"])
+            protected_rows = db.execute(
+                """SELECT token_budget, cost_budget_usd
+                   FROM orchestration_stages
+                   WHERE plan_id = ? AND state != ? AND role IN (?, ?)""",
+                (
+                    plan["plan_id"],
+                    StageState.PASSED.value,
+                    *sorted(REVIEWER_ROLES),
+                ),
+            ).fetchall()
+            protected_tokens = sum(row["token_budget"] for row in protected_rows)
+            available_tokens = (
+                plan["total_token_budget"]
+                - budget["settled_tokens"]
+                - budget["active_tokens"]
+                - protected_tokens
+            )
+            if token_reserved > available_tokens:
+                raise OrchestrationConflictError(
+                    "Consultation reservation would consume protected reviewer Tokens"
+                )
+            if plan["total_cost_budget_usd"] is None:
+                if cost_reserved_usd is not None:
+                    raise OrchestrationConflictError(
+                        "Unbounded Task cost may not claim a bounded consultation cost"
+                    )
+            else:
+                if cost_reserved_usd is None:
+                    raise OrchestrationConflictError(
+                        "A cost-bounded Task requires a consultation cost reservation"
+                    )
+                if any(row["cost_budget_usd"] is None for row in protected_rows):
+                    raise OrchestrationConflictError(
+                        "Protected reviewer cost allocation is unavailable"
+                    )
+                protected_cost = sum(
+                    row["cost_budget_usd"] for row in protected_rows
+                )
+                available_cost = (
+                    plan["total_cost_budget_usd"]
+                    - budget["settled_cost"]
+                    - budget["active_cost"]
+                    - protected_cost
+                )
+                if cost_reserved_usd > available_cost + 1e-9:
+                    raise OrchestrationConflictError(
+                        "Consultation reservation would consume protected reviewer cost"
+                    )
+
+            db.execute(
+                """INSERT INTO orchestration_consultations (
+                       consultation_id, operation_key, project_id, task_id,
+                       plan_id, plan_version_observed, inventory_id,
+                       inventory_sha256, stage_key, role, runtime, decision_key,
+                       repository_id, repository_ref, repository_commit, state,
+                       prompt_sha256, schema_status, token_reserved,
+                       cost_reserved_usd, started_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    consultation_id,
+                    operation_key,
+                    route.project_id,
+                    task_id,
+                    plan["plan_id"],
+                    expected_plan_version,
+                    route.inventory_id,
+                    route.inventory_sha256,
+                    route.stage_key,
+                    route.role,
+                    route.runtime,
+                    decision_key,
+                    repository_id,
+                    repository_ref,
+                    repository_commit,
+                    ConsultationState.RUNNING.value,
+                    prompt_sha256,
+                    "pending",
+                    token_reserved,
+                    cost_reserved_usd,
+                    now,
+                ),
+            )
+            self.tasks._insert_event(
+                db,
+                task_id=task_id,
+                event_type="orchestration.consultation_started",
+                actor=actor,
+                payload={
+                    "consultation_id": consultation_id,
+                    "plan_id": plan["plan_id"],
+                    "plan_version_observed": expected_plan_version,
+                    "inventory_id": route.inventory_id,
+                    "inventory_sha256": route.inventory_sha256,
+                    "stage_key": route.stage_key,
+                    "runtime": route.runtime,
+                    "repository_id": repository_id,
+                    "repository_ref": repository_ref,
+                    "repository_commit": repository_commit,
+                    "decision_key": decision_key,
+                    "prompt_sha256": prompt_sha256,
+                    "token_reserved": token_reserved,
+                    "cost_reserved_usd": cost_reserved_usd,
+                },
+                created_at=now,
+            )
+        return self.require_consultation(consultation_id), False
+
+    def attach_consultation_pid(
+        self,
+        consultation_id: str,
+        pid: int,
+    ) -> ConsultationRun:
+        if pid <= 0:
+            raise OrchestrationValidationError("Consultation PID must be positive")
+        with self._transaction() as db:
+            row = db.execute(
+                """SELECT * FROM orchestration_consultations
+                   WHERE consultation_id = ?""",
+                (consultation_id,),
+            ).fetchone()
+            if row is None:
+                raise OrchestrationNotFoundError(consultation_id)
+            if row["state"] != ConsultationState.RUNNING.value:
+                raise OrchestrationConflictError("Consultation is not running")
+            if row["pid"] is not None and row["pid"] != pid:
+                raise OrchestrationConflictError(
+                    "Consultation already has a different process"
+                )
+            db.execute(
+                """UPDATE orchestration_consultations SET pid = ?
+                   WHERE consultation_id = ?""",
+                (pid, consultation_id),
+            )
+        return self.require_consultation(consultation_id)
+
+    def settle_consultation(
+        self,
+        consultation_id: str,
+        *,
+        adapted: ConsultationAdapterResult,
+        output_sha256: str,
+        error_message: str | None,
+        usage_observation: ProviderUsageObservation,
+        actor: str = "orchestrator",
+    ) -> ConsultationRun:
+        """Atomically settle usage and register only a schema-valid candidate."""
+
+        if not re.fullmatch(r"[0-9a-f]{64}", output_sha256):
+            raise OrchestrationValidationError(
+                "Consultation output hash must be lowercase SHA-256"
+            )
+        safe_error = (
+            redact_text(error_message.strip())[-4_000:]
+            if error_message and error_message.strip()
+            else None
+        )
+        now = utc_now()
+        with self._transaction() as db:
+            row = db.execute(
+                """SELECT * FROM orchestration_consultations
+                   WHERE consultation_id = ?""",
+                (consultation_id,),
+            ).fetchone()
+            if row is None:
+                raise OrchestrationNotFoundError(consultation_id)
+            if row["state"] != ConsultationState.RUNNING.value:
+                raise OrchestrationConflictError("Consultation is already terminal")
+            if (
+                usage_observation.run_id != consultation_id
+                or usage_observation.adapter != row["runtime"]
+            ):
+                raise OrchestrationConflictError(
+                    "Consultation usage does not match its runtime binding"
+                )
+
+            draft = adapted.draft
+            error_code = adapted.error_code
+            schema_status = adapted.schema_status
+            candidate = None
+            if draft is not None:
+                plan = db.execute(
+                    "SELECT * FROM orchestration_plans WHERE plan_id = ?",
+                    (row["plan_id"],),
+                ).fetchone()
+                try:
+                    route = ControlPlaneStore(self.tasks).stage_route_snapshot(
+                        db,
+                        row["task_id"],
+                    )
+                except ControlPlaneConflictError:
+                    route = None
+                route_matches = bool(
+                    plan is not None
+                    and plan["version"] == row["plan_version_observed"]
+                    and route is not None
+                    and route.project_id == row["project_id"]
+                    and route.inventory_id == row["inventory_id"]
+                    and route.inventory_sha256 == row["inventory_sha256"]
+                    and route.stage_key == row["stage_key"]
+                    and route.role == row["role"]
+                    and route.runtime == row["runtime"]
+                )
+                safe_refs = list(draft.source_refs)
+                if not route_matches:
+                    draft = None
+                    schema_status = SchemaStatus.PROTOCOL_FAILED
+                    error_code = "candidate_context_stale"
+                elif any(redact_text(item) != item for item in safe_refs):
+                    draft = None
+                    schema_status = SchemaStatus.PROTOCOL_FAILED
+                    error_code = "candidate_source_ref_sensitive"
+                else:
+                    candidate_id = self._id("candidate")
+                    candidate_operation_key = f"candidate-from:{consultation_id}"
+                    candidate_payload = seal_model_payload(
+                        ConsultationCandidate,
+                        {
+                            "schema_version": "1.0",
+                            "candidate_id": candidate_id,
+                            "consultation_id": consultation_id,
+                            "operation_key": candidate_operation_key,
+                            "project_id": row["project_id"],
+                            "task_id": row["task_id"],
+                            "plan_id": row["plan_id"],
+                            "plan_version_observed": row["plan_version_observed"],
+                            "inventory_id": row["inventory_id"],
+                            "inventory_sha256": row["inventory_sha256"],
+                            "stage_key": row["stage_key"],
+                            "role": row["role"],
+                            "runtime": row["runtime"],
+                            "title": redact_text(draft.title),
+                            "decision_key": draft.decision_key,
+                            "decision_value": redact_text(draft.decision_value),
+                            "analysis": redact_text(draft.analysis),
+                            "source_refs": safe_refs,
+                            "registered_by": f"runtime:{row['runtime']}",
+                            "advisory_authority": False,
+                            "formal_artifact": False,
+                            "created_at": now,
+                        },
+                    )
+                    candidate = ConsultationCandidate.model_validate(
+                        candidate_payload
+                    )
+                    db.execute(
+                        """INSERT INTO orchestration_consultation_candidates (
+                               candidate_id, plan_id, task_id, stage_key,
+                               operation_key, payload, created_at
+                           ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            candidate.candidate_id,
+                            candidate.plan_id,
+                            candidate.task_id,
+                            candidate.stage_key,
+                            candidate.operation_key,
+                            self._json(candidate.model_dump(mode="json")),
+                            candidate.created_at.isoformat(),
+                        ),
+                    )
+                    self.tasks._insert_event(
+                        db,
+                        task_id=row["task_id"],
+                        event_type=(
+                            "orchestration.consultation_candidate_registered"
+                        ),
+                        actor=f"runtime:{row['runtime']}",
+                        payload={
+                            "plan_id": candidate.plan_id,
+                            "stage_key": candidate.stage_key,
+                            "candidate_id": candidate.candidate_id,
+                            "consultation_id": candidate.consultation_id,
+                            "candidate_sha256": candidate.content_sha256,
+                            "inventory_id": candidate.inventory_id,
+                            "inventory_sha256": candidate.inventory_sha256,
+                            "advisory_authority": False,
+                            "formal_artifact": False,
+                        },
+                        created_at=now,
+                    )
+
+            if candidate is not None:
+                state = ConsultationState.COMPLETED
+            elif adapted.process_status == ProcessStatus.INTERRUPTED:
+                state = ConsultationState.INTERRUPTED
+            elif schema_status == SchemaStatus.PROTOCOL_FAILED:
+                state = ConsultationState.PROTOCOL_FAILED
+            else:
+                state = ConsultationState.FAILED
+            schema_value = schema_status.value
+            db.execute(
+                """UPDATE orchestration_consultations
+                   SET state = ?, process_status = ?, transport_status = ?,
+                       schema_status = ?, repair_attempts = ?, candidate_id = ?,
+                       output_sha256 = ?, error_code = ?, error_message = ?,
+                       token_used = ?, token_measurement = ?,
+                       cost_used_usd = ?, cost_measurement = ?,
+                       usage_observation_payload = ?, finished_at = ?
+                   WHERE consultation_id = ?""",
+                (
+                    state.value,
+                    adapted.process_status.value,
+                    adapted.transport_status.value,
+                    schema_value,
+                    adapted.repair_attempts,
+                    candidate.candidate_id if candidate else None,
+                    output_sha256,
+                    error_code,
+                    safe_error,
+                    usage_observation.total_tokens,
+                    usage_observation.token_measurement,
+                    usage_observation.cost_usd,
+                    usage_observation.cost_measurement,
+                    self._json(usage_observation.model_dump(mode="json")),
+                    now,
+                    consultation_id,
+                ),
+            )
+            self.tasks._insert_event(
+                db,
+                task_id=row["task_id"],
+                event_type="orchestration.consultation_settled",
+                actor=actor,
+                payload={
+                    "consultation_id": consultation_id,
+                    "state": state.value,
+                    "process_status": adapted.process_status.value,
+                    "transport_status": adapted.transport_status.value,
+                    "schema_status": schema_value,
+                    "repair_attempts": adapted.repair_attempts,
+                    "candidate_id": candidate.candidate_id if candidate else None,
+                    "output_sha256": output_sha256,
+                    "error_code": error_code,
+                    "usage_observation_sha256": (
+                        usage_observation.content_sha256
+                    ),
+                },
+                created_at=now,
+            )
+        return self.require_consultation(consultation_id)
+
+    def require_consultation(self, consultation_id: str) -> ConsultationRun:
+        with closing(self._connect()) as db:
+            row = db.execute(
+                """SELECT * FROM orchestration_consultations
+                   WHERE consultation_id = ?""",
+                (consultation_id,),
+            ).fetchone()
+        if row is None:
+            raise OrchestrationNotFoundError(consultation_id)
+        return self._consultation(row)
 
     def register_consultation_candidate(
         self,
@@ -1545,55 +2073,16 @@ class OrchestrationStore:
             )
             for row in stage_rows
         ]
-        settled_tokens = int(db.execute(
-            """SELECT COALESCE(SUM(
-                       CASE
-                           WHEN ledger.token_measurement = ? OR ledger.tokens IS NULL
-                               THEN runs.token_reserved
-                           ELSE ledger.tokens
-                       END
-                   ), 0) AS total
-               FROM orchestration_usage_ledger AS ledger
-               JOIN orchestration_runs AS runs ON runs.run_id = ledger.run_id
-               WHERE ledger.plan_id = ? AND ledger.entry_type = ?""",
-            (
-                Measurement.UNAVAILABLE.value,
-                plan["plan_id"],
-                LedgerEntryType.SETTLEMENT.value,
-            ),
-        ).fetchone()["total"])
-        active_tokens = int(db.execute(
-            """SELECT COALESCE(SUM(token_reserved), 0) AS total
-               FROM orchestration_runs WHERE plan_id = ? AND state = ?""",
-            (plan["plan_id"], RunState.RUNNING.value),
-        ).fetchone()["total"])
+        budget = self._provider_budget_snapshot(db, plan["plan_id"])
+        settled_tokens = int(budget["settled_tokens"])
+        active_tokens = int(budget["active_tokens"])
 
         if plan["total_cost_budget_usd"] is None:
             settled_cost = None
             active_cost = None
         else:
-            settled_cost = float(db.execute(
-                """SELECT COALESCE(SUM(
-                           CASE
-                               WHEN ledger.cost_measurement = ? OR ledger.cost_usd IS NULL
-                                   THEN runs.cost_reserved_usd
-                               ELSE ledger.cost_usd
-                           END
-                       ), 0.0) AS total
-                   FROM orchestration_usage_ledger AS ledger
-                   JOIN orchestration_runs AS runs ON runs.run_id = ledger.run_id
-                   WHERE ledger.plan_id = ? AND ledger.entry_type = ?""",
-                (
-                    Measurement.UNAVAILABLE.value,
-                    plan["plan_id"],
-                    LedgerEntryType.SETTLEMENT.value,
-                ),
-            ).fetchone()["total"])
-            active_cost = float(db.execute(
-                """SELECT COALESCE(SUM(cost_reserved_usd), 0.0) AS total
-                   FROM orchestration_runs WHERE plan_id = ? AND state = ?""",
-                (plan["plan_id"], RunState.RUNNING.value),
-            ).fetchone()["total"])
+            settled_cost = float(budget["settled_cost"])
+            active_cost = float(budget["active_cost"])
 
         return derive_routing_policy_decision(
             decision_id=f"routing-policy:{hashlib.sha256(run_id.encode('utf-8')).hexdigest()[:32]}",
@@ -1658,6 +2147,15 @@ class OrchestrationStore:
                 )
             if plan["state"] != PlanState.ACTIVE.value:
                 raise OrchestrationConflictError(f"Plan is {plan['state']}, not active")
+            active_consultation = db.execute(
+                """SELECT consultation_id FROM orchestration_consultations
+                   WHERE plan_id = ? AND state = ? LIMIT 1""",
+                (plan["plan_id"], ConsultationState.RUNNING.value),
+            ).fetchone()
+            if active_consultation is not None:
+                raise OrchestrationConflictError(
+                    "An advisory consultation is already active for this Plan"
+                )
             if (
                 expected_stage_key is not None
                 and plan["current_stage_key"] != expected_stage_key
@@ -1682,28 +2180,9 @@ class OrchestrationStore:
             ).fetchone()
             if previous_incomplete:
                 raise OrchestrationConflictError("A previous methodology stage has not passed")
-            settled = db.execute(
-                """SELECT COALESCE(SUM(
-                           CASE
-                               WHEN ledger.token_measurement = ? OR ledger.tokens IS NULL
-                                   THEN runs.token_reserved
-                               ELSE ledger.tokens
-                           END
-                       ), 0) AS total
-                   FROM orchestration_usage_ledger AS ledger
-                   JOIN orchestration_runs AS runs ON runs.run_id = ledger.run_id
-                   WHERE ledger.plan_id = ? AND ledger.entry_type = ?""",
-                (
-                    Measurement.UNAVAILABLE.value,
-                    plan["plan_id"],
-                    LedgerEntryType.SETTLEMENT.value,
-                ),
-            ).fetchone()["total"]
-            active_reserved = db.execute(
-                """SELECT COALESCE(SUM(token_reserved), 0) AS total
-                   FROM orchestration_runs WHERE plan_id = ? AND state = ?""",
-                (plan["plan_id"], RunState.RUNNING.value),
-            ).fetchone()["total"]
+            budget = self._provider_budget_snapshot(db, plan["plan_id"])
+            settled = budget["settled_tokens"]
+            active_reserved = budget["active_tokens"]
             if routing_policy is not None:
                 assert route is not None and contract is not None and run_id is not None
                 current_policy = self._routing_policy_decision(
@@ -1754,6 +2233,20 @@ class OrchestrationStore:
                     raise OrchestrationConflictError(
                         "Token budget is exhausted; increase it before retrying"
                     )
+                if plan["total_cost_budget_usd"] is not None:
+                    if stage["cost_budget_usd"] is None:
+                        raise OrchestrationConflictError(
+                            "Current Stage cost reservation is unavailable"
+                        )
+                    if (
+                        budget["settled_cost"]
+                        + budget["active_cost"]
+                        + stage["cost_budget_usd"]
+                        > plan["total_cost_budget_usd"] + 1e-9
+                    ):
+                        raise OrchestrationConflictError(
+                            "Cost budget is exhausted; increase it before retrying"
+                        )
                 token_reservation = stage["token_budget"]
                 cost_reservation = stage["cost_budget_usd"]
                 routing_policy_payload = None
@@ -2754,6 +3247,61 @@ class OrchestrationStore:
         )
 
     @staticmethod
+    def _consultation(row: sqlite3.Row) -> ConsultationRun:
+        observation = (
+            ProviderUsageObservation.model_validate_json(
+                row["usage_observation_payload"]
+            )
+            if row["usage_observation_payload"]
+            else None
+        )
+        consultation = ConsultationRun(
+            consultation_id=row["consultation_id"],
+            operation_key=row["operation_key"],
+            project_id=row["project_id"],
+            task_id=row["task_id"],
+            plan_id=row["plan_id"],
+            plan_version_observed=row["plan_version_observed"],
+            inventory_id=row["inventory_id"],
+            inventory_sha256=row["inventory_sha256"],
+            stage_key=row["stage_key"],
+            role=row["role"],
+            runtime=row["runtime"],
+            repository_id=row["repository_id"],
+            repository_ref=row["repository_ref"],
+            repository_commit=row["repository_commit"],
+            decision_key=row["decision_key"],
+            state=row["state"],
+            prompt_sha256=row["prompt_sha256"],
+            pid=row["pid"],
+            process_status=row["process_status"],
+            transport_status=row["transport_status"],
+            schema_status=row["schema_status"],
+            repair_attempts=row["repair_attempts"],
+            candidate_id=row["candidate_id"],
+            output_sha256=row["output_sha256"],
+            error_code=row["error_code"],
+            error_message=row["error_message"],
+            token_reserved=row["token_reserved"],
+            cost_reserved_usd=row["cost_reserved_usd"],
+            usage_observation=observation,
+            started_at=row["started_at"],
+            finished_at=row["finished_at"],
+        )
+        if observation is not None and (
+            observation.run_id != consultation.consultation_id
+            or observation.adapter != consultation.runtime
+            or observation.total_tokens != row["token_used"]
+            or observation.token_measurement != row["token_measurement"]
+            or observation.cost_usd != row["cost_used_usd"]
+            or observation.cost_measurement != row["cost_measurement"]
+        ):
+            raise OrchestrationConflictError(
+                "Persisted consultation usage does not match its settlement"
+            )
+        return consultation
+
+    @staticmethod
     def _consultation_candidate(row: sqlite3.Row) -> ConsultationCandidate:
         candidate = ConsultationCandidate.model_validate_json(row["payload"])
         if (
@@ -2789,6 +3337,65 @@ class OrchestrationStore:
                 "Candidate disposition row does not match its hash-sealed payload"
             )
         return disposition
+
+    @staticmethod
+    def _provider_budget_snapshot(db, plan_id: str) -> dict[str, float | int]:
+        formal = db.execute(
+            """SELECT
+                   COALESCE(SUM(CASE
+                       WHEN ledger.token_measurement = 'unavailable'
+                            OR ledger.tokens IS NULL
+                           THEN runs.token_reserved
+                       ELSE ledger.tokens END), 0) AS settled_tokens,
+                   COALESCE(SUM(CASE
+                       WHEN ledger.cost_measurement = 'unavailable'
+                            OR ledger.cost_usd IS NULL
+                           THEN COALESCE(runs.cost_reserved_usd, 0)
+                       ELSE ledger.cost_usd END), 0) AS settled_cost
+               FROM orchestration_usage_ledger AS ledger
+               JOIN orchestration_runs AS runs ON runs.run_id = ledger.run_id
+               WHERE ledger.plan_id = ? AND ledger.entry_type = 'settlement'""",
+            (plan_id,),
+        ).fetchone()
+        formal_active = db.execute(
+            """SELECT COALESCE(SUM(token_reserved), 0) AS tokens,
+                      COALESCE(SUM(cost_reserved_usd), 0) AS cost
+               FROM orchestration_runs WHERE plan_id = ? AND state = ?""",
+            (plan_id, RunState.RUNNING.value),
+        ).fetchone()
+        consultations = db.execute(
+            """SELECT
+                   COALESCE(SUM(CASE
+                       WHEN token_measurement = 'unavailable'
+                            OR token_used IS NULL
+                           THEN token_reserved
+                       ELSE token_used END), 0) AS settled_tokens,
+                   COALESCE(SUM(CASE
+                       WHEN cost_measurement = 'unavailable'
+                            OR cost_used_usd IS NULL
+                           THEN COALESCE(cost_reserved_usd, 0)
+                       ELSE cost_used_usd END), 0) AS settled_cost
+               FROM orchestration_consultations
+               WHERE plan_id = ? AND state != ?""",
+            (plan_id, ConsultationState.RUNNING.value),
+        ).fetchone()
+        consultation_active = db.execute(
+            """SELECT COALESCE(SUM(token_reserved), 0) AS tokens,
+                      COALESCE(SUM(cost_reserved_usd), 0) AS cost
+               FROM orchestration_consultations
+               WHERE plan_id = ? AND state = ?""",
+            (plan_id, ConsultationState.RUNNING.value),
+        ).fetchone()
+        return {
+            "settled_tokens": int(formal["settled_tokens"])
+            + int(consultations["settled_tokens"]),
+            "settled_cost": float(formal["settled_cost"])
+            + float(consultations["settled_cost"]),
+            "active_tokens": int(formal_active["tokens"])
+            + int(consultation_active["tokens"]),
+            "active_cost": float(formal_active["cost"])
+            + float(consultation_active["cost"]),
+        }
 
     @staticmethod
     def _budget_amendment(row: sqlite3.Row) -> BudgetAmendment:

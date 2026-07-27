@@ -102,6 +102,28 @@ def parser() -> argparse.ArgumentParser:
     decide.add_argument("--reason", required=True)
     decide.add_argument("--actor", default="user")
 
+    consult = commands.add_parser(
+        "consult",
+        help=(
+            "Run the pinned Stage runtime as a read-only advisor and register "
+            "one non-authoritative candidate"
+        ),
+    )
+    consult.add_argument("task_id")
+    consult.add_argument("decision_key")
+    consult.add_argument("--question", required=True)
+    consult.add_argument("--tokens", type=int, required=True)
+    consult.add_argument("--cost-usd", type=float)
+    consult.add_argument("--operation-key")
+    consult.add_argument(
+        "--allow-unbounded-native-usage",
+        action="store_true",
+        help=(
+            "Acknowledge that provider usage is not hard-capped by the "
+            "consultation Token reservation"
+        ),
+    )
+
     for name, help_text in (
         (
             "adopt",
@@ -200,7 +222,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         provider_dispatch_requested = (
             (args.command == "start" and args.run)
-            or args.command in {"next", "run"}
+            or args.command in {"consult", "next", "run"}
         )
         if (
             provider_dispatch_requested
@@ -265,6 +287,26 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(json.dumps(decision.model_dump(mode="json"), ensure_ascii=False, indent=2))
             _print_status(service.status(args.task_id))
             return 0
+        if args.command == "consult":
+            consultation = asyncio.run(
+                service.consult(
+                    args.task_id,
+                    decision_key=args.decision_key,
+                    question=args.question,
+                    token_reserved=args.tokens,
+                    cost_reserved_usd=args.cost_usd,
+                    operation_key=args.operation_key,
+                )
+            )
+            print(
+                json.dumps(
+                    consultation.model_dump(mode="json"),
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            _print_unified_status(service.unified_status(args.task_id))
+            return 0 if consultation.state.value == "completed" else 2
         if args.command in {"adopt", "reject"}:
             method = (
                 service.adopt_candidate
@@ -502,6 +544,15 @@ def _print_unified_status(status) -> None:
         print("Required human actions:")
         for action in status.required_human_actions:
             print(f"  {action.kind}: {action.title} ({action.source_id})")
+    if status.consultation_runs:
+        print("Consultations:")
+        for consultation in status.consultation_runs:
+            print(
+                f"  {consultation.consultation_id} "
+                f"{consultation.runtime} state={consultation.state.value} "
+                f"decision={consultation.decision_key} "
+                f"candidate={consultation.candidate_id or 'none'}"
+            )
     if status.consultation_candidates:
         dispositions = {
             item.candidate_id: item

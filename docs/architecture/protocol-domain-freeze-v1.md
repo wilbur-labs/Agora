@@ -43,6 +43,7 @@ the Pydantic models in `backend/agora/protocol/`:
 - `provider-usage-observation.schema.json`
 - `native-runtime-capability-observation.schema.json`
 - `pinned-runtime-preflight-decision.schema.json`
+- `consultation-candidate-draft.schema.json`
 - `consultation-candidate.schema.json`
 - `consultation-candidate-disposition.schema.json`
 
@@ -199,6 +200,17 @@ or repaired schema. Exit code zero alone is never sufficient.
 
 Schema repair is limited to one format-only attempt. A second invalid response
 is `protocol_failed`, blocks the Stage, and creates Attention.
+
+An advisory consultation is not a formal Stage Run and cannot change Stage or
+Gate state. It uses the already authoritative Stage route and pinned runtime,
+records a separate consultation execution and truthful provider-usage
+observation, and accepts only `ConsultationCandidateDraft@1.0`. Agora binds
+the Project, Task, Plan version, inventory, Stage, runtime, and repository
+revision after strict parsing. The resulting hash-sealed candidate remains
+non-authoritative until explicit human adoption. One whole-document Markdown
+fence removal is the only consultation format repair; surrounding prose,
+wrong decision keys, stale route/Plan bindings, sensitive source references,
+and repository drift fail closed without creating a candidate.
 
 ## 5. Context and handoff contracts
 

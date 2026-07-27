@@ -111,6 +111,15 @@ Evidence, and Task decisions. Only an adopted receipt binds a versioned
 TaskDecision and increments the Plan version; a rejection creates no decision
 and leaves Plan state unchanged. See `task-consultation-candidate-v1.md`.
 
+Unified projection schema `11.0` adds paginated consultation executions with
+their immutable route/repository binding, independent process, transport, and
+schema dimensions, candidate result, recovery state, and hash-sealed provider
+usage observation. Consultation prompts and raw native output remain omitted.
+The aggregate budget now includes both active consultation reservations and
+terminal consultation usage; unavailable consultation measurements make the
+corresponding aggregate unavailable rather than inventing zero. See
+`native-task-consultation-v1.md`.
+
 Formal progress counts only Control Plane Stages in `completed` state. A passed
 process, compatibility Run, or Gate cannot increase the completed count by
 itself. Operational Stages not yet configured in the Control Plane remain
@@ -138,10 +147,10 @@ continues to own process reconciliation and duplicate-dispatch prevention.
 
 Budget totals are computed with bounded SQL aggregates rather than loading the
 complete usage history. Active reservations and settlements remain separate.
-Any unavailable Token settlement makes aggregate Token use and remaining
-capacity unavailable. Cost is exact zero only before any settlement exists; if
-any settled Run lacks cost, aggregate cost and remaining cost become
-unavailable rather than zero. Provider-specific exact usage remains deferred.
+Any unavailable formal-Run or consultation Token settlement makes aggregate
+Token use and remaining capacity unavailable. Cost is exact zero only before
+any settlement exists; if any settled Run or consultation lacks cost,
+aggregate cost and remaining cost become unavailable rather than zero.
 
 ## Bounds and payload shape
 

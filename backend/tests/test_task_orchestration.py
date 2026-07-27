@@ -20,6 +20,7 @@ from agora.orchestration.provider_usage import (
     RuntimeResultFormat,
     normalize_native_output,
 )
+from agora.orchestration.protocol_context import RepositoryRevision
 from agora.orchestration.schema import initialize_orchestration_schema
 from agora.orchestration.runtime import (
     ReadOnlyCliRunner,
@@ -73,7 +74,14 @@ class FakeRunner:
         return result
 
 
-def _system(tmp_path, results=None, *, tokens=30_000, process_inspector=inspect_process):
+def _system(
+    tmp_path,
+    results=None,
+    *,
+    tokens=30_000,
+    process_inspector=inspect_process,
+    revision_resolver=None,
+):
     root = tmp_path / "repo"
     root.mkdir(parents=True)
     config = {
@@ -104,7 +112,12 @@ def _system(tmp_path, results=None, *, tokens=30_000, process_inspector=inspect_
     }
     runner = FakeRunner(results or [RuntimeResult(0, PASS, "") for _ in range(3)])
     service = TaskOrchestrationService(
-        tasks, projects, runtimes, runner=runner, process_inspector=process_inspector,
+        tasks,
+        projects,
+        runtimes,
+        runner=runner,
+        process_inspector=process_inspector,
+        revision_resolver=revision_resolver,
     )
     task = service.create(
         project_id="alpha", title="Plan delivery", description="Build a safe feature",
@@ -1246,7 +1259,7 @@ def test_consultation_candidate_is_advisory_until_explicit_adoption(tmp_path):
     assert unchanged.plan.version == before.plan.version
     assert unchanged.decisions == []
     projection = service.unified_status(task.task_id)
-    assert projection.schema_version == "10.0"
+    assert projection.schema_version == "11.0"
     assert projection.consultation_candidates == [candidate]
     assert projection.consultation_candidate_dispositions == []
     assert projection.artifacts == []

@@ -63,6 +63,14 @@ class RunState(str, Enum):
     INTERRUPTED = "interrupted"
 
 
+class ConsultationState(str, Enum):
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    PROTOCOL_FAILED = "protocol_failed"
+    INTERRUPTED = "interrupted"
+
+
 class SemanticStatus(str, Enum):
     PASS = "pass"
     NEEDS_WORK = "needs_work"
@@ -487,6 +495,94 @@ class TaskDecision(StrictModel):
     created_at: str
 
 
+class ConsultationRun(StrictModel):
+    consultation_id: str
+    operation_key: str
+    project_id: str
+    task_id: str
+    plan_id: str
+    plan_version_observed: int = Field(ge=1)
+    inventory_id: str
+    inventory_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    stage_key: str
+    role: str
+    runtime: str
+    repository_id: str
+    repository_ref: str
+    repository_commit: str = Field(pattern=r"^[0-9a-f]{7,64}$")
+    decision_key: str = Field(pattern=r"^[a-z][a-z0-9_.-]*$")
+    state: ConsultationState
+    prompt_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    pid: int | None = Field(default=None, ge=1)
+    process_status: ProcessStatus | None = None
+    transport_status: TransportStatus | None = None
+    schema_status: SchemaStatus
+    repair_attempts: int = Field(default=0, ge=0, le=1)
+    candidate_id: str | None = None
+    output_sha256: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    error_code: str | None = None
+    error_message: str | None = Field(default=None, max_length=4_000)
+    token_reserved: int = Field(ge=1)
+    cost_reserved_usd: float | None = Field(default=None, ge=0)
+    usage_observation: ProviderUsageObservation | None = None
+    started_at: str
+    finished_at: str | None = None
+
+    @model_validator(mode="after")
+    def validate_consultation_state(self):
+        if self.state == ConsultationState.RUNNING:
+            if (
+                self.process_status is not None
+                or self.transport_status is not None
+                or self.candidate_id is not None
+                or self.usage_observation is not None
+                or self.finished_at is not None
+            ):
+                raise ValueError("Running consultation may not carry settlement facts")
+            return self
+        if (
+            self.process_status is None
+            or self.transport_status is None
+            or self.usage_observation is None
+            or self.finished_at is None
+            or self.output_sha256 is None
+        ):
+            raise ValueError("Terminal consultation requires complete settlement facts")
+        if self.state == ConsultationState.COMPLETED:
+            if (
+                self.candidate_id is None
+                or self.process_status != ProcessStatus.EXITED
+                or self.transport_status != TransportStatus.COMPLETED
+                or self.schema_status not in {
+                    SchemaStatus.VALID,
+                    SchemaStatus.REPAIRED,
+                }
+            ):
+                raise ValueError(
+                    "Completed consultation requires one schema-valid candidate"
+                )
+        elif self.candidate_id is not None:
+            raise ValueError("Non-completed consultation may not bind a candidate")
+        if (
+            self.state == ConsultationState.PROTOCOL_FAILED
+            and self.schema_status != SchemaStatus.PROTOCOL_FAILED
+        ):
+            raise ValueError(
+                "Protocol-failed consultation requires protocol-failed schema state"
+            )
+        if (
+            self.state == ConsultationState.INTERRUPTED
+            and self.process_status != ProcessStatus.INTERRUPTED
+        ):
+            raise ValueError(
+                "Interrupted consultation requires interrupted process state"
+            )
+        return self
+
+
 class TaskOrchestrationStatus(StrictModel):
     plan: OrchestrationPlan
     stages: list[OrchestrationStage]
@@ -647,7 +743,7 @@ class UnifiedBudgetProjection(StrictModel):
 
 
 class UnifiedTaskProjection(StrictModel):
-    schema_version: Literal["10.0"] = "10.0"
+    schema_version: Literal["11.0"] = "11.0"
     snapshot_at: str
     task: TaskManifest
     task_state: TaskStatus | None
@@ -674,6 +770,7 @@ class UnifiedTaskProjection(StrictModel):
     attention: list[AttentionItem]
     required_human_actions: list[RequiredHumanAction]
     decisions: list[TaskDecision]
+    consultation_runs: list[ConsultationRun]
     consultation_candidates: list[ConsultationCandidate]
     consultation_candidate_dispositions: list[ConsultationCandidateDisposition]
     budget_amendments: list[BudgetAmendment]

@@ -1,0 +1,57 @@
+{
+  "$id": "https://agora.local/schemas/v1/consultation-candidate-draft.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Untrusted native consultation output before Agora binds authority context.",
+  "properties": {
+    "analysis": {
+      "maxLength": 8000,
+      "minLength": 1,
+      "title": "Analysis",
+      "type": "string"
+    },
+    "decision_key": {
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9_.-]*$",
+      "title": "Decision Key",
+      "type": "string"
+    },
+    "decision_value": {
+      "maxLength": 1000,
+      "minLength": 1,
+      "title": "Decision Value",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "source_refs": {
+      "items": {
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+        "type": "string"
+      },
+      "maxItems": 20,
+      "title": "Source Refs",
+      "type": "array"
+    },
+    "title": {
+      "maxLength": 200,
+      "minLength": 1,
+      "title": "Title",
+      "type": "string"
+    }
+  },
+  "required": [
+    "title",
+    "decision_key",
+    "decision_value",
+    "analysis"
+  ],
+  "title": "ConsultationCandidateDraft",
+  "type": "object"
+}

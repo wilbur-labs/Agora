@@ -118,6 +118,48 @@ def initialize_orchestration_schema(db: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_orchestration_decisions_plan_key_version
             ON orchestration_decisions(plan_id, decision_key, version DESC);
 
+        CREATE TABLE IF NOT EXISTS orchestration_consultations (
+            consultation_id TEXT PRIMARY KEY,
+            operation_key TEXT NOT NULL UNIQUE,
+            project_id TEXT NOT NULL,
+            task_id TEXT NOT NULL REFERENCES tasks(task_id),
+            plan_id TEXT NOT NULL REFERENCES orchestration_plans(plan_id),
+            plan_version_observed INTEGER NOT NULL,
+            inventory_id TEXT NOT NULL,
+            inventory_sha256 TEXT NOT NULL,
+            stage_key TEXT NOT NULL,
+            role TEXT NOT NULL,
+            runtime TEXT NOT NULL,
+            repository_id TEXT NOT NULL,
+            repository_ref TEXT NOT NULL,
+            repository_commit TEXT NOT NULL,
+            decision_key TEXT NOT NULL,
+            state TEXT NOT NULL,
+            prompt_sha256 TEXT NOT NULL,
+            pid INTEGER,
+            process_status TEXT,
+            transport_status TEXT,
+            schema_status TEXT NOT NULL,
+            repair_attempts INTEGER NOT NULL DEFAULT 0,
+            candidate_id TEXT UNIQUE,
+            output_sha256 TEXT,
+            error_code TEXT,
+            error_message TEXT,
+            token_reserved INTEGER NOT NULL,
+            cost_reserved_usd REAL,
+            token_used INTEGER,
+            token_measurement TEXT,
+            cost_used_usd REAL,
+            cost_measurement TEXT,
+            usage_observation_payload TEXT,
+            started_at TEXT NOT NULL,
+            finished_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_orchestration_consultations_plan_started
+            ON orchestration_consultations(plan_id, started_at, consultation_id);
+        CREATE INDEX IF NOT EXISTS idx_orchestration_consultations_task_state
+            ON orchestration_consultations(task_id, state, started_at);
+
         CREATE TABLE IF NOT EXISTS orchestration_consultation_candidates (
             candidate_id TEXT PRIMARY KEY,
             plan_id TEXT NOT NULL REFERENCES orchestration_plans(plan_id),

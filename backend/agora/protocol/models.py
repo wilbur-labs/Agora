@@ -116,6 +116,27 @@ class ConsultationCandidate(HashSealedModel):
         return value
 
 
+class ConsultationCandidateDraft(ProtocolModel):
+    """Untrusted native consultation output before Agora binds authority context."""
+
+    schema_version: Literal["1.0"] = "1.0"
+    title: Annotated[str, Field(min_length=1, max_length=200)]
+    decision_key: Annotated[
+        str,
+        Field(pattern=r"^[a-z][a-z0-9_.-]*$", max_length=128),
+    ]
+    decision_value: Annotated[str, Field(min_length=1, max_length=1_000)]
+    analysis: Annotated[str, Field(min_length=1, max_length=8_000)]
+    source_refs: list[StableId] = Field(default_factory=list, max_length=20)
+
+    @field_validator("source_refs")
+    @classmethod
+    def validate_draft_source_refs(cls, value: list[str]):
+        if len(value) != len(set(value)):
+            raise ValueError("Consultation draft source refs must be unique")
+        return value
+
+
 class ConsultationCandidateDisposition(HashSealedModel):
     """Explicit human disposition of one immutable consultation candidate."""
 
