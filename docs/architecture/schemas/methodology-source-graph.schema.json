@@ -1,0 +1,395 @@
+{
+  "$defs": {
+    "MethodologyExternalSourceArtifact": {
+      "additionalProperties": false,
+      "properties": {
+        "content_sha256": {
+          "title": "Content Sha256",
+          "type": "string"
+        },
+        "role": {
+          "const": "method_definition",
+          "title": "Role",
+          "type": "string"
+        },
+        "url": {
+          "maxLength": 512,
+          "minLength": 1,
+          "pattern": "^https://[^\\s]+$",
+          "title": "Url",
+          "type": "string"
+        }
+      },
+      "required": [
+        "role",
+        "url",
+        "content_sha256"
+      ],
+      "title": "MethodologyExternalSourceArtifact",
+      "type": "object"
+    },
+    "MethodologyScopeProfile": {
+      "additionalProperties": false,
+      "properties": {
+        "depth": {
+          "enum": [
+            "minimal",
+            "standard",
+            "comprehensive"
+          ],
+          "title": "Depth",
+          "type": "string"
+        },
+        "scope_key": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Scope Key",
+          "type": "string"
+        },
+        "source_path": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Source Path",
+          "type": "string"
+        },
+        "test_strategy": {
+          "anyOf": [
+            {
+              "enum": [
+                "minimal",
+                "standard",
+                "comprehensive"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Test Strategy"
+        }
+      },
+      "required": [
+        "scope_key",
+        "depth",
+        "source_path"
+      ],
+      "title": "MethodologyScopeProfile",
+      "type": "object"
+    },
+    "MethodologySourceArtifact": {
+      "additionalProperties": false,
+      "properties": {
+        "content_sha256": {
+          "title": "Content Sha256",
+          "type": "string"
+        },
+        "path": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "role": {
+          "enum": [
+            "specification",
+            "stage_definition",
+            "rework_protocol",
+            "compiled_graph",
+            "scope_grid",
+            "stage",
+            "scope"
+          ],
+          "title": "Role",
+          "type": "string"
+        }
+      },
+      "required": [
+        "role",
+        "path",
+        "content_sha256"
+      ],
+      "title": "MethodologySourceArtifact",
+      "type": "object"
+    },
+    "MethodologySourcePin": {
+      "additionalProperties": false,
+      "properties": {
+        "artifacts": {
+          "items": {
+            "$ref": "#/$defs/MethodologySourceArtifact"
+          },
+          "maxItems": 100,
+          "minItems": 1,
+          "title": "Artifacts",
+          "type": "array"
+        },
+        "commit_sha": {
+          "pattern": "^[0-9a-f]{40}$",
+          "title": "Commit Sha",
+          "type": "string"
+        },
+        "external_artifacts": {
+          "items": {
+            "$ref": "#/$defs/MethodologyExternalSourceArtifact"
+          },
+          "maxItems": 10,
+          "minItems": 1,
+          "title": "External Artifacts",
+          "type": "array"
+        },
+        "license_spdx": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "License Spdx",
+          "type": "string"
+        },
+        "release_tag": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^v\\d+\\.\\d+\\.\\d+(?:[-+][A-Za-z0-9.-]+)?$",
+          "title": "Release Tag",
+          "type": "string"
+        },
+        "repository_url": {
+          "maxLength": 512,
+          "minLength": 1,
+          "pattern": "^https://github\\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$",
+          "title": "Repository Url",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repository_url",
+        "release_tag",
+        "commit_sha",
+        "license_spdx",
+        "artifacts",
+        "external_artifacts"
+      ],
+      "title": "MethodologySourcePin",
+      "type": "object"
+    },
+    "MethodologyStageNode": {
+      "additionalProperties": false,
+      "properties": {
+        "execution": {
+          "enum": [
+            "always",
+            "conditional"
+          ],
+          "title": "Execution",
+          "type": "string"
+        },
+        "for_each_artifact": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "For Each Artifact"
+        },
+        "mode": {
+          "enum": [
+            "inline",
+            "subagent",
+            "agent-team"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "phase": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Phase",
+          "type": "string"
+        },
+        "requires_stage": {
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+            "type": "string"
+          },
+          "maxItems": 50,
+          "title": "Requires Stage",
+          "type": "array"
+        },
+        "scopes": {
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+            "type": "string"
+          },
+          "maxItems": 32,
+          "minItems": 1,
+          "title": "Scopes",
+          "type": "array"
+        },
+        "source_number": {
+          "pattern": "^\\d+\\.\\d+$",
+          "title": "Source Number",
+          "type": "string"
+        },
+        "source_path": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Source Path",
+          "type": "string"
+        },
+        "stage_key": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Stage Key",
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_number",
+        "stage_key",
+        "title",
+        "phase",
+        "execution",
+        "mode",
+        "scopes",
+        "source_path"
+      ],
+      "title": "MethodologyStageNode",
+      "type": "object"
+    }
+  },
+  "$id": "https://agora.local/schemas/v1/methodology-source-graph.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Immutable source graph that is not yet an executable Agora method.",
+  "properties": {
+    "authority_basis": {
+      "const": "user_confirmed_official_source",
+      "title": "Authority Basis",
+      "type": "string"
+    },
+    "content_sha256": {
+      "title": "Content Sha256",
+      "type": "string"
+    },
+    "dispatch_authority": {
+      "const": false,
+      "default": false,
+      "title": "Dispatch Authority",
+      "type": "boolean"
+    },
+    "methodology_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Methodology Id",
+      "type": "string"
+    },
+    "methodology_version": {
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "title": "Methodology Version",
+      "type": "string"
+    },
+    "phases": {
+      "items": {
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+        "type": "string"
+      },
+      "maxItems": 16,
+      "minItems": 1,
+      "title": "Phases",
+      "type": "array"
+    },
+    "provisional": {
+      "const": false,
+      "default": false,
+      "title": "Provisional",
+      "type": "boolean"
+    },
+    "routing_authority": {
+      "const": false,
+      "default": false,
+      "title": "Routing Authority",
+      "type": "boolean"
+    },
+    "schema_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "scopes": {
+      "items": {
+        "$ref": "#/$defs/MethodologyScopeProfile"
+      },
+      "maxItems": 32,
+      "minItems": 1,
+      "title": "Scopes",
+      "type": "array"
+    },
+    "source": {
+      "$ref": "#/$defs/MethodologySourcePin"
+    },
+    "stages": {
+      "items": {
+        "$ref": "#/$defs/MethodologyStageNode"
+      },
+      "maxItems": 200,
+      "minItems": 1,
+      "title": "Stages",
+      "type": "array"
+    },
+    "structured_rework_edges": {
+      "const": false,
+      "default": false,
+      "title": "Structured Rework Edges",
+      "type": "boolean"
+    },
+    "unresolved_execution_requirements": {
+      "items": {
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+        "type": "string"
+      },
+      "maxItems": 32,
+      "minItems": 1,
+      "title": "Unresolved Execution Requirements",
+      "type": "array"
+    }
+  },
+  "required": [
+    "content_sha256",
+    "methodology_id",
+    "methodology_version",
+    "authority_basis",
+    "source",
+    "phases",
+    "stages",
+    "scopes",
+    "unresolved_execution_requirements"
+  ],
+  "title": "MethodologySourceGraph",
+  "type": "object"
+}

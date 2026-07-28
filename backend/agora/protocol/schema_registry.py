@@ -5,6 +5,7 @@ from typing import TypeAlias
 
 from pydantic import BaseModel
 
+from .methodology import MethodologySourceGraph
 from .models import (
     Approval,
     Artifact,
@@ -36,6 +37,7 @@ SCHEMA_MODELS: dict[str, SchemaModel] = {
     "evidence": Evidence,
     "gate-requirement": GateRequirement,
     "handoff-pack": HandoffPack,
+    "methodology-source-graph": MethodologySourceGraph,
     "native-runtime-capability-observation": NativeRuntimeCapabilityObservation,
     "native-state-snapshot": NativeStateSnapshot,
     "pinned-runtime-preflight-decision": PinnedRuntimePreflightDecision,

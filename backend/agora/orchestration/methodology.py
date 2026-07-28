@@ -1,4 +1,4 @@
-"""Versioned provisional method used until the authoritative AI-DLC graph is restored."""
+"""Versioned provisional method used until the pinned AI-DLC graph is activated."""
 from __future__ import annotations
 
 import hashlib

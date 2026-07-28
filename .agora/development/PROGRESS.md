@@ -1,5 +1,67 @@
 # Agora Control Plane Development Progress
 
+## 2026-07-28 - AWS AI-DLC authoritative source graph (review pending)
+
+### Bounded implementation
+
+- [x] The user identified the AWS AI-DLC Method Definition and the public
+  `awslabs/aidlc-workflows` repository as Agora's authoritative AI-DLC source.
+  The baseline pins stable release `v2.3.0` to peeled commit
+  `29a31f7899731b53f2b8d7f76cd223f9a8a25859`; it does not follow upstream
+  `main`.
+- [x] Added hash-sealed `MethodologySourceGraph@1.0` and its checked-in JSON
+  Schema. The source manifest binds the external Method Definition Paper by
+  URL and SHA-256, plus the repository specification, Stage format, recovery
+  protocol, compiled Codex graph, scope grid, all 32 canonical Stage files, and
+  all 9 scope files: 46 exact upstream paths and SHA-256 values.
+- [x] Froze the five source phases, all 32 Stage identities/order/modes,
+  dependency DAG, 9 scope branch profiles, and the five Construction nodes
+  that expand per `unit-of-work`. Validation fails closed for manifest/graph
+  drift, duplicate or unknown identities, missing source bindings, and
+  self/forward/cyclic dependencies.
+- [x] Preserved the authority boundary. The graph records
+  `routing_authority=false`, `dispatch_authority=false`, and
+  `structured_rework_edges=false`. AWS `v2.3.0` keeps rework/halting partly in
+  prose and reserves structured `on_failure`/`timeout`/`retry`, so Agora does
+  not invent transitions, limits, Gates, budgets, or runtime assignments.
+- [x] Kept `agora-aidlc-foundation@0.1` unchanged and provisional. Source
+  authority alone cannot initialize or migrate a Task, create a Stage, alter
+  routing, or fetch/install native AI-DLC files. The deterministic source-graph
+  hash is
+  `668a379e4b6ecbed1aaf47e0823b43df147b7c239a8a4ab03ba43b71030e057d`.
+
+### Verification and review state
+
+- [x] New source-graph regressions: 9 passed.
+- [x] Source graph plus protocol freeze and existing Task orchestration:
+  104 passed.
+- [x] Complete non-integration backend suite: 560 passed, 18 deselected, with
+  only the existing Starlette/httpx and Windows Proactor cleanup warnings.
+- [x] Protocol Schema export/check, isolated `compileall`, source-graph JSON
+  round-trip/hash smoke, `agora task --help`, and `git diff --check` passed.
+- [x] Read-only source verification matched all 46 repository artifact hashes
+  against `v2.3.0` and matched the downloaded Method Definition Paper hash.
+- [x] Kiro CLI session `0f3a4caa-78d1-4f41-831a-4c3e48806135`
+  independently verified the pinned tag/commit, source graph, representative
+  source hashes, scope profiles, seal, Schema, and non-dispatch boundary. It
+  reported no high/medium findings and returned `VERDICT: APPROVE`; its three
+  low observations are deferred activation hardening (`workspace_requires`,
+  `for_each` producer linkage, and automated upstream transcription checks).
+- [x] Independent Claude Code review inspected the complete in-repository
+  model, fixed graph, seal path, Schema, adversarial regressions, unchanged
+  foundation method, and boundary documentation. It reported no blocking
+  correctness, safety, or regression findings and returned
+  `VERDICT: APPROVE`.
+
+### Current checkpoint and next safe action
+
+The implementation, verification, and both review gates are complete. The next
+bounded backend slice is a separate Agora activation definition that
+materializes Stage Contracts, Artifacts/Evidence/Approvals/Gates, runtime
+independence, budget/quality policy, bounded rework/escalation, and explicit
+Task methodology migration. The source graph must remain non-dispatching until
+that mapping is reviewed.
+
 ## 2026-07-27 - Native Task consultation dispatch (reviewed)
 
 ### Bounded implementation

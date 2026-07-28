@@ -3,7 +3,7 @@
 Status: provisional CLI-first vertical slice
 
 This increment restores one unified Task entry point without claiming that the
-authoritative AI-DLC phase graph has been recovered. The built-in
+source-bound AWS AI-DLC graph has been activated. The built-in
 `agora-aidlc-foundation@0.1` method is deliberately limited to a read-only
 planning and review loop:
 
@@ -82,8 +82,9 @@ limits require version-matched adapter support in a later increment.
 
 ## Safety and non-goals
 
-- This method does not implement or rename the missing authoritative AI-DLC
-  phases. Its identity and `provisional` flag prevent that confusion.
+- This method does not implement, rename, or activate the pinned authoritative
+  AWS AI-DLC source Stages. Its identity and `provisional` flag prevent that
+  confusion.
 - It does not modify repository files, advance the legacy Task to done, or
   claim product delivery.
 - Human approval means only that the reviewed plan is ready for a later

@@ -87,5 +87,6 @@ separate consultation execution appears in unified projection schema `11.0`.
 
 This version returns at most one candidate. It does not add dynamic
 runtime/model selection, provider serviceability routing, authenticated HTTP
-routes, the complete authoritative AI-DLC graph, branch/rework/DAG scheduling,
+routes, activation of the pinned authoritative AI-DLC graph,
+branch/rework/DAG scheduling,
 or Task Workbench UI.

@@ -75,7 +75,7 @@ state. This inventory increment still does not:
 - derive parallel/DAG dependency edges or dynamic branches;
 - migrate a Task to a different methodology;
 - expose inventory commands or fields through the authenticated HTTP API;
-- recover or invent the missing authoritative AI-DLC graph;
+- activate or reinterpret the pinned AWS AI-DLC source graph;
 - start Task Workbench UI work.
 
 Lifecycle precedence, explicit completion approval, atomic transitions, and

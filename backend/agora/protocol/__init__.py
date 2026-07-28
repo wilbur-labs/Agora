@@ -10,6 +10,14 @@ from .gates import evaluate_gate
 from .hashing import canonical_json_bytes, canonical_sha256, seal_model_payload, seal_payload
 from .invalidation import ArtifactChange, InvalidationPlan, invalidate_approvals
 from .memory import M2UpdateAction, RunOutcome, decide_m2_update
+from .methodology import (
+    MethodologyExternalSourceArtifact,
+    MethodologyScopeProfile,
+    MethodologySourceArtifact,
+    MethodologySourceGraph,
+    MethodologySourcePin,
+    MethodologyStageNode,
+)
 from .models import (
     Approval,
     ApprovalStatus,
@@ -66,6 +74,12 @@ __all__ = [
     "HandoffPack",
     "InvalidationPlan",
     "M2UpdateAction",
+    "MethodologyExternalSourceArtifact",
+    "MethodologyScopeProfile",
+    "MethodologySourceArtifact",
+    "MethodologySourceGraph",
+    "MethodologySourcePin",
+    "MethodologyStageNode",
     "NativeStateSnapshot",
     "RunOutcome",
     "RepairAction",

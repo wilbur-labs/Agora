@@ -140,12 +140,20 @@ A Task pins the methodology identity, version, and hash when it is created.
 Changing methodology during execution requires an explicit migration Gate and
 must never silently alter the workflow.
 
-The authoritative full AI-DLC diagram or source specification is still
-missing. The repository's `agora-aidlc-foundation@0.1` is intentionally
-provisional and must not be renamed or presented as the recovered full method.
-The authoritative graph must not be invented from chat history or Council
-screenshots; the user must provide or identify the original source before it is
-formally frozen.
+On 2026-07-28 the user identified the AWS AI-DLC Method Definition and
+`awslabs/aidlc-workflows` as Agora's authoritative AI-DLC source. The
+source-bound `MethodologySourceGraph@1.0` pins upstream release `v2.3.0`, its
+peeled commit, every Stage/scope source hash, all 32 source Stages, all 9 scope
+profiles, and their dependency DAG.
+
+This source freeze does not make the graph executable. Upstream `v2.3.0`
+retains rework, retry, and halting behavior partly in prose and reserves
+structured `on_failure`, `timeout`, and `retry` fields for future releases.
+Agora must not invent those values. The repository's
+`agora-aidlc-foundation@0.1` therefore remains provisional until a separately
+reviewed activation definition binds Stage Contracts, required outputs,
+Artifacts/Evidence/Approvals/Gates, runtime independence, budgets, bounded
+rework limits, escalation, and methodology migration.
 
 ## 7. Quality and recovery invariants
 
@@ -210,7 +218,9 @@ tracked in `PROGRESS.md`.
 
 Still required:
 
-- the authoritative full AI-DLC method source and executable graph;
+- activation of the pinned AWS AI-DLC source graph as an executable Agora
+  methodology, including materialized Stage Contracts, Gates, budgets, bounded
+  rework, runtime-role mapping, and migration semantics;
 - a concrete Task contract with roles, process, Context/Handoff expectations,
   acceptance criteria, and required Artifacts/Evidence/Gates;
 - consult and decide/adopt semantics under the authoritative Task;

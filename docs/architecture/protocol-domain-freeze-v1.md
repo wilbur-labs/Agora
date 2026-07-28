@@ -39,6 +39,7 @@ the Pydantic models in `backend/agora/protocol/`:
 - `run-protocol-state.schema.json`
 - `gate-requirement.schema.json`
 - `runner-isolation-contract.schema.json`
+- `methodology-source-graph.schema.json`
 - `stage-inventory.schema.json`
 - `provider-usage-observation.schema.json`
 - `native-runtime-capability-observation.schema.json`
@@ -112,6 +113,17 @@ reconciliation_required | completed | failed | cancelled
 
 A completed Stage may reopen to `ready` when an approval or required artifact
 becomes stale.
+
+The user-confirmed AWS AI-DLC source is frozen separately as
+`MethodologySourceGraph@1.0`. It pins release `v2.3.0`, commit and source-file
+hashes, 32 source Stages, 9 scope profiles, and the source dependency DAG. It
+has `routing_authority=false` and `dispatch_authority=false`: source authority
+does not itself create an executable Agora methodology or alter any Task.
+Upstream rework semantics remain prose-only in this release, so Agora records
+`structured_rework_edges=false` rather than inventing transitions or limits.
+Activation requires a separate reviewed mapping for Stage Contracts,
+Artifacts/Evidence/Gates, runtime independence, budgets, bounded rework, and
+methodology migration.
 
 For a Task with a sealed grouped inventory, Agora routes the first incomplete
 Stage in inventory order and only that route may start a formal Run. Successful
