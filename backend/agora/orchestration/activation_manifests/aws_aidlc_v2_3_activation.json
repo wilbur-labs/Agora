@@ -1,0 +1,1898 @@
+{
+  "schema_version": "1.0",
+  "source_compiled_graph_sha256": "9de074e882c18bcc1285a953366a7793149d05a349657a7989f0e54b2fdd1430",
+  "stages": [
+    {
+      "condition": "Ensure-exists the per-intent record and artifact dirs — idempotent (creates on demand, skips existing)",
+      "for_each_artifact": null,
+      "input_artifacts": [],
+      "inputs_text": "none (first stage after session start)",
+      "lead_role": "orchestrator",
+      "optional_outputs": [],
+      "outputs_text": "the per-intent record tree (stage artifact dirs + verification dir) and the space-level knowledge/ dir",
+      "produces_kinds": {},
+      "required_outputs": [],
+      "sensors": [],
+      "source_reviewer_max_iterations": 0,
+      "source_reviewer_role": null,
+      "source_stage_key": "workspace-scaffold",
+      "support_roles": [],
+      "workspace_required": false
+    },
+    {
+      "condition": "Scans and classifies workspace — auto-proceeds (no approval gate)",
+      "for_each_artifact": null,
+      "input_artifacts": [],
+      "inputs_text": "none (scans filesystem)",
+      "lead_role": "orchestrator",
+      "optional_outputs": [],
+      "outputs_text": "workspace classification (greenfield/brownfield), technology stack detection",
+      "produces_kinds": {},
+      "required_outputs": [],
+      "sensors": [],
+      "source_reviewer_max_iterations": 0,
+      "source_reviewer_role": null,
+      "source_stage_key": "workspace-detection",
+      "support_roles": [],
+      "workspace_required": false
+    },
+    {
+      "condition": "Creates full populated state file and determines routing — auto-proceeds",
+      "for_each_artifact": null,
+      "input_artifacts": [],
+      "inputs_text": "workspace classification from workspace-detection, scope from orchestrator",
+      "lead_role": "orchestrator",
+      "optional_outputs": [],
+      "outputs_text": "<record>/aidlc-state.md (full populated version, engine-resolved)",
+      "produces_kinds": {},
+      "required_outputs": [],
+      "sensors": [],
+      "source_reviewer_max_iterations": 0,
+      "source_reviewer_role": null,
+      "source_stage_key": "state-init",
+      "support_roles": [],
+      "workspace_required": false
+    },
+    {
+      "condition": "First stage of every workflow — establishes the initiative's foundation",
+      "for_each_artifact": null,
+      "input_artifacts": [],
+      "inputs_text": "User's project description ($ARGUMENTS), scope selection",
+      "lead_role": "aidlc-product-agent",
+      "optional_outputs": [],
+      "outputs_text": "intent-statement.md, stakeholder-map.md, intent-capture-questions.md (under this stage's record dir, engine-resolved)",
+      "produces_kinds": {},
+      "required_outputs": [
+        "intent-statement",
+        "stakeholder-map",
+        "intent-capture-questions"
+      ],
+      "sensors": [
+        {
+          "content_sha256": "52b9631c830eb383166173037a922ec0ccd0ef3171c1f52796864302bf2acf08",
+          "id": "required-sections",
+          "matches": "**/{aidlc-docs,intents}/**",
+          "runtime_path": ".codex/sensors/aidlc-required-sections.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-required-sections.md"
+        },
+        {
+          "content_sha256": "223b8a8a644bab117d8a6afbde049f721c678eacdbe61847a542ec91e1a94ed8",
+          "id": "upstream-coverage",
+          "matches": "**/{aidlc-docs,intents}/**",
+          "runtime_path": ".codex/sensors/aidlc-upstream-coverage.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-upstream-coverage.md"
+        }
+      ],
+      "source_reviewer_max_iterations": 0,
+      "source_reviewer_role": null,
+      "source_stage_key": "intent-capture",
+      "support_roles": [
+        "aidlc-architect-agent"
+      ],
+      "workspace_required": false
+    },
+    {
+      "condition": "Execute when initiative has external market positioning or build-vs-buy considerations. Skip for internal tools, bug fixes, or refactors.",
+      "for_each_artifact": null,
+      "input_artifacts": [
+        {
+          "artifact": "intent-statement",
+          "required": true
+        }
+      ],
+      "inputs_text": "Intent statement from intent-capture stage",
+      "lead_role": "aidlc-product-agent",
+      "optional_outputs": [],
+      "outputs_text": "competitive-analysis.md, market-trends.md, build-vs-buy.md, market-research-questions.md (under this stage's record dir, engine-resolved)",
+      "produces_kinds": {},
+      "required_outputs": [
+        "competitive-analysis",
+        "market-trends",
+        "build-vs-buy",
+        "market-research-questions"
+      ],
+      "sensors": [
+        {
+          "content_sha256": "52b9631c830eb383166173037a922ec0ccd0ef3171c1f52796864302bf2acf08",
+          "id": "required-sections",
+          "matches": "**/{aidlc-docs,intents}/**",
+          "runtime_path": ".codex/sensors/aidlc-required-sections.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-required-sections.md"
+        },
+        {
+          "content_sha256": "223b8a8a644bab117d8a6afbde049f721c678eacdbe61847a542ec91e1a94ed8",
+          "id": "upstream-coverage",
+          "matches": "**/{aidlc-docs,intents}/**",
+          "runtime_path": ".codex/sensors/aidlc-upstream-coverage.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-upstream-coverage.md"
+        }
+      ],
+      "source_reviewer_max_iterations": 0,
+      "source_reviewer_role": null,
+      "source_stage_key": "market-research",
+      "support_roles": [],
+      "workspace_required": false
+    },
+    {
+      "condition": "Execute when there are integration constraints, regulatory requirements, or significant technical uncertainty. Skip for trivial changes with no technical risk.",
+      "for_each_artifact": null,
+      "input_artifacts": [
+        {
+          "artifact": "intent-statement",
+          "required": true
+        },
+        {
+          "artifact": "competitive-analysis",
+          "required": false
+        },
+        {
+          "artifact": "market-trends",
+          "required": false
+        },
+        {
+          "artifact": "build-vs-buy",
+          "required": false
+        }
+      ],
+      "inputs_text": "Intent statement from intent-capture stage, market research from market-research stage (if executed)",
+      "lead_role": "aidlc-architect-agent",
+      "optional_outputs": [],
+      "outputs_text": "feasibility-assessment.md, constraint-register.md, raid-log.md, feasibility-questions.md (under this stage's record dir, engine-resolved)",
+      "produces_kinds": {},
+      "required_outputs": [
+        "feasibility-assessment",
+        "constraint-register",
+        "raid-log",
+        "feasibility-questions"
+      ],
+      "sensors": [
+        {
+          "content_sha256": "52b9631c830eb383166173037a922ec0ccd0ef3171c1f52796864302bf2acf08",
+          "id": "required-sections",
+          "matches": "**/{aidlc-docs,intents}/**",
+          "runtime_path": ".codex/sensors/aidlc-required-sections.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-required-sections.md"
+        },
+        {
+          "content_sha256": "223b8a8a644bab117d8a6afbde049f721c678eacdbe61847a542ec91e1a94ed8",
+          "id": "upstream-coverage",
+          "matches": "**/{aidlc-docs,intents}/**",
+          "runtime_path": ".codex/sensors/aidlc-upstream-coverage.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-upstream-coverage.md"
+        }
+      ],
+      "source_reviewer_max_iterations": 0,
+      "source_reviewer_role": null,
+      "source_stage_key": "feasibility",
+      "support_roles": [
+        "aidlc-aws-platform-agent",
+        "aidlc-compliance-agent"
+      ],
+      "workspace_required": false
+    },
+    {
+      "condition": "Always executes — defines the scope boundary and prioritized backlog",
+      "for_each_artifact": null,
+      "input_artifacts": [
+        {
+          "artifact": "intent-statement",
+          "required": true
+        },
+        {
+          "artifact": "feasibility-assessment",
+          "required": false
+        },
+        {
+          "artifact": "constraint-register",
+          "required": false
+        }
+      ],
+      "inputs_text": "Intent statement, feasibility assessment, constraint register",
+      "lead_role": "aidlc-product-agent",
+      "optional_outputs": [],
+      "outputs_text": "scope-document.md, intent-backlog.md, scope-definition-questions.md (under this stage's record dir, engine-resolved)",
+      "produces_kinds": {},
+      "required_outputs": [
+        "scope-document",
+        "intent-backlog",
+        "scope-definition-questions"
+      ],
+      "sensors": [
+        {
+          "content_sha256": "52b9631c830eb383166173037a922ec0ccd0ef3171c1f52796864302bf2acf08",
+          "id": "required-sections",
+          "matches": "**/{aidlc-docs,intents}/**",
+          "runtime_path": ".codex/sensors/aidlc-required-sections.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-required-sections.md"
+        },
+        {
+          "content_sha256": "223b8a8a644bab117d8a6afbde049f721c678eacdbe61847a542ec91e1a94ed8",
+          "id": "upstream-coverage",
+          "matches": "**/{aidlc-docs,intents}/**",
+          "runtime_path": ".codex/sensors/aidlc-upstream-coverage.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-upstream-coverage.md"
+        }
+      ],
+      "source_reviewer_max_iterations": 0,
+      "source_reviewer_role": null,
+      "source_stage_key": "scope-definition",
+      "support_roles": [
+        "aidlc-delivery-agent"
+      ],
+      "workspace_required": false
+    },
+    {
+      "condition": "Execute when team composition, capacity, or mob planning is relevant. Skip for solo developer or small team projects.",
+      "for_each_artifact": null,
+      "input_artifacts": [
+        {
+          "artifact": "scope-document",
+          "required": true
+        },
+        {
+          "artifact": "intent-backlog",
+          "required": true
+        },
+        {
+          "artifact": "feasibility-assessment",
+          "required": false
+        }
+      ],
+      "inputs_text": "Scope definition, intent backlog, feasibility assessment",
+      "lead_role": "aidlc-delivery-agent",
+      "optional_outputs": [],
+      "outputs_text": "team-assessment.md, skill-matrix.md, mob-composition.md, team-formation-questions.md (under this stage's record dir, engine-resolved)",
+      "produces_kinds": {},
+      "required_outputs": [
+        "team-assessment",
+        "skill-matrix",
+        "mob-composition",
+        "team-formation-questions"
+      ],
+      "sensors": [
+        {
+          "content_sha256": "52b9631c830eb383166173037a922ec0ccd0ef3171c1f52796864302bf2acf08",
+          "id": "required-sections",
+          "matches": "**/{aidlc-docs,intents}/**",
+          "runtime_path": ".codex/sensors/aidlc-required-sections.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-required-sections.md"
+        },
+        {
+          "content_sha256": "223b8a8a644bab117d8a6afbde049f721c678eacdbe61847a542ec91e1a94ed8",
+          "id": "upstream-coverage",
+          "matches": "**/{aidlc-docs,intents}/**",
+          "runtime_path": ".codex/sensors/aidlc-upstream-coverage.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-upstream-coverage.md"
+        }
+      ],
+      "source_reviewer_max_iterations": 0,
+      "source_reviewer_role": null,
+      "source_stage_key": "team-formation",
+      "support_roles": [],
+      "workspace_required": false
+    },
+    {
+      "condition": "Execute when user-facing UI is part of the initiative; for API/backend, produce system interaction diagrams. Skip for non-UI, API-only, or infrastructure-only initiatives.",
+      "for_each_artifact": null,
+      "input_artifacts": [
+        {
+          "artifact": "intent-statement",
+          "required": true
+        },
+        {
+          "artifact": "scope-document",
+          "required": true
+        },
+        {
+          "artifact": "intent-backlog",
+          "required": true
+        }
+      ],
+      "inputs_text": "Intent statement, scope definition, intent backlog",
+      "lead_role": "aidlc-design-agent",
+      "optional_outputs": [],
+      "outputs_text": "wireframes.md, user-flow.md, rough-mockups-questions.md (under this stage's record dir, engine-resolved)",
+      "produces_kinds": {},
+      "required_outputs": [
+        "wireframes",
+        "user-flow",
+        "rough-mockups-questions"
+      ],
+      "sensors": [
+        {
+          "content_sha256": "52b9631c830eb383166173037a922ec0ccd0ef3171c1f52796864302bf2acf08",
+          "id": "required-sections",
+          "matches": "**/{aidlc-docs,intents}/**",
+          "runtime_path": ".codex/sensors/aidlc-required-sections.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-required-sections.md"
+        },
+        {
+          "content_sha256": "223b8a8a644bab117d8a6afbde049f721c678eacdbe61847a542ec91e1a94ed8",
+          "id": "upstream-coverage",
+          "matches": "**/{aidlc-docs,intents}/**",
+          "runtime_path": ".codex/sensors/aidlc-upstream-coverage.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-upstream-coverage.md"
+        }
+      ],
+      "source_reviewer_max_iterations": 2,
+      "source_reviewer_role": "aidlc-product-lead-agent",
+      "source_stage_key": "rough-mockups",
+      "support_roles": [
+        "aidlc-product-agent"
+      ],
+      "workspace_required": false
+    },
+    {
+      "condition": "Always executes — compiles all Ideation artifacts into initiative brief for approval",
+      "for_each_artifact": null,
+      "input_artifacts": [
+        {
+          "artifact": "intent-statement",
+          "required": true
+        },
+        {
+          "artifact": "scope-document",
+          "required": true
+        },
+        {
+          "artifact": "intent-backlog",
+          "required": true
+        },
+        {
+          "artifact": "competitive-analysis",
+          "required": false
+        },
+        {
+          "artifact": "feasibility-assessment",
+          "required": false
+        },
+        {
+          "artifact": "constraint-register",
+          "required": false
+        },
+        {
+          "artifact": "team-assessment",
+          "required": false
+        },
+        {
+          "artifact": "wireframes",
+          "required": false
+        }
+      ],
+      "inputs_text": "All Ideation phase artifacts (intent, market research, feasibility, scope, team, mockups)",
+      "lead_role": "aidlc-delivery-agent",
+      "optional_outputs": [],
+      "outputs_text": "initiative-brief.md, decision-log.md, approval-handoff-questions.md (under this stage's record dir, engine-resolved)",
+      "produces_kinds": {},
+      "required_outputs": [
+        "initiative-brief",
+        "decision-log",
+        "approval-handoff-questions"
+      ],
+      "sensors": [
+        {
+          "content_sha256": "52b9631c830eb383166173037a922ec0ccd0ef3171c1f52796864302bf2acf08",
+          "id": "required-sections",
+          "matches": "**/{aidlc-docs,intents}/**",
+          "runtime_path": ".codex/sensors/aidlc-required-sections.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-required-sections.md"
+        },
+        {
+          "content_sha256": "223b8a8a644bab117d8a6afbde049f721c678eacdbe61847a542ec91e1a94ed8",
+          "id": "upstream-coverage",
+          "matches": "**/{aidlc-docs,intents}/**",
+          "runtime_path": ".codex/sensors/aidlc-upstream-coverage.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-upstream-coverage.md"
+        }
+      ],
+      "source_reviewer_max_iterations": 0,
+      "source_reviewer_role": null,
+      "source_stage_key": "approval-handoff",
+      "support_roles": [
+        "aidlc-product-agent"
+      ],
+      "workspace_required": false
+    },
+    {
+      "condition": "Execute when project is brownfield. Always rerun for freshness. Skip for greenfield projects.",
+      "for_each_artifact": null,
+      "input_artifacts": [],
+      "inputs_text": "<record>/aidlc-state.md",
+      "lead_role": "aidlc-developer-agent",
+      "optional_outputs": [],
+      "outputs_text": "aidlc/spaces/<active-space>/codekb/<repo>/ (9 artifacts: business-overview.md, architecture.md, code-structure.md, api-documentation.md, component-inventory.md, technology-stack.md, dependencies.md, code-quality-assessment.md, reverse-engineering-timestamp.md)",
+      "produces_kinds": {},
+      "required_outputs": [
+        "business-overview",
+        "architecture",
+        "code-structure",
+        "api-documentation",
+        "component-inventory",
+        "technology-stack",
+        "dependencies",
+        "code-quality-assessment",
+        "reverse-engineering-timestamp"
+      ],
+      "sensors": [
+        {
+          "content_sha256": "52b9631c830eb383166173037a922ec0ccd0ef3171c1f52796864302bf2acf08",
+          "id": "required-sections",
+          "matches": "**/{aidlc-docs,intents}/**",
+          "runtime_path": ".codex/sensors/aidlc-required-sections.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-required-sections.md"
+        },
+        {
+          "content_sha256": "223b8a8a644bab117d8a6afbde049f721c678eacdbe61847a542ec91e1a94ed8",
+          "id": "upstream-coverage",
+          "matches": "**/{aidlc-docs,intents}/**",
+          "runtime_path": ".codex/sensors/aidlc-upstream-coverage.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-upstream-coverage.md"
+        }
+      ],
+      "source_reviewer_max_iterations": 0,
+      "source_reviewer_role": null,
+      "source_stage_key": "reverse-engineering",
+      "support_roles": [
+        "aidlc-architect-agent"
+      ],
+      "workspace_required": false
+    },
+    {
+      "condition": "Always rerun for freshness. Brownfield discovers from evidence + reverse-engineering artifacts. Greenfield prompts user via structured questions using org.md defaults.",
+      "for_each_artifact": null,
+      "input_artifacts": [
+        {
+          "artifact": "code-structure",
+          "conditional_on": "brownfield",
+          "required": false
+        },
+        {
+          "artifact": "technology-stack",
+          "conditional_on": "brownfield",
+          "required": false
+        },
+        {
+          "artifact": "dependencies",
+          "conditional_on": "brownfield",
+          "required": false
+        },
+        {
+          "artifact": "code-quality-assessment",
+          "conditional_on": "brownfield",
+          "required": false
+        },
+        {
+          "artifact": "architecture",
+          "conditional_on": "brownfield",
+          "required": false
+        },
+        {
+          "artifact": "business-overview",
+          "conditional_on": "brownfield",
+          "required": false
+        }
+      ],
+      "inputs_text": "<record>/aidlc-state.md + (brownfield) reverse-engineering's 8 artifacts",
+      "lead_role": "aidlc-pipeline-deploy-agent",
+      "optional_outputs": [],
+      "outputs_text": "team-practices.md, discovered-rules.md, evidence.md, practices-discovery-timestamp.md (4 artifacts under this stage's record dir, engine-resolved). On affirmation, content is promoted to the harness rule layer's aidlc-team.md and aidlc-project.md.",
+      "produces_kinds": {},
+      "required_outputs": [
+        "team-practices",
+        "discovered-rules",
+        "evidence",
+        "practices-discovery-timestamp"
+      ],
+      "sensors": [
+        {
+          "content_sha256": "52b9631c830eb383166173037a922ec0ccd0ef3171c1f52796864302bf2acf08",
+          "id": "required-sections",
+          "matches": "**/{aidlc-docs,intents}/**",
+          "runtime_path": ".codex/sensors/aidlc-required-sections.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-required-sections.md"
+        },
+        {
+          "content_sha256": "223b8a8a644bab117d8a6afbde049f721c678eacdbe61847a542ec91e1a94ed8",
+          "id": "upstream-coverage",
+          "matches": "**/{aidlc-docs,intents}/**",
+          "runtime_path": ".codex/sensors/aidlc-upstream-coverage.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-upstream-coverage.md"
+        }
+      ],
+      "source_reviewer_max_iterations": 0,
+      "source_reviewer_role": null,
+      "source_stage_key": "practices-discovery",
+      "support_roles": [
+        "aidlc-quality-agent",
+        "aidlc-developer-agent",
+        "aidlc-devsecops-agent"
+      ],
+      "workspace_required": false
+    },
+    {
+      "condition": "Always executes — depth scales with project complexity",
+      "for_each_artifact": null,
+      "input_artifacts": [
+        {
+          "artifact": "intent-statement",
+          "required": false
+        },
+        {
+          "artifact": "scope-document",
+          "required": false
+        },
+        {
+          "artifact": "business-overview",
+          "conditional_on": "brownfield",
+          "required": false
+        },
+        {
+          "artifact": "architecture",
+          "conditional_on": "brownfield",
+          "required": false
+        },
+        {
+          "artifact": "code-structure",
+          "conditional_on": "brownfield",
+          "required": false
+        },
+        {
+          "artifact": "team-practices",
+          "required": false
+        }
+      ],
+      "inputs_text": "RE artifacts (if brownfield), user's project description (from <record>/audit/<host>-<clone>.md)",
+      "lead_role": "aidlc-product-agent",
+      "optional_outputs": [],
+      "outputs_text": "requirements.md, requirements-analysis-questions.md (under this stage's record dir, engine-resolved)",
+      "produces_kinds": {},
+      "required_outputs": [
+        "requirements",
+        "requirements-analysis-questions"
+      ],
+      "sensors": [
+        {
+          "content_sha256": "52b9631c830eb383166173037a922ec0ccd0ef3171c1f52796864302bf2acf08",
+          "id": "required-sections",
+          "matches": "**/{aidlc-docs,intents}/**",
+          "runtime_path": ".codex/sensors/aidlc-required-sections.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-required-sections.md"
+        },
+        {
+          "content_sha256": "223b8a8a644bab117d8a6afbde049f721c678eacdbe61847a542ec91e1a94ed8",
+          "id": "upstream-coverage",
+          "matches": "**/{aidlc-docs,intents}/**",
+          "runtime_path": ".codex/sensors/aidlc-upstream-coverage.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-upstream-coverage.md"
+        }
+      ],
+      "source_reviewer_max_iterations": 2,
+      "source_reviewer_role": "aidlc-product-lead-agent",
+      "source_stage_key": "requirements-analysis",
+      "support_roles": [],
+      "workspace_required": false
+    },
+    {
+      "condition": "Execute when user-facing features, multiple personas, complex business logic, or cross-team work is involved. Skip for pure refactoring, isolated bug fixes, infrastructure-only changes, or developer tooling.",
+      "for_each_artifact": null,
+      "input_artifacts": [
+        {
+          "artifact": "requirements",
+          "required": true
+        },
+        {
+          "artifact": "business-overview",
+          "conditional_on": "brownfield",
+          "required": false
+        },
+        {
+          "artifact": "component-inventory",
+          "conditional_on": "brownfield",
+          "required": false
+        },
+        {
+          "artifact": "team-practices",
+          "required": false
+        }
+      ],
+      "inputs_text": "<record>/inception/requirements-analysis/requirements.md, RE artifacts (if brownfield)",
+      "lead_role": "aidlc-product-agent",
+      "optional_outputs": [],
+      "outputs_text": "stories.md, personas.md, user-stories-assessment.md (under this stage's record dir, engine-resolved)",
+      "produces_kinds": {},
+      "required_outputs": [
+        "stories",
+        "personas",
+        "user-stories-assessment"
+      ],
+      "sensors": [
+        {
+          "content_sha256": "52b9631c830eb383166173037a922ec0ccd0ef3171c1f52796864302bf2acf08",
+          "id": "required-sections",
+          "matches": "**/{aidlc-docs,intents}/**",
+          "runtime_path": ".codex/sensors/aidlc-required-sections.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-required-sections.md"
+        },
+        {
+          "content_sha256": "223b8a8a644bab117d8a6afbde049f721c678eacdbe61847a542ec91e1a94ed8",
+          "id": "upstream-coverage",
+          "matches": "**/{aidlc-docs,intents}/**",
+          "runtime_path": ".codex/sensors/aidlc-upstream-coverage.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-upstream-coverage.md"
+        }
+      ],
+      "source_reviewer_max_iterations": 2,
+      "source_reviewer_role": "aidlc-product-lead-agent",
+      "source_stage_key": "user-stories",
+      "support_roles": [
+        "aidlc-design-agent"
+      ],
+      "workspace_required": false
+    },
+    {
+      "condition": "Execute when user-facing UI exists and rough mockups were produced in Ideation; for APIs, refine interaction diagrams",
+      "for_each_artifact": null,
+      "input_artifacts": [
+        {
+          "artifact": "wireframes",
+          "required": true
+        },
+        {
+          "artifact": "user-flow",
+          "required": true
+        },
+        {
+          "artifact": "stories",
+          "required": false
+        },
+        {
+          "artifact": "requirements",
+          "required": true
+        },
+        {
+          "artifact": "team-practices",
+          "required": false
+        }
+      ],
+      "inputs_text": "Rough mockups from rough-mockups stage, user stories from user-stories stage, requirements from requirements-analysis stage",
+      "lead_role": "aidlc-design-agent",
+      "optional_outputs": [],
+      "outputs_text": "mockups.md, interaction-spec.md, design-system-mapping.md, accessibility-checklist.md, refined-mockups-questions.md (under this stage's record dir, engine-resolved)",
+      "produces_kinds": {},
+      "required_outputs": [
+        "mockups",
+        "interaction-spec",
+        "design-system-mapping",
+        "accessibility-checklist",
+        "refined-mockups-questions"
+      ],
+      "sensors": [
+        {
+          "content_sha256": "52b9631c830eb383166173037a922ec0ccd0ef3171c1f52796864302bf2acf08",
+          "id": "required-sections",
+          "matches": "**/{aidlc-docs,intents}/**",
+          "runtime_path": ".codex/sensors/aidlc-required-sections.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-required-sections.md"
+        },
+        {
+          "content_sha256": "223b8a8a644bab117d8a6afbde049f721c678eacdbe61847a542ec91e1a94ed8",
+          "id": "upstream-coverage",
+          "matches": "**/{aidlc-docs,intents}/**",
+          "runtime_path": ".codex/sensors/aidlc-upstream-coverage.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-upstream-coverage.md"
+        }
+      ],
+      "source_reviewer_max_iterations": 2,
+      "source_reviewer_role": "aidlc-product-lead-agent",
+      "source_stage_key": "refined-mockups",
+      "support_roles": [
+        "aidlc-product-agent"
+      ],
+      "workspace_required": false
+    },
+    {
+      "condition": "Execute when new components or services are needed, or service layer design is required. Skip when changes are modifications to existing components only.",
+      "for_each_artifact": null,
+      "input_artifacts": [
+        {
+          "artifact": "requirements",
+          "required": true
+        },
+        {
+          "artifact": "stories",
+          "required": false
+        },
+        {
+          "artifact": "architecture",
+          "conditional_on": "brownfield",
+          "required": false
+        },
+        {
+          "artifact": "component-inventory",
+          "conditional_on": "brownfield",
+          "required": false
+        },
+        {
+          "artifact": "team-practices",
+          "required": false
+        }
+      ],
+      "inputs_text": "<record>/inception/requirements-analysis/requirements.md, <record>/inception/user-stories/stories.md (if produced), RE artifacts (if brownfield)",
+      "lead_role": "aidlc-architect-agent",
+      "optional_outputs": [],
+      "outputs_text": "components.md, component-methods.md, services.md, component-dependency.md, decisions.md (under this stage's record dir, engine-resolved)",
+      "produces_kinds": {},
+      "required_outputs": [
+        "components",
+        "component-methods",
+        "services",
+        "component-dependency",
+        "decisions"
+      ],
+      "sensors": [
+        {
+          "content_sha256": "52b9631c830eb383166173037a922ec0ccd0ef3171c1f52796864302bf2acf08",
+          "id": "required-sections",
+          "matches": "**/{aidlc-docs,intents}/**",
+          "runtime_path": ".codex/sensors/aidlc-required-sections.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-required-sections.md"
+        },
+        {
+          "content_sha256": "223b8a8a644bab117d8a6afbde049f721c678eacdbe61847a542ec91e1a94ed8",
+          "id": "upstream-coverage",
+          "matches": "**/{aidlc-docs,intents}/**",
+          "runtime_path": ".codex/sensors/aidlc-upstream-coverage.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-upstream-coverage.md"
+        }
+      ],
+      "source_reviewer_max_iterations": 2,
+      "source_reviewer_role": "aidlc-architecture-reviewer-agent",
+      "source_stage_key": "application-design",
+      "support_roles": [
+        "aidlc-aws-platform-agent",
+        "aidlc-design-agent"
+      ],
+      "workspace_required": false
+    },
+    {
+      "condition": "Always executes when in scope. Produces the dependency DAG that Stage 2.8 Delivery Planning consumes for Bolt sequencing. In the compiled scope grid, 2.7 and 2.8 travel together — both EXECUTE or both SKIP per scope.",
+      "for_each_artifact": null,
+      "input_artifacts": [
+        {
+          "artifact": "components",
+          "required": true
+        },
+        {
+          "artifact": "component-methods",
+          "required": true
+        },
+        {
+          "artifact": "services",
+          "required": true
+        },
+        {
+          "artifact": "component-dependency",
+          "required": true
+        },
+        {
+          "artifact": "decisions",
+          "required": true
+        },
+        {
+          "artifact": "requirements",
+          "required": true
+        },
+        {
+          "artifact": "stories",
+          "required": false
+        }
+      ],
+      "inputs_text": "<record>/inception/application-design/ (all design artifacts), <record>/inception/requirements-analysis/requirements.md, <record>/inception/user-stories/stories.md (if produced)",
+      "lead_role": "aidlc-architect-agent",
+      "optional_outputs": [],
+      "outputs_text": "unit-of-work.md, unit-of-work-dependency.md, unit-of-work-story-map.md (under this stage's record dir, engine-resolved)",
+      "produces_kinds": {},
+      "required_outputs": [
+        "unit-of-work",
+        "unit-of-work-dependency",
+        "unit-of-work-story-map"
+      ],
+      "sensors": [
+        {
+          "content_sha256": "52b9631c830eb383166173037a922ec0ccd0ef3171c1f52796864302bf2acf08",
+          "id": "required-sections",
+          "matches": "**/{aidlc-docs,intents}/**",
+          "runtime_path": ".codex/sensors/aidlc-required-sections.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-required-sections.md"
+        },
+        {
+          "content_sha256": "223b8a8a644bab117d8a6afbde049f721c678eacdbe61847a542ec91e1a94ed8",
+          "id": "upstream-coverage",
+          "matches": "**/{aidlc-docs,intents}/**",
+          "runtime_path": ".codex/sensors/aidlc-upstream-coverage.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-upstream-coverage.md"
+        }
+      ],
+      "source_reviewer_max_iterations": 2,
+      "source_reviewer_role": "aidlc-architecture-reviewer-agent",
+      "source_stage_key": "units-generation",
+      "support_roles": [
+        "aidlc-delivery-agent"
+      ],
+      "workspace_required": false
+    },
+    {
+      "condition": "Always executes — capstone Inception stage, produces the detailed execution plan for Construction and Operation",
+      "for_each_artifact": null,
+      "input_artifacts": [
+        {
+          "artifact": "requirements",
+          "required": true
+        },
+        {
+          "artifact": "stories",
+          "required": false
+        },
+        {
+          "artifact": "mockups",
+          "required": false
+        },
+        {
+          "artifact": "components",
+          "required": true
+        },
+        {
+          "artifact": "unit-of-work",
+          "required": true
+        },
+        {
+          "artifact": "unit-of-work-dependency",
+          "required": true
+        },
+        {
+          "artifact": "unit-of-work-story-map",
+          "required": false
+        },
+        {
+          "artifact": "team-practices",
+          "required": false
+        }
+      ],
+      "inputs_text": "All Inception artifacts (requirements, stories, mockups, architecture, units)",
+      "lead_role": "aidlc-delivery-agent",
+      "optional_outputs": [],
+      "outputs_text": "bolt-plan.md, team-allocation.md, risk-and-sequencing-rationale.md, external-dependency-map.md, delivery-planning-questions.md (under this stage's record dir, engine-resolved)",
+      "produces_kinds": {},
+      "required_outputs": [
+        "bolt-plan",
+        "team-allocation",
+        "risk-and-sequencing-rationale",
+        "external-dependency-map",
+        "delivery-planning-questions"
+      ],
+      "sensors": [
+        {
+          "content_sha256": "52b9631c830eb383166173037a922ec0ccd0ef3171c1f52796864302bf2acf08",
+          "id": "required-sections",
+          "matches": "**/{aidlc-docs,intents}/**",
+          "runtime_path": ".codex/sensors/aidlc-required-sections.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-required-sections.md"
+        },
+        {
+          "content_sha256": "223b8a8a644bab117d8a6afbde049f721c678eacdbe61847a542ec91e1a94ed8",
+          "id": "upstream-coverage",
+          "matches": "**/{aidlc-docs,intents}/**",
+          "runtime_path": ".codex/sensors/aidlc-upstream-coverage.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-upstream-coverage.md"
+        }
+      ],
+      "source_reviewer_max_iterations": 0,
+      "source_reviewer_role": null,
+      "source_stage_key": "delivery-planning",
+      "support_roles": [
+        "aidlc-architect-agent"
+      ],
+      "workspace_required": false
+    },
+    {
+      "condition": "New data models, complex business logic, or business rules need design. Skip if simple logic changes with no new business logic.",
+      "for_each_artifact": "unit-of-work",
+      "input_artifacts": [
+        {
+          "artifact": "unit-of-work",
+          "required": true
+        },
+        {
+          "artifact": "unit-of-work-story-map",
+          "required": false
+        },
+        {
+          "artifact": "requirements",
+          "required": true
+        },
+        {
+          "artifact": "components",
+          "required": true
+        },
+        {
+          "artifact": "component-methods",
+          "required": true
+        },
+        {
+          "artifact": "services",
+          "required": true
+        }
+      ],
+      "inputs_text": "unit-of-work.md, unit-of-work-story-map.md, requirements.md, application design artifacts",
+      "lead_role": "aidlc-architect-agent",
+      "optional_outputs": [
+        "frontend-components"
+      ],
+      "outputs_text": "business-logic-model.md, business-rules.md, domain-entities.md, CONDITIONAL: frontend-components.md (under this stage's per-unit record dir, engine-resolved); per-kind applicability via produces_kinds (untagged unit: all)",
+      "produces_kinds": {
+        "business-logic-model": [
+          "service",
+          "ui",
+          "library"
+        ],
+        "business-rules": [
+          "service",
+          "spec",
+          "library"
+        ],
+        "domain-entities": [
+          "service",
+          "spec",
+          "library"
+        ],
+        "frontend-components": [
+          "ui"
+        ]
+      },
+      "required_outputs": [
+        "business-logic-model",
+        "business-rules",
+        "domain-entities"
+      ],
+      "sensors": [
+        {
+          "content_sha256": "52b9631c830eb383166173037a922ec0ccd0ef3171c1f52796864302bf2acf08",
+          "id": "required-sections",
+          "matches": "**/{aidlc-docs,intents}/**",
+          "runtime_path": ".codex/sensors/aidlc-required-sections.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-required-sections.md"
+        },
+        {
+          "content_sha256": "223b8a8a644bab117d8a6afbde049f721c678eacdbe61847a542ec91e1a94ed8",
+          "id": "upstream-coverage",
+          "matches": "**/{aidlc-docs,intents}/**",
+          "runtime_path": ".codex/sensors/aidlc-upstream-coverage.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-upstream-coverage.md"
+        },
+        {
+          "content_sha256": "11a082c26e181c79fb2107fdd750e5b58dfe79bc377deadaeb955e5abed67262",
+          "id": "linter",
+          "matches": "**/*.{ts,js}",
+          "runtime_path": ".codex/sensors/aidlc-linter.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-linter.md"
+        },
+        {
+          "content_sha256": "765688e25fd50054761f59ddf5cd68a898fe25e64b4c0a5a3c6e3e009f0adc1e",
+          "id": "type-check",
+          "matches": "**/*.{ts,tsx}",
+          "runtime_path": ".codex/sensors/aidlc-type-check.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-type-check.md"
+        }
+      ],
+      "source_reviewer_max_iterations": 2,
+      "source_reviewer_role": "aidlc-architecture-reviewer-agent",
+      "source_stage_key": "functional-design",
+      "support_roles": [
+        "aidlc-developer-agent"
+      ],
+      "workspace_required": false
+    },
+    {
+      "condition": "Performance requirements, security considerations, scalability concerns, or tech stack selection needed. Skip if no NFR requirements and tech stack already determined.",
+      "for_each_artifact": "unit-of-work",
+      "input_artifacts": [
+        {
+          "artifact": "business-logic-model",
+          "required": true
+        },
+        {
+          "artifact": "business-rules",
+          "required": true
+        },
+        {
+          "artifact": "requirements",
+          "required": true
+        },
+        {
+          "artifact": "technology-stack",
+          "conditional_on": "brownfield",
+          "required": false
+        }
+      ],
+      "inputs_text": "functional design artifacts, requirements.md, RE artifacts",
+      "lead_role": "aidlc-architect-agent",
+      "optional_outputs": [],
+      "outputs_text": "performance-requirements.md, security-requirements.md, scalability-requirements.md, reliability-requirements.md, tech-stack-decisions.md (under this stage's per-unit record dir, engine-resolved); per-kind applicability via produces_kinds (untagged unit: all)",
+      "produces_kinds": {
+        "performance-requirements": [
+          "service",
+          "ui"
+        ],
+        "reliability-requirements": [
+          "service"
+        ],
+        "scalability-requirements": [
+          "service"
+        ]
+      },
+      "required_outputs": [
+        "performance-requirements",
+        "security-requirements",
+        "scalability-requirements",
+        "reliability-requirements",
+        "tech-stack-decisions"
+      ],
+      "sensors": [
+        {
+          "content_sha256": "52b9631c830eb383166173037a922ec0ccd0ef3171c1f52796864302bf2acf08",
+          "id": "required-sections",
+          "matches": "**/{aidlc-docs,intents}/**",
+          "runtime_path": ".codex/sensors/aidlc-required-sections.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-required-sections.md"
+        },
+        {
+          "content_sha256": "223b8a8a644bab117d8a6afbde049f721c678eacdbe61847a542ec91e1a94ed8",
+          "id": "upstream-coverage",
+          "matches": "**/{aidlc-docs,intents}/**",
+          "runtime_path": ".codex/sensors/aidlc-upstream-coverage.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-upstream-coverage.md"
+        },
+        {
+          "content_sha256": "11a082c26e181c79fb2107fdd750e5b58dfe79bc377deadaeb955e5abed67262",
+          "id": "linter",
+          "matches": "**/*.{ts,js}",
+          "runtime_path": ".codex/sensors/aidlc-linter.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-linter.md"
+        },
+        {
+          "content_sha256": "765688e25fd50054761f59ddf5cd68a898fe25e64b4c0a5a3c6e3e009f0adc1e",
+          "id": "type-check",
+          "matches": "**/*.{ts,tsx}",
+          "runtime_path": ".codex/sensors/aidlc-type-check.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-type-check.md"
+        }
+      ],
+      "source_reviewer_max_iterations": 2,
+      "source_reviewer_role": "aidlc-architecture-reviewer-agent",
+      "source_stage_key": "nfr-requirements",
+      "support_roles": [
+        "aidlc-devsecops-agent",
+        "aidlc-compliance-agent",
+        "aidlc-quality-agent"
+      ],
+      "workspace_required": false
+    },
+    {
+      "condition": "NFR Requirements was executed and NFR patterns need design. Skip if NFR Requirements was skipped.",
+      "for_each_artifact": "unit-of-work",
+      "input_artifacts": [
+        {
+          "artifact": "performance-requirements",
+          "required": true
+        },
+        {
+          "artifact": "security-requirements",
+          "required": true
+        },
+        {
+          "artifact": "scalability-requirements",
+          "required": true
+        },
+        {
+          "artifact": "reliability-requirements",
+          "required": true
+        },
+        {
+          "artifact": "tech-stack-decisions",
+          "required": true
+        },
+        {
+          "artifact": "business-logic-model",
+          "required": true
+        }
+      ],
+      "inputs_text": "NFR requirements artifacts, functional design artifacts",
+      "lead_role": "aidlc-architect-agent",
+      "optional_outputs": [],
+      "outputs_text": "performance-design.md, security-design.md, scalability-design.md, reliability-design.md, logical-components.md (under this stage's per-unit record dir, engine-resolved); per-kind applicability via produces_kinds (untagged unit: all)",
+      "produces_kinds": {
+        "logical-components": [
+          "service",
+          "ui",
+          "library"
+        ],
+        "performance-design": [
+          "service",
+          "ui"
+        ],
+        "reliability-design": [
+          "service"
+        ],
+        "scalability-design": [
+          "service"
+        ]
+      },
+      "required_outputs": [
+        "performance-design",
+        "security-design",
+        "scalability-design",
+        "reliability-design",
+        "logical-components"
+      ],
+      "sensors": [
+        {
+          "content_sha256": "52b9631c830eb383166173037a922ec0ccd0ef3171c1f52796864302bf2acf08",
+          "id": "required-sections",
+          "matches": "**/{aidlc-docs,intents}/**",
+          "runtime_path": ".codex/sensors/aidlc-required-sections.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-required-sections.md"
+        },
+        {
+          "content_sha256": "223b8a8a644bab117d8a6afbde049f721c678eacdbe61847a542ec91e1a94ed8",
+          "id": "upstream-coverage",
+          "matches": "**/{aidlc-docs,intents}/**",
+          "runtime_path": ".codex/sensors/aidlc-upstream-coverage.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-upstream-coverage.md"
+        },
+        {
+          "content_sha256": "11a082c26e181c79fb2107fdd750e5b58dfe79bc377deadaeb955e5abed67262",
+          "id": "linter",
+          "matches": "**/*.{ts,js}",
+          "runtime_path": ".codex/sensors/aidlc-linter.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-linter.md"
+        },
+        {
+          "content_sha256": "765688e25fd50054761f59ddf5cd68a898fe25e64b4c0a5a3c6e3e009f0adc1e",
+          "id": "type-check",
+          "matches": "**/*.{ts,tsx}",
+          "runtime_path": ".codex/sensors/aidlc-type-check.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-type-check.md"
+        }
+      ],
+      "source_reviewer_max_iterations": 2,
+      "source_reviewer_role": "aidlc-architecture-reviewer-agent",
+      "source_stage_key": "nfr-design",
+      "support_roles": [
+        "aidlc-aws-platform-agent"
+      ],
+      "workspace_required": false
+    },
+    {
+      "condition": "Infrastructure services need mapping, deployment architecture required, or cloud resources needed. Skip if no infrastructure changes and infrastructure already defined.",
+      "for_each_artifact": "unit-of-work",
+      "input_artifacts": [
+        {
+          "artifact": "performance-design",
+          "required": true
+        },
+        {
+          "artifact": "security-design",
+          "required": true
+        },
+        {
+          "artifact": "scalability-design",
+          "required": true
+        },
+        {
+          "artifact": "reliability-design",
+          "required": true
+        },
+        {
+          "artifact": "logical-components",
+          "required": true
+        },
+        {
+          "artifact": "components",
+          "required": true
+        },
+        {
+          "artifact": "services",
+          "required": true
+        },
+        {
+          "artifact": "business-logic-model",
+          "required": true
+        }
+      ],
+      "inputs_text": "NFR design artifacts, application design, functional design",
+      "lead_role": "aidlc-aws-platform-agent",
+      "optional_outputs": [
+        "shared-infrastructure"
+      ],
+      "outputs_text": "deployment-architecture.md, infrastructure-services.md, monitoring-design.md, cicd-pipeline.md, CONDITIONAL: shared-infrastructure.md (under this stage's per-unit record dir, engine-resolved); per-kind applicability via produces_kinds (untagged unit: all)",
+      "produces_kinds": {
+        "cicd-pipeline": [
+          "service",
+          "ui",
+          "packaging",
+          "library"
+        ],
+        "deployment-architecture": [
+          "service",
+          "ui",
+          "packaging"
+        ],
+        "infrastructure-services": [
+          "service",
+          "packaging"
+        ],
+        "monitoring-design": [
+          "service",
+          "packaging"
+        ]
+      },
+      "required_outputs": [
+        "deployment-architecture",
+        "infrastructure-services",
+        "monitoring-design",
+        "cicd-pipeline"
+      ],
+      "sensors": [
+        {
+          "content_sha256": "52b9631c830eb383166173037a922ec0ccd0ef3171c1f52796864302bf2acf08",
+          "id": "required-sections",
+          "matches": "**/{aidlc-docs,intents}/**",
+          "runtime_path": ".codex/sensors/aidlc-required-sections.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-required-sections.md"
+        },
+        {
+          "content_sha256": "223b8a8a644bab117d8a6afbde049f721c678eacdbe61847a542ec91e1a94ed8",
+          "id": "upstream-coverage",
+          "matches": "**/{aidlc-docs,intents}/**",
+          "runtime_path": ".codex/sensors/aidlc-upstream-coverage.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-upstream-coverage.md"
+        },
+        {
+          "content_sha256": "11a082c26e181c79fb2107fdd750e5b58dfe79bc377deadaeb955e5abed67262",
+          "id": "linter",
+          "matches": "**/*.{ts,js}",
+          "runtime_path": ".codex/sensors/aidlc-linter.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-linter.md"
+        },
+        {
+          "content_sha256": "765688e25fd50054761f59ddf5cd68a898fe25e64b4c0a5a3c6e3e009f0adc1e",
+          "id": "type-check",
+          "matches": "**/*.{ts,tsx}",
+          "runtime_path": ".codex/sensors/aidlc-type-check.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-type-check.md"
+        }
+      ],
+      "source_reviewer_max_iterations": 2,
+      "source_reviewer_role": "aidlc-architecture-reviewer-agent",
+      "source_stage_key": "infrastructure-design",
+      "support_roles": [
+        "aidlc-devsecops-agent",
+        "aidlc-compliance-agent"
+      ],
+      "workspace_required": false
+    },
+    {
+      "condition": "Always executes for every unit in the execution plan.",
+      "for_each_artifact": "unit-of-work",
+      "input_artifacts": [
+        {
+          "artifact": "business-logic-model",
+          "required": false
+        },
+        {
+          "artifact": "business-rules",
+          "required": false
+        },
+        {
+          "artifact": "domain-entities",
+          "required": false
+        },
+        {
+          "artifact": "performance-design",
+          "required": false
+        },
+        {
+          "artifact": "security-design",
+          "required": false
+        },
+        {
+          "artifact": "deployment-architecture",
+          "required": false
+        },
+        {
+          "artifact": "unit-of-work",
+          "required": true
+        },
+        {
+          "artifact": "requirements",
+          "required": true
+        }
+      ],
+      "inputs_text": "ALL prior design artifacts for this unit",
+      "lead_role": "aidlc-developer-agent",
+      "optional_outputs": [],
+      "outputs_text": "application code + code-generation-plan.md, code-summary.md (under this stage's per-unit record dir, engine-resolved)",
+      "produces_kinds": {},
+      "required_outputs": [
+        "code-generation-plan",
+        "code-summary"
+      ],
+      "sensors": [
+        {
+          "content_sha256": "11a082c26e181c79fb2107fdd750e5b58dfe79bc377deadaeb955e5abed67262",
+          "id": "linter",
+          "matches": "**/*.{ts,js}",
+          "runtime_path": ".codex/sensors/aidlc-linter.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-linter.md"
+        },
+        {
+          "content_sha256": "765688e25fd50054761f59ddf5cd68a898fe25e64b4c0a5a3c6e3e009f0adc1e",
+          "id": "type-check",
+          "matches": "**/*.{ts,tsx}",
+          "runtime_path": ".codex/sensors/aidlc-type-check.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-type-check.md"
+        }
+      ],
+      "source_reviewer_max_iterations": 2,
+      "source_reviewer_role": "aidlc-architecture-reviewer-agent",
+      "source_stage_key": "code-generation",
+      "support_roles": [],
+      "workspace_required": true
+    },
+    {
+      "condition": "Always executes once after all per-unit stages are finished.",
+      "for_each_artifact": null,
+      "input_artifacts": [
+        {
+          "artifact": "code-generation-plan",
+          "required": true
+        },
+        {
+          "artifact": "code-summary",
+          "required": true
+        }
+      ],
+      "inputs_text": "ALL code generation outputs across all units",
+      "lead_role": "aidlc-quality-agent",
+      "optional_outputs": [],
+      "outputs_text": "build-instructions.md, unit-test-instructions.md, integration-test-instructions.md, performance-test-instructions.md, security-test-instructions.md, build-and-test-summary.md, test-results.md (under this stage's record dir, engine-resolved)",
+      "produces_kinds": {},
+      "required_outputs": [
+        "build-instructions",
+        "unit-test-instructions",
+        "integration-test-instructions",
+        "performance-test-instructions",
+        "security-test-instructions",
+        "build-and-test-summary",
+        "build-test-results"
+      ],
+      "sensors": [
+        {
+          "content_sha256": "52b9631c830eb383166173037a922ec0ccd0ef3171c1f52796864302bf2acf08",
+          "id": "required-sections",
+          "matches": "**/{aidlc-docs,intents}/**",
+          "runtime_path": ".codex/sensors/aidlc-required-sections.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-required-sections.md"
+        },
+        {
+          "content_sha256": "223b8a8a644bab117d8a6afbde049f721c678eacdbe61847a542ec91e1a94ed8",
+          "id": "upstream-coverage",
+          "matches": "**/{aidlc-docs,intents}/**",
+          "runtime_path": ".codex/sensors/aidlc-upstream-coverage.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-upstream-coverage.md"
+        },
+        {
+          "content_sha256": "765688e25fd50054761f59ddf5cd68a898fe25e64b4c0a5a3c6e3e009f0adc1e",
+          "id": "type-check",
+          "matches": "**/*.{ts,tsx}",
+          "runtime_path": ".codex/sensors/aidlc-type-check.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-type-check.md"
+        }
+      ],
+      "source_reviewer_max_iterations": 0,
+      "source_reviewer_role": null,
+      "source_stage_key": "build-and-test",
+      "support_roles": [
+        "aidlc-devsecops-agent"
+      ],
+      "workspace_required": false
+    },
+    {
+      "condition": "Execute when CI pipeline needs creation or significant modification. Skip if CI already exists and is adequate.",
+      "for_each_artifact": null,
+      "input_artifacts": [
+        {
+          "artifact": "code-summary",
+          "required": true
+        },
+        {
+          "artifact": "build-and-test-summary",
+          "required": true
+        },
+        {
+          "artifact": "build-test-results",
+          "required": true
+        }
+      ],
+      "inputs_text": "Code generation output from code-generation stage, build/test results from build-and-test stage",
+      "lead_role": "aidlc-pipeline-deploy-agent",
+      "optional_outputs": [],
+      "outputs_text": "ci-config.md, quality-gates.md, ci-pipeline-questions.md (under this stage's record dir, engine-resolved)",
+      "produces_kinds": {},
+      "required_outputs": [
+        "ci-config",
+        "quality-gates",
+        "ci-pipeline-questions"
+      ],
+      "sensors": [
+        {
+          "content_sha256": "52b9631c830eb383166173037a922ec0ccd0ef3171c1f52796864302bf2acf08",
+          "id": "required-sections",
+          "matches": "**/{aidlc-docs,intents}/**",
+          "runtime_path": ".codex/sensors/aidlc-required-sections.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-required-sections.md"
+        },
+        {
+          "content_sha256": "223b8a8a644bab117d8a6afbde049f721c678eacdbe61847a542ec91e1a94ed8",
+          "id": "upstream-coverage",
+          "matches": "**/{aidlc-docs,intents}/**",
+          "runtime_path": ".codex/sensors/aidlc-upstream-coverage.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-upstream-coverage.md"
+        },
+        {
+          "content_sha256": "11a082c26e181c79fb2107fdd750e5b58dfe79bc377deadaeb955e5abed67262",
+          "id": "linter",
+          "matches": "**/*.{ts,js}",
+          "runtime_path": ".codex/sensors/aidlc-linter.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-linter.md"
+        },
+        {
+          "content_sha256": "765688e25fd50054761f59ddf5cd68a898fe25e64b4c0a5a3c6e3e009f0adc1e",
+          "id": "type-check",
+          "matches": "**/*.{ts,tsx}",
+          "runtime_path": ".codex/sensors/aidlc-type-check.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-type-check.md"
+        }
+      ],
+      "source_reviewer_max_iterations": 0,
+      "source_reviewer_role": null,
+      "source_stage_key": "ci-pipeline",
+      "support_roles": [],
+      "workspace_required": false
+    },
+    {
+      "condition": "Execute when CD pipeline needs creation or significant modification",
+      "for_each_artifact": null,
+      "input_artifacts": [
+        {
+          "artifact": "ci-config",
+          "required": true
+        },
+        {
+          "artifact": "quality-gates",
+          "required": true
+        },
+        {
+          "artifact": "deployment-architecture",
+          "required": true
+        },
+        {
+          "artifact": "cicd-pipeline",
+          "required": true
+        }
+      ],
+      "inputs_text": "CI pipeline config from ci-pipeline stage, infrastructure design from infrastructure-design stage",
+      "lead_role": "aidlc-pipeline-deploy-agent",
+      "optional_outputs": [],
+      "outputs_text": "cd-config.md, deployment-strategy.md, rollback-runbook.md, deployment-pipeline-questions.md (under this stage's record dir, engine-resolved)",
+      "produces_kinds": {},
+      "required_outputs": [
+        "cd-config",
+        "deployment-strategy",
+        "rollback-runbook",
+        "deployment-pipeline-questions"
+      ],
+      "sensors": [
+        {
+          "content_sha256": "52b9631c830eb383166173037a922ec0ccd0ef3171c1f52796864302bf2acf08",
+          "id": "required-sections",
+          "matches": "**/{aidlc-docs,intents}/**",
+          "runtime_path": ".codex/sensors/aidlc-required-sections.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-required-sections.md"
+        },
+        {
+          "content_sha256": "223b8a8a644bab117d8a6afbde049f721c678eacdbe61847a542ec91e1a94ed8",
+          "id": "upstream-coverage",
+          "matches": "**/{aidlc-docs,intents}/**",
+          "runtime_path": ".codex/sensors/aidlc-upstream-coverage.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-upstream-coverage.md"
+        }
+      ],
+      "source_reviewer_max_iterations": 0,
+      "source_reviewer_role": null,
+      "source_stage_key": "deployment-pipeline",
+      "support_roles": [],
+      "workspace_required": false
+    },
+    {
+      "condition": "Execute when AWS environments need provisioning or validation",
+      "for_each_artifact": null,
+      "input_artifacts": [
+        {
+          "artifact": "deployment-architecture",
+          "required": true
+        },
+        {
+          "artifact": "infrastructure-services",
+          "required": true
+        },
+        {
+          "artifact": "cd-config",
+          "required": true
+        }
+      ],
+      "inputs_text": "Infrastructure design from infrastructure-design stage, CD pipeline config from deployment-pipeline stage",
+      "lead_role": "aidlc-aws-platform-agent",
+      "optional_outputs": [],
+      "outputs_text": "environment-inventory.md, validation-report.md, environment-provisioning-questions.md (under this stage's record dir, engine-resolved)",
+      "produces_kinds": {},
+      "required_outputs": [
+        "environment-inventory",
+        "validation-report",
+        "environment-provisioning-questions"
+      ],
+      "sensors": [
+        {
+          "content_sha256": "52b9631c830eb383166173037a922ec0ccd0ef3171c1f52796864302bf2acf08",
+          "id": "required-sections",
+          "matches": "**/{aidlc-docs,intents}/**",
+          "runtime_path": ".codex/sensors/aidlc-required-sections.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-required-sections.md"
+        },
+        {
+          "content_sha256": "223b8a8a644bab117d8a6afbde049f721c678eacdbe61847a542ec91e1a94ed8",
+          "id": "upstream-coverage",
+          "matches": "**/{aidlc-docs,intents}/**",
+          "runtime_path": ".codex/sensors/aidlc-upstream-coverage.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-upstream-coverage.md"
+        }
+      ],
+      "source_reviewer_max_iterations": 0,
+      "source_reviewer_role": null,
+      "source_stage_key": "environment-provisioning",
+      "support_roles": [
+        "aidlc-devsecops-agent",
+        "aidlc-compliance-agent"
+      ],
+      "workspace_required": false
+    },
+    {
+      "condition": "Execute after deployment pipeline and environment are ready",
+      "for_each_artifact": null,
+      "input_artifacts": [
+        {
+          "artifact": "cd-config",
+          "required": true
+        },
+        {
+          "artifact": "deployment-strategy",
+          "required": true
+        },
+        {
+          "artifact": "environment-inventory",
+          "required": true
+        },
+        {
+          "artifact": "build-test-results",
+          "required": true
+        }
+      ],
+      "inputs_text": "CD pipeline config from deployment-pipeline stage, provisioned environments from environment-provisioning stage, built artifacts from Construction",
+      "lead_role": "aidlc-pipeline-deploy-agent",
+      "optional_outputs": [],
+      "outputs_text": "deployment-log.md, smoke-test-results.md, health-check-report.md, deployment-execution-questions.md (under this stage's record dir, engine-resolved)",
+      "produces_kinds": {},
+      "required_outputs": [
+        "deployment-log",
+        "smoke-test-results",
+        "health-check-report",
+        "deployment-execution-questions"
+      ],
+      "sensors": [
+        {
+          "content_sha256": "52b9631c830eb383166173037a922ec0ccd0ef3171c1f52796864302bf2acf08",
+          "id": "required-sections",
+          "matches": "**/{aidlc-docs,intents}/**",
+          "runtime_path": ".codex/sensors/aidlc-required-sections.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-required-sections.md"
+        },
+        {
+          "content_sha256": "223b8a8a644bab117d8a6afbde049f721c678eacdbe61847a542ec91e1a94ed8",
+          "id": "upstream-coverage",
+          "matches": "**/{aidlc-docs,intents}/**",
+          "runtime_path": ".codex/sensors/aidlc-upstream-coverage.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-upstream-coverage.md"
+        }
+      ],
+      "source_reviewer_max_iterations": 0,
+      "source_reviewer_role": null,
+      "source_stage_key": "deployment-execution",
+      "support_roles": [
+        "aidlc-developer-agent"
+      ],
+      "workspace_required": false
+    },
+    {
+      "condition": "Execute when monitoring, dashboards, alarms, or tracing need configuration",
+      "for_each_artifact": null,
+      "input_artifacts": [
+        {
+          "artifact": "performance-design",
+          "required": true
+        },
+        {
+          "artifact": "security-design",
+          "required": true
+        },
+        {
+          "artifact": "reliability-design",
+          "required": true
+        },
+        {
+          "artifact": "monitoring-design",
+          "required": true
+        },
+        {
+          "artifact": "infrastructure-services",
+          "required": true
+        }
+      ],
+      "inputs_text": "NFR design from nfr-design stage, infrastructure design from infrastructure-design stage, deployed application",
+      "lead_role": "aidlc-operations-agent",
+      "optional_outputs": [],
+      "outputs_text": "dashboards.md, alarms.md, slo-config.md, log-queries.md, tracing-config.md, anomaly-config.md, observability-setup-questions.md (under this stage's record dir, engine-resolved)",
+      "produces_kinds": {},
+      "required_outputs": [
+        "dashboards",
+        "alarms",
+        "slo-config",
+        "log-queries",
+        "tracing-config",
+        "anomaly-config",
+        "observability-setup-questions"
+      ],
+      "sensors": [
+        {
+          "content_sha256": "52b9631c830eb383166173037a922ec0ccd0ef3171c1f52796864302bf2acf08",
+          "id": "required-sections",
+          "matches": "**/{aidlc-docs,intents}/**",
+          "runtime_path": ".codex/sensors/aidlc-required-sections.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-required-sections.md"
+        },
+        {
+          "content_sha256": "223b8a8a644bab117d8a6afbde049f721c678eacdbe61847a542ec91e1a94ed8",
+          "id": "upstream-coverage",
+          "matches": "**/{aidlc-docs,intents}/**",
+          "runtime_path": ".codex/sensors/aidlc-upstream-coverage.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-upstream-coverage.md"
+        }
+      ],
+      "source_reviewer_max_iterations": 0,
+      "source_reviewer_role": null,
+      "source_stage_key": "observability-setup",
+      "support_roles": [],
+      "workspace_required": false
+    },
+    {
+      "condition": "Execute when operational runbooks and incident response procedures are needed",
+      "for_each_artifact": null,
+      "input_artifacts": [
+        {
+          "artifact": "dashboards",
+          "required": true
+        },
+        {
+          "artifact": "alarms",
+          "required": true
+        },
+        {
+          "artifact": "reliability-design",
+          "required": true
+        },
+        {
+          "artifact": "security-design",
+          "required": true
+        },
+        {
+          "artifact": "deployment-architecture",
+          "required": true
+        }
+      ],
+      "inputs_text": "Observability setup from observability-setup stage, NFR design from nfr-design stage, infrastructure design from infrastructure-design stage",
+      "lead_role": "aidlc-operations-agent",
+      "optional_outputs": [],
+      "outputs_text": "runbooks.md, incident-plan.md, escalation-matrix.md, incident-response-questions.md (under this stage's record dir, engine-resolved)",
+      "produces_kinds": {},
+      "required_outputs": [
+        "runbooks",
+        "incident-plan",
+        "escalation-matrix",
+        "incident-response-questions"
+      ],
+      "sensors": [
+        {
+          "content_sha256": "52b9631c830eb383166173037a922ec0ccd0ef3171c1f52796864302bf2acf08",
+          "id": "required-sections",
+          "matches": "**/{aidlc-docs,intents}/**",
+          "runtime_path": ".codex/sensors/aidlc-required-sections.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-required-sections.md"
+        },
+        {
+          "content_sha256": "223b8a8a644bab117d8a6afbde049f721c678eacdbe61847a542ec91e1a94ed8",
+          "id": "upstream-coverage",
+          "matches": "**/{aidlc-docs,intents}/**",
+          "runtime_path": ".codex/sensors/aidlc-upstream-coverage.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-upstream-coverage.md"
+        }
+      ],
+      "source_reviewer_max_iterations": 0,
+      "source_reviewer_role": null,
+      "source_stage_key": "incident-response",
+      "support_roles": [],
+      "workspace_required": false
+    },
+    {
+      "condition": "Execute when NFR performance targets need validation under load",
+      "for_each_artifact": null,
+      "input_artifacts": [
+        {
+          "artifact": "performance-requirements",
+          "required": true
+        },
+        {
+          "artifact": "scalability-requirements",
+          "required": true
+        },
+        {
+          "artifact": "performance-design",
+          "required": true
+        },
+        {
+          "artifact": "scalability-design",
+          "required": true
+        },
+        {
+          "artifact": "dashboards",
+          "required": true
+        }
+      ],
+      "inputs_text": "NFR requirements from nfr-requirements stage, NFR design from nfr-design stage, deployed application, observability data from observability-setup stage",
+      "lead_role": "aidlc-quality-agent",
+      "optional_outputs": [],
+      "outputs_text": "load-test-plan.md, test-results.md, nfr-validation-matrix.md, performance-validation-questions.md (under this stage's record dir, engine-resolved)",
+      "produces_kinds": {},
+      "required_outputs": [
+        "load-test-plan",
+        "load-test-results",
+        "nfr-validation-matrix",
+        "performance-validation-questions"
+      ],
+      "sensors": [
+        {
+          "content_sha256": "52b9631c830eb383166173037a922ec0ccd0ef3171c1f52796864302bf2acf08",
+          "id": "required-sections",
+          "matches": "**/{aidlc-docs,intents}/**",
+          "runtime_path": ".codex/sensors/aidlc-required-sections.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-required-sections.md"
+        },
+        {
+          "content_sha256": "223b8a8a644bab117d8a6afbde049f721c678eacdbe61847a542ec91e1a94ed8",
+          "id": "upstream-coverage",
+          "matches": "**/{aidlc-docs,intents}/**",
+          "runtime_path": ".codex/sensors/aidlc-upstream-coverage.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-upstream-coverage.md"
+        }
+      ],
+      "source_reviewer_max_iterations": 0,
+      "source_reviewer_role": null,
+      "source_stage_key": "performance-validation",
+      "support_roles": [],
+      "workspace_required": false
+    },
+    {
+      "condition": "Execute when ongoing operational monitoring and optimization are needed",
+      "for_each_artifact": null,
+      "input_artifacts": [
+        {
+          "artifact": "dashboards",
+          "required": true
+        },
+        {
+          "artifact": "alarms",
+          "required": true
+        },
+        {
+          "artifact": "slo-config",
+          "required": true
+        },
+        {
+          "artifact": "deployment-log",
+          "required": true
+        },
+        {
+          "artifact": "load-test-results",
+          "required": false
+        },
+        {
+          "artifact": "incident-plan",
+          "required": false
+        }
+      ],
+      "inputs_text": "All Operation phase artifacts, production monitoring data",
+      "lead_role": "aidlc-operations-agent",
+      "optional_outputs": [],
+      "outputs_text": "slo-report.md, cost-analysis.md, drift-report.md, feedback-loop.md, feedback-optimization-questions.md (under this stage's record dir, engine-resolved)",
+      "produces_kinds": {},
+      "required_outputs": [
+        "slo-report",
+        "cost-analysis",
+        "drift-report",
+        "feedback-loop",
+        "feedback-optimization-questions"
+      ],
+      "sensors": [
+        {
+          "content_sha256": "52b9631c830eb383166173037a922ec0ccd0ef3171c1f52796864302bf2acf08",
+          "id": "required-sections",
+          "matches": "**/{aidlc-docs,intents}/**",
+          "runtime_path": ".codex/sensors/aidlc-required-sections.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-required-sections.md"
+        },
+        {
+          "content_sha256": "223b8a8a644bab117d8a6afbde049f721c678eacdbe61847a542ec91e1a94ed8",
+          "id": "upstream-coverage",
+          "matches": "**/{aidlc-docs,intents}/**",
+          "runtime_path": ".codex/sensors/aidlc-upstream-coverage.md",
+          "source_path": "dist/codex/.codex/sensors/aidlc-upstream-coverage.md"
+        }
+      ],
+      "source_reviewer_max_iterations": 0,
+      "source_reviewer_role": null,
+      "source_stage_key": "feedback-optimization",
+      "support_roles": [
+        "aidlc-aws-platform-agent"
+      ],
+      "workspace_required": false
+    }
+  ]
+}

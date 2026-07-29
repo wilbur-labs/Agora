@@ -1,0 +1,811 @@
+{
+  "$defs": {
+    "ActivationApprovalPolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "binding_fields": {
+          "items": {
+            "enum": [
+              "repository_id",
+              "ref",
+              "commit_sha",
+              "task_id",
+              "stage_key",
+              "artifact_path",
+              "artifact_hash",
+              "source_graph_hash",
+              "activation_definition_hash"
+            ],
+            "type": "string"
+          },
+          "maxItems": 9,
+          "minItems": 9,
+          "title": "Binding Fields",
+          "type": "array"
+        },
+        "completion_human_approval_required": {
+          "const": true,
+          "default": true,
+          "title": "Completion Human Approval Required",
+          "type": "boolean"
+        },
+        "migration_human_approval_required": {
+          "const": true,
+          "default": true,
+          "title": "Migration Human Approval Required",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "binding_fields"
+      ],
+      "title": "ActivationApprovalPolicy",
+      "type": "object"
+    },
+    "ActivationArtifactInput": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Artifact Id",
+          "type": "string"
+        },
+        "condition": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Condition"
+        },
+        "required": {
+          "title": "Required",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "required"
+      ],
+      "title": "ActivationArtifactInput",
+      "type": "object"
+    },
+    "ActivationArtifactOutput": {
+      "additionalProperties": false,
+      "properties": {
+        "applicable_unit_kinds": {
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+            "type": "string"
+          },
+          "maxItems": 16,
+          "title": "Applicable Unit Kinds",
+          "type": "array"
+        },
+        "output_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Output Id",
+          "type": "string"
+        },
+        "required": {
+          "title": "Required",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "output_id",
+        "required"
+      ],
+      "title": "ActivationArtifactOutput",
+      "type": "object"
+    },
+    "ActivationBudgetPolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "activation_task_must_supply_limits": {
+          "const": true,
+          "default": true,
+          "title": "Activation Task Must Supply Limits",
+          "type": "boolean"
+        },
+        "per_run_reservation_required": {
+          "const": true,
+          "default": true,
+          "title": "Per Run Reservation Required",
+          "type": "boolean"
+        },
+        "static_stage_token_limits_authored": {
+          "const": false,
+          "default": false,
+          "title": "Static Stage Token Limits Authored",
+          "type": "boolean"
+        },
+        "task_envelope_required": {
+          "const": true,
+          "default": true,
+          "title": "Task Envelope Required",
+          "type": "boolean"
+        },
+        "unbounded_native_usage_ack_required": {
+          "const": true,
+          "default": true,
+          "title": "Unbounded Native Usage Ack Required",
+          "type": "boolean"
+        },
+        "usage_settlement": {
+          "const": "exact_or_conservative_reservation",
+          "title": "Usage Settlement",
+          "type": "string"
+        }
+      },
+      "required": [
+        "usage_settlement"
+      ],
+      "title": "ActivationBudgetPolicy",
+      "type": "object"
+    },
+    "ActivationGateRequirement": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence_kind": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Evidence Kind",
+          "type": "string"
+        },
+        "failure_action": {
+          "const": "block_stage",
+          "default": "block_stage",
+          "title": "Failure Action",
+          "type": "string"
+        },
+        "requirement_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Requirement Id",
+          "type": "string"
+        },
+        "severity": {
+          "const": "blocker",
+          "default": "blocker",
+          "title": "Severity",
+          "type": "string"
+        },
+        "source": {
+          "enum": [
+            "contract",
+            "output",
+            "sensor",
+            "source_review"
+          ],
+          "title": "Source",
+          "type": "string"
+        },
+        "subject_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Subject Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "requirement_id",
+        "evidence_kind",
+        "source",
+        "subject_id"
+      ],
+      "title": "ActivationGateRequirement",
+      "type": "object"
+    },
+    "ActivationMigrationPolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "activation_command_exposed": {
+          "const": false,
+          "default": false,
+          "title": "Activation Command Exposed",
+          "type": "boolean"
+        },
+        "automatic_reroute": {
+          "const": false,
+          "default": false,
+          "title": "Automatic Reroute",
+          "type": "boolean"
+        },
+        "existing_tasks_preserved": {
+          "const": true,
+          "default": true,
+          "title": "Existing Tasks Preserved",
+          "type": "boolean"
+        },
+        "explicit_migration_gate_required": {
+          "const": true,
+          "default": true,
+          "title": "Explicit Migration Gate Required",
+          "type": "boolean"
+        },
+        "in_place_methodology_mutation": {
+          "const": false,
+          "default": false,
+          "title": "In Place Methodology Mutation",
+          "type": "boolean"
+        }
+      },
+      "title": "ActivationMigrationPolicy",
+      "type": "object"
+    },
+    "ActivationQualityPolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "format_only_repair_attempts": {
+          "const": 1,
+          "default": 1,
+          "title": "Format Only Repair Attempts",
+          "type": "integer"
+        },
+        "human_completion_approval_required": {
+          "const": true,
+          "default": true,
+          "title": "Human Completion Approval Required",
+          "type": "boolean"
+        },
+        "independent_correctness_completion_gate": {
+          "const": true,
+          "default": true,
+          "title": "Independent Correctness Completion Gate",
+          "type": "boolean"
+        },
+        "independent_run_dimensions_required": {
+          "const": true,
+          "default": true,
+          "title": "Independent Run Dimensions Required",
+          "type": "boolean"
+        },
+        "methodology_completion_gate": {
+          "const": true,
+          "default": true,
+          "title": "Methodology Completion Gate",
+          "type": "boolean"
+        },
+        "source_sensor_evidence_required": {
+          "const": true,
+          "default": true,
+          "title": "Source Sensor Evidence Required",
+          "type": "boolean"
+        },
+        "stage_contract_evidence_required": {
+          "const": true,
+          "default": true,
+          "title": "Stage Contract Evidence Required",
+          "type": "boolean"
+        }
+      },
+      "title": "ActivationQualityPolicy",
+      "type": "object"
+    },
+    "ActivationReworkPolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "automatic_cross_stage_rework": {
+          "const": false,
+          "default": false,
+          "title": "Automatic Cross Stage Rework",
+          "type": "boolean"
+        },
+        "exhaustion_action": {
+          "const": "block_and_escalate",
+          "title": "Exhaustion Action",
+          "type": "string"
+        },
+        "keep_modify_redo_requires_task_decision": {
+          "const": true,
+          "default": true,
+          "title": "Keep Modify Redo Requires Task Decision",
+          "type": "boolean"
+        },
+        "source_review_iteration_bounds_enforced": {
+          "const": true,
+          "default": true,
+          "title": "Source Review Iteration Bounds Enforced",
+          "type": "boolean"
+        },
+        "structured_cross_stage_rework_edges": {
+          "const": false,
+          "default": false,
+          "title": "Structured Cross Stage Rework Edges",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "exhaustion_action"
+      ],
+      "title": "ActivationReworkPolicy",
+      "type": "object"
+    },
+    "ActivationRoleProfile": {
+      "additionalProperties": false,
+      "properties": {
+        "lead_role": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Lead Role",
+          "type": "string"
+        },
+        "source_reviewer_max_iterations": {
+          "default": 0,
+          "maximum": 10,
+          "minimum": 0,
+          "title": "Source Reviewer Max Iterations",
+          "type": "integer"
+        },
+        "source_reviewer_role": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Reviewer Role"
+        },
+        "support_roles": {
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+            "type": "string"
+          },
+          "maxItems": 32,
+          "title": "Support Roles",
+          "type": "array"
+        }
+      },
+      "required": [
+        "lead_role"
+      ],
+      "title": "ActivationRoleProfile",
+      "type": "object"
+    },
+    "ActivationRuntimePolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "independent_correctness_runtime": {
+          "const": "claude",
+          "default": "claude",
+          "title": "Independent Correctness Runtime",
+          "type": "string"
+        },
+        "methodology_steward_runtime": {
+          "const": "kiro",
+          "default": "kiro",
+          "title": "Methodology Steward Runtime",
+          "type": "string"
+        },
+        "pairwise_distinct_runtime_families": {
+          "const": true,
+          "default": true,
+          "title": "Pairwise Distinct Runtime Families",
+          "type": "boolean"
+        },
+        "production_runtime": {
+          "const": "codex",
+          "default": "codex",
+          "title": "Production Runtime",
+          "type": "string"
+        },
+        "source_agent_roles_are_profiles_only": {
+          "const": true,
+          "default": true,
+          "title": "Source Agent Roles Are Profiles Only",
+          "type": "boolean"
+        },
+        "task_runtime_pins_required": {
+          "const": true,
+          "default": true,
+          "title": "Task Runtime Pins Required",
+          "type": "boolean"
+        }
+      },
+      "title": "ActivationRuntimePolicy",
+      "type": "object"
+    },
+    "ActivationScopeInputPolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "conditional_input_requires_matching_task_condition": {
+          "const": true,
+          "default": true,
+          "title": "Conditional Input Requires Matching Task Condition",
+          "type": "boolean"
+        },
+        "missing_required_input_action": {
+          "const": "block_activation",
+          "title": "Missing Required Input Action",
+          "type": "string"
+        },
+        "optional_input_absence_allowed": {
+          "const": true,
+          "default": true,
+          "title": "Optional Input Absence Allowed",
+          "type": "boolean"
+        },
+        "required_input_binding": {
+          "const": "selected_upstream_stage_or_hash_bound_task_seed",
+          "title": "Required Input Binding",
+          "type": "string"
+        }
+      },
+      "required": [
+        "required_input_binding",
+        "missing_required_input_action"
+      ],
+      "title": "ActivationScopeInputPolicy",
+      "type": "object"
+    },
+    "ActivationScopeSeedRequirement": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Artifact Id",
+          "type": "string"
+        },
+        "binding": {
+          "const": "hash_bound_task_seed",
+          "default": "hash_bound_task_seed",
+          "title": "Binding",
+          "type": "string"
+        },
+        "consumer_stage_key": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Consumer Stage Key",
+          "type": "string"
+        },
+        "scope_key": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Scope Key",
+          "type": "string"
+        },
+        "source_producer_stage_key": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Source Producer Stage Key",
+          "type": "string"
+        }
+      },
+      "required": [
+        "scope_key",
+        "consumer_stage_key",
+        "artifact_id",
+        "source_producer_stage_key"
+      ],
+      "title": "ActivationScopeSeedRequirement",
+      "type": "object"
+    },
+    "ActivationSensorRequirement": {
+      "additionalProperties": false,
+      "properties": {
+        "match_pattern": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Match Pattern",
+          "type": "string"
+        },
+        "runtime_path": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Runtime Path",
+          "type": "string"
+        },
+        "sensor_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Sensor Id",
+          "type": "string"
+        },
+        "source_path": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Source Path",
+          "type": "string"
+        },
+        "source_sha256": {
+          "title": "Source Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sensor_id",
+        "source_path",
+        "runtime_path",
+        "source_sha256",
+        "match_pattern"
+      ],
+      "title": "ActivationSensorRequirement",
+      "type": "object"
+    },
+    "ActivationStageDefinition": {
+      "additionalProperties": false,
+      "properties": {
+        "for_each_artifact": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "For Each Artifact"
+        },
+        "gate_requirements": {
+          "items": {
+            "$ref": "#/$defs/ActivationGateRequirement"
+          },
+          "maxItems": 200,
+          "minItems": 1,
+          "title": "Gate Requirements",
+          "type": "array"
+        },
+        "input_artifacts": {
+          "items": {
+            "$ref": "#/$defs/ActivationArtifactInput"
+          },
+          "maxItems": 100,
+          "title": "Input Artifacts",
+          "type": "array"
+        },
+        "output_artifacts": {
+          "items": {
+            "$ref": "#/$defs/ActivationArtifactOutput"
+          },
+          "maxItems": 100,
+          "title": "Output Artifacts",
+          "type": "array"
+        },
+        "role_profile": {
+          "$ref": "#/$defs/ActivationRoleProfile"
+        },
+        "sensors": {
+          "items": {
+            "$ref": "#/$defs/ActivationSensorRequirement"
+          },
+          "maxItems": 32,
+          "title": "Sensors",
+          "type": "array"
+        },
+        "source_inputs_text": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "title": "Source Inputs Text",
+          "type": "string"
+        },
+        "source_stage_key": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Source Stage Key",
+          "type": "string"
+        },
+        "stage_contract": {
+          "$ref": "#/$defs/StageContract"
+        },
+        "workspace_required": {
+          "default": false,
+          "title": "Workspace Required",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "source_stage_key",
+        "stage_contract",
+        "source_inputs_text",
+        "role_profile",
+        "gate_requirements"
+      ],
+      "title": "ActivationStageDefinition",
+      "type": "object"
+    },
+    "StageContract": {
+      "additionalProperties": false,
+      "properties": {
+        "completion_conditions": {
+          "items": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 100,
+          "minItems": 1,
+          "title": "Completion Conditions",
+          "type": "array"
+        },
+        "contract_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Contract Id",
+          "type": "string"
+        },
+        "objective": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "title": "Objective",
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 300,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "contract_id",
+        "title",
+        "objective",
+        "completion_conditions"
+      ],
+      "title": "StageContract",
+      "type": "object"
+    }
+  },
+  "$id": "https://agora.local/schemas/v1/methodology-activation-definition.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Sealed execution definition with no Task mutation authority.",
+  "properties": {
+    "activation_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Activation Id",
+      "type": "string"
+    },
+    "approval_policy": {
+      "$ref": "#/$defs/ActivationApprovalPolicy"
+    },
+    "budget_policy": {
+      "$ref": "#/$defs/ActivationBudgetPolicy"
+    },
+    "content_sha256": {
+      "title": "Content Sha256",
+      "type": "string"
+    },
+    "dispatch_authority": {
+      "const": false,
+      "default": false,
+      "title": "Dispatch Authority",
+      "type": "boolean"
+    },
+    "methodology_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Methodology Id",
+      "type": "string"
+    },
+    "methodology_version": {
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "title": "Methodology Version",
+      "type": "string"
+    },
+    "migration_authority": {
+      "const": false,
+      "default": false,
+      "title": "Migration Authority",
+      "type": "boolean"
+    },
+    "migration_policy": {
+      "$ref": "#/$defs/ActivationMigrationPolicy"
+    },
+    "quality_policy": {
+      "$ref": "#/$defs/ActivationQualityPolicy"
+    },
+    "rework_policy": {
+      "$ref": "#/$defs/ActivationReworkPolicy"
+    },
+    "routing_authority": {
+      "const": false,
+      "default": false,
+      "title": "Routing Authority",
+      "type": "boolean"
+    },
+    "runtime_policy": {
+      "$ref": "#/$defs/ActivationRuntimePolicy"
+    },
+    "schema_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "scope_input_policy": {
+      "$ref": "#/$defs/ActivationScopeInputPolicy"
+    },
+    "scope_seed_requirements": {
+      "items": {
+        "$ref": "#/$defs/ActivationScopeSeedRequirement"
+      },
+      "maxItems": 500,
+      "minItems": 1,
+      "title": "Scope Seed Requirements",
+      "type": "array"
+    },
+    "source_activation_manifest_sha256": {
+      "title": "Source Activation Manifest Sha256",
+      "type": "string"
+    },
+    "source_compiled_graph_sha256": {
+      "title": "Source Compiled Graph Sha256",
+      "type": "string"
+    },
+    "source_graph_sha256": {
+      "title": "Source Graph Sha256",
+      "type": "string"
+    },
+    "stages": {
+      "items": {
+        "$ref": "#/$defs/ActivationStageDefinition"
+      },
+      "maxItems": 200,
+      "minItems": 1,
+      "title": "Stages",
+      "type": "array"
+    }
+  },
+  "required": [
+    "content_sha256",
+    "activation_id",
+    "methodology_id",
+    "methodology_version",
+    "source_graph_sha256",
+    "source_compiled_graph_sha256",
+    "source_activation_manifest_sha256",
+    "stages",
+    "runtime_policy",
+    "budget_policy",
+    "quality_policy",
+    "rework_policy",
+    "approval_policy",
+    "migration_policy",
+    "scope_input_policy",
+    "scope_seed_requirements"
+  ],
+  "title": "MethodologyActivationDefinition",
+  "type": "object"
+}

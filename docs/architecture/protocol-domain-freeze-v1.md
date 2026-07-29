@@ -39,6 +39,7 @@ the Pydantic models in `backend/agora/protocol/`:
 - `run-protocol-state.schema.json`
 - `gate-requirement.schema.json`
 - `runner-isolation-contract.schema.json`
+- `methodology-activation-definition.schema.json`
 - `methodology-source-graph.schema.json`
 - `stage-inventory.schema.json`
 - `provider-usage-observation.schema.json`
@@ -121,9 +122,14 @@ has `routing_authority=false` and `dispatch_authority=false`: source authority
 does not itself create an executable Agora methodology or alter any Task.
 Upstream rework semantics remain prose-only in this release, so Agora records
 `structured_rework_edges=false` rather than inventing transitions or limits.
-Activation requires a separate reviewed mapping for Stage Contracts,
-Artifacts/Evidence/Gates, runtime independence, budgets, bounded rework, and
-methodology migration.
+`MethodologyActivationDefinition@1.0` separately materializes the 32 Stage
+Contracts, input/output Artifact graph, source sensors and reviewer bounds,
+Gate requirements, pairwise-distinct Codex/Claude/Kiro responsibilities,
+budget/quality policy, bounded escalation, approval bindings, and migration
+policy. It remains definition-only with `routing_authority=false`,
+`dispatch_authority=false`, and `migration_authority=false`. Existing Tasks
+remain pinned until a later sealed Task-scoped migration decision and reviewed
+transactional migration path authorize a version change.
 
 For a Task with a sealed grouped inventory, Agora routes the first incomplete
 Stage in inventory order and only that route may start a formal Run. Successful

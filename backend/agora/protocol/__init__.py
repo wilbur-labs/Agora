@@ -18,6 +18,10 @@ from .methodology import (
     MethodologySourcePin,
     MethodologyStageNode,
 )
+from .methodology_activation import (
+    MethodologyActivationDefinition,
+    validate_activation_source_binding,
+)
 from .models import (
     Approval,
     ApprovalStatus,
@@ -74,6 +78,7 @@ __all__ = [
     "HandoffPack",
     "InvalidationPlan",
     "M2UpdateAction",
+    "MethodologyActivationDefinition",
     "MethodologyExternalSourceArtifact",
     "MethodologyScopeProfile",
     "MethodologySourceArtifact",
@@ -108,4 +113,5 @@ __all__ = [
     "transition_gate",
     "transition_stage",
     "transition_task",
+    "validate_activation_source_binding",
 ]

@@ -101,8 +101,8 @@ requirements, or runtime assignments. The source graph cannot initialize a
 Task, replace `agora-aidlc-foundation@0.1`, select a runtime, create a Stage,
 or affect Control Plane routing.
 
-Before activation, a separate reviewed Agora methodology definition must
-materialize and hash-bind:
+The separate `MethodologyActivationDefinition@1.0` now materializes and
+hash-binds:
 
 - Stage Contracts and required outputs;
 - Agora runtime-role and independence mappings;
@@ -111,6 +111,8 @@ materialize and hash-bind:
 - bounded rework limits and escalation behavior;
 - Task methodology activation/migration semantics.
 
-That activation contract is the next safe backend slice. It must preserve the
-existing provisional method and current Tasks until an explicit migration Gate
-authorizes a version change.
+That definition has no routing, dispatch, or migration authority. It preserves
+the existing provisional method and current Tasks. The next safe slice is a
+sealed Task-scoped migration preview/decision; no version change may occur
+until an explicit migration Gate and a later reviewed transactional migration
+path authorize it.

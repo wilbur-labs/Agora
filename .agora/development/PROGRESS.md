@@ -1,6 +1,78 @@
 # Agora Control Plane Development Progress
 
-## 2026-07-28 - AWS AI-DLC authoritative source graph (review pending)
+## 2026-07-29 - AWS AI-DLC activation definition (reviewed)
+
+### Bounded implementation
+
+- [x] Added hash-sealed `MethodologyActivationDefinition@1.0`, its generated
+  activation manifest, checked-in JSON Schema, and a guarded export/check
+  script. It binds source graph
+  `668a379e4b6ecbed1aaf47e0823b43df147b7c239a8a4ab03ba43b71030e057d`,
+  compiled graph
+  `9de074e882c18bcc1285a953366a7793149d05a349657a7989f0e54b2fdd1430`,
+  and activation manifest
+  `219d863f92b9162bef04f133623d020fb9c0ff48676d68521b5ddab47c2ede12`.
+- [x] Materialized all 32 source Stage Contracts, 132 input bindings, 122
+  unique required/optional output Artifacts, source lead/support/reviewer
+  profiles, five per-`unit-of-work` expansions, the `code-generation`
+  workspace requirement, four hash-bound sensors, and 232 globally unique Gate
+  requirements. It also records all 27 required-input gaps in the non-closed
+  upstream scope matrix as exact hash-bound Task seed requirements; missing
+  seeds must block activation instead of silently widening the scope.
+- [x] Fixed the runtime/independence policy as Task-pinned Codex production,
+  independent Claude correctness review, Kiro methodology stewardship, and
+  explicit human completion approval. Source AWS agent identities remain
+  profiles only and do not gain routing authority.
+- [x] Preserved truthful budget and quality boundaries: no invented static
+  per-Stage Token/cost limits; Task envelope and per-Run reservations remain
+  mandatory; exact-or-conservative settlement, four independent Run
+  dimensions, and one format-only repair remain required.
+- [x] Preserved all eleven authored source reviewer bounds at two iterations.
+  Automatic cross-Stage rework remains forbidden; exhaustion blocks and
+  escalates, and Keep/Modify/Redo requires an explicit Task decision.
+- [x] Kept existing Tasks and `agora-aidlc-foundation@0.1` unchanged. The
+  activation definition records `routing_authority=false`,
+  `dispatch_authority=false`, and `migration_authority=false`; it exposes no
+  activation command. Its deterministic hash is
+  `c9d9b075a5219292d94e1fa3aff2383dc1e98bb5518cd486227f85b20b45af6d`.
+
+### Verification and review state
+
+- [x] New activation-definition regressions: 12 passed.
+- [x] Activation definition, source graph, protocol freeze, Task orchestration,
+  and formal protocol orchestration: 181 passed.
+- [x] Final post-review non-integration backend suite: 572 passed, 18
+  deselected, with only the existing Starlette/httpx and Windows Proactor
+  cleanup warnings.
+- [x] Activation-manifest export/check passed against the pinned upstream
+  checkout.
+- [x] Protocol Schema export/check, system-Temp-isolated `compileall`,
+  activation JSON round-trip/hash smoke, `agora task --help`, and
+  `git diff --check` passed.
+- [x] Kiro CLI session `2c9215c4-53de-4bbb-ab33-f03cec9de836` completed the
+  methodology/protocol/source-fidelity review and returned
+  `VERDICT: APPROVE` with no high/medium findings. Its three informational
+  LOW observations concern optional manifest defense-in-depth, automated
+  exporter-drift fixtures, and additional direct source-binding branch tests;
+  the review used 1.16 credits.
+- [x] Independent Claude Code safe-mode review inspected the complete tracked
+  and untracked implementation, packaging/resource path, exporter, hash/schema
+  binding, authority boundaries, and adversarial tests. It found no actionable
+  high/medium defect and returned `VERDICT: APPROVE`; the text invocation did
+  not expose a session or cost field. Its optional LOW hardening notes concern
+  installed-wheel package-data assurance, more direct fail-closed branch tests,
+  and explicitly documenting the sensor manifest as its integrity anchor.
+
+### Current checkpoint and next safe action
+
+The implementation, verification, and both review gates are complete. After
+the reviewed commit, the next bounded backend slice is a sealed, Task-scoped
+methodology migration preview/decision that validates Task, repository
+revision, selected scope, source/activation hashes, runtime pins, budget, and
+explicit human Gate. It must remain read-only and non-migrating until a later
+reviewed transactional activation path exists. HTTP and UI stay deferred.
+
+## 2026-07-28 - AWS AI-DLC authoritative source graph (reviewed)
 
 ### Bounded implementation
 

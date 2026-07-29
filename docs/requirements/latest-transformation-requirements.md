@@ -149,11 +149,14 @@ profiles, and their dependency DAG.
 This source freeze does not make the graph executable. Upstream `v2.3.0`
 retains rework, retry, and halting behavior partly in prose and reserves
 structured `on_failure`, `timeout`, and `retry` fields for future releases.
-Agora must not invent those values. The repository's
-`agora-aidlc-foundation@0.1` therefore remains provisional until a separately
-reviewed activation definition binds Stage Contracts, required outputs,
-Artifacts/Evidence/Approvals/Gates, runtime independence, budgets, bounded
-rework limits, escalation, and methodology migration.
+Agora must not invent those values. The separately sealed
+`MethodologyActivationDefinition@1.0` now binds Stage Contracts, required
+outputs, Artifacts/Evidence/Approvals/Gates, runtime independence, budget
+policy, the authored source-review bounds, escalation, and migration policy.
+It deliberately has no routing, dispatch, or migration authority. The
+repository's `agora-aidlc-foundation@0.1` and every existing Task remain
+unchanged until an explicit Task-scoped migration Gate and later reviewed
+transactional migration path authorize a version change.
 
 ## 7. Quality and recovery invariants
 
@@ -218,9 +221,9 @@ tracked in `PROGRESS.md`.
 
 Still required:
 
-- activation of the pinned AWS AI-DLC source graph as an executable Agora
-  methodology, including materialized Stage Contracts, Gates, budgets, bounded
-  rework, runtime-role mapping, and migration semantics;
+- a sealed Task-scoped AWS AI-DLC methodology migration decision and reviewed
+  transactional activation path; the definition is materialized but remains
+  non-authoritative;
 - a concrete Task contract with roles, process, Context/Handoff expectations,
   acceptance criteria, and required Artifacts/Evidence/Gates;
 - consult and decide/adopt semantics under the authoritative Task;
