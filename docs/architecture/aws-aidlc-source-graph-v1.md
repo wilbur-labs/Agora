@@ -115,6 +115,8 @@ That definition has no routing, dispatch, or migration authority. It preserves
 the existing provisional method and current Tasks. A sealed, read-only
 successor-Task migration preview now checks the exact current state, selected
 scope inputs, runtime pins, and explicit Stage/runtime budget proposal. Its
-human Gate assertion is non-authoritative preview input. No version change may
-occur until a later reviewed transaction authenticates and persists the Gate,
-rechecks every binding, and atomically creates the successor Plan/inventory.
+human Gate assertion is non-authoritative preview input. The separate reviewed
+migration writer authenticates and persists that Gate, rechecks every binding
+inside one transaction, and atomically creates a distinct successor
+Task/Plan/inventory while preserving the predecessor. The successor remains
+non-dispatching until a later reviewed route-activation contract exists.

@@ -143,6 +143,112 @@ class ControlPlaneStore:
             assert row is not None
             return self._task_record(row)
 
+    def initialize_migrated_successor_tx(
+        self,
+        db: sqlite3.Connection,
+        inventory: StageInventory,
+        *,
+        actor: str,
+        now: str,
+    ) -> TaskRecord:
+        """Initialize successor lifecycle and inventory in a caller transaction."""
+
+        self._validate_actor(actor)
+        task = self._task_row(db, inventory.task_id)
+        self._assert_project(task, inventory.project_id)
+        if db.execute(
+            "SELECT 1 FROM control_tasks WHERE task_id = ?",
+            (inventory.task_id,),
+        ).fetchone() is not None:
+            raise ControlPlaneConflictError(
+                "Methodology successor already has frozen Task state"
+            )
+        if db.execute(
+            "SELECT 1 FROM control_stage_inventories WHERE task_id = ?",
+            (inventory.task_id,),
+        ).fetchone() is not None:
+            raise ControlPlaneConflictError(
+                "Methodology successor already has a Stage inventory"
+            )
+
+        db.execute(
+            """
+            INSERT INTO control_tasks (
+                task_id, project_id, status, version, created_at, updated_at
+            ) VALUES (?, ?, ?, 1, ?, ?)
+            """,
+            (
+                inventory.task_id,
+                inventory.project_id,
+                TaskStatus.BACKLOG.value,
+                now,
+                now,
+            ),
+        )
+        self._event(
+            db,
+            event_key=f"task.state.initialize:{inventory.task_id}",
+            task_id=inventory.task_id,
+            project_id=inventory.project_id,
+            event_type="task.state_initialized",
+            actor=actor,
+            payload={"status": TaskStatus.BACKLOG.value, "version": 1},
+            now=now,
+        )
+        db.execute(
+            """
+            INSERT INTO control_stage_inventories (
+                task_id, project_id, inventory_id, payload,
+                content_sha256, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                inventory.task_id,
+                inventory.project_id,
+                inventory.inventory_id,
+                self._json(inventory),
+                inventory.content_sha256,
+                now,
+            ),
+        )
+        stage_count = sum(len(group.stages) for group in inventory.groups)
+        self._event(
+            db,
+            event_key=f"stage.inventory.initialize:{inventory.task_id}",
+            task_id=inventory.task_id,
+            project_id=inventory.project_id,
+            event_type="stage.inventory_initialized",
+            actor=actor,
+            payload={
+                "inventory_id": inventory.inventory_id,
+                "content_sha256": inventory.content_sha256,
+                "methodology_id": inventory.methodology_id,
+                "methodology_version": inventory.methodology_version,
+                "methodology_sha256": inventory.methodology_sha256,
+                "provisional": inventory.provisional,
+                "group_count": len(inventory.groups),
+                "stage_count": stage_count,
+            },
+            now=now,
+        )
+        self._reconcile_task_lifecycle_tx(
+            db,
+            task_id=inventory.task_id,
+            cause=TaskTransitionCause.ORCHESTRATION,
+            actor=actor,
+            event_key_prefix=(
+                f"methodology.migration.activate:{inventory.task_id}"
+            ),
+            now=now,
+            required=True,
+        )
+        row = db.execute(
+            "SELECT * FROM control_tasks WHERE task_id = ?",
+            (inventory.task_id,),
+        ).fetchone()
+        assert row is not None
+        return self._task_record(row)
+
     def transition_task_state(
         self,
         task_id: str,

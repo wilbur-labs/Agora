@@ -4,11 +4,14 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
+import re
 import sys
 from pathlib import Path
 from typing import Sequence
 
 from agora.config.settings import get_config
+from agora.control_plane.auth import authenticate_control_plane_token
 from agora.control_plane.store import (
     ControlPlaneConflictError,
     ControlPlaneNotFoundError,
@@ -74,6 +77,21 @@ def parser() -> argparse.ArgumentParser:
     )
     migration_preview.add_argument("task_id")
     migration_preview.add_argument("--request", type=Path, required=True)
+
+    migration_activate = commands.add_parser(
+        "migration-activate",
+        help=(
+            "Authenticate a migration Gate and atomically create a sealed "
+            "AWS AI-DLC successor Task without dispatch"
+        ),
+    )
+    migration_activate.add_argument("task_id")
+    migration_activate.add_argument("--request", type=Path, required=True)
+    migration_activate.add_argument(
+        "--credential-env",
+        required=True,
+        help="Environment variable containing a configured Control Plane token",
+    )
 
     start = commands.add_parser("start", help="Create a Task and attach the provisional method")
     start.add_argument("title", nargs="?")
@@ -244,6 +262,22 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "--allow-unbounded-native-usage because Task Token envelopes "
                 "are admission-control reservations, not native hard caps"
             )
+        migration_activation = None
+        if args.command == "migration-activate":
+            if re.fullmatch(
+                r"[A-Za-z_][A-Za-z0-9_]{0,127}",
+                args.credential_env,
+            ) is None:
+                raise ValueError("Invalid credential environment variable name")
+            credential = os.environ.get(args.credential_env)
+            if credential is None:
+                raise ValueError(
+                    "Configured migration credential environment variable is absent"
+                )
+            migration_activation = (
+                load_methodology_migration_request(args.request),
+                authenticate_control_plane_token(credential),
+            )
         service = build_service()
         if args.command == "migration-preview":
             request = load_methodology_migration_request(args.request)
@@ -259,6 +293,22 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             )
             return 0 if decision.eligible else 2
+        if args.command == "migration-activate":
+            assert migration_activation is not None
+            request, principal = migration_activation
+            receipt = service.activate_methodology_migration(
+                args.task_id,
+                request,
+                principal=principal,
+            )
+            print(
+                json.dumps(
+                    receipt.model_dump(mode="json"),
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return 0
         if args.command == "start":
             contract = load_task_contract(args.contract) if args.contract else None
             if contract and args.title:

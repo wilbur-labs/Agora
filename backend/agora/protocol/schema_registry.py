@@ -8,6 +8,8 @@ from pydantic import BaseModel
 from .methodology import MethodologySourceGraph
 from .methodology_activation import MethodologyActivationDefinition
 from .methodology_migration import (
+    AuthenticatedMethodologyMigrationGate,
+    MethodologyMigrationActivationReceipt,
     MethodologyMigrationPreviewDecision,
     MethodologyMigrationPreviewRequest,
 )
@@ -35,6 +37,9 @@ SchemaModel: TypeAlias = type[BaseModel]
 SCHEMA_MODELS: dict[str, SchemaModel] = {
     "approval": Approval,
     "artifact": Artifact,
+    "authenticated-methodology-migration-gate": (
+        AuthenticatedMethodologyMigrationGate
+    ),
     "consultation-candidate": ConsultationCandidate,
     "consultation-candidate-draft": ConsultationCandidateDraft,
     "consultation-candidate-disposition": ConsultationCandidateDisposition,
@@ -43,6 +48,9 @@ SCHEMA_MODELS: dict[str, SchemaModel] = {
     "gate-requirement": GateRequirement,
     "handoff-pack": HandoffPack,
     "methodology-activation-definition": MethodologyActivationDefinition,
+    "methodology-migration-activation-receipt": (
+        MethodologyMigrationActivationReceipt
+    ),
     "methodology-migration-preview-decision": MethodologyMigrationPreviewDecision,
     "methodology-migration-preview-request": MethodologyMigrationPreviewRequest,
     "methodology-source-graph": MethodologySourceGraph,

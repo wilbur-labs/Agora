@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from agora.control_plane.auth import ControlPrincipal
 from agora.orchestration import cli as orchestration_cli
 from agora.orchestration.aws_aidlc import AWS_AIDLC_V2_3_SOURCE_GRAPH
 from agora.orchestration.aws_aidlc_activation import (
@@ -21,6 +22,7 @@ from agora.orchestration.methodology_migration import (
     migration_budget_sha256,
     migration_seed_artifacts_sha256,
 )
+from agora.orchestration.models import PlanState
 from agora.orchestration.protocol_context import RepositoryRevision
 from agora.orchestration.runtime import RuntimeCommand
 from agora.orchestration.runtime_capabilities import (
@@ -28,9 +30,15 @@ from agora.orchestration.runtime_capabilities import (
     runtime_registry_sha256,
 )
 from agora.orchestration.service import TaskOrchestrationService
+from agora.orchestration.store import (
+    OrchestrationConflictError,
+    OrchestrationValidationError,
+)
 from agora.projects import ProjectRegistry
 from agora.protocol.hashing import seal_model_payload
 from agora.protocol.methodology_migration import (
+    AuthenticatedMethodologyMigrationGate,
+    MethodologyMigrationActivationReceipt,
     MethodologyMigrationGateAssertion,
     MethodologyMigrationPreviewDecision,
     MethodologyMigrationPreviewRequest,
@@ -666,3 +674,469 @@ def test_methodology_migration_preview_schemas_are_registered():
         is MethodologyMigrationPreviewDecision
     )
     assert len(AWS_AIDLC_V2_3_SOURCE_GRAPH.scopes) == 9
+
+
+def _migration_principal(
+    *,
+    principal_id: str = "user",
+    permissions: frozenset[str] = frozenset({"control_plane.approve"}),
+    projects: frozenset[str] = frozenset({"alpha"}),
+) -> ControlPrincipal:
+    return ControlPrincipal(
+        principal_id=principal_id,
+        permissions=permissions,
+        projects=projects,
+    )
+
+
+def _migration_row_count(tasks: TaskStore) -> int:
+    with sqlite3.connect(tasks.db_path) as db:
+        return int(
+            db.execute(
+                "SELECT COUNT(*) FROM orchestration_methodology_migrations"
+            ).fetchone()[0]
+        )
+
+
+def test_methodology_migration_activation_atomically_creates_sealed_successor(
+    tmp_path,
+):
+    tasks, service, task, root, proposal_path = _system(tmp_path)
+    request = _request(service, task.task_id, root, proposal_path)
+    source_manifest = tasks.get(task.task_id)
+    source_events = tasks.events(task.task_id)
+
+    receipt = service.activate_methodology_migration(
+        task.task_id,
+        request,
+        principal=_migration_principal(),
+    )
+
+    assert isinstance(receipt, MethodologyMigrationActivationReceipt)
+    assert receipt.recheck_decision.eligible is True
+    assert receipt.authenticated_gate.authenticated_principal_id == "user"
+    assert receipt.source_task_id == task.task_id
+    assert receipt.successor_task_id != task.task_id
+    assert receipt.source_task_preserved is True
+    assert receipt.migration_gate_persisted is True
+    assert receipt.successor_plan_sealed is True
+    assert receipt.successor_inventory_sealed is True
+    assert receipt.route_activated is False
+    assert receipt.runtime_spawned is False
+    assert receipt.dispatch_authority is False
+    assert tasks.get(task.task_id) == source_manifest
+    assert tasks.events(task.task_id) == source_events
+
+    successor = tasks.get(receipt.successor_task_id)
+    assert successor is not None
+    assert successor.kind == "aws_aidlc_successor"
+    assert successor.primary_agent == "codex"
+    assert successor.reviewers == ["claude", "kiro"]
+    assert successor.metadata["methodology_predecessor_task_id"] == task.task_id
+    assert successor.metadata["methodology_dispatch_authority"] is False
+    assert (
+        successor.metadata["methodology_activation_sha256"]
+        == AWS_AIDLC_V2_3_ACTIVATION_DEFINITION.content_sha256
+    )
+
+    status = service.status(successor.task_id)
+    inventory = service.control_plane.get_stage_inventory(successor.task_id)
+    route = service.control_plane.get_stage_route(successor.task_id)
+    expected_stage_count = sum(
+        allocation.instance_count
+        for allocation in request.budget.stage_allocations
+    )
+    assert status.plan.state == PlanState.READY_FOR_IMPLEMENTATION
+    assert status.plan.methodology_sha256 == request.target_activation_definition_sha256
+    assert len(status.stages) == expected_stage_count
+    assert inventory is not None
+    assert inventory.content_sha256 == receipt.successor_inventory_sha256
+    assert inventory.methodology_version == "2.3.0"
+    assert sum(len(group.stages) for group in inventory.groups) == expected_stage_count
+    assert route is not None
+    assert route.stage_status is None
+    assert route.runnable is False
+    assert service.store.runs(status.plan.plan_id) == []
+    resumed = service.resume(successor.task_id)
+    resumed_route = service.control_plane.get_stage_route(successor.task_id)
+    assert resumed.plan.state == PlanState.READY_FOR_IMPLEMENTATION
+    assert resumed_route is not None
+    assert resumed_route.stage_status is None
+    with sqlite3.connect(tasks.db_path) as db:
+        assert (
+            db.execute(
+                "SELECT COUNT(*) FROM control_stages WHERE task_id = ?",
+                (successor.task_id,),
+            ).fetchone()[0]
+            == 0
+        )
+        assert (
+            db.execute(
+                "SELECT COUNT(*) FROM control_gates WHERE task_id = ?",
+                (successor.task_id,),
+            ).fetchone()[0]
+            == 0
+        )
+
+    allocation_by_source = {
+        allocation.source_stage_key: allocation
+        for allocation in request.budget.stage_allocations
+    }
+    for stage in status.stages:
+        source_key = stage.stage_key.partition("-unit-")[0]
+        assert stage.role == "production_execution"
+        assert stage.adapter == "codex"
+        assert (
+            stage.token_budget
+            == allocation_by_source[source_key].token_allocation_per_instance
+        )
+    assert _migration_row_count(tasks) == 1
+    with sqlite3.connect(tasks.db_path) as db:
+        db.row_factory = sqlite3.Row
+        row = db.execute(
+            """
+            SELECT * FROM orchestration_methodology_migrations
+            WHERE request_id = ?
+            """,
+            (request.request_id,),
+        ).fetchone()
+        assert row is not None
+        gate = AuthenticatedMethodologyMigrationGate.model_validate_json(
+            row["gate_payload"]
+        )
+        assert gate.authenticated_principal_id == "user"
+        assert gate.assertion == request.human_gate
+        assert row["receipt_sha256"] == receipt.content_sha256
+
+
+def test_methodology_migration_activation_preserves_token_only_budget(tmp_path):
+    _, service, task, root, proposal_path = _system(
+        tmp_path,
+        total_cost_budget_usd=None,
+    )
+    request = _request(service, task.task_id, root, proposal_path)
+
+    receipt = service.activate_methodology_migration(
+        task.task_id,
+        request,
+        principal=_migration_principal(),
+    )
+    status = service.status(receipt.successor_task_id)
+
+    assert status.plan.total_cost_budget_usd is None
+    assert all(stage.cost_budget_usd is None for stage in status.stages)
+
+
+def test_methodology_migration_successor_rejects_legacy_budget_amendment(
+    tmp_path,
+):
+    tasks, service, task, root, proposal_path = _system(tmp_path)
+    request = _request(service, task.task_id, root, proposal_path)
+    receipt = service.activate_methodology_migration(
+        task.task_id,
+        request,
+        principal=_migration_principal(),
+    )
+    successor = tasks.get(receipt.successor_task_id)
+    status = service.status(receipt.successor_task_id)
+    assert successor is not None
+    before = _database_dump(tasks)
+
+    with pytest.raises(
+        OrchestrationConflictError,
+        match="budget amendment is deferred",
+    ):
+        service.amend_budget(
+            successor.task_id,
+            amended_total_token_budget=status.plan.total_token_budget + 1_000,
+            expected_task_version=successor.version,
+            expected_plan_version=status.plan.version,
+            reason="must remain inert",
+        )
+
+    assert _database_dump(tasks) == before
+
+
+def test_methodology_migration_activation_is_exactly_idempotent(tmp_path):
+    tasks, service, task, root, proposal_path = _system(tmp_path)
+    request = _request(service, task.task_id, root, proposal_path)
+    principal = _migration_principal()
+    first = service.activate_methodology_migration(
+        task.task_id,
+        request,
+        principal=principal,
+    )
+    successor_events = tasks.events(first.successor_task_id)
+
+    second = service.activate_methodology_migration(
+        task.task_id,
+        request,
+        principal=principal,
+    )
+
+    assert second == first
+    assert tasks.events(first.successor_task_id) == successor_events
+    assert len(tasks.list()) == 2
+    assert _migration_row_count(tasks) == 1
+
+
+@pytest.mark.parametrize(
+    "principal",
+    [
+        _migration_principal(permissions=frozenset()),
+        _migration_principal(projects=frozenset()),
+        _migration_principal(principal_id="different-user"),
+    ],
+)
+def test_methodology_migration_activation_requires_exact_authenticated_approver(
+    tmp_path,
+    principal,
+):
+    tasks, service, task, root, proposal_path = _system(tmp_path)
+    request = _request(service, task.task_id, root, proposal_path)
+    before = _database_dump(tasks)
+
+    with pytest.raises(
+        OrchestrationValidationError,
+        match="principal|permission|authorized",
+    ):
+        service.activate_methodology_migration(
+            task.task_id,
+            request,
+            principal=principal,
+        )
+
+    assert _database_dump(tasks) == before
+
+
+def test_methodology_migration_activation_requires_registered_project(
+    tmp_path,
+    monkeypatch,
+):
+    tasks, service, task, root, proposal_path = _system(tmp_path)
+    request = _request(service, task.task_id, root, proposal_path)
+    before = _database_dump(tasks)
+
+    def project_missing(_project_id):
+        raise KeyError("unregistered")
+
+    monkeypatch.setattr(service.projects, "get", project_missing)
+
+    with pytest.raises(
+        OrchestrationConflictError,
+        match="Migration project is not registered",
+    ):
+        service.activate_methodology_migration(
+            task.task_id,
+            request,
+            principal=_migration_principal(),
+        )
+
+    assert _database_dump(tasks) == before
+
+
+@pytest.mark.parametrize("drift", ["task_version", "proposal_artifact"])
+def test_methodology_migration_activation_rechecks_live_bindings_before_writes(
+    tmp_path,
+    drift,
+):
+    tasks, service, task, root, proposal_path = _system(tmp_path)
+    request = _request(service, task.task_id, root, proposal_path)
+    if drift == "task_version":
+        with sqlite3.connect(tasks.db_path) as db:
+            db.execute(
+                "UPDATE tasks SET version = version + 1 WHERE task_id = ?",
+                (task.task_id,),
+            )
+    else:
+        proposal_path.write_text("changed after approval", encoding="utf-8")
+    before = _database_dump(tasks)
+
+    with pytest.raises(
+        OrchestrationConflictError,
+        match="atomic recheck blocked",
+    ):
+        service.activate_methodology_migration(
+            task.task_id,
+            request,
+            principal=_migration_principal(),
+        )
+
+    assert _database_dump(tasks) == before
+
+
+def test_methodology_migration_activation_rechecks_repository_after_hashing(
+    tmp_path,
+):
+    tasks, service, task, root, proposal_path = _system(tmp_path)
+    request = _request(service, task.task_id, root, proposal_path)
+    revisions = iter(
+        [
+            REVISION,
+            RepositoryRevision(
+                repository_id=REVISION.repository_id,
+                ref=REVISION.ref,
+                commit_sha="b" * 40,
+            ),
+        ]
+    )
+    service.revision_resolver = lambda _root, _repository_id: next(revisions)
+    before = _database_dump(tasks)
+
+    with pytest.raises(
+        OrchestrationConflictError,
+        match="repository_binding",
+    ):
+        service.activate_methodology_migration(
+            task.task_id,
+            request,
+            principal=_migration_principal(),
+        )
+
+    assert _database_dump(tasks) == before
+
+
+def test_methodology_migration_activation_rolls_back_partial_successor(
+    tmp_path,
+    monkeypatch,
+):
+    tasks, service, task, root, proposal_path = _system(tmp_path)
+    request = _request(service, task.task_id, root, proposal_path)
+    before = _database_dump(tasks)
+
+    def fail_after_plan(*_args, **_kwargs):
+        raise RuntimeError("injected successor initialization failure")
+
+    monkeypatch.setattr(
+        service.control_plane,
+        "initialize_migrated_successor_tx",
+        fail_after_plan,
+    )
+    with pytest.raises(RuntimeError, match="injected successor"):
+        service.activate_methodology_migration(
+            task.task_id,
+            request,
+            principal=_migration_principal(),
+        )
+
+    assert _database_dump(tasks) == before
+
+
+def test_methodology_migration_activation_blocks_a_second_successor(tmp_path):
+    tasks, service, task, root, proposal_path = _system(tmp_path)
+    request = _request(service, task.task_id, root, proposal_path)
+    service.activate_methodology_migration(
+        task.task_id,
+        request,
+        principal=_migration_principal(),
+    )
+    payload = request.model_dump(mode="json")
+    payload["request_id"] = "migration-request-2"
+    second_request = _reseal_request(payload)
+    before = _database_dump(tasks)
+
+    with pytest.raises(
+        OrchestrationConflictError,
+        match="already has a methodology migration successor",
+    ):
+        service.activate_methodology_migration(
+            task.task_id,
+            second_request,
+            principal=_migration_principal(),
+        )
+
+    assert _database_dump(tasks) == before
+
+
+def test_methodology_migration_activation_cli_uses_env_credential_without_leak(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    tasks, service, task, root, proposal_path = _system(tmp_path)
+    request = _request(service, task.task_id, root, proposal_path)
+    request_path = tmp_path / "migration-request.json"
+    request_path.write_text(request.model_dump_json(), encoding="utf-8")
+    secret = "migration-control-secret"
+    monkeypatch.setenv("AGORA_TEST_MIGRATION_TOKEN", secret)
+    monkeypatch.setattr(orchestration_cli, "build_service", lambda: service)
+    monkeypatch.setattr(
+        "agora.control_plane.auth.get_config",
+        lambda: {
+            "control_plane": {
+                "auth": {
+                    "credentials": [
+                        {
+                            "secret_ref": "AGORA_TEST_MIGRATION_TOKEN",
+                            "principal": "user",
+                            "permissions": ["control_plane.approve"],
+                            "projects": ["alpha"],
+                        }
+                    ]
+                }
+            }
+        },
+    )
+
+    code = orchestration_cli.main(
+        [
+            "migration-activate",
+            task.task_id,
+            "--request",
+            str(request_path),
+            "--credential-env",
+            "AGORA_TEST_MIGRATION_TOKEN",
+        ]
+    )
+    output = capsys.readouterr().out
+    payload = json.loads(output)
+
+    assert code == 0
+    assert payload["successor_task_id"] != task.task_id
+    assert payload["dispatch_authority"] is False
+    assert secret not in output
+    assert secret not in _database_dump(tasks)
+
+
+def test_methodology_migration_activation_cli_authenticates_before_store_init(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    request_path = tmp_path / "request.json"
+    request_path.write_text("{}", encoding="utf-8")
+    monkeypatch.delenv("AGORA_MISSING_MIGRATION_TOKEN", raising=False)
+    built = False
+
+    def build_forbidden():
+        nonlocal built
+        built = True
+        raise AssertionError("service must not be built before authentication")
+
+    monkeypatch.setattr(orchestration_cli, "build_service", build_forbidden)
+
+    code = orchestration_cli.main(
+        [
+            "migration-activate",
+            "task-source",
+            "--request",
+            str(request_path),
+            "--credential-env",
+            "AGORA_MISSING_MIGRATION_TOKEN",
+        ]
+    )
+
+    assert code == 2
+    assert built is False
+    assert "credential environment variable is absent" in capsys.readouterr().out
+
+
+def test_methodology_migration_activation_schemas_are_registered():
+    assert (
+        SCHEMA_MODELS["authenticated-methodology-migration-gate"]
+        is AuthenticatedMethodologyMigrationGate
+    )
+    assert (
+        SCHEMA_MODELS["methodology-migration-activation-receipt"]
+        is MethodologyMigrationActivationReceipt
+    )

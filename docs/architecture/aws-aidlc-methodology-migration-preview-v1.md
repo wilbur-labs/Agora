@@ -112,15 +112,16 @@ The activation definition remains non-authoritative. Native provider
 availability, advisory output, and process exit code cannot turn the preview
 into a writer.
 
-## Later transactional boundary
+## Transactional successor boundary
 
-A later reviewed writer may create a successor Task only after it
-authenticates and persists the human migration Gate and, inside the writer
-transaction, rechecks every optimistic-lock binding, methodology hash,
-repository revision, source/activation hash, scope seed, runtime pin, budget,
-and quiescence fact. It must build and seal the successor Plan and grouped
-Stage inventory atomically. It must not mutate the current Task in place or
-reuse a stale preview as authorization.
+The separately reviewed writer in
+`aws-aidlc-methodology-migration-activation-v1.md` may consume the same request,
+but it never treats this preview decision as authorization. It authenticates
+and persists the human migration Gate and, inside one writer transaction,
+rechecks every optimistic-lock binding, methodology hash, repository revision,
+source/activation hash, scope seed, runtime pin, budget, and quiescence fact.
+Only a fresh eligible recheck may atomically create the successor Task, Plan,
+and grouped Stage inventory. The current Task is not mutated in place.
 
-HTTP, UI, automatic routing, runtime dispatch, compatibility migration, and
-dynamic provider substitution remain deferred.
+HTTP, UI, route activation, runtime dispatch, dynamic provider substitution,
+and native AI-DLC file installation remain deferred.

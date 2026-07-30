@@ -8,9 +8,14 @@ import re
 import sqlite3
 import uuid
 from contextlib import closing, contextmanager
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
-from agora.control_plane.models import RunSettlementReceipt, StageRouteDecision
+from agora.control_plane.auth import ControlPrincipal
+from agora.control_plane.models import (
+    RunSettlementReceipt,
+    StageRouteDecision,
+    TaskRecord,
+)
 from agora.control_plane.store import ControlPlaneConflictError, ControlPlaneStore
 from agora.execution.security import redact_text, sanitize_data
 from agora.protocol.agent_adapter import AgentAdapterResult
@@ -25,13 +30,20 @@ from agora.protocol.models import (
     SemanticStageResult,
     StageInventory,
 )
+from agora.protocol.methodology_migration import (
+    MethodologyMigrationActivationReceipt,
+    MethodologyMigrationPreviewRequest,
+)
 from agora.protocol.state_machines import GateStatus, StageStatus
-from agora.tasks.models import TaskBudget, utc_now
+from agora.tasks.models import TaskBudget, TaskState, utc_now
 from agora.tasks.store import TaskNotFoundError, TaskStore
 
 from .contracts import TaskContract, contract_sha256
 from .consultation import ConsultationAdapterResult
 from .methodology import MethodologyDefinition, methodology_sha256
+from .methodology_migration_activation import (
+    MethodologySuccessorMaterialization,
+)
 from .models import (
     BudgetAmendment,
     ConsultationRun,
@@ -2896,6 +2908,340 @@ class OrchestrationStore:
             )
         return self.require_plan(task_id)
 
+    def activate_methodology_successor(
+        self,
+        task_id: str,
+        request: MethodologyMigrationPreviewRequest,
+        *,
+        principal: ControlPrincipal,
+        control_plane: ControlPlaneStore,
+        recheck: Callable[
+            [MethodologyMigrationStateSnapshot, str, str, str],
+            MethodologySuccessorMaterialization,
+        ],
+    ) -> MethodologyMigrationActivationReceipt:
+        """Atomically recheck and create one authenticated successor Task."""
+
+        actor = principal.principal_id
+        now = utc_now()
+        with self._transaction() as db:
+            existing = db.execute(
+                """
+                SELECT * FROM orchestration_methodology_migrations
+                WHERE request_id = ?
+                """,
+                (request.request_id,),
+            ).fetchone()
+            if existing is not None:
+                if (
+                    existing["request_sha256"] != request.content_sha256
+                    or existing["source_task_id"] != task_id
+                    or existing["authenticated_principal_id"] != actor
+                ):
+                    raise OrchestrationConflictError(
+                        "Methodology migration request id already has different bindings"
+                    )
+                return MethodologyMigrationActivationReceipt.model_validate_json(
+                    existing["receipt_payload"]
+                )
+            prior = db.execute(
+                """
+                SELECT request_id FROM orchestration_methodology_migrations
+                WHERE source_task_id = ?
+                """,
+                (task_id,),
+            ).fetchone()
+            if prior is not None:
+                raise OrchestrationConflictError(
+                    "Source Task already has a methodology migration successor"
+                )
+
+            snapshot = self._methodology_migration_snapshot_tx(db, task_id)
+            successor_task_id = self._id("task")
+            successor_plan_id = self._id("plan")
+            materialization = recheck(
+                snapshot,
+                successor_task_id,
+                successor_plan_id,
+                now,
+            )
+            assertion = materialization.authenticated_gate.assertion
+            if (
+                assertion.task_id != task_id
+                or assertion.project_id != snapshot.task.project_id
+            ):
+                raise OrchestrationValidationError(
+                    "Authenticated migration Gate does not match the source Task"
+                )
+            inventory = materialization.inventory
+            if (
+                inventory.task_id != successor_task_id
+                or inventory.plan_id != successor_plan_id
+                or inventory.project_id != snapshot.task.project_id
+                or inventory.methodology_id != request.target_methodology_id
+                or inventory.methodology_version
+                != request.target_methodology_version
+                or inventory.methodology_sha256
+                != request.target_activation_definition_sha256
+            ):
+                raise OrchestrationValidationError(
+                    "Successor inventory does not match the migration request"
+                )
+            if not materialization.stages:
+                raise OrchestrationValidationError(
+                    "Methodology successor requires at least one Stage"
+                )
+            inventory_stage_keys = [
+                stage.stage_key
+                for group in inventory.groups
+                for stage in group.stages
+            ]
+            planned_stage_keys = [
+                stage.stage_key for stage in materialization.stages
+            ]
+            if inventory_stage_keys != planned_stage_keys:
+                raise OrchestrationValidationError(
+                    "Successor Plan Stages do not match the sealed inventory"
+                )
+
+            db.execute(
+                """
+                INSERT INTO tasks (
+                    task_id, project_id, title, description, kind, state, risk,
+                    priority, primary_agent, reviewers, acceptance, budget,
+                    metadata, version, created_by, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+                """,
+                (
+                    successor_task_id,
+                    snapshot.task.project_id,
+                    materialization.task_title,
+                    materialization.task_description,
+                    materialization.task_kind,
+                    TaskState.BACKLOG.value,
+                    materialization.task_risk,
+                    materialization.task_priority,
+                    materialization.task_primary_agent,
+                    self._json(list(materialization.task_reviewers)),
+                    self._json(list(materialization.task_acceptance)),
+                    self._json(
+                        TaskBudget(
+                            max_cost_usd=request.budget.task_cost_budget_usd
+                        ).model_dump(exclude_none=True)
+                    ),
+                    self._json(materialization.task_metadata),
+                    actor,
+                    now,
+                    now,
+                ),
+            )
+            self.tasks._insert_event(
+                db,
+                task_id=successor_task_id,
+                event_type="task_created",
+                actor=actor,
+                payload={"state": TaskState.BACKLOG.value, "version": 1},
+                created_at=now,
+            )
+            db.execute(
+                """
+                INSERT INTO orchestration_plans (
+                    plan_id, task_id, project_id, methodology_id,
+                    methodology_version, methodology_sha256,
+                    methodology_payload, provisional, state,
+                    total_token_budget, total_cost_budget_usd,
+                    current_stage_key, version, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, 1, ?, ?)
+                """,
+                (
+                    successor_plan_id,
+                    successor_task_id,
+                    snapshot.task.project_id,
+                    request.target_methodology_id,
+                    request.target_methodology_version,
+                    request.target_activation_definition_sha256,
+                    self._json(materialization.methodology_payload),
+                    PlanState.READY_FOR_IMPLEMENTATION.value,
+                    request.budget.task_token_budget,
+                    request.budget.task_cost_budget_usd,
+                    materialization.stages[0].stage_key,
+                    now,
+                    now,
+                ),
+            )
+            for sequence, stage in enumerate(materialization.stages, start=1):
+                db.execute(
+                    """
+                    INSERT INTO orchestration_stages (
+                        stage_id, plan_id, stage_key, sequence, title, role,
+                        adapter, state, token_budget, cost_budget_usd, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        self._id("stage"),
+                        successor_plan_id,
+                        stage.stage_key,
+                        sequence,
+                        stage.title,
+                        stage.role,
+                        stage.runtime,
+                        StageState.PENDING.value,
+                        stage.token_budget,
+                        stage.cost_budget_usd,
+                        now,
+                    ),
+                )
+            self.tasks._insert_event(
+                db,
+                task_id=successor_task_id,
+                event_type="orchestration.plan_created",
+                actor=actor,
+                payload={
+                    "plan_id": successor_plan_id,
+                    "methodology": (
+                        f"{request.target_methodology_id}@"
+                        f"{request.target_methodology_version}"
+                    ),
+                    "methodology_sha256": (
+                        request.target_activation_definition_sha256
+                    ),
+                    "provisional": False,
+                    "total_token_budget": request.budget.task_token_budget,
+                    "total_cost_budget_usd": (
+                        request.budget.task_cost_budget_usd
+                    ),
+                    "dispatch_authority": False,
+                },
+                created_at=now,
+            )
+            successor_control_task = (
+                control_plane.initialize_migrated_successor_tx(
+                    db,
+                    inventory,
+                    actor=actor,
+                    now=now,
+                )
+            )
+
+            recheck_decision = materialization.recheck_decision
+            source_control_version = (
+                recheck_decision.observed_control_task_version
+            )
+            if source_control_version is None:
+                raise OrchestrationValidationError(
+                    "Eligible migration recheck omitted the source Control Task"
+                )
+            gate = materialization.authenticated_gate
+            receipt_payload = {
+                "schema_version": "1.0",
+                "receipt_id": (
+                    f"migration-receipt-{request.content_sha256[:20]}"
+                ),
+                "activated_at": now,
+                "request_id": request.request_id,
+                "request_sha256": request.content_sha256,
+                "recheck_decision": recheck_decision.model_dump(mode="json"),
+                "authenticated_gate": gate.model_dump(mode="json"),
+                "authenticated_gate_id": gate.gate_id,
+                "authenticated_gate_sha256": gate.content_sha256,
+                "project_id": snapshot.task.project_id,
+                "source_task_id": snapshot.task.task_id,
+                "source_task_version": snapshot.task.version,
+                "source_control_task_version": source_control_version,
+                "successor_task_id": successor_task_id,
+                "successor_task_version": 1,
+                "successor_control_task_status": (
+                    successor_control_task.status.value
+                ),
+                "successor_control_task_version": (
+                    successor_control_task.version
+                ),
+                "successor_plan_id": successor_plan_id,
+                "successor_plan_version": 1,
+                "successor_inventory_id": inventory.inventory_id,
+                "successor_inventory_sha256": inventory.content_sha256,
+                "target_activation_id": request.target_activation_id,
+                "target_methodology_id": request.target_methodology_id,
+                "target_methodology_version": (
+                    request.target_methodology_version
+                ),
+                "target_source_graph_sha256": (
+                    request.target_source_graph_sha256
+                ),
+                "target_activation_definition_sha256": (
+                    request.target_activation_definition_sha256
+                ),
+                "selected_scope": request.selected_scope,
+                "migration_strategy": "successor_task",
+                "source_task_preserved": True,
+                "migration_gate_persisted": True,
+                "successor_task_created": True,
+                "successor_plan_sealed": True,
+                "successor_inventory_sealed": True,
+                "route_activated": False,
+                "runtime_spawned": False,
+                "dispatch_authority": False,
+            }
+            receipt = MethodologyMigrationActivationReceipt.model_validate(
+                seal_model_payload(
+                    MethodologyMigrationActivationReceipt,
+                    receipt_payload,
+                )
+            )
+            db.execute(
+                """
+                INSERT INTO orchestration_methodology_migrations (
+                    request_id, request_sha256, request_payload,
+                    source_task_id, successor_task_id, successor_plan_id,
+                    gate_id, gate_sha256, gate_payload,
+                    recheck_decision_sha256, recheck_decision_payload,
+                    receipt_sha256, receipt_payload,
+                    authenticated_principal_id, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    request.request_id,
+                    request.content_sha256,
+                    self._json(request.model_dump(mode="json")),
+                    task_id,
+                    successor_task_id,
+                    successor_plan_id,
+                    gate.gate_id,
+                    gate.content_sha256,
+                    self._json(gate.model_dump(mode="json")),
+                    recheck_decision.content_sha256,
+                    self._json(recheck_decision.model_dump(mode="json")),
+                    receipt.content_sha256,
+                    self._json(receipt.model_dump(mode="json")),
+                    actor,
+                    now,
+                ),
+            )
+            control_plane._event(
+                db,
+                event_key=f"methodology.migration.activate:{request.request_id}",
+                task_id=successor_task_id,
+                project_id=snapshot.task.project_id,
+                event_type="methodology.migration_activated",
+                actor=actor,
+                payload={
+                    "source_task_id": task_id,
+                    "request_id": request.request_id,
+                    "request_sha256": request.content_sha256,
+                    "gate_id": gate.gate_id,
+                    "gate_sha256": gate.content_sha256,
+                    "receipt_id": receipt.receipt_id,
+                    "receipt_sha256": receipt.content_sha256,
+                    "plan_id": successor_plan_id,
+                    "inventory_id": inventory.inventory_id,
+                    "inventory_sha256": inventory.content_sha256,
+                    "route_activated": False,
+                    "dispatch_authority": False,
+                },
+                now=now,
+            )
+            return receipt
+
     def require_run(self, run_id: str) -> OrchestrationRun:
         with closing(self._connect()) as db:
             row = db.execute("SELECT * FROM orchestration_runs WHERE run_id = ?", (run_id,)).fetchone()
@@ -2920,76 +3266,94 @@ class OrchestrationStore:
         with closing(self._connect()) as db:
             db.execute("BEGIN")
             try:
-                task_row = db.execute(
-                    "SELECT * FROM tasks WHERE task_id = ?",
-                    (task_id,),
-                ).fetchone()
-                if task_row is None:
-                    raise OrchestrationNotFoundError(task_id)
-                plan_row = db.execute(
-                    "SELECT * FROM orchestration_plans WHERE task_id = ?",
-                    (task_id,),
-                ).fetchone()
-                if plan_row is None:
-                    raise OrchestrationNotFoundError(task_id)
-
-                control_plane = ControlPlaneStore(self.tasks)
-                control_task_row = db.execute(
-                    "SELECT * FROM control_tasks WHERE task_id = ?",
-                    (task_id,),
-                ).fetchone()
-                stage_inventory = control_plane.stage_inventory_snapshot(
-                    db,
-                    task_id,
-                )
-                active_runs = int(
-                    db.execute(
-                        """
-                        SELECT COUNT(*) AS value
-                        FROM orchestration_runs
-                        WHERE task_id = ? AND state = ?
-                        """,
-                        (task_id, RunState.RUNNING.value),
-                    ).fetchone()["value"]
-                )
-                active_consultations = int(
-                    db.execute(
-                        """
-                        SELECT COUNT(*) AS value
-                        FROM orchestration_consultations
-                        WHERE task_id = ? AND state = ?
-                        """,
-                        (task_id, ConsultationState.RUNNING.value),
-                    ).fetchone()["value"]
-                )
-                unsettled_protocol_runs = int(
-                    db.execute(
-                        """
-                        SELECT COUNT(*) AS value
-                        FROM protocol_runs
-                        WHERE task_id = ? AND settled_at IS NULL
-                        """,
-                        (task_id,),
-                    ).fetchone()["value"]
-                )
-                return MethodologyMigrationStateSnapshot(
-                    task=self.tasks._manifest(task_row),
-                    control_task=(
-                        control_plane._task_record(control_task_row)
-                        if control_task_row is not None
-                        else None
-                    ),
-                    plan=self._plan(plan_row),
-                    current_methodology=MethodologyDefinition.model_validate_json(
-                        plan_row["methodology_payload"]
-                    ),
-                    stage_inventory=stage_inventory,
-                    active_runs=active_runs,
-                    active_consultations=active_consultations,
-                    unsettled_protocol_runs=unsettled_protocol_runs,
-                )
+                return self._methodology_migration_snapshot_tx(db, task_id)
             finally:
                 db.rollback()
+
+    def _methodology_migration_snapshot_tx(
+        self,
+        db: sqlite3.Connection,
+        task_id: str,
+    ) -> MethodologyMigrationStateSnapshot:
+        """Read exact migration inputs from one caller-owned transaction."""
+
+        task_row = db.execute(
+            "SELECT * FROM tasks WHERE task_id = ?",
+            (task_id,),
+        ).fetchone()
+        if task_row is None:
+            raise OrchestrationNotFoundError(task_id)
+        plan_row = db.execute(
+            "SELECT * FROM orchestration_plans WHERE task_id = ?",
+            (task_id,),
+        ).fetchone()
+        if plan_row is None:
+            raise OrchestrationNotFoundError(task_id)
+        control_task_row = db.execute(
+            "SELECT * FROM control_tasks WHERE task_id = ?",
+            (task_id,),
+        ).fetchone()
+        inventory_row = db.execute(
+            "SELECT payload FROM control_stage_inventories WHERE task_id = ?",
+            (task_id,),
+        ).fetchone()
+        active_runs = int(
+            db.execute(
+                """
+                SELECT COUNT(*) AS value
+                FROM orchestration_runs
+                WHERE task_id = ? AND state = ?
+                """,
+                (task_id, RunState.RUNNING.value),
+            ).fetchone()["value"]
+        )
+        active_consultations = int(
+            db.execute(
+                """
+                SELECT COUNT(*) AS value
+                FROM orchestration_consultations
+                WHERE task_id = ? AND state = ?
+                """,
+                (task_id, ConsultationState.RUNNING.value),
+            ).fetchone()["value"]
+        )
+        unsettled_protocol_runs = int(
+            db.execute(
+                """
+                SELECT COUNT(*) AS value
+                FROM protocol_runs
+                WHERE task_id = ? AND settled_at IS NULL
+                """,
+                (task_id,),
+            ).fetchone()["value"]
+        )
+        return MethodologyMigrationStateSnapshot(
+            task=self.tasks._manifest(task_row),
+            control_task=(
+                TaskRecord(
+                    task_id=control_task_row["task_id"],
+                    project_id=control_task_row["project_id"],
+                    status=control_task_row["status"],
+                    version=control_task_row["version"],
+                    created_at=control_task_row["created_at"],
+                    updated_at=control_task_row["updated_at"],
+                )
+                if control_task_row is not None
+                else None
+            ),
+            plan=self._plan(plan_row),
+            current_methodology=MethodologyDefinition.model_validate_json(
+                plan_row["methodology_payload"]
+            ),
+            stage_inventory=(
+                StageInventory.model_validate_json(inventory_row["payload"])
+                if inventory_row is not None
+                else None
+            ),
+            active_runs=active_runs,
+            active_consultations=active_consultations,
+            unsettled_protocol_runs=unsettled_protocol_runs,
+        )
 
     def _status_snapshot(
         self,

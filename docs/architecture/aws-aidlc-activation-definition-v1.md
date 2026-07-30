@@ -122,7 +122,10 @@ assertion, and quiescence without writing state. Its Gate assertion is preview
 input, not authenticated or persisted authority, and `eligible=true` does not
 authorize migration.
 
-The next safe backend slice is a reviewed transactional successor-Task
-activation path that rechecks every preview binding, authenticates and
-persists the migration Gate, and atomically seals the successor Plan and
-grouped Stage inventory. HTTP and UI remain deferred.
+The separate writer in
+`aws-aidlc-methodology-migration-activation-v1.md` now rechecks every preview
+binding, authenticates and persists the migration Gate, and atomically seals a
+distinct successor Task, Plan, and grouped Stage inventory. That command is
+authority granted by the reviewed writer transaction, not by this inert
+definition. It does not activate a route or dispatch a runtime. HTTP and UI
+remain deferred.

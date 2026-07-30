@@ -160,9 +160,12 @@ unchanged. The read-only `MethodologyMigrationPreviewRequest@1.0` /
 `successor_task` proposal, including Task/Plan/inventory optimistic locks,
 repository/source/activation hashes, scope seeds, runtime pins, per-Stage and
 protected runtime budgets, a human assertion, and quiescence. It never writes
-state or grants migration authority. A later reviewed transaction must
-authenticate and persist the migration Gate, recheck every binding, and
-atomically create the successor Plan/inventory before any version change.
+state or grants migration authority. The reviewed transactional writer
+authenticates the asserted approver through a configured Control Plane
+credential, persists the migration Gate, rechecks every binding inside one
+write transaction, and atomically creates a distinct successor Task, Plan, and
+sealed grouped inventory. It preserves the predecessor and leaves the
+successor non-dispatching with no activated route.
 
 ## 7. Quality and recovery invariants
 
@@ -225,11 +228,18 @@ envelope without reallocating Stages, reducing reviewers, or rewriting usage,
 and forces the next Run claim to derive a fresh policy. Its review state is
 tracked in `PROGRESS.md`.
 
+The source-bound AWS AI-DLC increments now include the pinned source graph,
+inert activation definition, read-only migration preview, and authenticated
+transactional successor writer. The writer persists the Gate and seals the
+successor Task/Plan/inventory, but intentionally stops before route activation
+or provider dispatch.
+
 Still required:
 
-- a reviewed transactional AWS AI-DLC successor-Task activation path; the
-  source graph, activation definition, and read-only migration preview are
-  sealed but remain non-authoritative;
+- an executable per-Stage Context/Handoff, Evidence, and Gate contract for the
+  sealed AWS AI-DLC successor, followed by a separately reviewed first-route
+  activation path; the migration writer creates the successor but deliberately
+  grants no runtime dispatch authority;
 - a concrete Task contract with roles, process, Context/Handoff expectations,
   acceptance criteria, and required Artifacts/Evidence/Gates;
 - consult and decide/adopt semantics under the authoritative Task;

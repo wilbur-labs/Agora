@@ -200,6 +200,29 @@ def initialize_orchestration_schema(db: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_orchestration_budget_amendments_plan_version
             ON orchestration_budget_amendments(plan_id, version);
+
+        CREATE TABLE IF NOT EXISTS orchestration_methodology_migrations (
+            request_id TEXT PRIMARY KEY,
+            request_sha256 TEXT NOT NULL,
+            request_payload TEXT NOT NULL,
+            source_task_id TEXT NOT NULL UNIQUE REFERENCES tasks(task_id),
+            successor_task_id TEXT NOT NULL UNIQUE REFERENCES tasks(task_id),
+            successor_plan_id TEXT NOT NULL UNIQUE
+                REFERENCES orchestration_plans(plan_id),
+            gate_id TEXT NOT NULL UNIQUE,
+            gate_sha256 TEXT NOT NULL,
+            gate_payload TEXT NOT NULL,
+            recheck_decision_sha256 TEXT NOT NULL,
+            recheck_decision_payload TEXT NOT NULL,
+            receipt_sha256 TEXT NOT NULL,
+            receipt_payload TEXT NOT NULL,
+            authenticated_principal_id TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_orchestration_methodology_migrations_successor
+            ON orchestration_methodology_migrations(
+                successor_task_id, created_at
+            );
         """
     )
     columns = {row[1] for row in db.execute("PRAGMA table_info(orchestration_runs)")}

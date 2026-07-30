@@ -20,6 +20,10 @@ class ControlPrincipal:
     projects: frozenset[str]
 
 
+class ControlPlaneAuthenticationError(ValueError):
+    """Raised when a raw credential does not identify exactly one principal."""
+
+
 _bearer = HTTPBearer(auto_error=False)
 _principal_id = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
 _project_id = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}")
@@ -46,9 +50,17 @@ def authenticate_control_plane(
 ) -> ControlPrincipal:
     if credential is None or credential.scheme.lower() != "bearer":
         raise _unauthorized()
-    token = credential.credentials
+    try:
+        return authenticate_control_plane_token(credential.credentials)
+    except ControlPlaneAuthenticationError as exc:
+        raise _unauthorized() from exc
+
+
+def authenticate_control_plane_token(token: str) -> ControlPrincipal:
+    """Resolve one raw token without exposing it in a persisted contract."""
+
     if not token or len(token.encode("utf-8")) > 4096:
-        raise _unauthorized()
+        raise ControlPlaneAuthenticationError("Invalid control-plane credential")
     supplied = hashlib.sha256(token.encode("utf-8")).digest()
     entries = (
         get_config().get("control_plane", {}).get("auth", {}).get("credentials", [])
@@ -91,7 +103,7 @@ def authenticate_control_plane(
                 projects=project_set,
             )
     if match is None or match_count != 1:
-        raise _unauthorized()
+        raise ControlPlaneAuthenticationError("Invalid control-plane credential")
     return match
 
 

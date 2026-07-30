@@ -39,7 +39,9 @@ the Pydantic models in `backend/agora/protocol/`:
 - `run-protocol-state.schema.json`
 - `gate-requirement.schema.json`
 - `runner-isolation-contract.schema.json`
+- `authenticated-methodology-migration-gate.schema.json`
 - `methodology-activation-definition.schema.json`
+- `methodology-migration-activation-receipt.schema.json`
 - `methodology-migration-preview-request.schema.json`
 - `methodology-migration-preview-decision.schema.json`
 - `methodology-source-graph.schema.json`
@@ -133,9 +135,14 @@ policy. It remains definition-only with `routing_authority=false`,
 remain pinned. A sealed, read-only Task-scoped successor migration preview now
 evaluates exact Task/Plan/inventory versions, repository, source/activation
 hashes, scope seeds, runtime pins, explicit Stage/runtime budgets, a human
-assertion, and quiescence. Even `eligible=true` has no migration authority; a
-later reviewed transaction must authenticate and persist the Gate and recheck
-every binding before it creates a successor Task.
+assertion, and quiescence. Even `eligible=true` has no migration authority.
+The separate migration writer authenticates the asserted approver through a
+configured Control Plane credential, persists an
+`AuthenticatedMethodologyMigrationGate@1.0`, rechecks every preview binding
+inside one write transaction, and atomically creates a distinct successor
+Task, activation-hash-bound Plan, and sealed grouped inventory. The predecessor
+is not mutated. The successor Plan remains non-dispatching and its first route
+is not activated until a later reviewed execution-contract increment.
 
 For a Task with a sealed grouped inventory, Agora routes the first incomplete
 Stage in inventory order and only that route may start a formal Run. Successful

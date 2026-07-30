@@ -672,7 +672,10 @@ class StageInventory(HashSealedModel):
     project_id: StableId
     plan_id: StableId
     methodology_id: StableId
-    methodology_version: Annotated[str, Field(pattern=r"^\d+\.\d+$")]
+    methodology_version: Annotated[
+        str,
+        Field(pattern=r"^\d+\.\d+(?:\.\d+)?$"),
+    ]
     methodology_sha256: Sha256Hex
     provisional: bool
     contract: StageInventoryContractBinding | None = None

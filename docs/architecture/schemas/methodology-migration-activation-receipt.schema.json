@@ -1,0 +1,918 @@
+{
+  "$defs": {
+    "AuthenticatedMethodologyMigrationGate": {
+      "additionalProperties": false,
+      "description": "Persisted human Gate whose principal was authenticated out of band.",
+      "properties": {
+        "assertion": {
+          "$ref": "#/$defs/MethodologyMigrationGateAssertion"
+        },
+        "assertion_sha256": {
+          "title": "Assertion Sha256",
+          "type": "string"
+        },
+        "authenticated_permission": {
+          "const": "control_plane.approve",
+          "default": "control_plane.approve",
+          "title": "Authenticated Permission",
+          "type": "string"
+        },
+        "authenticated_principal_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Authenticated Principal Id",
+          "type": "string"
+        },
+        "authenticated_project_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Authenticated Project Id",
+          "type": "string"
+        },
+        "content_sha256": {
+          "title": "Content Sha256",
+          "type": "string"
+        },
+        "credential_verified": {
+          "const": true,
+          "default": true,
+          "title": "Credential Verified",
+          "type": "boolean"
+        },
+        "gate_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Gate Id",
+          "type": "string"
+        },
+        "persisted_at": {
+          "format": "date-time",
+          "title": "Persisted At",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "1.0",
+          "default": "1.0",
+          "title": "Schema Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "content_sha256",
+        "gate_id",
+        "assertion",
+        "assertion_sha256",
+        "authenticated_principal_id",
+        "authenticated_project_id",
+        "persisted_at"
+      ],
+      "title": "AuthenticatedMethodologyMigrationGate",
+      "type": "object"
+    },
+    "MethodologyMigrationGateAssertion": {
+      "additionalProperties": false,
+      "description": "Explicit human assertion consumed only as preview input.",
+      "properties": {
+        "approved_at": {
+          "format": "date-time",
+          "title": "Approved At",
+          "type": "string"
+        },
+        "approved_by": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Approved By",
+          "type": "string"
+        },
+        "assertion_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Assertion Id",
+          "type": "string"
+        },
+        "budget_sha256": {
+          "title": "Budget Sha256",
+          "type": "string"
+        },
+        "content_sha256": {
+          "title": "Content Sha256",
+          "type": "string"
+        },
+        "current_methodology_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Current Methodology Id",
+          "type": "string"
+        },
+        "current_methodology_sha256": {
+          "title": "Current Methodology Sha256",
+          "type": "string"
+        },
+        "current_methodology_version": {
+          "pattern": "^\\d+\\.\\d+(?:\\.\\d+)?$",
+          "title": "Current Methodology Version",
+          "type": "string"
+        },
+        "expected_control_task_version": {
+          "minimum": 1,
+          "title": "Expected Control Task Version",
+          "type": "integer"
+        },
+        "expected_task_status": {
+          "$ref": "#/$defs/TaskStatus"
+        },
+        "expected_task_version": {
+          "minimum": 1,
+          "title": "Expected Task Version",
+          "type": "integer"
+        },
+        "gate_key": {
+          "const": "methodology-migration",
+          "default": "methodology-migration",
+          "title": "Gate Key",
+          "type": "string"
+        },
+        "human_approved": {
+          "const": true,
+          "default": true,
+          "title": "Human Approved",
+          "type": "boolean"
+        },
+        "migration_artifact": {
+          "$ref": "#/$defs/MigrationArtifactBinding"
+        },
+        "migration_strategy": {
+          "const": "successor_task",
+          "default": "successor_task",
+          "title": "Migration Strategy",
+          "type": "string"
+        },
+        "plan_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Plan Id",
+          "type": "string"
+        },
+        "plan_version": {
+          "minimum": 1,
+          "title": "Plan Version",
+          "type": "integer"
+        },
+        "project_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Project Id",
+          "type": "string"
+        },
+        "repository": {
+          "$ref": "#/$defs/MigrationRepositoryBinding"
+        },
+        "runtime_registry_sha256": {
+          "title": "Runtime Registry Sha256",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "1.0",
+          "default": "1.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "seed_artifacts_sha256": {
+          "title": "Seed Artifacts Sha256",
+          "type": "string"
+        },
+        "selected_scope": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Selected Scope",
+          "type": "string"
+        },
+        "target_activation_definition_sha256": {
+          "title": "Target Activation Definition Sha256",
+          "type": "string"
+        },
+        "target_activation_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Target Activation Id",
+          "type": "string"
+        },
+        "target_methodology_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Target Methodology Id",
+          "type": "string"
+        },
+        "target_methodology_version": {
+          "pattern": "^\\d+\\.\\d+\\.\\d+$",
+          "title": "Target Methodology Version",
+          "type": "string"
+        },
+        "target_source_graph_sha256": {
+          "title": "Target Source Graph Sha256",
+          "type": "string"
+        },
+        "task_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Task Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "content_sha256",
+        "assertion_id",
+        "approved_by",
+        "approved_at",
+        "project_id",
+        "task_id",
+        "expected_task_version",
+        "expected_control_task_version",
+        "expected_task_status",
+        "plan_id",
+        "plan_version",
+        "current_methodology_id",
+        "current_methodology_version",
+        "current_methodology_sha256",
+        "repository",
+        "migration_artifact",
+        "target_activation_id",
+        "target_methodology_id",
+        "target_methodology_version",
+        "target_source_graph_sha256",
+        "target_activation_definition_sha256",
+        "selected_scope",
+        "runtime_registry_sha256",
+        "budget_sha256",
+        "seed_artifacts_sha256"
+      ],
+      "title": "MethodologyMigrationGateAssertion",
+      "type": "object"
+    },
+    "MethodologyMigrationPreviewCheck": {
+      "additionalProperties": false,
+      "properties": {
+        "constraint": {
+          "enum": [
+            "task_binding",
+            "current_methodology_binding",
+            "repository_binding",
+            "target_source_binding",
+            "scope_selection",
+            "scope_seed_artifacts",
+            "runtime_pins",
+            "budget",
+            "human_gate",
+            "task_quiescence"
+          ],
+          "title": "Constraint",
+          "type": "string"
+        },
+        "detail": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Detail",
+          "type": "string"
+        },
+        "satisfied": {
+          "title": "Satisfied",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "constraint",
+        "satisfied",
+        "detail"
+      ],
+      "title": "MethodologyMigrationPreviewCheck",
+      "type": "object"
+    },
+    "MethodologyMigrationPreviewDecision": {
+      "additionalProperties": false,
+      "description": "Non-authoritative result of one exact read-only migration preview.",
+      "properties": {
+        "active_consultations": {
+          "minimum": 0,
+          "title": "Active Consultations",
+          "type": "integer"
+        },
+        "active_runs": {
+          "minimum": 0,
+          "title": "Active Runs",
+          "type": "integer"
+        },
+        "blockers": {
+          "items": {
+            "enum": [
+              "task_binding",
+              "current_methodology_binding",
+              "repository_binding",
+              "target_source_binding",
+              "scope_selection",
+              "scope_seed_artifacts",
+              "runtime_pins",
+              "budget",
+              "human_gate",
+              "task_quiescence"
+            ],
+            "type": "string"
+          },
+          "maxItems": 10,
+          "title": "Blockers",
+          "type": "array"
+        },
+        "checks": {
+          "items": {
+            "$ref": "#/$defs/MethodologyMigrationPreviewCheck"
+          },
+          "maxItems": 10,
+          "minItems": 10,
+          "title": "Checks",
+          "type": "array"
+        },
+        "content_sha256": {
+          "title": "Content Sha256",
+          "type": "string"
+        },
+        "current_methodology_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Current Methodology Id",
+          "type": "string"
+        },
+        "current_methodology_sha256": {
+          "title": "Current Methodology Sha256",
+          "type": "string"
+        },
+        "current_methodology_version": {
+          "pattern": "^\\d+\\.\\d+(?:\\.\\d+)?$",
+          "title": "Current Methodology Version",
+          "type": "string"
+        },
+        "decision_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Decision Id",
+          "type": "string"
+        },
+        "dispatch_authority": {
+          "const": false,
+          "default": false,
+          "title": "Dispatch Authority",
+          "type": "boolean"
+        },
+        "eligible": {
+          "title": "Eligible",
+          "type": "boolean"
+        },
+        "generated_at": {
+          "format": "date-time",
+          "title": "Generated At",
+          "type": "string"
+        },
+        "inventory_mutated": {
+          "const": false,
+          "default": false,
+          "title": "Inventory Mutated",
+          "type": "boolean"
+        },
+        "migration_authority": {
+          "const": false,
+          "default": false,
+          "title": "Migration Authority",
+          "type": "boolean"
+        },
+        "migration_executed": {
+          "const": false,
+          "default": false,
+          "title": "Migration Executed",
+          "type": "boolean"
+        },
+        "migration_strategy": {
+          "const": "successor_task",
+          "default": "successor_task",
+          "title": "Migration Strategy",
+          "type": "string"
+        },
+        "observed_control_task_version": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Observed Control Task Version"
+        },
+        "observed_plan_version": {
+          "minimum": 1,
+          "title": "Observed Plan Version",
+          "type": "integer"
+        },
+        "observed_repository": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MigrationRepositoryBinding"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "observed_task_status": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TaskStatus"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "observed_task_version": {
+          "minimum": 1,
+          "title": "Observed Task Version",
+          "type": "integer"
+        },
+        "plan_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Plan Id",
+          "type": "string"
+        },
+        "plan_mutated": {
+          "const": false,
+          "default": false,
+          "title": "Plan Mutated",
+          "type": "boolean"
+        },
+        "preview_only": {
+          "const": true,
+          "default": true,
+          "title": "Preview Only",
+          "type": "boolean"
+        },
+        "project_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Project Id",
+          "type": "string"
+        },
+        "request_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Request Id",
+          "type": "string"
+        },
+        "request_sha256": {
+          "title": "Request Sha256",
+          "type": "string"
+        },
+        "routing_authority": {
+          "const": false,
+          "default": false,
+          "title": "Routing Authority",
+          "type": "boolean"
+        },
+        "runtime_spawned": {
+          "const": false,
+          "default": false,
+          "title": "Runtime Spawned",
+          "type": "boolean"
+        },
+        "schema_version": {
+          "const": "1.0",
+          "default": "1.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "selected_scope": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Selected Scope",
+          "type": "string"
+        },
+        "state_mutated": {
+          "const": false,
+          "default": false,
+          "title": "State Mutated",
+          "type": "boolean"
+        },
+        "target_activation_definition_sha256": {
+          "title": "Target Activation Definition Sha256",
+          "type": "string"
+        },
+        "target_activation_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Target Activation Id",
+          "type": "string"
+        },
+        "target_methodology_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Target Methodology Id",
+          "type": "string"
+        },
+        "target_methodology_version": {
+          "pattern": "^\\d+\\.\\d+\\.\\d+$",
+          "title": "Target Methodology Version",
+          "type": "string"
+        },
+        "target_source_graph_sha256": {
+          "title": "Target Source Graph Sha256",
+          "type": "string"
+        },
+        "task_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Task Id",
+          "type": "string"
+        },
+        "unsettled_protocol_runs": {
+          "minimum": 0,
+          "title": "Unsettled Protocol Runs",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "content_sha256",
+        "decision_id",
+        "generated_at",
+        "request_id",
+        "request_sha256",
+        "project_id",
+        "task_id",
+        "observed_task_version",
+        "plan_id",
+        "observed_plan_version",
+        "current_methodology_id",
+        "current_methodology_version",
+        "current_methodology_sha256",
+        "target_activation_id",
+        "target_methodology_id",
+        "target_methodology_version",
+        "target_source_graph_sha256",
+        "target_activation_definition_sha256",
+        "selected_scope",
+        "active_runs",
+        "active_consultations",
+        "unsettled_protocol_runs",
+        "checks",
+        "eligible"
+      ],
+      "title": "MethodologyMigrationPreviewDecision",
+      "type": "object"
+    },
+    "MigrationArtifactBinding": {
+      "additionalProperties": false,
+      "properties": {
+        "commit_sha": {
+          "title": "Commit Sha",
+          "type": "string"
+        },
+        "path": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "ref": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "title": "Ref",
+          "type": "string"
+        },
+        "repository_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Repository Id",
+          "type": "string"
+        },
+        "sha256": {
+          "title": "Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repository_id",
+        "ref",
+        "commit_sha",
+        "path",
+        "sha256"
+      ],
+      "title": "MigrationArtifactBinding",
+      "type": "object"
+    },
+    "MigrationRepositoryBinding": {
+      "additionalProperties": false,
+      "properties": {
+        "commit_sha": {
+          "title": "Commit Sha",
+          "type": "string"
+        },
+        "ref": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "title": "Ref",
+          "type": "string"
+        },
+        "repository_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Repository Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repository_id",
+        "ref",
+        "commit_sha"
+      ],
+      "title": "MigrationRepositoryBinding",
+      "type": "object"
+    },
+    "TaskStatus": {
+      "enum": [
+        "backlog",
+        "ready",
+        "active",
+        "blocked",
+        "needs_review",
+        "completed",
+        "failed",
+        "cancelled"
+      ],
+      "title": "TaskStatus",
+      "type": "string"
+    }
+  },
+  "$id": "https://agora.local/schemas/v1/methodology-migration-activation-receipt.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Authoritative receipt for one atomic successor-Task creation.",
+  "properties": {
+    "activated_at": {
+      "format": "date-time",
+      "title": "Activated At",
+      "type": "string"
+    },
+    "authenticated_gate": {
+      "$ref": "#/$defs/AuthenticatedMethodologyMigrationGate"
+    },
+    "authenticated_gate_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Authenticated Gate Id",
+      "type": "string"
+    },
+    "authenticated_gate_sha256": {
+      "title": "Authenticated Gate Sha256",
+      "type": "string"
+    },
+    "content_sha256": {
+      "title": "Content Sha256",
+      "type": "string"
+    },
+    "dispatch_authority": {
+      "const": false,
+      "default": false,
+      "title": "Dispatch Authority",
+      "type": "boolean"
+    },
+    "migration_gate_persisted": {
+      "const": true,
+      "default": true,
+      "title": "Migration Gate Persisted",
+      "type": "boolean"
+    },
+    "migration_strategy": {
+      "const": "successor_task",
+      "default": "successor_task",
+      "title": "Migration Strategy",
+      "type": "string"
+    },
+    "project_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Project Id",
+      "type": "string"
+    },
+    "receipt_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Receipt Id",
+      "type": "string"
+    },
+    "recheck_decision": {
+      "$ref": "#/$defs/MethodologyMigrationPreviewDecision"
+    },
+    "request_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Request Id",
+      "type": "string"
+    },
+    "request_sha256": {
+      "title": "Request Sha256",
+      "type": "string"
+    },
+    "route_activated": {
+      "const": false,
+      "default": false,
+      "title": "Route Activated",
+      "type": "boolean"
+    },
+    "runtime_spawned": {
+      "const": false,
+      "default": false,
+      "title": "Runtime Spawned",
+      "type": "boolean"
+    },
+    "schema_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "selected_scope": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Selected Scope",
+      "type": "string"
+    },
+    "source_control_task_version": {
+      "minimum": 1,
+      "title": "Source Control Task Version",
+      "type": "integer"
+    },
+    "source_task_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Source Task Id",
+      "type": "string"
+    },
+    "source_task_preserved": {
+      "const": true,
+      "default": true,
+      "title": "Source Task Preserved",
+      "type": "boolean"
+    },
+    "source_task_version": {
+      "minimum": 1,
+      "title": "Source Task Version",
+      "type": "integer"
+    },
+    "successor_control_task_status": {
+      "$ref": "#/$defs/TaskStatus"
+    },
+    "successor_control_task_version": {
+      "minimum": 1,
+      "title": "Successor Control Task Version",
+      "type": "integer"
+    },
+    "successor_inventory_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Successor Inventory Id",
+      "type": "string"
+    },
+    "successor_inventory_sealed": {
+      "const": true,
+      "default": true,
+      "title": "Successor Inventory Sealed",
+      "type": "boolean"
+    },
+    "successor_inventory_sha256": {
+      "title": "Successor Inventory Sha256",
+      "type": "string"
+    },
+    "successor_plan_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Successor Plan Id",
+      "type": "string"
+    },
+    "successor_plan_sealed": {
+      "const": true,
+      "default": true,
+      "title": "Successor Plan Sealed",
+      "type": "boolean"
+    },
+    "successor_plan_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Successor Plan Version",
+      "type": "integer"
+    },
+    "successor_task_created": {
+      "const": true,
+      "default": true,
+      "title": "Successor Task Created",
+      "type": "boolean"
+    },
+    "successor_task_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Successor Task Id",
+      "type": "string"
+    },
+    "successor_task_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Successor Task Version",
+      "type": "integer"
+    },
+    "target_activation_definition_sha256": {
+      "title": "Target Activation Definition Sha256",
+      "type": "string"
+    },
+    "target_activation_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Target Activation Id",
+      "type": "string"
+    },
+    "target_methodology_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Target Methodology Id",
+      "type": "string"
+    },
+    "target_methodology_version": {
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "title": "Target Methodology Version",
+      "type": "string"
+    },
+    "target_source_graph_sha256": {
+      "title": "Target Source Graph Sha256",
+      "type": "string"
+    }
+  },
+  "required": [
+    "content_sha256",
+    "receipt_id",
+    "activated_at",
+    "request_id",
+    "request_sha256",
+    "recheck_decision",
+    "authenticated_gate",
+    "authenticated_gate_id",
+    "authenticated_gate_sha256",
+    "project_id",
+    "source_task_id",
+    "source_task_version",
+    "source_control_task_version",
+    "successor_task_id",
+    "successor_control_task_status",
+    "successor_control_task_version",
+    "successor_plan_id",
+    "successor_inventory_id",
+    "successor_inventory_sha256",
+    "target_activation_id",
+    "target_methodology_id",
+    "target_methodology_version",
+    "target_source_graph_sha256",
+    "target_activation_definition_sha256",
+    "selected_scope"
+  ],
+  "title": "MethodologyMigrationActivationReceipt",
+  "type": "object"
+}

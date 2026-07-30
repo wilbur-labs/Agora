@@ -1,6 +1,90 @@
 # Agora Control Plane Development Progress
 
-## 2026-07-29 - AWS AI-DLC successor migration preview (review pending)
+## 2026-07-30 - AWS AI-DLC transactional successor activation (reviewed)
+
+### Bounded implementation
+
+- [x] Added hash-sealed `AuthenticatedMethodologyMigrationGate@1.0` and
+  `MethodologyMigrationActivationReceipt@1.0` contracts plus checked-in JSON
+  Schemas. The receipt embeds the fresh atomic recheck and authenticated Gate;
+  no credential or credential-environment name is serialized.
+- [x] Added
+  `agora task migration-activate TASK_ID --request PATH --credential-env NAME`.
+  It resolves one configured Control Plane principal before storage
+  initialization, requires `control_plane.approve` for the exact Project, and
+  requires the authenticated principal to equal the Gate assertion's
+  `approved_by`.
+- [x] The writer opens one immediate transaction, rereads the exact
+  Task/Control Task/Plan/current-methodology/inventory/quiescence facts,
+  re-resolves Git before and after bounded Artifact hashing, and reruns every
+  preview constraint against the current source/activation definitions,
+  runtime registry, budgets, seeds, proposal, and human assertion before any
+  insert.
+- [x] A successful transaction persists the authenticated migration Gate,
+  request, fresh recheck decision, and receipt; creates one distinct successor
+  Task; pins the complete activation-definition payload/hash in a new Plan; and
+  seals the selected-scope grouped inventory with exact per-instance budgets.
+  The predecessor Task manifest, events, Plan, inventory, lifecycle, and Run
+  ledgers remain unchanged.
+- [x] Preserved source and authority boundaries. Selected Stages remain in
+  source order and source phase groups; the five unit-of-work Stages expand to
+  deterministic `STAGE-unit-NNN` instances. AWS lead/support/reviewer
+  identities remain profiles in the sealed definition; inventory execution
+  responsibility is the exact approved production runtime pin.
+- [x] The successor Plan is fixed at `ready_for_implementation`,
+  `methodology_route_activated=false`, and
+  `methodology_dispatch_authority=false`. No Control Plane Stage/Gate, Run,
+  route activation, runtime spawn, HTTP, or UI surface is created. `resume`
+  preserves that inert boundary. Legacy budget amendment also fails closed
+  rather than interpreting the activation payload as a legacy methodology.
+- [x] Exact retries return the original sealed receipt without duplicate
+  state. Request/Gate identity drift, a second successor for the same source
+  Task, stale bindings, repository drift, authorization failure, or any
+  mid-transaction exception fails closed and rolls back every successor row.
+- [x] Refactored migration snapshots to read directly from the caller-owned
+  transaction, removing the redundant nested Control Plane schema
+  initialization noted as LOW in the prior Claude review.
+- [x] An authorized but unregistered Project now fails before opening the
+  writer transaction with a typed domain conflict and a regression proving
+  the database remains byte-for-byte logically unchanged.
+- [x] Documented the boundary in
+  `docs/architecture/aws-aidlc-methodology-migration-activation-v1.md`; native
+  execution-contract materialization, first-route activation, provider
+  dispatch, HTTP, UI, and native AI-DLC installation remain deferred.
+
+### Verification and review state
+
+- [x] Migration preview/activation regressions: 34 passed.
+- [x] Migration activation/preview, source/definition, Control Plane auth and
+  inventory, Task orchestration, formal protocol orchestration, and protocol
+  freeze: 236 passed.
+- [x] Exact complete non-integration backend suite:
+  606 passed, 18 deselected, with only the existing Starlette/httpx and Windows
+  Proactor cleanup warnings.
+- [x] Protocol Schema export/check, system-Temp-isolated `compileall`,
+  migration-activation CLI help, and `git diff --check` passed.
+- [x] Kiro CLI session `50bfd9b3-63c9-4991-b852-34dfe690681a`
+  independently reviewed the full methodology/protocol/lifecycle boundary and
+  returned `VERDICT: APPROVE` with no high/medium findings. Its one LOW
+  reachable legacy-payload reader was fixed by making budget amendment
+  explicitly fail closed; targeted re-review also confirmed the final
+  unregistered-Project guard, with no actionable findings remaining.
+- [x] Independent Claude Code safe-mode review inspected the complete
+  implementation, transaction/auth ordering, schemas, docs, and adversarial
+  regressions and returned `VERDICT: APPROVE` with no high/medium findings.
+  Its actionable LOW unregistered-Project error path was fixed and targeted
+  re-review returned `VERDICT: APPROVE`; its SQLite external-I/O lock-duration
+  and global semver-pattern notes were informational and non-blocking.
+
+### Current checkpoint and next safe action
+
+Implementation, automated verification, actionable-finding resolution, and
+both review gates are complete on baseline `63cb70e`. This bounded writer is
+ready for its reviewed commit/push. The next backend slice is a source-bound
+executable per-Stage Context/Handoff/Evidence/Gate contract for the sealed
+successor, followed by separately reviewed first-route activation.
+
+## 2026-07-29 - AWS AI-DLC successor migration preview (reviewed)
 
 ### Bounded implementation
 

@@ -12,6 +12,7 @@ from pydantic import ValidationError
 
 from agora.attention.models import AttentionState, CancelAttentionRequest
 from agora.attention.store import AttentionConflictError, AttentionStore
+from agora.control_plane.auth import ControlPrincipal
 from agora.control_plane.models import (
     ProtocolRunRecord,
     RunSettlementReceipt,
@@ -38,6 +39,7 @@ from agora.protocol.models import (
     StageInventory,
 )
 from agora.protocol.methodology_migration import (
+    MethodologyMigrationActivationReceipt,
     MethodologyMigrationPreviewDecision,
     MethodologyMigrationPreviewRequest,
 )
@@ -55,6 +57,9 @@ from .methodology import (
 from .methodology_migration import (
     derive_methodology_migration_preview,
     observe_migration_artifacts,
+)
+from .methodology_migration_activation import (
+    build_methodology_successor_materialization,
 )
 from .models import (
     BudgetAmendment,
@@ -571,6 +576,14 @@ class TaskOrchestrationService:
         task = self.tasks.get(task_id)
         if task is None:
             raise OrchestrationConflictError("Task not found")
+        if (
+            task.metadata.get("methodology_activation_sha256") is not None
+            and task.metadata.get("methodology_dispatch_authority") is False
+        ):
+            raise OrchestrationConflictError(
+                "Migrated successor budget amendment is deferred until its "
+                "executable routing contract is activated"
+            )
         plan = self.store.require_plan(task_id)
         effective_cost_budget = (
             plan.total_cost_budget_usd
@@ -1039,6 +1052,89 @@ class TaskOrchestrationService:
             runtimes=self.runtimes,
             observed_artifact_sha256s=observed_artifact_sha256s,
             generated_at=utc_now(),
+        )
+
+    def activate_methodology_migration(
+        self,
+        task_id: str,
+        request: MethodologyMigrationPreviewRequest,
+        *,
+        principal: ControlPrincipal,
+    ) -> MethodologyMigrationActivationReceipt:
+        """Authenticate, atomically recheck, and create a successor Task."""
+
+        try:
+            project = self.projects.get(request.project_id)
+        except KeyError as exc:
+            raise OrchestrationConflictError(
+                "Migration project is not registered"
+            ) from exc
+
+        def recheck(
+            snapshot,
+            successor_task_id: str,
+            successor_plan_id: str,
+            activated_at: str,
+        ):
+            try:
+                repository_before = self.revision_resolver(
+                    project.root,
+                    snapshot.task.project_id,
+                )
+            except (KeyError, TypeError, ValueError):
+                repository_before = None
+            artifacts = list(request.seed_artifacts)
+            if request.human_gate is not None:
+                artifacts.append(request.human_gate.migration_artifact)
+            observed_artifact_sha256s = observe_migration_artifacts(
+                project.root,
+                artifacts,
+            )
+            try:
+                repository_after = self.revision_resolver(
+                    project.root,
+                    snapshot.task.project_id,
+                )
+            except (KeyError, TypeError, ValueError):
+                repository_after = None
+            repository = (
+                repository_after
+                if repository_before is not None
+                and repository_after == repository_before
+                else None
+            )
+            decision = derive_methodology_migration_preview(
+                request=request,
+                snapshot=snapshot,
+                repository=repository,
+                runtimes=self.runtimes,
+                observed_artifact_sha256s=observed_artifact_sha256s,
+                generated_at=activated_at,
+            )
+            if not decision.eligible:
+                raise OrchestrationConflictError(
+                    "Methodology migration atomic recheck blocked: "
+                    + ", ".join(decision.blockers)
+                )
+            try:
+                return build_methodology_successor_materialization(
+                    source_task=snapshot.task,
+                    request=request,
+                    recheck_decision=decision,
+                    principal=principal,
+                    successor_task_id=successor_task_id,
+                    successor_plan_id=successor_plan_id,
+                    activated_at=activated_at,
+                )
+            except ValueError as exc:
+                raise OrchestrationValidationError(str(exc)) from exc
+
+        return self.store.activate_methodology_successor(
+            task_id,
+            request,
+            principal=principal,
+            control_plane=self.control_plane,
+            recheck=recheck,
         )
 
     async def run_until_blocked(
@@ -1633,6 +1729,28 @@ explicitly adopts or rejects the immutable candidate.
         if task is None:
             raise OrchestrationConflictError("Task not found")
         plan = self.store.require_plan(task_id)
+        activation_sha256 = task.metadata.get("methodology_activation_sha256")
+        if activation_sha256 is not None:
+            inventory = self.control_plane.get_stage_inventory(task_id)
+            if (
+                task.metadata.get("methodology_dispatch_authority") is not False
+                or task.metadata.get("methodology_route_activated") is not False
+                or plan.state != PlanState.READY_FOR_IMPLEMENTATION
+                or plan.methodology_id
+                != task.metadata.get("methodology", "").partition("@")[0]
+                or plan.methodology_sha256 != activation_sha256
+                or inventory is None
+                or inventory.task_id != task.task_id
+                or inventory.project_id != task.project_id
+                or inventory.plan_id != plan.plan_id
+                or inventory.methodology_id != plan.methodology_id
+                or inventory.methodology_version != plan.methodology_version
+                or inventory.methodology_sha256 != plan.methodology_sha256
+            ):
+                raise OrchestrationValidationError(
+                    "Migrated successor Plan/inventory binding is unavailable or drifted"
+                )
+            return inventory
         methodology = self.store.methodology(plan.plan_id)
         digest = methodology_sha256(methodology)
         if (
@@ -1816,6 +1934,13 @@ explicitly adopts or rejects the immutable candidate.
         route = self.control_plane.get_stage_route(task_id)
         if route is None:
             return None
+        task = self.tasks.get(task_id)
+        if (
+            task is not None
+            and task.metadata.get("methodology_activation_sha256") is not None
+            and task.metadata.get("methodology_route_activated") is False
+        ):
+            return route
         if route.stage_status not in {None, StageStatus.PENDING}:
             return route
         operation_key = "stage-activate:" + canonical_sha256(

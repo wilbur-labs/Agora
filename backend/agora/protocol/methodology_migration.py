@@ -348,3 +348,143 @@ class MethodologyMigrationPreviewDecision(HashSealedModel):
         if self.eligible != (not failed):
             raise ValueError("migration preview eligibility must match failed checks")
         return self
+
+
+class AuthenticatedMethodologyMigrationGate(HashSealedModel):
+    """Persisted human Gate whose principal was authenticated out of band."""
+
+    schema_version: Literal["1.0"] = "1.0"
+    gate_id: StableId
+    assertion: MethodologyMigrationGateAssertion
+    assertion_sha256: Sha256Hex
+    authenticated_principal_id: Annotated[
+        str,
+        Field(min_length=1, max_length=128),
+    ]
+    authenticated_permission: Literal["control_plane.approve"] = (
+        "control_plane.approve"
+    )
+    authenticated_project_id: StableId
+    credential_verified: Literal[True] = True
+    persisted_at: AwareDatetime
+
+    @model_validator(mode="after")
+    def validate_authenticated_assertion(self):
+        if self.gate_id != self.assertion.assertion_id:
+            raise ValueError("authenticated migration Gate id must match its assertion")
+        if self.assertion_sha256 != self.assertion.content_sha256:
+            raise ValueError("authenticated migration Gate assertion hash differs")
+        if self.authenticated_principal_id != self.assertion.approved_by:
+            raise ValueError(
+                "authenticated migration principal must match the asserted approver"
+            )
+        if self.authenticated_project_id != self.assertion.project_id:
+            raise ValueError(
+                "authenticated migration project must match the asserted project"
+            )
+        if self.assertion.approved_at > self.persisted_at:
+            raise ValueError("migration Gate approval time cannot be in the future")
+        return self
+
+
+class MethodologyMigrationActivationReceipt(HashSealedModel):
+    """Authoritative receipt for one atomic successor-Task creation."""
+
+    schema_version: Literal["1.0"] = "1.0"
+    receipt_id: StableId
+    activated_at: AwareDatetime
+    request_id: StableId
+    request_sha256: Sha256Hex
+    recheck_decision: MethodologyMigrationPreviewDecision
+    authenticated_gate: AuthenticatedMethodologyMigrationGate
+    authenticated_gate_id: StableId
+    authenticated_gate_sha256: Sha256Hex
+    project_id: StableId
+    source_task_id: StableId
+    source_task_version: int = Field(ge=1)
+    source_control_task_version: int = Field(ge=1)
+    successor_task_id: StableId
+    successor_task_version: Literal[1] = 1
+    successor_control_task_status: TaskStatus
+    successor_control_task_version: int = Field(ge=1)
+    successor_plan_id: StableId
+    successor_plan_version: Literal[1] = 1
+    successor_inventory_id: StableId
+    successor_inventory_sha256: Sha256Hex
+    target_activation_id: StableId
+    target_methodology_id: StableId
+    target_methodology_version: Annotated[
+        str,
+        Field(pattern=r"^\d+\.\d+\.\d+$"),
+    ]
+    target_source_graph_sha256: Sha256Hex
+    target_activation_definition_sha256: Sha256Hex
+    selected_scope: StableId
+    migration_strategy: Literal["successor_task"] = "successor_task"
+    source_task_preserved: Literal[True] = True
+    migration_gate_persisted: Literal[True] = True
+    successor_task_created: Literal[True] = True
+    successor_plan_sealed: Literal[True] = True
+    successor_inventory_sealed: Literal[True] = True
+    route_activated: Literal[False] = False
+    runtime_spawned: Literal[False] = False
+    dispatch_authority: Literal[False] = False
+
+    @model_validator(mode="after")
+    def validate_activation_bindings(self):
+        decision = self.recheck_decision
+        if not decision.eligible or decision.blockers:
+            raise ValueError("migration activation requires an eligible atomic recheck")
+        if (
+            decision.request_id != self.request_id
+            or decision.request_sha256 != self.request_sha256
+        ):
+            raise ValueError("migration activation receipt request binding differs")
+        gate = self.authenticated_gate
+        if (
+            gate.gate_id != self.authenticated_gate_id
+            or gate.content_sha256 != self.authenticated_gate_sha256
+        ):
+            raise ValueError(
+                "migration activation receipt authenticated Gate binding differs"
+            )
+        if (
+            decision.project_id != self.project_id
+            or decision.task_id != self.source_task_id
+            or decision.observed_task_version != self.source_task_version
+            or decision.observed_control_task_version
+            != self.source_control_task_version
+        ):
+            raise ValueError("migration activation receipt source Task binding differs")
+        if self.successor_task_id == self.source_task_id:
+            raise ValueError("methodology migration must create a distinct successor Task")
+        assertion = gate.assertion
+        if (
+            assertion.project_id != self.project_id
+            or assertion.task_id != self.source_task_id
+            or assertion.expected_task_version != self.source_task_version
+            or assertion.expected_control_task_version
+            != self.source_control_task_version
+        ):
+            raise ValueError(
+                "migration activation receipt Gate source binding differs"
+            )
+        target_bindings = {
+            "target_activation_id": self.target_activation_id,
+            "target_methodology_id": self.target_methodology_id,
+            "target_methodology_version": self.target_methodology_version,
+            "target_source_graph_sha256": self.target_source_graph_sha256,
+            "target_activation_definition_sha256": (
+                self.target_activation_definition_sha256
+            ),
+            "selected_scope": self.selected_scope,
+        }
+        for field_name, expected in target_bindings.items():
+            if (
+                getattr(decision, field_name) != expected
+                or getattr(assertion, field_name) != expected
+            ):
+                raise ValueError(
+                    f"migration activation receipt {field_name} binding differs"
+                )
+        return self

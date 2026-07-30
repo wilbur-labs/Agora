@@ -23,6 +23,8 @@ from .methodology_activation import (
     validate_activation_source_binding,
 )
 from .methodology_migration import (
+    AuthenticatedMethodologyMigrationGate,
+    MethodologyMigrationActivationReceipt,
     MethodologyMigrationGateAssertion,
     MethodologyMigrationPreviewDecision,
     MethodologyMigrationPreviewRequest,
@@ -83,7 +85,9 @@ __all__ = [
     "HandoffPack",
     "InvalidationPlan",
     "M2UpdateAction",
+    "AuthenticatedMethodologyMigrationGate",
     "MethodologyActivationDefinition",
+    "MethodologyMigrationActivationReceipt",
     "MethodologyMigrationGateAssertion",
     "MethodologyMigrationPreviewDecision",
     "MethodologyMigrationPreviewRequest",
