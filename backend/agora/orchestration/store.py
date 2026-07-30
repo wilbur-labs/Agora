@@ -38,6 +38,7 @@ from .models import (
     ConsultationState,
     LedgerEntryType,
     Measurement,
+    MethodologyMigrationStateSnapshot,
     OrchestrationPlan,
     OrchestrationRun,
     OrchestrationStage,
@@ -2907,6 +2908,86 @@ class OrchestrationStore:
             db.execute("BEGIN")
             try:
                 return self._status_snapshot(db, task_id)
+            finally:
+                db.rollback()
+
+    def methodology_migration_snapshot(
+        self,
+        task_id: str,
+    ) -> MethodologyMigrationStateSnapshot:
+        """Read exact migration-preview inputs through one rollback snapshot."""
+
+        with closing(self._connect()) as db:
+            db.execute("BEGIN")
+            try:
+                task_row = db.execute(
+                    "SELECT * FROM tasks WHERE task_id = ?",
+                    (task_id,),
+                ).fetchone()
+                if task_row is None:
+                    raise OrchestrationNotFoundError(task_id)
+                plan_row = db.execute(
+                    "SELECT * FROM orchestration_plans WHERE task_id = ?",
+                    (task_id,),
+                ).fetchone()
+                if plan_row is None:
+                    raise OrchestrationNotFoundError(task_id)
+
+                control_plane = ControlPlaneStore(self.tasks)
+                control_task_row = db.execute(
+                    "SELECT * FROM control_tasks WHERE task_id = ?",
+                    (task_id,),
+                ).fetchone()
+                stage_inventory = control_plane.stage_inventory_snapshot(
+                    db,
+                    task_id,
+                )
+                active_runs = int(
+                    db.execute(
+                        """
+                        SELECT COUNT(*) AS value
+                        FROM orchestration_runs
+                        WHERE task_id = ? AND state = ?
+                        """,
+                        (task_id, RunState.RUNNING.value),
+                    ).fetchone()["value"]
+                )
+                active_consultations = int(
+                    db.execute(
+                        """
+                        SELECT COUNT(*) AS value
+                        FROM orchestration_consultations
+                        WHERE task_id = ? AND state = ?
+                        """,
+                        (task_id, ConsultationState.RUNNING.value),
+                    ).fetchone()["value"]
+                )
+                unsettled_protocol_runs = int(
+                    db.execute(
+                        """
+                        SELECT COUNT(*) AS value
+                        FROM protocol_runs
+                        WHERE task_id = ? AND settled_at IS NULL
+                        """,
+                        (task_id,),
+                    ).fetchone()["value"]
+                )
+                return MethodologyMigrationStateSnapshot(
+                    task=self.tasks._manifest(task_row),
+                    control_task=(
+                        control_plane._task_record(control_task_row)
+                        if control_task_row is not None
+                        else None
+                    ),
+                    plan=self._plan(plan_row),
+                    current_methodology=MethodologyDefinition.model_validate_json(
+                        plan_row["methodology_payload"]
+                    ),
+                    stage_inventory=stage_inventory,
+                    active_runs=active_runs,
+                    active_consultations=active_consultations,
+                    unsettled_protocol_runs=unsettled_protocol_runs,
+                )
             finally:
                 db.rollback()
 

@@ -155,8 +155,14 @@ outputs, Artifacts/Evidence/Approvals/Gates, runtime independence, budget
 policy, the authored source-review bounds, escalation, and migration policy.
 It deliberately has no routing, dispatch, or migration authority. The
 repository's `agora-aidlc-foundation@0.1` and every existing Task remain
-unchanged until an explicit Task-scoped migration Gate and later reviewed
-transactional migration path authorize a version change.
+unchanged. The read-only `MethodologyMigrationPreviewRequest@1.0` /
+`MethodologyMigrationPreviewDecision@1.0` path evaluates an exact
+`successor_task` proposal, including Task/Plan/inventory optimistic locks,
+repository/source/activation hashes, scope seeds, runtime pins, per-Stage and
+protected runtime budgets, a human assertion, and quiescence. It never writes
+state or grants migration authority. A later reviewed transaction must
+authenticate and persist the migration Gate, recheck every binding, and
+atomically create the successor Plan/inventory before any version change.
 
 ## 7. Quality and recovery invariants
 
@@ -221,9 +227,9 @@ tracked in `PROGRESS.md`.
 
 Still required:
 
-- a sealed Task-scoped AWS AI-DLC methodology migration decision and reviewed
-  transactional activation path; the definition is materialized but remains
-  non-authoritative;
+- a reviewed transactional AWS AI-DLC successor-Task activation path; the
+  source graph, activation definition, and read-only migration preview are
+  sealed but remain non-authoritative;
 - a concrete Task contract with roles, process, Context/Handoff expectations,
   acceptance criteria, and required Artifacts/Evidence/Gates;
 - consult and decide/adopt semantics under the authoritative Task;

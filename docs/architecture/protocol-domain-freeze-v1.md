@@ -40,6 +40,8 @@ the Pydantic models in `backend/agora/protocol/`:
 - `gate-requirement.schema.json`
 - `runner-isolation-contract.schema.json`
 - `methodology-activation-definition.schema.json`
+- `methodology-migration-preview-request.schema.json`
+- `methodology-migration-preview-decision.schema.json`
 - `methodology-source-graph.schema.json`
 - `stage-inventory.schema.json`
 - `provider-usage-observation.schema.json`
@@ -128,8 +130,12 @@ Gate requirements, pairwise-distinct Codex/Claude/Kiro responsibilities,
 budget/quality policy, bounded escalation, approval bindings, and migration
 policy. It remains definition-only with `routing_authority=false`,
 `dispatch_authority=false`, and `migration_authority=false`. Existing Tasks
-remain pinned until a later sealed Task-scoped migration decision and reviewed
-transactional migration path authorize a version change.
+remain pinned. A sealed, read-only Task-scoped successor migration preview now
+evaluates exact Task/Plan/inventory versions, repository, source/activation
+hashes, scope seeds, runtime pins, explicit Stage/runtime budgets, a human
+assertion, and quiescence. Even `eligible=true` has no migration authority; a
+later reviewed transaction must authenticate and persist the Gate and recheck
+every binding before it creates a successor Task.
 
 For a Task with a sealed grouped inventory, Agora routes the first incomplete
 Stage in inventory order and only that route may start a formal Run. Successful

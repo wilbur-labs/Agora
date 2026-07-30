@@ -37,6 +37,10 @@ from agora.protocol.models import (
     NativeRuntimeCapabilityObservation,
     StageInventory,
 )
+from agora.protocol.methodology_migration import (
+    MethodologyMigrationPreviewDecision,
+    MethodologyMigrationPreviewRequest,
+)
 from agora.protocol.state_machines import StageStatus, TaskStatus
 from agora.tasks.models import CreateTaskRequest, TaskBudget, TaskManifest, TaskRisk, utc_now
 from agora.tasks.store import TaskStore
@@ -47,6 +51,10 @@ from .methodology import (
     FOUNDATION_METHODOLOGY,
     MethodologyDefinition,
     methodology_sha256,
+)
+from .methodology_migration import (
+    derive_methodology_migration_preview,
+    observe_migration_artifacts,
 )
 from .models import (
     BudgetAmendment,
@@ -996,6 +1004,41 @@ class TaskOrchestrationService:
             project_id=task.project_id,
             decision=decision,
             remediation=runtime_preflight_remediation(decision),
+        )
+
+    def preview_methodology_migration(
+        self,
+        task_id: str,
+        request: MethodologyMigrationPreviewRequest,
+    ) -> MethodologyMigrationPreviewDecision:
+        """Explain one successor-Task proposal without persistence or mutation."""
+
+        snapshot = self.store.methodology_migration_snapshot(task_id)
+        project = None
+        try:
+            project = self.projects.get(snapshot.task.project_id)
+            repository = self.revision_resolver(
+                project.root,
+                snapshot.task.project_id,
+            )
+        except (KeyError, ValueError):
+            repository = None
+
+        artifacts = list(request.seed_artifacts)
+        if request.human_gate is not None:
+            artifacts.append(request.human_gate.migration_artifact)
+        observed_artifact_sha256s = (
+            observe_migration_artifacts(project.root, artifacts)
+            if project is not None
+            else {artifact.path: None for artifact in artifacts}
+        )
+        return derive_methodology_migration_preview(
+            request=request,
+            snapshot=snapshot,
+            repository=repository,
+            runtimes=self.runtimes,
+            observed_artifact_sha256s=observed_artifact_sha256s,
+            generated_at=utc_now(),
         )
 
     async def run_until_blocked(

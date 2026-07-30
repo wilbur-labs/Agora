@@ -12,6 +12,7 @@ from agora.control_plane.models import (
     StageRecord,
     StageRouteDecision,
     TaskLifecycleDecision,
+    TaskRecord,
 )
 from agora.protocol.models import (
     Approval,
@@ -465,6 +466,19 @@ class RuntimePreflightPreview(StrictModel):
         if not self.decision.run_id.startswith("preview_"):
             raise ValueError("preflight preview decision must use a preview Run identity")
         return self
+
+
+class MethodologyMigrationStateSnapshot(StrictModel):
+    """Focused read-only state used by methodology migration preview."""
+
+    task: TaskManifest
+    control_task: TaskRecord | None
+    plan: OrchestrationPlan
+    current_methodology: MethodologyDefinition
+    stage_inventory: StageInventory | None
+    active_runs: int = Field(ge=0)
+    active_consultations: int = Field(ge=0)
+    unsettled_protocol_runs: int = Field(ge=0)
 
 
 class UsageLedgerEntry(StrictModel):

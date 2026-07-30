@@ -19,6 +19,7 @@ from agora.tasks.models import TaskRisk
 from agora.tasks.store import TaskNotFoundError, TaskStore
 
 from .contracts import load_task_contract
+from .methodology_migration import load_methodology_migration_request
 from .models import Measurement, PlanState
 from .runtime import ReadOnlyCliRunner, build_runtime_registry
 from .runtime_capabilities import collect_native_runtime_capabilities
@@ -63,6 +64,16 @@ def parser() -> argparse.ArgumentParser:
         help="Preview the pinned runtime allow/block decision without claiming a Run",
     )
     preflight.add_argument("task_id")
+
+    migration_preview = commands.add_parser(
+        "migration-preview",
+        help=(
+            "Preview AWS AI-DLC successor-Task migration eligibility without "
+            "mutating state"
+        ),
+    )
+    migration_preview.add_argument("task_id")
+    migration_preview.add_argument("--request", type=Path, required=True)
 
     start = commands.add_parser("start", help="Create a Task and attach the provisional method")
     start.add_argument("title", nargs="?")
@@ -234,6 +245,20 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "are admission-control reservations, not native hard caps"
             )
         service = build_service()
+        if args.command == "migration-preview":
+            request = load_methodology_migration_request(args.request)
+            decision = service.preview_methodology_migration(
+                args.task_id,
+                request,
+            )
+            print(
+                json.dumps(
+                    decision.model_dump(mode="json"),
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return 0 if decision.eligible else 2
         if args.command == "start":
             contract = load_task_contract(args.contract) if args.contract else None
             if contract and args.title:

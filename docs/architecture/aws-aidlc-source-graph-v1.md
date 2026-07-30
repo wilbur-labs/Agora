@@ -112,7 +112,9 @@ hash-binds:
 - Task methodology activation/migration semantics.
 
 That definition has no routing, dispatch, or migration authority. It preserves
-the existing provisional method and current Tasks. The next safe slice is a
-sealed Task-scoped migration preview/decision; no version change may occur
-until an explicit migration Gate and a later reviewed transactional migration
-path authorize it.
+the existing provisional method and current Tasks. A sealed, read-only
+successor-Task migration preview now checks the exact current state, selected
+scope inputs, runtime pins, and explicit Stage/runtime budget proposal. Its
+human Gate assertion is non-authoritative preview input. No version change may
+occur until a later reviewed transaction authenticates and persists the Gate,
+rechecks every binding, and atomically creates the successor Plan/inventory.

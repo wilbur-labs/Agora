@@ -22,6 +22,11 @@ from .methodology_activation import (
     MethodologyActivationDefinition,
     validate_activation_source_binding,
 )
+from .methodology_migration import (
+    MethodologyMigrationGateAssertion,
+    MethodologyMigrationPreviewDecision,
+    MethodologyMigrationPreviewRequest,
+)
 from .models import (
     Approval,
     ApprovalStatus,
@@ -79,6 +84,9 @@ __all__ = [
     "InvalidationPlan",
     "M2UpdateAction",
     "MethodologyActivationDefinition",
+    "MethodologyMigrationGateAssertion",
+    "MethodologyMigrationPreviewDecision",
+    "MethodologyMigrationPreviewRequest",
     "MethodologyExternalSourceArtifact",
     "MethodologyScopeProfile",
     "MethodologySourceArtifact",

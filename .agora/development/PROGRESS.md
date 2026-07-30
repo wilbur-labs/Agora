@@ -1,5 +1,88 @@
 # Agora Control Plane Development Progress
 
+## 2026-07-29 - AWS AI-DLC successor migration preview (review pending)
+
+### Bounded implementation
+
+- [x] Added hash-sealed `MethodologyMigrationPreviewRequest@1.0`,
+  `MethodologyMigrationGateAssertion@1.0`, and
+  `MethodologyMigrationPreviewDecision@1.0` contracts plus checked-in JSON
+  Schemas. The only accepted strategy is `successor_task`; no in-place
+  methodology mutation is representable.
+- [x] Added `agora task migration-preview TASK_ID --request PATH`. It reads one
+  rollback-only Task/Control-Task/Plan/inventory/quiescence snapshot, observes
+  bounded repository Artifacts, and prints a deterministic ordered eligibility
+  decision. Eligible returns 0 and blocked returns 2; neither result writes
+  state or grants authority.
+- [x] The preview validates exact Task, authoritative Control Task, Plan,
+  current-methodology and grouped-inventory optimistic bindings; clean
+  repository/ref/commit; pinned AWS AI-DLC source/activation hashes; one of the
+  nine scopes and its exact hash-bound seed set; current Codex/Claude/Kiro
+  command and registry hashes; explicit per-selected-Stage instance budgets
+  plus protected runtime reservations; an exact human assertion; and Task
+  quiescence.
+- [x] Preserved source semantics without invented budgets. The request supplies
+  every selected Stage allocation and maximum Run reservation. The five
+  `for_each_artifact=unit-of-work` Stages must use the explicit unit count;
+  other selected Stages have one instance. Stage and protected runtime totals
+  must fit the current Task Token/cost envelope, including the explicit
+  Token-only branch.
+- [x] Kept the human Gate assertion non-authoritative: it hash-binds the exact
+  successor strategy, current optimistic locks/methodology, migration proposal
+  path/hash, repository/source/activation, scope, seeds, runtime registry, and
+  budget, but the preview does not authenticate identity, persist/consume a
+  Gate, or authorize migration.
+- [x] Every decision fixes `preview_only=true`, all mutation/execution flags
+  false, and routing/dispatch/migration authority false. Repository Artifact
+  observation rejects paths outside the project, unreadable/changing files,
+  files over 16 MB, and aggregate input over 64 MB.
+- [x] Documented the boundary in
+  `docs/architecture/aws-aidlc-methodology-migration-preview-v1.md`; HTTP, UI,
+  runtime dispatch, routing, and compatibility migration remain deferred.
+
+### Verification and review state
+
+- [x] New migration-preview regressions: 18 passed.
+- [x] Migration preview, activation/source contracts, protocol freeze,
+  inventory/lifecycle, Task orchestration, and formal protocol orchestration:
+  235 passed.
+- [x] Complete non-integration backend surface outside two legacy literal
+  `/tmp/...` Windows path tests: 588 passed, 20 deselected. The exact required
+  suite reached 588 passed and 18 deselected; only
+  `test_tool_calling_loop` and `test_multi_tool_sequence` failed because this
+  Windows sandbox denied `D:\tmp`, not because of migration-preview behavior.
+- [x] Protocol Schema export/check, system-Temp-isolated `compileall`, CLI help,
+  and `git diff --check` passed.
+- [x] Final post-review verification repeated the 18 focused regressions and
+  the complete backend surface outside the two legacy literal `/tmp/...`
+  tests: 588 passed, 20 deselected. Protocol Schema export/check,
+  system-Temp-isolated `compileall`, migration-preview CLI help, and
+  `git diff --check` also passed.
+- [x] Kiro CLI session `87107c54-bde9-4707-a7f8-0159524b03fc`
+  independently reviewed the methodology/protocol/lifecycle boundary,
+  deterministic bindings, budget/quiescence checks, rollback-only snapshot,
+  bounded Artifact observation, schemas, and non-authority guarantees. It
+  returned `VERDICT: APPROVE` with no high/medium findings. Its one LOW
+  documentation finding was fixed by documenting the existing stable stdout
+  error behavior, and its targeted final re-review confirmed the prior
+  approval remains valid.
+- [x] Independent Claude Code safe-mode review inspected the complete final
+  tracked and untracked implementation, schemas, wiring, docs, and adversarial
+  regressions. It returned `VERDICT: APPROVE` with no high/medium findings.
+  Its non-blocking LOW notes concern the rollback snapshot's redundant
+  idempotent Control Plane schema initialization and the deliberately
+  overloaded documented exit-2/stdout contract; its informational aggregate
+  byte-accounting observation is fail-closed.
+
+### Current checkpoint and next safe action
+
+Implementation, automated verification, actionable finding resolution, and
+both review gates are complete on baseline `74e2acd`. This bounded preview is
+ready for its reviewed commit/push. The next implementation slice after that is
+a reviewed transactional successor-Task activation path that authenticates and
+persists the human migration Gate and atomically rechecks every preview binding
+before sealing the successor Plan/inventory.
+
 ## 2026-07-29 - AWS AI-DLC activation definition (reviewed)
 
 ### Bounded implementation

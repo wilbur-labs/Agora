@@ -114,8 +114,15 @@ Existing Tasks retain their pinned methodology. In-place methodology mutation
 and automatic rerouting are forbidden, and no activation command is exposed
 by this increment.
 
-The next safe backend slice is a sealed, Task-scoped methodology migration
-preview/decision that validates the exact Task, repository revision, source
-graph, activation definition, selected scope, runtime pins, budget, and human
-Gate before any later transactional migration implementation. HTTP and UI
-remain deferred.
+The sealed, read-only Task-scoped successor migration preview is defined in
+`aws-aidlc-methodology-migration-preview-v1.md`. It validates the exact Task,
+Plan, inventory, repository revision, source graph, activation definition,
+selected scope seeds, runtime pins, per-Stage/runtime budget proposal, human
+assertion, and quiescence without writing state. Its Gate assertion is preview
+input, not authenticated or persisted authority, and `eligible=true` does not
+authorize migration.
+
+The next safe backend slice is a reviewed transactional successor-Task
+activation path that rechecks every preview binding, authenticates and
+persists the migration Gate, and atomically seals the successor Plan and
+grouped Stage inventory. HTTP and UI remain deferred.
