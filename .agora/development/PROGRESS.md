@@ -1,5 +1,86 @@
 # Agora Control Plane Development Progress
 
+## 2026-07-31 - AWS AI-DLC next-Stage formal Gate configuration (reviewed)
+
+### Bounded implementation
+
+- [x] Added hash-sealed `MethodologyStageGateRequest@1.0` and
+  `MethodologyStageGateReceipt@1.0` contracts plus checked-in JSON Schemas.
+  The request binds the live Task, Control Task, Plan, grouped inventory,
+  execution contract, repository/runtime pins, immutable predecessor dispatch
+  receipt, settled formal Run/Handoff, completed predecessor Stage, passed
+  predecessor Gate, and exact execution-contract sequence-2 Stage/Gate.
+- [x] Added
+  `agora task migration-next-stage-gate SUCCESSOR_TASK_ID --request PATH
+  --credential-env NAME`. Authentication and strict bounded request loading
+  complete before service/storage initialization. The principal must retain
+  `control_plane.approve`, exact Project scope, and identity equality with the
+  migration Gate, execution contract, and first Run claim.
+- [x] One immediate transaction revalidates the complete sealed predecessor
+  chain, live repository before/after bounded Artifact hashing, runtime
+  registry and all command pins, the exact current grouped-inventory route,
+  and absence of any sequence-2 Run, Context, compatibility Run,
+  consultation, Artifact, or Evidence.
+- [x] Only the Control Plane's authoritative `_configure_gate_tx` creates the
+  exact canonical sequence-2 Gate requirements. The transaction proves the
+  Stage stays `READY`, the new Gate is version 1 and `PENDING`, the route stays
+  runnable, and Task, Control Task, Plan, and Stage remain unchanged. Task and
+  Control Plane audit events plus the immutable Gate ledger commit or roll
+  back together.
+- [x] Preserved the semantic distinction that
+  `StageRouteDecision.runnable=true` means the routed Stage is ready even when
+  its formal Gate is absent. The receipt separately records
+  `formal_run_claimable_before=false` and
+  `formal_run_claimable_after=true`; it grants no Run, Context, process,
+  Artifact, Evidence, dispatch, routing, or substitution authority.
+- [x] Added exact replay with current original-principal authorization,
+  different-request and identity conflicts, real two-thread convergence,
+  event-failure rollback, twelve stale-binding cases, three authorization
+  denials, unsettled predecessor, repository/runtime drift, CLI secret
+  non-persistence/auth-before-store, loader, schema, and zero-write
+  regressions.
+- [x] Documented the boundary in
+  `docs/architecture/aws-aidlc-methodology-next-stage-gate-v1.md` and linked it
+  from the reviewed first-Run dispatch boundary.
+
+### Verification and review state
+
+- [x] Focused next-Stage Gate selection: 24 passed, 103 deselected.
+- [x] Complete AWS AI-DLC migration test module: 127 passed.
+- [x] Related methodology, Control Plane Stage inventory/routing/lifecycle,
+  protocol adapter/orchestration/freeze, and Task orchestration suite:
+  388 passed.
+- [x] Exact complete non-integration backend suite: 701 passed, 18 deselected,
+  with only the existing Starlette/httpx and Windows Proactor cleanup warnings.
+- [x] Protocol freeze suite: 34 passed. Protocol Schema export/check,
+  system-Temp-isolated `compileall`, `migration-next-stage-gate --help`, and
+  `git diff --check` passed.
+- [x] Kiro CLI session `805cf6a4-12fc-4f6a-8319-fa1a052c0ecc`
+  independently inspected the full diff, governing documents, generated
+  Schemas, transaction/authority/replay surface, and regression coverage. It
+  independently reran all 24 focused and 127 methodology tests plus Schema and
+  compile checks, found no HIGH or MEDIUM actionable issue, and returned
+  `KIRO_APPROVE`.
+- [x] Independent Claude Code safe-mode review inspected every changed
+  implementation, DDL, protocol model, generated Schema, CLI, documentation,
+  and test. It found no actionable HIGH, MEDIUM, or LOW defect and returned
+  `CLAUDE_APPROVE`. Its environment could not execute the venv, so its verdict
+  used static inspection; the complete 701-case execution above is the local
+  validation authority.
+
+### Current checkpoint and next safe action
+
+Implementation, automated verification, and both review gates are complete on
+baseline `38f047d`. This sequence-2 formal Gate configuration increment is
+ready for its reviewed commit/push. The next backend slice must claim exactly
+one sequence-2 formal Run and Context Pack only after the persisted Gate exists
+with the execution contract's canonical requirements. It must bind selected
+predecessor Artifact versions from the settled sequence-1 Handoff, preserve
+the current route/runtime/repository/usage reservation, create no compatibility
+Run, and start no process. Dispatch, later inventory positions, automatic
+rework, HTTP, UI, dynamic provider substitution, and native AI-DLC file
+installation remain deferred.
+
 ## 2026-07-31 - AWS AI-DLC first claimed-Run dispatch and settlement (reviewed)
 
 ### Bounded implementation

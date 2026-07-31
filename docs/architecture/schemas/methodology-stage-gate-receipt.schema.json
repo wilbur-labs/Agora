@@ -1,0 +1,537 @@
+{
+  "$defs": {
+    "GateRequirement": {
+      "additionalProperties": false,
+      "properties": {
+        "commit_sha": {
+          "title": "Commit Sha",
+          "type": "string"
+        },
+        "evidence_kind": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Evidence Kind",
+          "type": "string"
+        },
+        "failure_action": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "title": "Failure Action",
+          "type": "string"
+        },
+        "priority": {
+          "default": 100,
+          "maximum": 10000,
+          "minimum": 0,
+          "title": "Priority",
+          "type": "integer"
+        },
+        "ref": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "title": "Ref",
+          "type": "string"
+        },
+        "repository_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Repository Id",
+          "type": "string"
+        },
+        "requirement_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Requirement Id",
+          "type": "string"
+        },
+        "schema_version": {
+          "default": "1.0",
+          "pattern": "^1\\.[0-9]+$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "severity": {
+          "$ref": "#/$defs/RequirementSeverity",
+          "default": "blocker"
+        },
+        "title": {
+          "maxLength": 300,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "requirement_id",
+        "title",
+        "repository_id",
+        "ref",
+        "commit_sha",
+        "evidence_kind",
+        "failure_action"
+      ],
+      "title": "GateRequirement",
+      "type": "object"
+    },
+    "MigrationRepositoryBinding": {
+      "additionalProperties": false,
+      "properties": {
+        "commit_sha": {
+          "title": "Commit Sha",
+          "type": "string"
+        },
+        "ref": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "title": "Ref",
+          "type": "string"
+        },
+        "repository_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Repository Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repository_id",
+        "ref",
+        "commit_sha"
+      ],
+      "title": "MigrationRepositoryBinding",
+      "type": "object"
+    },
+    "RequirementSeverity": {
+      "enum": [
+        "blocker",
+        "warning"
+      ],
+      "title": "RequirementSeverity",
+      "type": "string"
+    },
+    "TaskStatus": {
+      "enum": [
+        "backlog",
+        "ready",
+        "active",
+        "blocked",
+        "needs_review",
+        "completed",
+        "failed",
+        "cancelled"
+      ],
+      "title": "TaskStatus",
+      "type": "string"
+    }
+  },
+  "$id": "https://agora.local/schemas/v1/methodology-stage-gate-receipt.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Immutable receipt for one non-dispatching next-Stage Gate setup.",
+  "properties": {
+    "authenticated_permission": {
+      "const": "control_plane.approve",
+      "default": "control_plane.approve",
+      "title": "Authenticated Permission",
+      "type": "string"
+    },
+    "authenticated_principal_id": {
+      "maxLength": 256,
+      "minLength": 1,
+      "title": "Authenticated Principal Id",
+      "type": "string"
+    },
+    "configured_at": {
+      "format": "date-time",
+      "title": "Configured At",
+      "type": "string"
+    },
+    "content_sha256": {
+      "title": "Content Sha256",
+      "type": "string"
+    },
+    "context_pack_created": {
+      "const": false,
+      "default": false,
+      "title": "Context Pack Created",
+      "type": "boolean"
+    },
+    "control_task_mutated": {
+      "const": false,
+      "default": false,
+      "title": "Control Task Mutated",
+      "type": "boolean"
+    },
+    "control_task_status_after": {
+      "$ref": "#/$defs/TaskStatus"
+    },
+    "control_task_status_before": {
+      "$ref": "#/$defs/TaskStatus"
+    },
+    "control_task_version_after": {
+      "minimum": 1,
+      "title": "Control Task Version After",
+      "type": "integer"
+    },
+    "control_task_version_before": {
+      "minimum": 1,
+      "title": "Control Task Version Before",
+      "type": "integer"
+    },
+    "dispatch_authority": {
+      "const": false,
+      "default": false,
+      "title": "Dispatch Authority",
+      "type": "boolean"
+    },
+    "execution_contract_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Execution Contract Id",
+      "type": "string"
+    },
+    "execution_contract_sha256": {
+      "title": "Execution Contract Sha256",
+      "type": "string"
+    },
+    "formal_gate_configured": {
+      "const": true,
+      "default": true,
+      "title": "Formal Gate Configured",
+      "type": "boolean"
+    },
+    "formal_run_claimable_after": {
+      "const": true,
+      "default": true,
+      "title": "Formal Run Claimable After",
+      "type": "boolean"
+    },
+    "formal_run_claimable_before": {
+      "const": false,
+      "default": false,
+      "title": "Formal Run Claimable Before",
+      "type": "boolean"
+    },
+    "gate_key": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Gate Key",
+      "type": "string"
+    },
+    "gate_status": {
+      "const": "pending",
+      "default": "pending",
+      "title": "Gate Status",
+      "type": "string"
+    },
+    "gate_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Gate Version",
+      "type": "integer"
+    },
+    "inventory_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Inventory Id",
+      "type": "string"
+    },
+    "inventory_sha256": {
+      "title": "Inventory Sha256",
+      "type": "string"
+    },
+    "plan_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Plan Id",
+      "type": "string"
+    },
+    "plan_mutated": {
+      "const": false,
+      "default": false,
+      "title": "Plan Mutated",
+      "type": "boolean"
+    },
+    "plan_version_after": {
+      "minimum": 1,
+      "title": "Plan Version After",
+      "type": "integer"
+    },
+    "plan_version_before": {
+      "minimum": 1,
+      "title": "Plan Version Before",
+      "type": "integer"
+    },
+    "predecessor_dispatch_receipt_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Predecessor Dispatch Receipt Id",
+      "type": "string"
+    },
+    "predecessor_dispatch_receipt_sha256": {
+      "title": "Predecessor Dispatch Receipt Sha256",
+      "type": "string"
+    },
+    "predecessor_gate_key": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Predecessor Gate Key",
+      "type": "string"
+    },
+    "predecessor_gate_status": {
+      "const": "passed",
+      "default": "passed",
+      "title": "Predecessor Gate Status",
+      "type": "string"
+    },
+    "predecessor_handoff_pack_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Predecessor Handoff Pack Id",
+      "type": "string"
+    },
+    "predecessor_handoff_pack_sha256": {
+      "title": "Predecessor Handoff Pack Sha256",
+      "type": "string"
+    },
+    "predecessor_protocol_settled": {
+      "const": true,
+      "default": true,
+      "title": "Predecessor Protocol Settled",
+      "type": "boolean"
+    },
+    "predecessor_run_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Predecessor Run Id",
+      "type": "string"
+    },
+    "predecessor_stage_key": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Predecessor Stage Key",
+      "type": "string"
+    },
+    "predecessor_stage_status": {
+      "const": "completed",
+      "default": "completed",
+      "title": "Predecessor Stage Status",
+      "type": "string"
+    },
+    "process_started": {
+      "const": false,
+      "default": false,
+      "title": "Process Started",
+      "type": "boolean"
+    },
+    "project_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Project Id",
+      "type": "string"
+    },
+    "protocol_artifacts_created": {
+      "const": false,
+      "default": false,
+      "title": "Protocol Artifacts Created",
+      "type": "boolean"
+    },
+    "protocol_evidence_created": {
+      "const": false,
+      "default": false,
+      "title": "Protocol Evidence Created",
+      "type": "boolean"
+    },
+    "provider_substitution": {
+      "const": false,
+      "default": false,
+      "title": "Provider Substitution",
+      "type": "boolean"
+    },
+    "receipt_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Receipt Id",
+      "type": "string"
+    },
+    "repository": {
+      "$ref": "#/$defs/MigrationRepositoryBinding"
+    },
+    "request_authenticated": {
+      "const": true,
+      "default": true,
+      "title": "Request Authenticated",
+      "type": "boolean"
+    },
+    "request_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Request Id",
+      "type": "string"
+    },
+    "request_sha256": {
+      "title": "Request Sha256",
+      "type": "string"
+    },
+    "requirements": {
+      "items": {
+        "$ref": "#/$defs/GateRequirement"
+      },
+      "maxItems": 210,
+      "minItems": 1,
+      "title": "Requirements",
+      "type": "array"
+    },
+    "route_runnable_after": {
+      "const": true,
+      "default": true,
+      "title": "Route Runnable After",
+      "type": "boolean"
+    },
+    "route_runnable_before": {
+      "const": true,
+      "default": true,
+      "title": "Route Runnable Before",
+      "type": "boolean"
+    },
+    "run_created": {
+      "const": false,
+      "default": false,
+      "title": "Run Created",
+      "type": "boolean"
+    },
+    "runtime": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Runtime",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "stage_key": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Stage Key",
+      "type": "string"
+    },
+    "stage_mutated": {
+      "const": false,
+      "default": false,
+      "title": "Stage Mutated",
+      "type": "boolean"
+    },
+    "stage_sequence": {
+      "maximum": 200,
+      "minimum": 2,
+      "title": "Stage Sequence",
+      "type": "integer"
+    },
+    "stage_status_after": {
+      "const": "ready",
+      "default": "ready",
+      "title": "Stage Status After",
+      "type": "string"
+    },
+    "stage_status_before": {
+      "const": "ready",
+      "default": "ready",
+      "title": "Stage Status Before",
+      "type": "string"
+    },
+    "stage_version_after": {
+      "minimum": 2,
+      "title": "Stage Version After",
+      "type": "integer"
+    },
+    "stage_version_before": {
+      "minimum": 2,
+      "title": "Stage Version Before",
+      "type": "integer"
+    },
+    "task_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Task Id",
+      "type": "string"
+    },
+    "task_mutated": {
+      "const": false,
+      "default": false,
+      "title": "Task Mutated",
+      "type": "boolean"
+    },
+    "task_version_after": {
+      "minimum": 1,
+      "title": "Task Version After",
+      "type": "integer"
+    },
+    "task_version_before": {
+      "minimum": 1,
+      "title": "Task Version Before",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "content_sha256",
+    "receipt_id",
+    "configured_at",
+    "request_id",
+    "request_sha256",
+    "authenticated_principal_id",
+    "project_id",
+    "task_id",
+    "task_version_before",
+    "task_version_after",
+    "control_task_status_before",
+    "control_task_version_before",
+    "control_task_status_after",
+    "control_task_version_after",
+    "plan_id",
+    "plan_version_before",
+    "plan_version_after",
+    "inventory_id",
+    "inventory_sha256",
+    "execution_contract_id",
+    "execution_contract_sha256",
+    "predecessor_dispatch_receipt_id",
+    "predecessor_dispatch_receipt_sha256",
+    "predecessor_run_id",
+    "predecessor_stage_key",
+    "predecessor_gate_key",
+    "predecessor_handoff_pack_id",
+    "predecessor_handoff_pack_sha256",
+    "repository",
+    "stage_sequence",
+    "stage_key",
+    "stage_version_before",
+    "stage_version_after",
+    "gate_key",
+    "runtime",
+    "requirements"
+  ],
+  "title": "MethodologyStageGateReceipt",
+  "type": "object"
+}

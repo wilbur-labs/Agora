@@ -27,6 +27,7 @@ from .methodology_route_activation import (
     load_methodology_route_activation_request,
 )
 from .methodology_run_claim import load_methodology_run_claim_request
+from .methodology_stage_gate import load_methodology_stage_gate_request
 from .models import Measurement, PlanState
 from .runtime import ReadOnlyCliRunner, build_runtime_registry
 from .runtime_capabilities import collect_native_runtime_capabilities
@@ -164,6 +165,25 @@ def parser() -> argparse.ArgumentParser:
             "Acknowledge that provider usage is not hard-capped by the "
             "methodology Run Token reservation"
         ),
+    )
+
+    migration_next_stage_gate = commands.add_parser(
+        "migration-next-stage-gate",
+        help=(
+            "Authenticate and configure the exact next AWS AI-DLC formal "
+            "Stage Gate without claiming a Run or starting a process"
+        ),
+    )
+    migration_next_stage_gate.add_argument("task_id")
+    migration_next_stage_gate.add_argument(
+        "--request",
+        type=Path,
+        required=True,
+    )
+    migration_next_stage_gate.add_argument(
+        "--credential-env",
+        required=True,
+        help="Environment variable containing a configured Control Plane token",
     )
 
     start = commands.add_parser("start", help="Create a Task and attach the provisional method")
@@ -340,11 +360,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         methodology_contract_principal = None
         methodology_route_activation = None
         methodology_run_claim = None
+        methodology_stage_gate = None
         if args.command in {
             "migration-activate",
             "migration-contract",
             "migration-route-activate",
             "migration-run-claim",
+            "migration-next-stage-gate",
         }:
             if re.fullmatch(
                 r"[A-Za-z_][A-Za-z0-9_]{0,127}",
@@ -369,9 +391,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                     load_methodology_route_activation_request(args.request),
                     principal,
                 )
-            else:
+            elif args.command == "migration-run-claim":
                 methodology_run_claim = (
                     load_methodology_run_claim_request(args.request),
+                    principal,
+                )
+            else:
+                methodology_stage_gate = (
+                    load_methodology_stage_gate_request(args.request),
                     principal,
                 )
         service = build_service()
@@ -459,6 +486,22 @@ def main(argv: Sequence[str] | None = None) -> int:
                         args.allow_unbounded_native_usage
                     ),
                 )
+            )
+            print(
+                json.dumps(
+                    receipt.model_dump(mode="json"),
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return 0
+        if args.command == "migration-next-stage-gate":
+            assert methodology_stage_gate is not None
+            request, principal = methodology_stage_gate
+            receipt = service.configure_methodology_next_stage_gate(
+                args.task_id,
+                request,
+                principal=principal,
             )
             print(
                 json.dumps(

@@ -378,6 +378,36 @@ def initialize_orchestration_schema(db: sqlite3.Connection) -> None:
             ON orchestration_methodology_usage_ledger(
                 task_id, created_at, entry_id
             );
+
+        CREATE TABLE IF NOT EXISTS orchestration_methodology_stage_gates (
+            request_id TEXT PRIMARY KEY,
+            request_sha256 TEXT NOT NULL,
+            request_payload TEXT NOT NULL,
+            receipt_id TEXT NOT NULL UNIQUE,
+            receipt_sha256 TEXT NOT NULL,
+            receipt_payload TEXT NOT NULL,
+            task_id TEXT NOT NULL REFERENCES tasks(task_id),
+            plan_id TEXT NOT NULL REFERENCES orchestration_plans(plan_id),
+            execution_contract_id TEXT NOT NULL
+                REFERENCES orchestration_methodology_execution_contracts(contract_id),
+            predecessor_dispatch_id TEXT NOT NULL
+                REFERENCES orchestration_methodology_run_dispatches(dispatch_id),
+            predecessor_run_id TEXT NOT NULL REFERENCES protocol_runs(run_id),
+            stage_sequence INTEGER NOT NULL CHECK (
+                stage_sequence >= 2 AND stage_sequence <= 200
+            ),
+            stage_key TEXT NOT NULL,
+            gate_key TEXT NOT NULL,
+            authenticated_principal_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(task_id, stage_key),
+            UNIQUE(task_id, gate_key),
+            UNIQUE(task_id, stage_sequence)
+        );
+        CREATE INDEX IF NOT EXISTS idx_methodology_stage_gates_task_sequence
+            ON orchestration_methodology_stage_gates(
+                task_id, stage_sequence, created_at
+            );
         """
     )
     columns = {row[1] for row in db.execute("PRAGMA table_info(orchestration_runs)")}

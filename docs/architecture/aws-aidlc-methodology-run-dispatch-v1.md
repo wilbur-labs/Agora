@@ -115,10 +115,14 @@ Recovery never starts a second process:
 This covers crashes between dispatch claim, PID attachment, terminal
 observation, Control Plane settlement, and final usage projection.
 
-## Deferred boundaries
+## Succeeding Gate boundary
 
-The current increment executes and settles only the already claimed first
-Stage. Automatic cross-Stage rework, automatic claiming/dispatch of later
-methodology Stages, dynamic provider substitution, authenticated HTTP, Task
-Workbench UI, and native AWS AI-DLC file installation remain separate reviewed
-increments.
+The reviewed succeeding increment is defined in
+`aws-aidlc-methodology-next-stage-gate-v1.md`. A successful first settlement
+activates the next inventory Stage, but Stage readiness is not a substitute
+for its formal Gate. The authenticated next-Stage operation configures only
+that exact contract-bound Gate and still creates no Run or process.
+
+Automatic cross-Stage rework, claiming/dispatch of later methodology Stages,
+dynamic provider substitution, authenticated HTTP, Task Workbench UI, and
+native AWS AI-DLC file installation remain separate reviewed increments.

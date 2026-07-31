@@ -44,6 +44,10 @@ from .methodology_run_dispatch import (
     MethodologyRunDispatchPolicyDecision,
     MethodologyRunDispatchReceipt,
 )
+from .methodology_stage_gate import (
+    MethodologyStageGateReceipt,
+    MethodologyStageGateRequest,
+)
 from .models import (
     Approval,
     ApprovalStatus,
@@ -114,6 +118,8 @@ __all__ = [
     "MethodologyRunDispatchClaim",
     "MethodologyRunDispatchPolicyDecision",
     "MethodologyRunDispatchReceipt",
+    "MethodologyStageGateReceipt",
+    "MethodologyStageGateRequest",
     "MethodologySeedArtifactRegistration",
     "MethodologyExternalSourceArtifact",
     "MethodologyScopeProfile",

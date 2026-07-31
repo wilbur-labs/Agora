@@ -56,6 +56,10 @@ from agora.protocol.methodology_run_dispatch import (
     MethodologyRunDispatchClaim,
     MethodologyRunDispatchReceipt,
 )
+from agora.protocol.methodology_stage_gate import (
+    MethodologyStageGateReceipt,
+    MethodologyStageGateRequest,
+)
 from agora.protocol.state_machines import StageStatus, TaskStatus
 from agora.tasks.models import CreateTaskRequest, TaskBudget, TaskManifest, TaskRisk, utc_now
 from agora.tasks.store import TaskStore
@@ -86,6 +90,7 @@ from .methodology_run_dispatch import (
     derive_methodology_run_dispatch_policy,
     derive_methodology_runtime_preflight,
 )
+from .methodology_stage_gate import validate_methodology_stage_gate
 from .models import (
     BudgetAmendment,
     ConsultationRun,
@@ -1359,6 +1364,71 @@ class TaskOrchestrationService:
             )
 
         return self.store.claim_methodology_first_run(
+            task_id,
+            request,
+            principal=principal,
+            control_plane=self.control_plane,
+            recheck=recheck,
+        )
+
+    def configure_methodology_next_stage_gate(
+        self,
+        task_id: str,
+        request: MethodologyStageGateRequest,
+        *,
+        principal: ControlPrincipal,
+    ) -> MethodologyStageGateReceipt:
+        """Authenticate and configure only the exact current next Gate."""
+
+        task = self.tasks.get(task_id)
+        if task is None:
+            raise OrchestrationConflictError("Task not found")
+        try:
+            project = self.projects.get(task.project_id)
+        except KeyError as exc:
+            raise OrchestrationConflictError(
+                "Methodology successor project is not registered"
+            ) from exc
+
+        def recheck(snapshot, _configured_at: str):
+            try:
+                repository_before = self.revision_resolver(
+                    project.root,
+                    snapshot.task.project_id,
+                )
+            except (KeyError, TypeError, ValueError):
+                repository_before = None
+            artifacts = [
+                *snapshot.migration_request.seed_artifacts,
+                snapshot.migration_gate.assertion.migration_artifact,
+            ]
+            observed_artifact_sha256s = observe_migration_artifacts(
+                project.root,
+                artifacts,
+            )
+            try:
+                repository_after = self.revision_resolver(
+                    project.root,
+                    snapshot.task.project_id,
+                )
+            except (KeyError, TypeError, ValueError):
+                repository_after = None
+            repository = (
+                repository_after
+                if repository_before is not None
+                and repository_after == repository_before
+                else None
+            )
+            return validate_methodology_stage_gate(
+                snapshot=snapshot,
+                request=request,
+                principal=principal,
+                repository=repository,
+                observed_artifact_sha256s=observed_artifact_sha256s,
+                runtimes=self.runtimes,
+            )
+
+        return self.store.configure_methodology_next_stage_gate(
             task_id,
             request,
             principal=principal,

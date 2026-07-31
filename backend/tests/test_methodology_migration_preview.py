@@ -41,6 +41,9 @@ from agora.orchestration.methodology_run_claim import (
 from agora.orchestration.methodology_run_dispatch import (
     derive_methodology_run_dispatch_policy,
 )
+from agora.orchestration.methodology_stage_gate import (
+    load_methodology_stage_gate_request,
+)
 from agora.orchestration.models import MethodologyDispatchState, PlanState
 from agora.orchestration.processes import ProcessState
 from agora.orchestration.protocol_context import RepositoryRevision
@@ -81,6 +84,10 @@ from agora.protocol.methodology_run_dispatch import (
     MethodologyRunDispatchClaim,
     MethodologyRunDispatchPolicyDecision,
     MethodologyRunDispatchReceipt,
+)
+from agora.protocol.methodology_stage_gate import (
+    MethodologyStageGateReceipt,
+    MethodologyStageGateRequest,
 )
 from agora.protocol.models import ContextPack, HandoffPack
 from agora.protocol.schema_registry import SCHEMA_MODELS
@@ -3845,4 +3852,590 @@ def test_methodology_run_dispatch_schemas_are_registered():
     assert (
         SCHEMA_MODELS["methodology-run-dispatch-receipt"]
         is MethodologyRunDispatchReceipt
+    )
+
+
+async def _settled_first_methodology_run(tmp_path):
+    tasks, service, contract, run_claim = _claimed_methodology_run(tmp_path)
+    service.runner = MethodologyDispatchRunner()
+    dispatch = await _dispatch_methodology_run(service, contract.task_id)
+    assert dispatch.stage_status.value == "completed"
+    assert dispatch.gate_status.value == "passed"
+    assert dispatch.next_stage_key == contract.stages[1].stage_key
+    return tasks, service, contract, run_claim, dispatch
+
+
+def _stage_gate_request(
+    tasks: TaskStore,
+    service: TaskOrchestrationService,
+    contract: MethodologyExecutionContract,
+    dispatch: MethodologyRunDispatchReceipt,
+) -> MethodologyStageGateRequest:
+    task = tasks.get(contract.task_id)
+    control_task = service.control_plane.get_task_state(contract.task_id)
+    inventory = service.control_plane.get_stage_inventory(contract.task_id)
+    route = service.control_plane.get_stage_route(contract.task_id)
+    status = service.status(contract.task_id)
+    assert task is not None
+    assert control_task is not None
+    assert inventory is not None
+    assert route is not None
+    formal_stage = service.control_plane.get_stage(
+        contract.task_id,
+        route.stage_key,
+    )
+    assert formal_stage is not None
+    assert dispatch.handoff_pack_id is not None
+    assert dispatch.handoff_pack_sha256 is not None
+    stage = contract.stages[1]
+    payload = {
+        "schema_version": "1.0",
+        "request_id": f"stage-gate-request-{contract.content_sha256[:20]}",
+        "requested_at": FIXED_TIME,
+        "project_id": task.project_id,
+        "task_id": task.task_id,
+        "expected_task_version": task.version,
+        "expected_control_task_version": control_task.version,
+        "expected_control_task_status": control_task.status.value,
+        "plan_id": status.plan.plan_id,
+        "expected_plan_version": status.plan.version,
+        "inventory_id": inventory.inventory_id,
+        "inventory_sha256": inventory.content_sha256,
+        "execution_contract_id": contract.contract_id,
+        "execution_contract_sha256": contract.content_sha256,
+        "predecessor_dispatch_receipt_id": dispatch.receipt_id,
+        "predecessor_dispatch_receipt_sha256": dispatch.content_sha256,
+        "predecessor_run_id": dispatch.dispatch_claim.run_id,
+        "predecessor_stage_key": contract.stages[0].stage_key,
+        "predecessor_gate_key": contract.stages[0].gate_key,
+        "predecessor_handoff_pack_id": dispatch.handoff_pack_id,
+        "predecessor_handoff_pack_sha256": dispatch.handoff_pack_sha256,
+        "repository": contract.repository.model_dump(mode="json"),
+        "stage_sequence": stage.sequence,
+        "stage_key": stage.stage_key,
+        "gate_key": stage.gate_key,
+        "runtime": stage.runtime,
+        "expected_stage_version": formal_stage.version,
+        "configure_formal_gate": True,
+        "claim_formal_run": False,
+        "start_runtime_process": False,
+    }
+    return MethodologyStageGateRequest.model_validate(
+        seal_model_payload(MethodologyStageGateRequest, payload)
+    )
+
+
+def _reseal_stage_gate_request(
+    request: MethodologyStageGateRequest,
+    **updates,
+) -> MethodologyStageGateRequest:
+    payload = request.model_dump(mode="json")
+    payload.pop("content_sha256")
+    payload.update(updates)
+    return MethodologyStageGateRequest.model_validate(
+        seal_model_payload(MethodologyStageGateRequest, payload)
+    )
+
+
+@pytest.mark.asyncio
+async def test_methodology_next_stage_gate_is_atomic_and_non_dispatching(
+    tmp_path,
+):
+    tasks, service, contract, _, dispatch = (
+        await _settled_first_methodology_run(tmp_path)
+    )
+    request = _stage_gate_request(tasks, service, contract, dispatch)
+    task_before = tasks.get(contract.task_id)
+    control_before = service.control_plane.get_task_state(contract.task_id)
+    plan_before = service.status(contract.task_id).plan
+    stage_before = service.control_plane.get_stage(
+        contract.task_id,
+        request.stage_key,
+    )
+    route_before = service.control_plane.get_stage_route(contract.task_id)
+    with sqlite3.connect(tasks.db_path) as db:
+        before_counts = tuple(
+            db.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE task_id = ?",
+                (contract.task_id,),
+            ).fetchone()[0]
+            for table in (
+                "protocol_runs",
+                "protocol_artifacts",
+                "protocol_evidence",
+                "orchestration_runs",
+                "orchestration_consultations",
+            )
+        )
+    assert route_before is not None
+    assert route_before.runnable is True
+    assert route_before.gate_status is None
+
+    receipt = service.configure_methodology_next_stage_gate(
+        contract.task_id,
+        request,
+        principal=_migration_principal(),
+    )
+
+    assert isinstance(receipt, MethodologyStageGateReceipt)
+    assert receipt.request_id == request.request_id
+    assert receipt.request_sha256 == request.content_sha256
+    assert receipt.predecessor_dispatch_receipt_id == dispatch.receipt_id
+    assert receipt.predecessor_dispatch_receipt_sha256 == dispatch.content_sha256
+    assert receipt.predecessor_run_id == dispatch.dispatch_claim.run_id
+    assert receipt.stage_sequence == 2
+    assert receipt.stage_key == contract.stages[1].stage_key
+    assert receipt.gate_key == contract.stages[1].gate_key
+    assert receipt.route_runnable_before is True
+    assert receipt.route_runnable_after is True
+    assert receipt.formal_run_claimable_before is False
+    assert receipt.formal_run_claimable_after is True
+    assert receipt.run_created is False
+    assert receipt.context_pack_created is False
+    assert receipt.process_started is False
+    assert receipt.dispatch_authority is False
+    assert receipt.requirements == sorted(
+        [
+            item.requirement
+            for item in contract.stages[1].gate.evidence_contracts
+        ],
+        key=lambda item: item.requirement_id,
+    )
+    route_after = service.control_plane.get_stage_route(contract.task_id)
+    gate_after = service.control_plane.get_gate(
+        contract.task_id,
+        request.gate_key,
+    )
+    assert route_after is not None
+    assert route_after.stage_key == request.stage_key
+    assert route_after.runnable is True
+    assert route_after.gate_status.value == "pending"
+    assert gate_after is not None
+    assert gate_after.requirements == receipt.requirements
+    assert tasks.get(contract.task_id) == task_before
+    assert service.control_plane.get_task_state(contract.task_id) == control_before
+    assert service.status(contract.task_id).plan == plan_before
+    assert (
+        service.control_plane.get_stage(contract.task_id, request.stage_key)
+        == stage_before
+    )
+    with sqlite3.connect(tasks.db_path) as db:
+        after_counts = tuple(
+            db.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE task_id = ?",
+                (contract.task_id,),
+            ).fetchone()[0]
+            for table in (
+                "protocol_runs",
+                "protocol_artifacts",
+                "protocol_evidence",
+                "orchestration_runs",
+                "orchestration_consultations",
+            )
+        )
+        gate_rows = db.execute(
+            """
+            SELECT COUNT(*) FROM orchestration_methodology_stage_gates
+            WHERE task_id = ?
+            """,
+            (contract.task_id,),
+        ).fetchone()[0]
+    assert after_counts == before_counts
+    assert gate_rows == 1
+    assert (
+        service.store.get_methodology_stage_gate(
+            contract.task_id,
+            request.stage_key,
+        )
+        == receipt
+    )
+
+
+@pytest.mark.asyncio
+async def test_methodology_next_stage_gate_exact_replay_and_conflict(
+    tmp_path,
+):
+    tasks, service, contract, _, dispatch = (
+        await _settled_first_methodology_run(tmp_path)
+    )
+    request = _stage_gate_request(tasks, service, contract, dispatch)
+    receipt = service.configure_methodology_next_stage_gate(
+        contract.task_id,
+        request,
+        principal=_migration_principal(),
+    )
+    before = _database_dump(tasks)
+
+    replay = service.configure_methodology_next_stage_gate(
+        contract.task_id,
+        request,
+        principal=_migration_principal(),
+    )
+
+    assert replay == receipt
+    assert _database_dump(tasks) == before
+    changed = _reseal_stage_gate_request(
+        request,
+        request_id=f"{request.request_id}-different",
+    )
+    with pytest.raises(
+        OrchestrationConflictError,
+        match="replay binding differs",
+    ):
+        service.configure_methodology_next_stage_gate(
+            contract.task_id,
+            changed,
+            principal=_migration_principal(),
+        )
+    with pytest.raises(
+        OrchestrationValidationError,
+        match="original currently authorized principal",
+    ):
+        service.configure_methodology_next_stage_gate(
+            contract.task_id,
+            request,
+            principal=_migration_principal(principal_id="other"),
+        )
+    assert _database_dump(tasks) == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("expected_task_version", 999),
+        ("expected_control_task_version", 999),
+        ("expected_plan_version", 999),
+        ("inventory_sha256", "0" * 64),
+        ("execution_contract_sha256", "0" * 64),
+        ("predecessor_dispatch_receipt_sha256", "0" * 64),
+        ("predecessor_run_id", "wrong-run"),
+        ("predecessor_handoff_pack_sha256", "0" * 64),
+        ("stage_key", "wrong-stage"),
+        ("gate_key", "wrong-gate"),
+        ("runtime", "wrong-runtime"),
+        ("expected_stage_version", 999),
+    ],
+)
+async def test_methodology_next_stage_gate_stale_bindings_are_zero_write(
+    tmp_path,
+    field,
+    value,
+):
+    tasks, service, contract, _, dispatch = (
+        await _settled_first_methodology_run(tmp_path)
+    )
+    request = _stage_gate_request(tasks, service, contract, dispatch)
+    changed = _reseal_stage_gate_request(request, **{field: value})
+    before = _database_dump(tasks)
+
+    with pytest.raises(
+        (OrchestrationConflictError, OrchestrationValidationError),
+        match="binding|route|unavailable|blocked",
+    ):
+        service.configure_methodology_next_stage_gate(
+            contract.task_id,
+            changed,
+            principal=_migration_principal(),
+        )
+
+    assert _database_dump(tasks) == before
+    assert (
+        service.control_plane.get_gate(contract.task_id, request.gate_key)
+        is None
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "principal",
+    [
+        _migration_principal(permissions=frozenset()),
+        _migration_principal(projects=frozenset()),
+        _migration_principal(principal_id="other"),
+    ],
+)
+async def test_methodology_next_stage_gate_authorization_is_zero_write(
+    tmp_path,
+    principal,
+):
+    tasks, service, contract, _, dispatch = (
+        await _settled_first_methodology_run(tmp_path)
+    )
+    request = _stage_gate_request(tasks, service, contract, dispatch)
+    before = _database_dump(tasks)
+
+    with pytest.raises(
+        OrchestrationConflictError,
+        match="blocked",
+    ):
+        service.configure_methodology_next_stage_gate(
+            contract.task_id,
+            request,
+            principal=principal,
+        )
+
+    assert _database_dump(tasks) == before
+
+
+@pytest.mark.asyncio
+async def test_methodology_next_stage_gate_requires_settled_predecessor(
+    tmp_path,
+):
+    tasks, service, contract, _ = _claimed_methodology_run(tmp_path)
+    task = tasks.get(contract.task_id)
+    control_task = service.control_plane.get_task_state(contract.task_id)
+    assert task is not None
+    assert control_task is not None
+    route = service.control_plane.get_stage_route(contract.task_id)
+    assert route is not None
+    assert route.stage_key == contract.stages[0].stage_key
+    before = _database_dump(tasks)
+    request_payload = {
+        "schema_version": "1.0",
+        "request_id": "premature-stage-gate",
+        "requested_at": FIXED_TIME,
+        "project_id": contract.project_id,
+        "task_id": contract.task_id,
+        "expected_task_version": task.version,
+        "expected_control_task_version": control_task.version,
+        "expected_control_task_status": "active",
+        "plan_id": contract.plan_id,
+        "expected_plan_version": contract.plan_version,
+        "inventory_id": contract.inventory_id,
+        "inventory_sha256": contract.inventory_sha256,
+        "execution_contract_id": contract.contract_id,
+        "execution_contract_sha256": contract.content_sha256,
+        "predecessor_dispatch_receipt_id": "missing-receipt",
+        "predecessor_dispatch_receipt_sha256": "0" * 64,
+        "predecessor_run_id": "missing-run",
+        "predecessor_stage_key": contract.stages[0].stage_key,
+        "predecessor_gate_key": contract.stages[0].gate_key,
+        "predecessor_handoff_pack_id": "missing-handoff",
+        "predecessor_handoff_pack_sha256": "0" * 64,
+        "repository": contract.repository.model_dump(mode="json"),
+        "stage_sequence": 2,
+        "stage_key": contract.stages[1].stage_key,
+        "gate_key": contract.stages[1].gate_key,
+        "runtime": contract.stages[1].runtime,
+        "expected_stage_version": 2,
+        "configure_formal_gate": True,
+        "claim_formal_run": False,
+        "start_runtime_process": False,
+    }
+    request = MethodologyStageGateRequest.model_validate(
+        seal_model_payload(
+            MethodologyStageGateRequest,
+            request_payload,
+        )
+    )
+
+    with pytest.raises(
+        OrchestrationConflictError,
+        match="dispatch is unavailable",
+    ):
+        service.configure_methodology_next_stage_gate(
+            contract.task_id,
+            request,
+            principal=_migration_principal(),
+        )
+
+    assert _database_dump(tasks) == before
+
+
+@pytest.mark.asyncio
+async def test_methodology_next_stage_gate_repository_and_runtime_drift_block(
+    tmp_path,
+):
+    tasks, service, contract, _, dispatch = (
+        await _settled_first_methodology_run(tmp_path)
+    )
+    request = _stage_gate_request(tasks, service, contract, dispatch)
+    before = _database_dump(tasks)
+    service.revision_resolver = (
+        lambda _root, _repository_id: replace(
+            REVISION,
+            commit_sha="b" * 40,
+        )
+    )
+    with pytest.raises(OrchestrationConflictError, match="repository binding"):
+        service.configure_methodology_next_stage_gate(
+            contract.task_id,
+            request,
+            principal=_migration_principal(),
+        )
+    assert _database_dump(tasks) == before
+
+    service.revision_resolver = lambda _root, _repository_id: REVISION
+    service.runtimes["codex"] = RuntimeCommand(
+        adapter="codex",
+        command_template=(sys.executable, "changed", "{prompt}"),
+    )
+    with pytest.raises(OrchestrationConflictError, match="runtime"):
+        service.configure_methodology_next_stage_gate(
+            contract.task_id,
+            request,
+            principal=_migration_principal(),
+        )
+    assert _database_dump(tasks) == before
+
+
+@pytest.mark.asyncio
+async def test_methodology_next_stage_gate_event_failure_rolls_back(
+    tmp_path,
+    monkeypatch,
+):
+    tasks, service, contract, _, dispatch = (
+        await _settled_first_methodology_run(tmp_path)
+    )
+    request = _stage_gate_request(tasks, service, contract, dispatch)
+    before = _database_dump(tasks)
+
+    def fail_event(*_args, **_kwargs):
+        raise RuntimeError("injected Stage Gate event failure")
+
+    monkeypatch.setattr(service.control_plane, "_event", fail_event)
+    with pytest.raises(RuntimeError, match="injected Stage Gate event failure"):
+        service.configure_methodology_next_stage_gate(
+            contract.task_id,
+            request,
+            principal=_migration_principal(),
+        )
+
+    assert _database_dump(tasks) == before
+    assert (
+        service.control_plane.get_gate(contract.task_id, request.gate_key)
+        is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_methodology_next_stage_gate_concurrent_calls_share_receipt(
+    tmp_path,
+):
+    tasks, service, contract, _, dispatch = (
+        await _settled_first_methodology_run(tmp_path)
+    )
+    request = _stage_gate_request(tasks, service, contract, dispatch)
+    barrier = Barrier(2)
+
+    def configure():
+        barrier.wait()
+        return service.configure_methodology_next_stage_gate(
+            contract.task_id,
+            request,
+            principal=_migration_principal(),
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        receipts = list(executor.map(lambda _index: configure(), range(2)))
+
+    assert receipts[0] == receipts[1]
+    with sqlite3.connect(tasks.db_path) as db:
+        assert (
+            db.execute(
+                """
+                SELECT COUNT(*) FROM orchestration_methodology_stage_gates
+                WHERE task_id = ?
+                """,
+                (contract.task_id,),
+            ).fetchone()[0]
+            == 1
+        )
+
+
+@pytest.mark.asyncio
+async def test_methodology_next_stage_gate_loader_and_cli(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    tasks, service, contract, _, dispatch = (
+        await _settled_first_methodology_run(tmp_path)
+    )
+    request = _stage_gate_request(tasks, service, contract, dispatch)
+    request_path = tmp_path / "stage-gate.json"
+    request_path.write_text(request.model_dump_json(), encoding="utf-8")
+    assert load_methodology_stage_gate_request(request_path) == request
+    secret = "stage-gate-control-secret"
+    monkeypatch.setenv("AGORA_TEST_STAGE_GATE_TOKEN", secret)
+    monkeypatch.setattr(orchestration_cli, "build_service", lambda: service)
+    monkeypatch.setattr(
+        "agora.control_plane.auth.get_config",
+        lambda: {
+            "control_plane": {
+                "auth": {
+                    "credentials": [
+                        {
+                            "secret_ref": "AGORA_TEST_STAGE_GATE_TOKEN",
+                            "principal": "user",
+                            "permissions": ["control_plane.approve"],
+                            "projects": ["alpha"],
+                        }
+                    ]
+                }
+            }
+        },
+    )
+
+    code = orchestration_cli.main(
+        [
+            "migration-next-stage-gate",
+            contract.task_id,
+            "--request",
+            str(request_path),
+            "--credential-env",
+            "AGORA_TEST_STAGE_GATE_TOKEN",
+        ]
+    )
+    output = capsys.readouterr().out
+    payload = json.loads(output)
+
+    assert code == 0
+    assert payload["stage_key"] == contract.stages[1].stage_key
+    assert payload["formal_gate_configured"] is True
+    assert payload["run_created"] is False
+    assert payload["process_started"] is False
+    assert secret not in output
+    assert secret not in _database_dump(tasks)
+
+
+def test_methodology_next_stage_gate_cli_authenticates_before_store(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    monkeypatch.delenv("AGORA_MISSING_STAGE_GATE_TOKEN", raising=False)
+    built = False
+
+    def build_forbidden():
+        nonlocal built
+        built = True
+        raise AssertionError("service must not be built before authentication")
+
+    monkeypatch.setattr(orchestration_cli, "build_service", build_forbidden)
+    code = orchestration_cli.main(
+        [
+            "migration-next-stage-gate",
+            "task-successor",
+            "--request",
+            str(tmp_path / "missing.json"),
+            "--credential-env",
+            "AGORA_MISSING_STAGE_GATE_TOKEN",
+        ]
+    )
+
+    assert code == 2
+    assert built is False
+    assert "credential environment variable is absent" in capsys.readouterr().out
+
+
+def test_methodology_stage_gate_schemas_are_registered():
+    assert (
+        SCHEMA_MODELS["methodology-stage-gate-request"]
+        is MethodologyStageGateRequest
+    )
+    assert (
+        SCHEMA_MODELS["methodology-stage-gate-receipt"]
+        is MethodologyStageGateReceipt
     )
