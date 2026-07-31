@@ -20,6 +20,8 @@ from .models import (
     ArtifactSummary,
     ConsultationState,
     GateDerivedNextSafeAction,
+    Measurement,
+    MethodologyDispatchState,
     PlanState,
     ProjectionPage,
     RequiredHumanAction,
@@ -250,12 +252,14 @@ class TaskProjectionStore:
         operational_runs = self._operational_runs(db, run_ids)
         protocol_runs = self._protocol_runs(db, run_ids)
         methodology_claims = self._methodology_run_claims(db, run_ids)
+        methodology_dispatches = self._methodology_run_dispatches(db, run_ids)
         runs = [
             self._run_projection(
                 run_id,
                 operational_runs.get(run_id),
                 protocol_runs.get(run_id),
                 methodology_claims.get(run_id),
+                methodology_dispatches.get(run_id),
                 snapshot_at,
             )
             for run_id in run_ids
@@ -633,18 +637,42 @@ class TaskProjectionStore:
         ).fetchall()
         return {row["run_id"]: row for row in rows}
 
+    def _methodology_run_dispatches(self, db, run_ids):
+        if not run_ids:
+            return {}
+        placeholders = ",".join("?" for _ in run_ids)
+        rows = db.execute(
+            f"""
+            SELECT * FROM orchestration_methodology_run_dispatches
+            WHERE run_id IN ({placeholders})
+            """,
+            tuple(run_ids),
+        ).fetchall()
+        return {
+            row["run_id"]: self.orchestration._methodology_dispatch(row)
+            for row in rows
+        }
+
     def _run_projection(
         self,
         run_id: str,
         operational,
         protocol: ProtocolRunRecord | None,
         methodology_claim,
+        methodology_dispatch,
         snapshot_at: str,
     ) -> UnifiedRunProjection:
         protocol_state = protocol.protocol_state if protocol else None
+        observed_protocol_state = (
+            methodology_dispatch.adapter_result.protocol_state
+            if methodology_dispatch is not None
+            and methodology_dispatch.adapter_result is not None
+            else None
+        )
+        projected_protocol_state = protocol_state or observed_protocol_state
         handoff = protocol.handoff_pack if protocol else None
-        if protocol_state is not None:
-            semantic_result = protocol_state.semantic_stage_result
+        if projected_protocol_state is not None:
+            semantic_result = projected_protocol_state.semantic_stage_result
             semantic_source = "protocol"
         elif operational is not None and operational.semantic_status is not None:
             semantic_result = operational.semantic_status
@@ -655,11 +683,16 @@ class TaskProjectionStore:
         started_at = (
             operational.started_at
             if operational is not None
+            else methodology_dispatch.claimed_at
+            if methodology_dispatch is not None
             else protocol.created_at
         )
         finished_at = (
             operational.finished_at
             if operational is not None and operational.finished_at is not None
+            else methodology_dispatch.settled_at
+            if methodology_dispatch is not None
+            and methodology_dispatch.settled_at is not None
             else protocol.settled_at if protocol else None
         )
         runtime = operational.adapter if operational is not None else None
@@ -667,6 +700,26 @@ class TaskProjectionStore:
             runtime = handoff.producer.runtime.value
         if runtime is None and methodology_claim is not None:
             runtime = methodology_claim["runtime"]
+        dispatch_operational_state = None
+        if methodology_dispatch is not None:
+            if methodology_dispatch.state != MethodologyDispatchState.SETTLED:
+                dispatch_operational_state = RunState.RUNNING
+            elif protocol is not None and protocol.protocol_state is not None:
+                dispatch_operational_state = (
+                    RunState.PASSED
+                    if methodology_dispatch.receipt is not None
+                    and methodology_dispatch.receipt.stage_status
+                    == StageStatus.COMPLETED
+                    else RunState.CANCELLED
+                    if methodology_dispatch.receipt is not None
+                    and methodology_dispatch.receipt.stage_status
+                    == StageStatus.CANCELLED
+                    else RunState.FAILED
+                    if methodology_dispatch.receipt is not None
+                    and methodology_dispatch.receipt.stage_status
+                    == StageStatus.FAILED
+                    else RunState.BLOCKED
+                )
         return UnifiedRunProjection(
             run_id=run_id,
             stage_key=(
@@ -674,19 +727,45 @@ class TaskProjectionStore:
             ),
             runtime=runtime,
             attempt=operational.attempt if operational is not None else None,
-            operational_state=operational.state if operational is not None else None,
-            wait_state=self._wait_state(operational, protocol),
-            process_status=protocol_state.process_status if protocol_state else None,
-            transport_status=protocol_state.transport_status if protocol_state else None,
-            schema_status=protocol_state.schema_status if protocol_state else None,
+            operational_state=(
+                operational.state
+                if operational is not None
+                else dispatch_operational_state
+            ),
+            wait_state=self._wait_state(
+                operational,
+                protocol,
+                methodology_dispatch,
+            ),
+            process_status=(
+                projected_protocol_state.process_status
+                if projected_protocol_state
+                else None
+            ),
+            transport_status=(
+                projected_protocol_state.transport_status
+                if projected_protocol_state
+                else None
+            ),
+            schema_status=(
+                projected_protocol_state.schema_status
+                if projected_protocol_state
+                else None
+            ),
             semantic_result=semantic_result,
             semantic_source=semantic_source,
             process_exit_code=(
-                protocol_state.process_exit_code
-                if protocol_state is not None
+                projected_protocol_state.process_exit_code
+                if projected_protocol_state is not None
                 else operational.exit_code if operational is not None else None
             ),
-            timed_out=operational.timed_out if operational is not None else False,
+            timed_out=(
+                operational.timed_out
+                if operational is not None
+                else methodology_dispatch.timed_out
+                if methodology_dispatch is not None
+                else False
+            ),
             semantic_summary=(
                 operational.semantic_summary[-4_000:]
                 if operational is not None and operational.semantic_summary
@@ -700,6 +779,9 @@ class TaskProjectionStore:
             failure=(
                 operational.error_message[-4_000:]
                 if operational is not None and operational.error_message
+                else methodology_dispatch.error_message[-4_000:]
+                if methodology_dispatch is not None
+                and methodology_dispatch.error_message
                 else None
             ),
             context_pack_id=protocol.context_pack.pack_id if protocol else None,
@@ -722,8 +804,24 @@ class TaskProjectionStore:
                 if methodology_claim is not None
                 else None
             ),
-            token_settled=operational.token_used if operational else None,
-            token_measurement=operational.token_measurement if operational else None,
+            token_settled=(
+                operational.token_used
+                if operational
+                else methodology_dispatch.usage_observation.total_tokens
+                if methodology_dispatch is not None
+                and methodology_dispatch.usage_observation is not None
+                else None
+            ),
+            token_measurement=(
+                operational.token_measurement
+                if operational
+                else Measurement(
+                    methodology_dispatch.usage_observation.token_measurement
+                )
+                if methodology_dispatch is not None
+                and methodology_dispatch.usage_observation is not None
+                else None
+            ),
             cost_reserved_usd=(
                 operational.cost_reserved_usd
                 if operational
@@ -731,11 +829,38 @@ class TaskProjectionStore:
                 if methodology_claim is not None
                 else None
             ),
-            cost_settled_usd=operational.cost_used_usd if operational else None,
-            cost_measurement=operational.cost_measurement if operational else None,
+            cost_settled_usd=(
+                operational.cost_used_usd
+                if operational
+                else methodology_dispatch.usage_observation.cost_usd
+                if methodology_dispatch is not None
+                and methodology_dispatch.usage_observation is not None
+                else None
+            ),
+            cost_measurement=(
+                operational.cost_measurement
+                if operational
+                else Measurement(
+                    methodology_dispatch.usage_observation.cost_measurement
+                )
+                if methodology_dispatch is not None
+                and methodology_dispatch.usage_observation is not None
+                else None
+            ),
             routing_policy=(operational.routing_policy if operational else None),
+            runtime_preflight=(
+                operational.runtime_preflight
+                if operational is not None
+                else methodology_dispatch.claim.runtime_preflight
+                if methodology_dispatch is not None
+                else None
+            ),
             usage_observation=(
-                operational.usage_observation if operational else None
+                operational.usage_observation
+                if operational
+                else methodology_dispatch.usage_observation
+                if methodology_dispatch is not None
+                else None
             ),
             started_at=started_at,
             finished_at=finished_at,
@@ -746,7 +871,17 @@ class TaskProjectionStore:
         )
 
     @staticmethod
-    def _wait_state(operational, protocol: ProtocolRunRecord | None) -> RunWaitState:
+    def _wait_state(
+        operational,
+        protocol: ProtocolRunRecord | None,
+        methodology_dispatch=None,
+    ) -> RunWaitState:
+        if methodology_dispatch is not None:
+            return (
+                RunWaitState.SETTLED
+                if methodology_dispatch.state == MethodologyDispatchState.SETTLED
+                else RunWaitState.RUNTIME_OR_SETTLEMENT_PENDING
+            )
         if operational is None:
             return (
                 RunWaitState.SETTLED
@@ -888,14 +1023,29 @@ class TaskProjectionStore:
 
     def _usage(self, db, plan_id, limit, offset):
         rows = db.execute(
-            """SELECT * FROM orchestration_usage_ledger WHERE plan_id = ?
-               ORDER BY rowid LIMIT ? OFFSET ?""",
-            (plan_id, limit, offset),
+            """SELECT * FROM (
+                   SELECT entry_id, task_id, plan_id, stage_key, run_id,
+                          entry_type, tokens, token_measurement, cost_usd,
+                          cost_measurement, adapter, created_at
+                   FROM orchestration_usage_ledger WHERE plan_id = ?
+                   UNION ALL
+                   SELECT entry_id, task_id, plan_id, stage_key, run_id,
+                          'settlement' AS entry_type, tokens,
+                          token_measurement, cost_usd, cost_measurement,
+                          adapter, created_at
+                   FROM orchestration_methodology_usage_ledger
+                   WHERE plan_id = ?
+               )
+               ORDER BY created_at, entry_id LIMIT ? OFFSET ?""",
+            (plan_id, plan_id, limit, offset),
         ).fetchall()
         total = db.execute(
-            """SELECT COUNT(*) AS count FROM orchestration_usage_ledger
-               WHERE plan_id = ?""",
-            (plan_id,),
+            """SELECT
+                   (SELECT COUNT(*) FROM orchestration_usage_ledger
+                    WHERE plan_id = ?) +
+                   (SELECT COUNT(*) FROM orchestration_methodology_usage_ledger
+                    WHERE plan_id = ?) AS count""",
+            (plan_id, plan_id),
         ).fetchone()["count"]
         return [self.orchestration._usage(row) for row in rows], total
 
@@ -1009,8 +1159,9 @@ class TaskProjectionStore:
                           AS unavailable_costs,
                       COALESCE(SUM(c.cost_reserved_usd), 0) AS cost_reserved
                FROM orchestration_methodology_run_claims c
-               JOIN protocol_runs r ON r.run_id = c.run_id
-               WHERE c.plan_id = ? AND r.settled_at IS NULL""",
+               LEFT JOIN orchestration_methodology_usage_ledger u
+                 ON u.run_id = c.run_id
+               WHERE c.plan_id = ? AND u.run_id IS NULL""",
             (plan.plan_id,),
         ).fetchone()
         settled_runs = db.execute(
@@ -1050,6 +1201,25 @@ class TaskProjectionStore:
                WHERE plan_id = ? AND state != ?""",
             (plan.plan_id, ConsultationState.RUNNING.value),
         ).fetchone()
+        settled_methodology = db.execute(
+            """SELECT COUNT(*) AS count,
+                      COALESCE(SUM(CASE WHEN tokens IS NOT NULL
+                                        THEN tokens ELSE 0 END), 0)
+                          AS known_tokens,
+                      SUM(CASE WHEN token_measurement = 'unavailable'
+                               THEN 1 ELSE 0 END) AS unavailable_tokens,
+                      SUM(CASE WHEN token_measurement = 'estimated'
+                               THEN 1 ELSE 0 END) AS estimated_tokens,
+                      SUM(CASE WHEN cost_usd IS NOT NULL
+                               THEN 1 ELSE 0 END) AS cost_count,
+                      COALESCE(SUM(cost_usd), 0) AS known_cost,
+                      SUM(CASE WHEN cost_usd IS NOT NULL
+                               AND cost_measurement != 'exact'
+                               THEN 1 ELSE 0 END) AS inexact_costs
+               FROM orchestration_methodology_usage_ledger
+               WHERE plan_id = ?""",
+            (plan.plan_id,),
+        ).fetchone()
         active_token_reserved = (
             active_runs["token_reserved"]
             + active_consultations["token_reserved"]
@@ -1066,19 +1236,24 @@ class TaskProjectionStore:
             + active_methodology_claims["cost_reserved"]
         )
         settled_count = (
-            settled_runs["count"] + settled_consultations["count"]
+            settled_runs["count"]
+            + settled_consultations["count"]
+            + settled_methodology["count"]
         )
         known_tokens = (
             settled_runs["known_tokens"]
             + settled_consultations["known_tokens"]
+            + settled_methodology["known_tokens"]
         )
         unavailable_tokens = (
             (settled_runs["unavailable_tokens"] or 0)
             + (settled_consultations["unavailable_tokens"] or 0)
+            + (settled_methodology["unavailable_tokens"] or 0)
         )
         estimated_tokens = (
             (settled_runs["estimated_tokens"] or 0)
             + (settled_consultations["estimated_tokens"] or 0)
+            + (settled_methodology["estimated_tokens"] or 0)
         )
         if unavailable_tokens:
             token_measurement = "unavailable"
@@ -1102,13 +1277,16 @@ class TaskProjectionStore:
         cost_count = (
             (settled_runs["cost_count"] or 0)
             + (settled_consultations["cost_count"] or 0)
+            + (settled_methodology["cost_count"] or 0)
         )
         known_cost = (
             settled_runs["known_cost"] + settled_consultations["known_cost"]
+            + settled_methodology["known_cost"]
         )
         inexact_costs = (
             (settled_runs["inexact_costs"] or 0)
             + (settled_consultations["inexact_costs"] or 0)
+            + (settled_methodology["inexact_costs"] or 0)
         )
         if settled_count == 0:
             cost_settled = 0.0

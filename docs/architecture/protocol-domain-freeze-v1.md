@@ -47,6 +47,11 @@ the Pydantic models in `backend/agora/protocol/`:
 - `methodology-migration-preview-decision.schema.json`
 - `methodology-route-activation-receipt.schema.json`
 - `methodology-route-activation-request.schema.json`
+- `methodology-run-claim-receipt.schema.json`
+- `methodology-run-claim-request.schema.json`
+- `methodology-run-dispatch-claim.schema.json`
+- `methodology-run-dispatch-policy-decision.schema.json`
+- `methodology-run-dispatch-receipt.schema.json`
 - `methodology-source-graph.schema.json`
 - `stage-inventory.schema.json`
 - `provider-usage-observation.schema.json`

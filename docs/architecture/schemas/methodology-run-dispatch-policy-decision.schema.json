@@ -1,0 +1,326 @@
+{
+  "$defs": {
+    "MethodologyRunDispatchPolicyCheck": {
+      "additionalProperties": false,
+      "properties": {
+        "check": {
+          "enum": [
+            "claimed_formal_run",
+            "context_binding",
+            "current_route",
+            "repository_binding",
+            "runtime_binding",
+            "usage_reservation"
+          ],
+          "title": "Check",
+          "type": "string"
+        },
+        "detail": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Detail",
+          "type": "string"
+        },
+        "satisfied": {
+          "title": "Satisfied",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "check",
+        "satisfied",
+        "detail"
+      ],
+      "title": "MethodologyRunDispatchPolicyCheck",
+      "type": "object"
+    },
+    "MigrationRepositoryBinding": {
+      "additionalProperties": false,
+      "properties": {
+        "commit_sha": {
+          "title": "Commit Sha",
+          "type": "string"
+        },
+        "ref": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "title": "Ref",
+          "type": "string"
+        },
+        "repository_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Repository Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repository_id",
+        "ref",
+        "commit_sha"
+      ],
+      "title": "MigrationRepositoryBinding",
+      "type": "object"
+    }
+  },
+  "$id": "https://agora.local/schemas/v1/methodology-run-dispatch-policy-decision.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Per-Run allow/block policy before native capability preflight.",
+  "properties": {
+    "blockers": {
+      "items": {
+        "maxLength": 1000,
+        "minLength": 1,
+        "type": "string"
+      },
+      "maxItems": 6,
+      "title": "Blockers",
+      "type": "array"
+    },
+    "checks": {
+      "items": {
+        "$ref": "#/$defs/MethodologyRunDispatchPolicyCheck"
+      },
+      "maxItems": 6,
+      "minItems": 6,
+      "title": "Checks",
+      "type": "array"
+    },
+    "content_sha256": {
+      "title": "Content Sha256",
+      "type": "string"
+    },
+    "context_pack_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Context Pack Id",
+      "type": "string"
+    },
+    "context_pack_sha256": {
+      "title": "Context Pack Sha256",
+      "type": "string"
+    },
+    "cost_reservation_usd": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Cost Reservation Usd"
+    },
+    "decision_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Decision Id",
+      "type": "string"
+    },
+    "dispatchable": {
+      "title": "Dispatchable",
+      "type": "boolean"
+    },
+    "evaluated_at": {
+      "format": "date-time",
+      "title": "Evaluated At",
+      "type": "string"
+    },
+    "execution_contract_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Execution Contract Id",
+      "type": "string"
+    },
+    "execution_contract_sha256": {
+      "title": "Execution Contract Sha256",
+      "type": "string"
+    },
+    "gate_key": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Gate Key",
+      "type": "string"
+    },
+    "inventory_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Inventory Id",
+      "type": "string"
+    },
+    "inventory_sha256": {
+      "title": "Inventory Sha256",
+      "type": "string"
+    },
+    "pinned_runtime": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Pinned Runtime",
+      "type": "string"
+    },
+    "plan_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Plan Id",
+      "type": "string"
+    },
+    "policy_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Policy Id",
+      "type": "string"
+    },
+    "policy_sha256": {
+      "title": "Policy Sha256",
+      "type": "string"
+    },
+    "policy_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Policy Version",
+      "type": "string"
+    },
+    "project_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Project Id",
+      "type": "string"
+    },
+    "provider_serviceability_verified": {
+      "const": false,
+      "default": false,
+      "title": "Provider Serviceability Verified",
+      "type": "boolean"
+    },
+    "repository": {
+      "$ref": "#/$defs/MigrationRepositoryBinding"
+    },
+    "role": {
+      "const": "production_execution",
+      "default": "production_execution",
+      "title": "Role",
+      "type": "string"
+    },
+    "route_activation_receipt_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Route Activation Receipt Id",
+      "type": "string"
+    },
+    "route_activation_receipt_sha256": {
+      "title": "Route Activation Receipt Sha256",
+      "type": "string"
+    },
+    "route_selection_authority": {
+      "const": false,
+      "default": false,
+      "title": "Route Selection Authority",
+      "type": "boolean"
+    },
+    "run_claim_receipt_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Run Claim Receipt Id",
+      "type": "string"
+    },
+    "run_claim_receipt_sha256": {
+      "title": "Run Claim Receipt Sha256",
+      "type": "string"
+    },
+    "run_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Run Id",
+      "type": "string"
+    },
+    "runtime_capabilities": {
+      "items": {
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+        "type": "string"
+      },
+      "maxItems": 50,
+      "title": "Runtime Capabilities",
+      "type": "array"
+    },
+    "runtime_substitution_allowed": {
+      "const": false,
+      "default": false,
+      "title": "Runtime Substitution Allowed",
+      "type": "boolean"
+    },
+    "schema_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "stage_key": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Stage Key",
+      "type": "string"
+    },
+    "task_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Task Id",
+      "type": "string"
+    },
+    "token_reservation": {
+      "minimum": 0,
+      "title": "Token Reservation",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "content_sha256",
+    "decision_id",
+    "evaluated_at",
+    "policy_id",
+    "policy_sha256",
+    "project_id",
+    "task_id",
+    "plan_id",
+    "inventory_id",
+    "inventory_sha256",
+    "execution_contract_id",
+    "execution_contract_sha256",
+    "route_activation_receipt_id",
+    "route_activation_receipt_sha256",
+    "run_claim_receipt_id",
+    "run_claim_receipt_sha256",
+    "repository",
+    "stage_key",
+    "gate_key",
+    "pinned_runtime",
+    "run_id",
+    "context_pack_id",
+    "context_pack_sha256",
+    "runtime_capabilities",
+    "token_reservation",
+    "checks",
+    "dispatchable"
+  ],
+  "title": "MethodologyRunDispatchPolicyDecision",
+  "type": "object"
+}

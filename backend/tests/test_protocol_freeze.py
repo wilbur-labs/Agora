@@ -727,3 +727,17 @@ def test_checked_in_json_schemas_match_executable_models():
             (schema_dir / f"{name}.schema.json").read_text(encoding="utf-8")
         )
         assert checked_in == schema_document(name, model)
+
+
+def test_protocol_freeze_lists_every_normative_json_schema():
+    freeze = (
+        ROOT / "docs" / "architecture" / "protocol-domain-freeze-v1.md"
+    ).read_text(encoding="utf-8")
+    listed = {
+        line.removeprefix("- `").removesuffix("`")
+        for line in freeze.splitlines()
+        if line.startswith("- `") and line.endswith(".schema.json`")
+    }
+    assert listed == {
+        f"{name}.schema.json" for name in SCHEMA_MODELS
+    }

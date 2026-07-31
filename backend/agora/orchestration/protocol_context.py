@@ -345,7 +345,7 @@ def build_protocol_run_definition(
             continue
         context_pack = candidate
 
-    prompt = _build_protocol_prompt(
+    prompt = build_protocol_prompt(
         context_pack=context_pack,
         runtime=role.runtime,
         requirements=requirements,
@@ -595,7 +595,7 @@ def _gate_requirements(
     ]
 
 
-def _build_protocol_prompt(
+def build_protocol_prompt(
     *,
     context_pack: ContextPack,
     runtime: str,

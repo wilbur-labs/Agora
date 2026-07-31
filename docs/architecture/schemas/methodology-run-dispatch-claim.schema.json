@@ -1,0 +1,1157 @@
+{
+  "$defs": {
+    "MethodologyRunDispatchPolicyCheck": {
+      "additionalProperties": false,
+      "properties": {
+        "check": {
+          "enum": [
+            "claimed_formal_run",
+            "context_binding",
+            "current_route",
+            "repository_binding",
+            "runtime_binding",
+            "usage_reservation"
+          ],
+          "title": "Check",
+          "type": "string"
+        },
+        "detail": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Detail",
+          "type": "string"
+        },
+        "satisfied": {
+          "title": "Satisfied",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "check",
+        "satisfied",
+        "detail"
+      ],
+      "title": "MethodologyRunDispatchPolicyCheck",
+      "type": "object"
+    },
+    "MethodologyRunDispatchPolicyDecision": {
+      "additionalProperties": false,
+      "description": "Per-Run allow/block policy before native capability preflight.",
+      "properties": {
+        "blockers": {
+          "items": {
+            "maxLength": 1000,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 6,
+          "title": "Blockers",
+          "type": "array"
+        },
+        "checks": {
+          "items": {
+            "$ref": "#/$defs/MethodologyRunDispatchPolicyCheck"
+          },
+          "maxItems": 6,
+          "minItems": 6,
+          "title": "Checks",
+          "type": "array"
+        },
+        "content_sha256": {
+          "title": "Content Sha256",
+          "type": "string"
+        },
+        "context_pack_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Context Pack Id",
+          "type": "string"
+        },
+        "context_pack_sha256": {
+          "title": "Context Pack Sha256",
+          "type": "string"
+        },
+        "cost_reservation_usd": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cost Reservation Usd"
+        },
+        "decision_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Decision Id",
+          "type": "string"
+        },
+        "dispatchable": {
+          "title": "Dispatchable",
+          "type": "boolean"
+        },
+        "evaluated_at": {
+          "format": "date-time",
+          "title": "Evaluated At",
+          "type": "string"
+        },
+        "execution_contract_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Execution Contract Id",
+          "type": "string"
+        },
+        "execution_contract_sha256": {
+          "title": "Execution Contract Sha256",
+          "type": "string"
+        },
+        "gate_key": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Gate Key",
+          "type": "string"
+        },
+        "inventory_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Inventory Id",
+          "type": "string"
+        },
+        "inventory_sha256": {
+          "title": "Inventory Sha256",
+          "type": "string"
+        },
+        "pinned_runtime": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Pinned Runtime",
+          "type": "string"
+        },
+        "plan_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Plan Id",
+          "type": "string"
+        },
+        "policy_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Policy Id",
+          "type": "string"
+        },
+        "policy_sha256": {
+          "title": "Policy Sha256",
+          "type": "string"
+        },
+        "policy_version": {
+          "const": "1.0",
+          "default": "1.0",
+          "title": "Policy Version",
+          "type": "string"
+        },
+        "project_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Project Id",
+          "type": "string"
+        },
+        "provider_serviceability_verified": {
+          "const": false,
+          "default": false,
+          "title": "Provider Serviceability Verified",
+          "type": "boolean"
+        },
+        "repository": {
+          "$ref": "#/$defs/MigrationRepositoryBinding"
+        },
+        "role": {
+          "const": "production_execution",
+          "default": "production_execution",
+          "title": "Role",
+          "type": "string"
+        },
+        "route_activation_receipt_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Route Activation Receipt Id",
+          "type": "string"
+        },
+        "route_activation_receipt_sha256": {
+          "title": "Route Activation Receipt Sha256",
+          "type": "string"
+        },
+        "route_selection_authority": {
+          "const": false,
+          "default": false,
+          "title": "Route Selection Authority",
+          "type": "boolean"
+        },
+        "run_claim_receipt_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Run Claim Receipt Id",
+          "type": "string"
+        },
+        "run_claim_receipt_sha256": {
+          "title": "Run Claim Receipt Sha256",
+          "type": "string"
+        },
+        "run_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Run Id",
+          "type": "string"
+        },
+        "runtime_capabilities": {
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+            "type": "string"
+          },
+          "maxItems": 50,
+          "title": "Runtime Capabilities",
+          "type": "array"
+        },
+        "runtime_substitution_allowed": {
+          "const": false,
+          "default": false,
+          "title": "Runtime Substitution Allowed",
+          "type": "boolean"
+        },
+        "schema_version": {
+          "const": "1.0",
+          "default": "1.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "stage_key": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Stage Key",
+          "type": "string"
+        },
+        "task_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Task Id",
+          "type": "string"
+        },
+        "token_reservation": {
+          "minimum": 0,
+          "title": "Token Reservation",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "content_sha256",
+        "decision_id",
+        "evaluated_at",
+        "policy_id",
+        "policy_sha256",
+        "project_id",
+        "task_id",
+        "plan_id",
+        "inventory_id",
+        "inventory_sha256",
+        "execution_contract_id",
+        "execution_contract_sha256",
+        "route_activation_receipt_id",
+        "route_activation_receipt_sha256",
+        "run_claim_receipt_id",
+        "run_claim_receipt_sha256",
+        "repository",
+        "stage_key",
+        "gate_key",
+        "pinned_runtime",
+        "run_id",
+        "context_pack_id",
+        "context_pack_sha256",
+        "runtime_capabilities",
+        "token_reservation",
+        "checks",
+        "dispatchable"
+      ],
+      "title": "MethodologyRunDispatchPolicyDecision",
+      "type": "object"
+    },
+    "MigrationRepositoryBinding": {
+      "additionalProperties": false,
+      "properties": {
+        "commit_sha": {
+          "title": "Commit Sha",
+          "type": "string"
+        },
+        "ref": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "title": "Ref",
+          "type": "string"
+        },
+        "repository_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Repository Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repository_id",
+        "ref",
+        "commit_sha"
+      ],
+      "title": "MigrationRepositoryBinding",
+      "type": "object"
+    },
+    "NativeRuntimeCapabilityObservation": {
+      "additionalProperties": false,
+      "description": "Read-only local installation and declaration facts for native adapters.",
+      "properties": {
+        "adapters": {
+          "items": {
+            "$ref": "#/$defs/RuntimeCapabilityAdapterObservation"
+          },
+          "maxItems": 20,
+          "minItems": 1,
+          "title": "Adapters",
+          "type": "array"
+        },
+        "capability_declaration_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Capability Declaration Id",
+          "type": "string"
+        },
+        "capability_declaration_sha256": {
+          "title": "Capability Declaration Sha256",
+          "type": "string"
+        },
+        "capability_declaration_version": {
+          "pattern": "^\\d+\\.\\d+$",
+          "title": "Capability Declaration Version",
+          "type": "string"
+        },
+        "collected_at": {
+          "format": "date-time",
+          "title": "Collected At",
+          "type": "string"
+        },
+        "collector_id": {
+          "const": "agora-native-runtime-capability-observer",
+          "default": "agora-native-runtime-capability-observer",
+          "title": "Collector Id",
+          "type": "string"
+        },
+        "collector_version": {
+          "const": "1.0",
+          "default": "1.0",
+          "title": "Collector Version",
+          "type": "string"
+        },
+        "content_sha256": {
+          "title": "Content Sha256",
+          "type": "string"
+        },
+        "platform": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Platform",
+          "type": "string"
+        },
+        "routing_authority": {
+          "const": false,
+          "default": false,
+          "title": "Routing Authority",
+          "type": "boolean"
+        },
+        "runtime_registry_sha256": {
+          "title": "Runtime Registry Sha256",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "1.0",
+          "default": "1.0",
+          "title": "Schema Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "content_sha256",
+        "collected_at",
+        "platform",
+        "runtime_registry_sha256",
+        "capability_declaration_id",
+        "capability_declaration_version",
+        "capability_declaration_sha256",
+        "adapters"
+      ],
+      "title": "NativeRuntimeCapabilityObservation",
+      "type": "object"
+    },
+    "PinnedRuntimePreflightCheck": {
+      "additionalProperties": false,
+      "description": "One deterministic allow/block check for an already selected runtime.",
+      "properties": {
+        "check": {
+          "enum": [
+            "route_binding",
+            "observation_freshness",
+            "observation_integrity",
+            "runtime_command_binding",
+            "runtime_installation",
+            "capability_declaration_binding"
+          ],
+          "title": "Check",
+          "type": "string"
+        },
+        "detail": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Detail",
+          "type": "string"
+        },
+        "satisfied": {
+          "title": "Satisfied",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "check",
+        "satisfied",
+        "detail"
+      ],
+      "title": "PinnedRuntimePreflightCheck",
+      "type": "object"
+    },
+    "PinnedRuntimePreflightDecision": {
+      "additionalProperties": false,
+      "description": "Fresh native preflight for one pinned route without route substitution.",
+      "properties": {
+        "allowed": {
+          "title": "Allowed",
+          "type": "boolean"
+        },
+        "blockers": {
+          "items": {
+            "maxLength": 1000,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 6,
+          "title": "Blockers",
+          "type": "array"
+        },
+        "capability_declaration_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Capability Declaration Id",
+          "type": "string"
+        },
+        "capability_declaration_sha256": {
+          "title": "Capability Declaration Sha256",
+          "type": "string"
+        },
+        "capability_declaration_version": {
+          "pattern": "^\\d+\\.\\d+$",
+          "title": "Capability Declaration Version",
+          "type": "string"
+        },
+        "capability_observation": {
+          "$ref": "#/$defs/NativeRuntimeCapabilityObservation"
+        },
+        "capability_observation_sha256": {
+          "title": "Capability Observation Sha256",
+          "type": "string"
+        },
+        "checks": {
+          "items": {
+            "$ref": "#/$defs/PinnedRuntimePreflightCheck"
+          },
+          "maxItems": 6,
+          "minItems": 6,
+          "title": "Checks",
+          "type": "array"
+        },
+        "content_sha256": {
+          "title": "Content Sha256",
+          "type": "string"
+        },
+        "decision_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Decision Id",
+          "type": "string"
+        },
+        "declared_capabilities": {
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+            "type": "string"
+          },
+          "maxItems": 50,
+          "title": "Declared Capabilities",
+          "type": "array"
+        },
+        "declared_models": {
+          "items": {
+            "maxLength": 200,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:/-]*$",
+            "type": "string"
+          },
+          "maxItems": 50,
+          "title": "Declared Models",
+          "type": "array"
+        },
+        "evaluated_at": {
+          "format": "date-time",
+          "title": "Evaluated At",
+          "type": "string"
+        },
+        "installation_status": {
+          "enum": [
+            "installed",
+            "not_found",
+            "uninspectable"
+          ],
+          "title": "Installation Status",
+          "type": "string"
+        },
+        "inventory_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Inventory Id",
+          "type": "string"
+        },
+        "inventory_sha256": {
+          "title": "Inventory Sha256",
+          "type": "string"
+        },
+        "max_observation_age_seconds": {
+          "const": 60,
+          "default": 60,
+          "title": "Max Observation Age Seconds",
+          "type": "integer"
+        },
+        "model_availability": {
+          "enum": [
+            "declared",
+            "unavailable"
+          ],
+          "title": "Model Availability",
+          "type": "string"
+        },
+        "observation_collected_at": {
+          "format": "date-time",
+          "title": "Observation Collected At",
+          "type": "string"
+        },
+        "pinned_runtime": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Pinned Runtime",
+          "type": "string"
+        },
+        "project_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Project Id",
+          "type": "string"
+        },
+        "provider_serviceability_verified": {
+          "const": false,
+          "default": false,
+          "title": "Provider Serviceability Verified",
+          "type": "boolean"
+        },
+        "rationale": {
+          "items": {
+            "maxLength": 1000,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 10,
+          "minItems": 3,
+          "title": "Rationale",
+          "type": "array"
+        },
+        "resolved_runtime_command_sha256": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Resolved Runtime Command Sha256"
+        },
+        "role": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Role",
+          "type": "string"
+        },
+        "route_selection_authority": {
+          "const": false,
+          "default": false,
+          "title": "Route Selection Authority",
+          "type": "boolean"
+        },
+        "routing_policy_decision_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Routing Policy Decision Id",
+          "type": "string"
+        },
+        "routing_policy_decision_sha256": {
+          "title": "Routing Policy Decision Sha256",
+          "type": "string"
+        },
+        "routing_policy_declaration_sha256": {
+          "title": "Routing Policy Declaration Sha256",
+          "type": "string"
+        },
+        "run_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Run Id",
+          "type": "string"
+        },
+        "runtime_command_sha256": {
+          "title": "Runtime Command Sha256",
+          "type": "string"
+        },
+        "runtime_registry_sha256": {
+          "title": "Runtime Registry Sha256",
+          "type": "string"
+        },
+        "runtime_substitution_allowed": {
+          "const": false,
+          "default": false,
+          "title": "Runtime Substitution Allowed",
+          "type": "boolean"
+        },
+        "schema_version": {
+          "const": "1.0",
+          "default": "1.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "stage_key": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Stage Key",
+          "type": "string"
+        },
+        "task_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Task Id",
+          "type": "string"
+        },
+        "valid_until": {
+          "format": "date-time",
+          "title": "Valid Until",
+          "type": "string"
+        },
+        "version": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Version"
+        },
+        "version_status": {
+          "enum": [
+            "exact",
+            "unavailable"
+          ],
+          "title": "Version Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "content_sha256",
+        "decision_id",
+        "evaluated_at",
+        "valid_until",
+        "task_id",
+        "project_id",
+        "run_id",
+        "inventory_id",
+        "inventory_sha256",
+        "stage_key",
+        "role",
+        "pinned_runtime",
+        "routing_policy_decision_id",
+        "routing_policy_decision_sha256",
+        "routing_policy_declaration_sha256",
+        "capability_observation_sha256",
+        "capability_observation",
+        "observation_collected_at",
+        "runtime_registry_sha256",
+        "runtime_command_sha256",
+        "capability_declaration_id",
+        "capability_declaration_version",
+        "capability_declaration_sha256",
+        "installation_status",
+        "version_status",
+        "model_availability",
+        "checks",
+        "allowed",
+        "rationale"
+      ],
+      "title": "PinnedRuntimePreflightDecision",
+      "type": "object"
+    },
+    "RuntimeCapabilityAdapterObservation": {
+      "additionalProperties": false,
+      "description": "One configured native adapter observed without granting route authority.",
+      "properties": {
+        "adapter": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Adapter",
+          "type": "string"
+        },
+        "declared_capabilities": {
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+            "type": "string"
+          },
+          "maxItems": 50,
+          "minItems": 1,
+          "title": "Declared Capabilities",
+          "type": "array"
+        },
+        "declared_models": {
+          "items": {
+            "maxLength": 200,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:/-]*$",
+            "type": "string"
+          },
+          "maxItems": 50,
+          "title": "Declared Models",
+          "type": "array"
+        },
+        "installation_status": {
+          "enum": [
+            "installed",
+            "not_found",
+            "uninspectable"
+          ],
+          "title": "Installation Status",
+          "type": "string"
+        },
+        "model_availability": {
+          "enum": [
+            "declared",
+            "unavailable"
+          ],
+          "title": "Model Availability",
+          "type": "string"
+        },
+        "provider": {
+          "enum": [
+            "openai",
+            "anthropic",
+            "kiro",
+            "unknown"
+          ],
+          "title": "Provider",
+          "type": "string"
+        },
+        "resolved_runtime_command_sha256": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Resolved Runtime Command Sha256"
+        },
+        "resolved_version_command_sha256": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Resolved Version Command Sha256"
+        },
+        "runtime_command_sha256": {
+          "title": "Runtime Command Sha256",
+          "type": "string"
+        },
+        "version": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Version"
+        },
+        "version_command_sha256": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Version Command Sha256"
+        },
+        "version_method": {
+          "enum": [
+            "native_version_command",
+            "not_configured",
+            "not_installed",
+            "probe_failed"
+          ],
+          "title": "Version Method",
+          "type": "string"
+        },
+        "version_output_sha256": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Version Output Sha256"
+        },
+        "version_probe_exit_code": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Version Probe Exit Code"
+        },
+        "version_probe_timed_out": {
+          "default": false,
+          "title": "Version Probe Timed Out",
+          "type": "boolean"
+        },
+        "version_status": {
+          "enum": [
+            "exact",
+            "unavailable"
+          ],
+          "title": "Version Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "adapter",
+        "provider",
+        "installation_status",
+        "version_status",
+        "version_method",
+        "model_availability",
+        "declared_capabilities",
+        "runtime_command_sha256"
+      ],
+      "title": "RuntimeCapabilityAdapterObservation",
+      "type": "object"
+    }
+  },
+  "$id": "https://agora.local/schemas/v1/methodology-run-dispatch-claim.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Durable single-use spawn attachment for one existing formal Run.",
+  "properties": {
+    "claimed_at": {
+      "format": "date-time",
+      "title": "Claimed At",
+      "type": "string"
+    },
+    "compatibility_run_created": {
+      "const": false,
+      "default": false,
+      "title": "Compatibility Run Created",
+      "type": "boolean"
+    },
+    "content_sha256": {
+      "title": "Content Sha256",
+      "type": "string"
+    },
+    "context_pack_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Context Pack Id",
+      "type": "string"
+    },
+    "context_pack_sha256": {
+      "title": "Context Pack Sha256",
+      "type": "string"
+    },
+    "dispatch_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Dispatch Id",
+      "type": "string"
+    },
+    "dispatch_policy": {
+      "$ref": "#/$defs/MethodologyRunDispatchPolicyDecision"
+    },
+    "execution_contract_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Execution Contract Id",
+      "type": "string"
+    },
+    "execution_contract_sha256": {
+      "title": "Execution Contract Sha256",
+      "type": "string"
+    },
+    "existing_context_pack_reused": {
+      "const": true,
+      "default": true,
+      "title": "Existing Context Pack Reused",
+      "type": "boolean"
+    },
+    "existing_formal_run_reused": {
+      "const": true,
+      "default": true,
+      "title": "Existing Formal Run Reused",
+      "type": "boolean"
+    },
+    "first_gate_key": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "First Gate Key",
+      "type": "string"
+    },
+    "first_stage_key": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "First Stage Key",
+      "type": "string"
+    },
+    "inventory_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Inventory Id",
+      "type": "string"
+    },
+    "inventory_sha256": {
+      "title": "Inventory Sha256",
+      "type": "string"
+    },
+    "plan_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Plan Id",
+      "type": "string"
+    },
+    "process_spawn_authority": {
+      "const": true,
+      "default": true,
+      "title": "Process Spawn Authority",
+      "type": "boolean"
+    },
+    "process_started": {
+      "const": false,
+      "default": false,
+      "title": "Process Started",
+      "type": "boolean"
+    },
+    "project_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Project Id",
+      "type": "string"
+    },
+    "prompt_sha256": {
+      "title": "Prompt Sha256",
+      "type": "string"
+    },
+    "provider_serviceability_verified": {
+      "const": false,
+      "default": false,
+      "title": "Provider Serviceability Verified",
+      "type": "boolean"
+    },
+    "repository": {
+      "$ref": "#/$defs/MigrationRepositoryBinding"
+    },
+    "role": {
+      "const": "production_execution",
+      "default": "production_execution",
+      "title": "Role",
+      "type": "string"
+    },
+    "route_activation_receipt_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Route Activation Receipt Id",
+      "type": "string"
+    },
+    "route_activation_receipt_sha256": {
+      "title": "Route Activation Receipt Sha256",
+      "type": "string"
+    },
+    "route_selection_authority": {
+      "const": false,
+      "default": false,
+      "title": "Route Selection Authority",
+      "type": "boolean"
+    },
+    "run_claim_receipt_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Run Claim Receipt Id",
+      "type": "string"
+    },
+    "run_claim_receipt_sha256": {
+      "title": "Run Claim Receipt Sha256",
+      "type": "string"
+    },
+    "run_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Run Id",
+      "type": "string"
+    },
+    "runtime": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Runtime",
+      "type": "string"
+    },
+    "runtime_preflight": {
+      "$ref": "#/$defs/PinnedRuntimePreflightDecision"
+    },
+    "runtime_substitution_allowed": {
+      "const": false,
+      "default": false,
+      "title": "Runtime Substitution Allowed",
+      "type": "boolean"
+    },
+    "schema_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "task_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Task Id",
+      "type": "string"
+    },
+    "unbounded_native_usage_acknowledged": {
+      "const": true,
+      "default": true,
+      "title": "Unbounded Native Usage Acknowledged",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "content_sha256",
+    "dispatch_id",
+    "claimed_at",
+    "project_id",
+    "task_id",
+    "plan_id",
+    "inventory_id",
+    "inventory_sha256",
+    "execution_contract_id",
+    "execution_contract_sha256",
+    "route_activation_receipt_id",
+    "route_activation_receipt_sha256",
+    "run_claim_receipt_id",
+    "run_claim_receipt_sha256",
+    "repository",
+    "first_stage_key",
+    "first_gate_key",
+    "runtime",
+    "run_id",
+    "context_pack_id",
+    "context_pack_sha256",
+    "prompt_sha256",
+    "dispatch_policy",
+    "runtime_preflight"
+  ],
+  "title": "MethodologyRunDispatchClaim",
+  "type": "object"
+}

@@ -1259,7 +1259,7 @@ def test_consultation_candidate_is_advisory_until_explicit_adoption(tmp_path):
     assert unchanged.plan.version == before.plan.version
     assert unchanged.decisions == []
     projection = service.unified_status(task.task_id)
-    assert projection.schema_version == "11.0"
+    assert projection.schema_version == "12.0"
     assert projection.consultation_candidates == [candidate]
     assert projection.consultation_candidate_dispositions == []
     assert projection.artifacts == []

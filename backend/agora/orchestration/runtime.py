@@ -285,7 +285,14 @@ class ReadOnlyCliRunner:
             )
         capture = asyncio.create_task(self._capture_output(proc))
         try:
-            await on_process(proc.pid)
+            try:
+                await on_process(proc.pid)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                raise RuntimeInterrupted(
+                    "runtime process started but its PID could not attach"
+                ) from exc
             try:
                 stdout, stderr, stdout_prefix_truncated = await asyncio.wait_for(
                     asyncio.shield(capture), timeout=timeout_seconds,

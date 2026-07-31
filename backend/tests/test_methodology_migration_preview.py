@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import sqlite3
@@ -37,10 +38,19 @@ from agora.orchestration.methodology_run_claim import (
     _context_entry,
     load_methodology_run_claim_request,
 )
-from agora.orchestration.models import PlanState
+from agora.orchestration.methodology_run_dispatch import (
+    derive_methodology_run_dispatch_policy,
+)
+from agora.orchestration.models import MethodologyDispatchState, PlanState
+from agora.orchestration.processes import ProcessState
 from agora.orchestration.protocol_context import RepositoryRevision
-from agora.orchestration.runtime import RuntimeCommand
+from agora.orchestration.runtime import (
+    RuntimeCommand,
+    RuntimeResult,
+    resolve_runtime_command,
+)
 from agora.orchestration.runtime_capabilities import (
+    collect_native_runtime_capabilities,
     runtime_command_sha256,
     runtime_registry_sha256,
 )
@@ -67,7 +77,14 @@ from agora.protocol.methodology_run_claim import (
     MethodologyRunClaimReceipt,
     MethodologyRunClaimRequest,
 )
+from agora.protocol.methodology_run_dispatch import (
+    MethodologyRunDispatchClaim,
+    MethodologyRunDispatchPolicyDecision,
+    MethodologyRunDispatchReceipt,
+)
+from agora.protocol.models import ContextPack, HandoffPack
 from agora.protocol.schema_registry import SCHEMA_MODELS
+from agora.tasks.models import utc_now
 from agora.tasks.store import TaskStore
 
 
@@ -83,6 +100,142 @@ REVISION = RepositoryRevision(
     commit_sha="a" * 40,
 )
 FIXED_TIME = datetime(2026, 7, 29, 12, 0, tzinfo=timezone.utc)
+
+
+def _context_from_prompt(prompt: str) -> ContextPack:
+    value = prompt.split("SEALED CONTEXT PACK (canonical JSON):\n", 1)[1]
+    value = value.split("\nEND SEALED CONTEXT PACK", 1)[0]
+    return ContextPack.model_validate_json(value)
+
+
+class MethodologyDispatchRunner:
+    def __init__(self, *, fail_before_process: bool = False):
+        self.fail_before_process = fail_before_process
+        self.calls = 0
+        self.pid = 515_151
+        self.prompts: list[str] = []
+
+    async def run(self, runtime, prompt, **kwargs):
+        self.calls += 1
+        self.prompts.append(prompt)
+        if self.fail_before_process:
+            raise RuntimeError("injected pre-process boundary failure")
+        if kwargs.get("before_spawn") is not None:
+            kwargs["before_spawn"](
+                runtime,
+                resolve_runtime_command(runtime.build(prompt)),
+            )
+        await kwargs["on_process"](self.pid)
+        context = _context_from_prompt(prompt)
+        artifacts = []
+        for output in context.required_outputs:
+            content = json.dumps(
+                {
+                    "output_id": output.output_id,
+                    "result": "methodology stage completed",
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            artifacts.append(
+                {
+                    "schema_version": "1.0",
+                    "artifact_id": output.output_id,
+                    "project_id": context.project_id,
+                    "task_id": context.task_id,
+                    "stage_key": context.stage_key,
+                    "producer": {
+                        "runtime": runtime.adapter,
+                        "run_id": context.run_id,
+                        "stage_key": context.stage_key,
+                    },
+                    "kind": output.kind,
+                    "storage": "managed",
+                    "version": 1,
+                    "sha256": hashlib.sha256(
+                        content.encode("utf-8")
+                    ).hexdigest(),
+                    "media_type": "application/json",
+                    "content": content,
+                    "location": None,
+                    "created_at": utc_now(),
+                }
+            )
+        artifact_refs = [
+            {
+                key: artifact[key]
+                for key in ("artifact_id", "version", "sha256", "kind", "location")
+            }
+            for artifact in artifacts
+        ]
+        requirements = json.loads(
+            prompt.split("FORMAL GATE REQUIREMENTS:\n", 1)[1].split(
+                "\n\nSEALED CONTEXT PACK", 1
+            )[0]
+        )
+        evidence = [
+            {
+                "schema_version": "1.0",
+                "evidence_id": (
+                    f"evidence:{context.run_id}:{item['requirement_id']}"
+                ),
+                "project_id": context.project_id,
+                "task_id": context.task_id,
+                "stage_key": context.stage_key,
+                "producer": {
+                    "runtime": runtime.adapter,
+                    "run_id": context.run_id,
+                    "stage_key": context.stage_key,
+                },
+                "repository_id": item["repository_id"],
+                "ref": item["ref"],
+                "commit_sha": item["commit_sha"],
+                "requirement_id": item["requirement_id"],
+                "kind": item["evidence_kind"],
+                "status": "passed",
+                "artifact_versions": artifact_refs,
+                "summary": "Observed the exact methodology Gate requirement.",
+                "observed_at": utc_now(),
+                "details": {},
+            }
+            for item in requirements
+        ]
+        payload = {
+            "schema_version": "1.0",
+            "pack_id": f"handoff:{context.run_id}",
+            "project_id": context.project_id,
+            "task_id": context.task_id,
+            "stage_key": context.stage_key,
+            "run_id": context.run_id,
+            "producer": {
+                "runtime": runtime.adapter,
+                "run_id": context.run_id,
+                "stage_key": context.stage_key,
+            },
+            "input_artifacts": [
+                item.model_dump(mode="json") for item in context.input_artifacts
+            ],
+            "required_outputs": [
+                item.model_dump(mode="json") for item in context.required_outputs
+            ],
+            "forbidden_constraints": list(context.forbidden_constraints),
+            "stage_result": "succeeded",
+            "output_artifacts": artifacts,
+            "evidence": evidence,
+            "unresolved_questions": [],
+            "native_state_snapshot": None,
+            "memory_candidates": [],
+            "blocker_requirement_ids": [],
+            "suggested_next_action": None,
+        }
+        return RuntimeResult(
+            0,
+            json.dumps(
+                seal_model_payload(HandoffPack, payload),
+                ensure_ascii=False,
+            ),
+            "",
+        )
 
 
 def _database_dump(tasks: TaskStore) -> str:
@@ -3085,4 +3238,611 @@ def test_methodology_run_claim_schemas_are_registered():
     assert (
         SCHEMA_MODELS["methodology-run-claim-receipt"]
         is MethodologyRunClaimReceipt
+    )
+
+
+def _claimed_methodology_run(
+    tmp_path,
+):
+    tasks, service, task, root, proposal_path = _system(tmp_path)
+    contract, _, request = _activated_route(
+        tasks,
+        service,
+        task,
+        root,
+        proposal_path,
+    )
+    run_claim = service.claim_methodology_first_run(
+        contract.task_id,
+        request,
+        principal=_migration_principal(),
+    )
+    return tasks, service, contract, run_claim
+
+
+async def _dispatch_methodology_run(service, task_id):
+    return await service.dispatch_methodology_first_run(
+        task_id,
+        allow_unbounded_native_usage=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_methodology_dispatch_service_requires_explicit_acknowledgement(
+    tmp_path,
+):
+    tasks, service, contract, _ = _claimed_methodology_run(tmp_path)
+    before = _database_dump(tasks)
+
+    with pytest.raises(
+        OrchestrationValidationError,
+        match="acknowledgement",
+    ):
+        await service.dispatch_methodology_first_run(
+            contract.task_id,
+            allow_unbounded_native_usage=False,
+        )
+
+    assert _database_dump(tasks) == before
+
+
+@pytest.mark.asyncio
+async def test_methodology_dispatch_reuses_claimed_run_and_settles_atomically(
+    tmp_path,
+):
+    tasks, service, contract, run_claim = _claimed_methodology_run(tmp_path)
+    runner = MethodologyDispatchRunner()
+    service.runner = runner
+
+    receipt = await _dispatch_methodology_run(service, contract.task_id)
+
+    assert isinstance(receipt, MethodologyRunDispatchReceipt)
+    assert isinstance(receipt.dispatch_claim, MethodologyRunDispatchClaim)
+    assert receipt.dispatch_claim.run_id == run_claim.run_id
+    assert receipt.dispatch_claim.context_pack_id == run_claim.context_pack_id
+    assert receipt.dispatch_claim.dispatch_policy.dispatchable is True
+    assert receipt.dispatch_claim.runtime_preflight.allowed is True
+    assert (
+        receipt.dispatch_claim.runtime_preflight.routing_policy_decision_id
+        == receipt.dispatch_claim.dispatch_policy.decision_id
+    )
+    assert (
+        receipt.dispatch_claim.runtime_preflight.routing_policy_decision_sha256
+        == receipt.dispatch_claim.dispatch_policy.content_sha256
+    )
+    assert receipt.dispatch_claim.existing_formal_run_reused is True
+    assert receipt.dispatch_claim.existing_context_pack_reused is True
+    assert receipt.dispatch_claim.compatibility_run_created is False
+    assert receipt.process_started is True
+    assert receipt.pid == runner.pid
+    assert receipt.protocol_settled is True
+    assert receipt.provider_substitution is False
+    assert runner.calls == 1
+
+    dispatch = service.store.get_methodology_run_dispatch(contract.task_id)
+    assert dispatch is not None
+    assert dispatch.state == MethodologyDispatchState.SETTLED
+    assert dispatch.receipt == receipt
+    protocol_run = service.control_plane.get_protocol_run(run_claim.run_id)
+    assert protocol_run is not None
+    assert protocol_run.settled_at is not None
+    assert protocol_run.protocol_state == receipt.protocol_state
+    assert protocol_run.handoff_pack is not None
+    assert protocol_run.handoff_pack.pack_id == receipt.handoff_pack_id
+    unified = service.unified_status(contract.task_id)
+    assert unified.schema_version == "12.0"
+    assert len(unified.runs) == 1
+    assert unified.runs[0].run_id == run_claim.run_id
+    assert unified.runs[0].runtime_preflight == (
+        receipt.dispatch_claim.runtime_preflight
+    )
+    assert unified.runs[0].usage_observation == receipt.usage_observation
+    assert unified.runs[0].wait_state.value == "settled"
+    assert unified.budget.token_reserved == 0
+    assert unified.collection_totals["usage"] == 1
+    assert len(unified.usage) == 1
+    assert unified.usage[0].run_id == run_claim.run_id
+    with sqlite3.connect(tasks.db_path) as db:
+        assert db.execute(
+            "SELECT COUNT(*) FROM protocol_runs WHERE task_id = ?",
+            (contract.task_id,),
+        ).fetchone()[0] == 1
+        assert db.execute(
+            "SELECT COUNT(*) FROM orchestration_runs WHERE task_id = ?",
+            (contract.task_id,),
+        ).fetchone()[0] == 0
+        assert db.execute(
+            """
+            SELECT COUNT(*) FROM orchestration_methodology_run_dispatches
+            WHERE task_id = ? AND state = 'settled'
+            """,
+            (contract.task_id,),
+        ).fetchone()[0] == 1
+        assert db.execute(
+            """
+            SELECT COUNT(*) FROM orchestration_methodology_usage_ledger
+            WHERE task_id = ?
+            """,
+            (contract.task_id,),
+        ).fetchone()[0] == 1
+        assert db.execute(
+            """
+            SELECT process_started FROM orchestration_methodology_run_claims
+            WHERE task_id = ?
+            """,
+            (contract.task_id,),
+        ).fetchone()[0] == 0
+
+    replay = await _dispatch_methodology_run(service, contract.task_id)
+    assert replay == receipt
+    assert runner.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_methodology_dispatch_pre_spawn_failure_settles_exact_zero(
+    tmp_path,
+):
+    tasks, service, contract, run_claim = _claimed_methodology_run(tmp_path)
+    runner = MethodologyDispatchRunner(fail_before_process=True)
+    service.runner = runner
+
+    receipt = await _dispatch_methodology_run(service, contract.task_id)
+
+    assert receipt.process_started is False
+    assert receipt.pid is None
+    assert receipt.exit_code is None
+    assert receipt.usage_observation.total_tokens == 0
+    assert receipt.usage_observation.token_measurement == "exact"
+    assert receipt.usage_observation.cost_usd == 0
+    assert receipt.usage_observation.cost_measurement == "exact"
+    assert receipt.protocol_state.process_status.value == "launch_failed"
+    assert receipt.stage_status.value == "failed"
+    assert receipt.handoff_pack_id is None
+    assert runner.calls == 1
+    with sqlite3.connect(tasks.db_path) as db:
+        assert db.execute(
+            "SELECT COUNT(*) FROM protocol_runs WHERE run_id = ?",
+            (run_claim.run_id,),
+        ).fetchone()[0] == 1
+        assert db.execute(
+            "SELECT COUNT(*) FROM orchestration_runs WHERE task_id = ?",
+            (contract.task_id,),
+        ).fetchone()[0] == 0
+
+
+@pytest.mark.asyncio
+async def test_methodology_dispatch_immediate_repository_recheck_blocks_spawn(
+    tmp_path,
+):
+    _, service, contract, _ = _claimed_methodology_run(tmp_path)
+    runner = MethodologyDispatchRunner()
+    service.runner = runner
+    calls = 0
+
+    def changing_revision(_root, _repository_id):
+        nonlocal calls
+        calls += 1
+        if calls >= 3:
+            return RepositoryRevision(
+                repository_id=REVISION.repository_id,
+                ref=REVISION.ref,
+                commit_sha="b" * 40,
+            )
+        return REVISION
+
+    service.revision_resolver = changing_revision
+    receipt = await _dispatch_methodology_run(service, contract.task_id)
+
+    assert receipt.process_started is False
+    assert receipt.protocol_state.process_status.value == "launch_failed"
+    assert runner.calls == 0
+    assert calls == 3
+
+
+@pytest.mark.asyncio
+async def test_methodology_dispatch_blocked_preflight_has_zero_mutation(
+    tmp_path,
+):
+    tasks, service, contract, _ = _claimed_methodology_run(tmp_path)
+    service.runtimes["codex"] = RuntimeCommand(
+        adapter="codex",
+        command_template=("agora-missing-methodology-runtime", "{prompt}"),
+    )
+    before = _database_dump(tasks)
+
+    with pytest.raises(
+        OrchestrationConflictError,
+        match="unavailable|changed",
+    ):
+        await _dispatch_methodology_run(service, contract.task_id)
+
+    assert _database_dump(tasks) == before
+    assert service.store.get_methodology_run_dispatch(contract.task_id) is None
+
+
+def test_methodology_dispatch_policy_reports_unbounded_reservation_as_blocked(
+    tmp_path,
+):
+    _, service, contract, _ = _claimed_methodology_run(tmp_path)
+    snapshot = service.store.methodology_run_dispatch_snapshot(
+        contract.task_id,
+        control_plane=service.control_plane,
+    )
+    unbounded_budget = snapshot.run_claim_receipt.budget.model_copy(
+        update={"max_model_tokens": None}
+    )
+    unbounded_claim = snapshot.run_claim_receipt.model_copy(
+        update={"budget": unbounded_budget}
+    )
+
+    decision = derive_methodology_run_dispatch_policy(
+        snapshot=replace(
+            snapshot,
+            run_claim_receipt=unbounded_claim,
+        ),
+        repository=REVISION,
+        runtimes=service.runtimes,
+        evaluated_at=utc_now(),
+    )
+
+    assert decision.dispatchable is False
+    assert decision.token_reservation == 0
+    assert any(
+        item.check == "usage_reservation" and not item.satisfied
+        for item in decision.checks
+    )
+
+
+@pytest.mark.asyncio
+async def test_methodology_dispatch_collection_occurs_before_write_claim(
+    tmp_path,
+):
+    tasks, service, contract, _ = _claimed_methodology_run(tmp_path)
+    runner = MethodologyDispatchRunner(fail_before_process=True)
+    service.runner = runner
+    observed_without_claim = False
+
+    async def collector(runtimes):
+        nonlocal observed_without_claim
+        with sqlite3.connect(tasks.db_path, timeout=0.1) as db:
+            db.execute("BEGIN IMMEDIATE")
+            observed_without_claim = (
+                db.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM orchestration_methodology_run_dispatches
+                    """
+                ).fetchone()[0]
+                == 0
+            )
+            db.rollback()
+        return await collect_native_runtime_capabilities(runtimes)
+
+    service.capability_collector = collector
+    await _dispatch_methodology_run(service, contract.task_id)
+
+    assert observed_without_claim is True
+
+
+@pytest.mark.asyncio
+async def test_methodology_dispatch_registry_drift_inside_runner_blocks_spawn(
+    tmp_path,
+):
+    _, service, contract, _ = _claimed_methodology_run(tmp_path)
+
+    class DriftingRunner:
+        def __init__(self):
+            self.calls = 0
+
+        async def run(self, runtime, prompt, **kwargs):
+            self.calls += 1
+            service.runtimes["codex"] = RuntimeCommand(
+                adapter="codex",
+                command_template=(sys.executable, "changed", "{prompt}"),
+            )
+            kwargs["before_spawn"](
+                runtime,
+                resolve_runtime_command(runtime.build(prompt)),
+            )
+            raise AssertionError("preflight drift must reject before process")
+
+    runner = DriftingRunner()
+    service.runner = runner
+    receipt = await _dispatch_methodology_run(service, contract.task_id)
+
+    assert runner.calls == 1
+    assert receipt.process_started is False
+    assert receipt.protocol_state.process_status.value == "launch_failed"
+    assert receipt.usage_observation.total_tokens == 0
+
+
+@pytest.mark.asyncio
+async def test_methodology_dispatch_concurrency_never_spawns_twice(tmp_path):
+    _, service, contract, _ = _claimed_methodology_run(tmp_path)
+    runner = MethodologyDispatchRunner()
+    service.runner = runner
+
+    results = await asyncio.gather(
+        _dispatch_methodology_run(service, contract.task_id),
+        _dispatch_methodology_run(service, contract.task_id),
+        return_exceptions=True,
+    )
+
+    assert runner.calls == 1
+    assert sum(isinstance(item, MethodologyRunDispatchReceipt) for item in results) == 1
+    assert sum(isinstance(item, OrchestrationConflictError) for item in results) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("attach_process", "expected_process_status", "expected_stage_status"),
+    [
+        (False, "launch_failed", "failed"),
+        (True, "cancelled", "cancelled"),
+    ],
+)
+async def test_methodology_dispatch_cancellation_settles_before_propagating(
+    tmp_path,
+    attach_process,
+    expected_process_status,
+    expected_stage_status,
+):
+    _, service, contract, _ = _claimed_methodology_run(tmp_path)
+
+    class CancellingRunner:
+        async def run(self, _runtime, _prompt, **kwargs):
+            if attach_process:
+                await kwargs["on_process"](717_171)
+            raise asyncio.CancelledError
+
+    service.runner = CancellingRunner()
+    with pytest.raises(asyncio.CancelledError):
+        await _dispatch_methodology_run(service, contract.task_id)
+
+    dispatch = service.store.get_methodology_run_dispatch(contract.task_id)
+    assert dispatch is not None
+    assert dispatch.state == MethodologyDispatchState.SETTLED
+    assert dispatch.receipt is not None
+    assert (
+        dispatch.receipt.protocol_state.process_status.value
+        == expected_process_status
+    )
+    assert dispatch.receipt.stage_status.value == expected_stage_status
+
+
+@pytest.mark.asyncio
+async def test_methodology_dispatch_crash_recovery_refuses_live_pid_then_settles(
+    tmp_path,
+):
+    _, service, contract, _ = _claimed_methodology_run(tmp_path)
+
+    class CrashingRunner:
+        async def run(self, _runtime, _prompt, **kwargs):
+            await kwargs["on_process"](616_161)
+            raise GeneratorExit("simulated host crash")
+
+    service.runner = CrashingRunner()
+    with pytest.raises(GeneratorExit, match="simulated host crash"):
+        await _dispatch_methodology_run(service, contract.task_id)
+    dispatch = service.store.get_methodology_run_dispatch(contract.task_id)
+    assert dispatch is not None
+    assert dispatch.state == MethodologyDispatchState.RUNNING
+    assert dispatch.pid == 616_161
+
+    service.process_inspector = lambda _pid: ProcessState.ALIVE
+    with pytest.raises(
+        OrchestrationConflictError,
+        match="refusing duplicate dispatch",
+    ):
+        service.resume(contract.task_id)
+
+    service.process_inspector = lambda _pid: ProcessState.DEAD
+    service.resume(contract.task_id)
+    recovered = service.store.get_methodology_run_dispatch(contract.task_id)
+    assert recovered is not None
+    assert recovered.state == MethodologyDispatchState.SETTLED
+    assert recovered.receipt is not None
+    assert recovered.receipt.process_started is True
+    assert recovered.receipt.protocol_state.process_status.value == "interrupted"
+
+
+@pytest.mark.asyncio
+async def test_methodology_dispatch_finalization_recovers_after_event_rollback(
+    tmp_path,
+    monkeypatch,
+):
+    tasks, service, contract, run_claim = _claimed_methodology_run(tmp_path)
+    service.runner = MethodologyDispatchRunner()
+    original_event = service.control_plane._event
+
+    def fail_final_event(*args, **kwargs):
+        if kwargs.get("event_type") == "methodology.run_dispatch_settled":
+            raise RuntimeError("injected dispatch finalization event failure")
+        return original_event(*args, **kwargs)
+
+    monkeypatch.setattr(service.control_plane, "_event", fail_final_event)
+    with pytest.raises(
+        RuntimeError,
+        match="dispatch finalization event failure",
+    ):
+        await _dispatch_methodology_run(service, contract.task_id)
+
+    dispatch = service.store.get_methodology_run_dispatch(contract.task_id)
+    assert dispatch is not None
+    assert dispatch.state == MethodologyDispatchState.TERMINAL_OBSERVED
+    assert service.control_plane.get_protocol_run(
+        dispatch.claim.run_id
+    ).settled_at is not None
+    with sqlite3.connect(tasks.db_path) as db:
+        assert db.execute(
+            "SELECT COUNT(*) FROM orchestration_methodology_usage_ledger"
+        ).fetchone()[0] == 0
+    interrupted_projection = service.unified_status(contract.task_id)
+    assert (
+        interrupted_projection.budget.token_reserved
+        == run_claim.budget.max_model_tokens
+    )
+
+    monkeypatch.setattr(service.control_plane, "_event", original_event)
+    receipt = await _dispatch_methodology_run(service, contract.task_id)
+    assert receipt.protocol_settled is True
+    assert (
+        service.store.get_methodology_run_dispatch(contract.task_id).state
+        == MethodologyDispatchState.SETTLED
+    )
+    assert service.unified_status(contract.task_id).budget.token_reserved == 0
+
+
+@pytest.mark.asyncio
+async def test_methodology_dispatch_persisted_preflight_tamper_fails_closed(
+    tmp_path,
+):
+    tasks, service, contract, _ = _claimed_methodology_run(tmp_path)
+    service.runner = MethodologyDispatchRunner(fail_before_process=True)
+    await _dispatch_methodology_run(service, contract.task_id)
+    with sqlite3.connect(tasks.db_path) as db:
+        payload = json.loads(
+            db.execute(
+                """
+                SELECT preflight_payload
+                FROM orchestration_methodology_run_dispatches
+                WHERE task_id = ?
+                """,
+                (contract.task_id,),
+            ).fetchone()[0]
+        )
+        payload["rationale"][0] = "tampered methodology preflight"
+        db.execute(
+            """
+            UPDATE orchestration_methodology_run_dispatches
+            SET preflight_payload = ? WHERE task_id = ?
+            """,
+            (json.dumps(payload), contract.task_id),
+        )
+        db.commit()
+
+    with pytest.raises(
+        (ValidationError, OrchestrationValidationError),
+        match="content_sha256|binding drifted",
+    ):
+        service.store.get_methodology_run_dispatch(contract.task_id)
+
+
+@pytest.mark.asyncio
+async def test_methodology_dispatch_persisted_policy_tamper_fails_closed(
+    tmp_path,
+):
+    tasks, service, contract, _ = _claimed_methodology_run(tmp_path)
+    service.runner = MethodologyDispatchRunner(fail_before_process=True)
+    await _dispatch_methodology_run(service, contract.task_id)
+    with sqlite3.connect(tasks.db_path) as db:
+        payload = json.loads(
+            db.execute(
+                """
+                SELECT dispatch_policy_payload
+                FROM orchestration_methodology_run_dispatches
+                WHERE task_id = ?
+                """,
+                (contract.task_id,),
+            ).fetchone()[0]
+        )
+        payload["checks"][0]["detail"] = "tampered methodology dispatch policy"
+        db.execute(
+            """
+            UPDATE orchestration_methodology_run_dispatches
+            SET dispatch_policy_payload = ? WHERE task_id = ?
+            """,
+            (json.dumps(payload), contract.task_id),
+        )
+        db.commit()
+
+    with pytest.raises(
+        (ValidationError, OrchestrationValidationError),
+        match="content_sha256|binding drifted",
+    ):
+        service.store.get_methodology_run_dispatch(contract.task_id)
+
+
+@pytest.mark.asyncio
+async def test_methodology_dispatch_terminal_fact_tamper_fails_closed(
+    tmp_path,
+):
+    tasks, service, contract, _ = _claimed_methodology_run(tmp_path)
+    service.runner = MethodologyDispatchRunner()
+    await _dispatch_methodology_run(service, contract.task_id)
+    with sqlite3.connect(tasks.db_path) as db:
+        db.execute(
+            """
+            UPDATE orchestration_methodology_run_dispatches
+            SET output = ? WHERE task_id = ?
+            """,
+            ("tampered terminal output", contract.task_id),
+        )
+        db.commit()
+
+    with pytest.raises(
+        (ValidationError, OrchestrationValidationError),
+        match="receipt differs|binding drifted",
+    ):
+        service.store.get_methodology_run_dispatch(contract.task_id)
+
+
+def test_methodology_dispatch_cli_requires_acknowledgement_before_store(
+    monkeypatch,
+    capsys,
+):
+    built = False
+
+    def build_forbidden():
+        nonlocal built
+        built = True
+        raise AssertionError("service must not build before acknowledgement")
+
+    monkeypatch.setattr(orchestration_cli, "build_service", build_forbidden)
+    code = orchestration_cli.main(
+        ["migration-run-dispatch", "task-successor"]
+    )
+
+    assert code == 2
+    assert built is False
+    assert "--allow-unbounded-native-usage" in capsys.readouterr().out
+
+
+def test_methodology_dispatch_cli_emits_terminal_receipt(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    _, service, contract, _ = _claimed_methodology_run(tmp_path)
+    service.runner = MethodologyDispatchRunner(fail_before_process=True)
+    monkeypatch.setattr(orchestration_cli, "build_service", lambda: service)
+
+    code = orchestration_cli.main(
+        [
+            "migration-run-dispatch",
+            contract.task_id,
+            "--allow-unbounded-native-usage",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert code == 0
+    assert payload["dispatch_claim"]["task_id"] == contract.task_id
+    assert payload["process_started"] is False
+    assert payload["protocol_settled"] is True
+    assert payload["provider_substitution"] is False
+
+
+def test_methodology_run_dispatch_schemas_are_registered():
+    assert (
+        SCHEMA_MODELS["methodology-run-dispatch-policy-decision"]
+        is MethodologyRunDispatchPolicyDecision
+    )
+    assert (
+        SCHEMA_MODELS["methodology-run-dispatch-claim"]
+        is MethodologyRunDispatchClaim
+    )
+    assert (
+        SCHEMA_MODELS["methodology-run-dispatch-receipt"]
+        is MethodologyRunDispatchReceipt
     )

@@ -152,6 +152,14 @@ Token use and remaining capacity unavailable. Cost is exact zero only before
 any settlement exists; if any settled Run or consultation lacks cost,
 aggregate cost and remaining cost become unavailable rather than zero.
 
+Unified projection schema `12.0` adds the one-shot AWS AI-DLC methodology
+dispatch attachment to its existing formal Run projection. It exposes the
+fresh pinned-runtime preflight, terminal process/protocol state, Run-bound
+usage observation, and settlement timing without creating a compatibility
+Run. The separate methodology usage ledger participates in settled and
+remaining budget totals, while the original claim remains the active
+reservation source only until `protocol_runs.settled_at` is present.
+
 ## Bounds and payload shape
 
 - history page limit: 1 to 200, offset: 0 to 1,000,000;

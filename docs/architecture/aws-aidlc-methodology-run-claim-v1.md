@@ -99,15 +99,16 @@ process_spawn_authority = false
 provider_substitution = false
 ```
 
-## Deferred process boundary
+## Successor process boundary
 
-The next reviewed slice must collect a fresh pinned-runtime capability
-observation and preflight outside the claim transaction, recheck the exact
-repository/registry/command/launch binding immediately before process
-creation, and attach process execution to this already claimed Run. It must not
-create a second Run or Context Pack, substitute a runtime/model, infer provider
-serviceability, or relax the existing unbounded-native-usage acknowledgement.
+The separately reviewed successor is specified in
+`aws-aidlc-methodology-run-dispatch-v1.md`. It collects a fresh pinned-runtime
+capability observation and preflight outside the claim transaction, rechecks
+the exact repository/registry/command/launch binding immediately before
+process creation, and attaches process execution to this already claimed Run.
+It does not create a second Run or Context Pack, substitute a runtime/model,
+infer provider serviceability, or relax the existing
+unbounded-native-usage acknowledgement.
 
-Provider spawn, Handoff settlement, cross-Stage activation/rework, HTTP, UI,
-dynamic provider substitution, and native AI-DLC file installation remain
-deferred.
+Automatic later-Stage claim/dispatch and cross-Stage rework, HTTP, UI, dynamic
+provider substitution, and native AI-DLC file installation remain deferred.

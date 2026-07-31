@@ -1,5 +1,82 @@
 # Agora Control Plane Development Progress
 
+## 2026-07-31 - AWS AI-DLC first claimed-Run dispatch and settlement (reviewed)
+
+### Bounded implementation
+
+- [x] Added hash-sealed `MethodologyRunDispatchPolicyDecision@1.0`,
+  `MethodologyRunDispatchClaim@1.0`, and
+  `MethodologyRunDispatchReceipt@1.0` contracts plus checked-in JSON Schemas.
+  The per-Run policy authenticates the exact claim, Context Pack, running
+  Stage/pending Gate, route activation, repository revision, complete runtime
+  pins, and usage reservation without route-selection, substitution, or
+  provider-serviceability authority.
+- [x] Added
+  `agora task migration-run-dispatch SUCCESSOR_TASK_ID
+  --allow-unbounded-native-usage`. Both CLI and service boundaries require the
+  explicit provider-usage acknowledgement before any dispatch mutation.
+- [x] Fresh capability observation and policy-bound pinned-runtime preflight
+  occur outside the write transaction. The immediate claim transaction
+  revalidates the complete methodology ledger and live repository/runtime
+  bindings, then consumes exactly one process attachment for the existing
+  formal Run and Context Pack. It creates no second `protocol_runs` row and no
+  compatibility `orchestration_runs` row.
+- [x] The default no-shell Runner repeats repository, registry, command,
+  resolved-launch, observation, and preflight checks immediately before
+  process creation. PID attachment, bounded terminal output, adapter result,
+  repository result, and provider usage are durable recovery facts.
+- [x] Formal Handoff parsing and the one format-only repair remain unchanged;
+  only the Control Plane settles Artifact/Evidence, Gate, Stage, Run, and next
+  route. A separate methodology usage ledger and immutable receipt finalize
+  afterward, with the active reservation retained across an interrupted
+  post-Control-Plane/pre-ledger window.
+- [x] Recovery never starts a replacement process: unattached claims settle as
+  launch failures, live/unknown PIDs block, dead PIDs settle as interrupted,
+  terminal observations replay formal settlement/finalization, and settled
+  receipts replay exactly. Cancellation, concurrency, transaction rollback,
+  drift, and persisted policy/preflight/terminal tamper cases fail closed.
+- [x] Unified Task projection schema `12.0` exposes the existing formal Run's
+  preflight, operational/protocol state, provider usage, budget accounting,
+  and recovery timing without fabricating compatibility state.
+
+### Verification and review state
+
+- [x] Focused review-fix selection covering dispatch, tamper/recovery, blocked
+  reservation, and normative Schema enumeration: 19 passed, 118 deselected.
+- [x] Related methodology, runtime preflight, protocol settlement, Task
+  orchestration, consultation, projection, and provider-usage suite:
+  258 passed.
+- [x] Exact complete non-integration backend suite: 677 passed, 18 deselected,
+  with only the existing Starlette/httpx and Windows Proactor cleanup warnings.
+- [x] Protocol Schema export/check, system-Temp-isolated `compileall`,
+  `migration-run-dispatch --help`, and `git diff --check` passed.
+- [x] Kiro CLI session `7adeb87a-54fa-409f-9b06-8729c126b49a` completed a
+  substantive methodology/protocol review and requested one LOW documentation
+  fix: the normative freeze Schema list was stale. All five missing
+  run-claim/dispatch entries, an exact-list regression, and its informational
+  zero-reservation defense were added. The same session independently reran
+  the 34 protocol-freeze cases, 20 dispatch-selected cases, Schema check, and
+  complete 677-case suite, confirmed no new actionable issue, and returned
+  `VERDICT: APPROVE`.
+- [x] The first independent Claude Code attempt exhausted its configured
+  budget before emitting a verdict and was not treated as approval. A fresh
+  complete read-only review inspected every tracked diff and untracked
+  implementation/Schema file across policy/preflight, process/PID,
+  transaction/concurrency, cancellation/recovery, formal settlement,
+  provider accounting, tamper defense, projection, CLI, documentation, and
+  regression coverage. It found no actionable HIGH, MEDIUM, or LOW issue and
+  returned `VERDICT: APPROVE`.
+
+### Current checkpoint and next safe action
+
+Implementation, automated validation, actionable-finding resolution, and both
+review gates are complete on baseline `795ffab`. This bounded first claimed-Run
+dispatch/settlement increment is ready for its reviewed commit/push. The
+succeeding slice must remain backend-first and derive later-Stage
+claim/dispatch authority from the settled formal Gate and grouped inventory;
+automatic rework, HTTP, UI, dynamic provider substitution, and native AI-DLC
+file installation remain deferred.
+
 ## 2026-07-31 - AWS AI-DLC first formal Run and Context Pack claim (reviewed)
 
 ### Bounded implementation

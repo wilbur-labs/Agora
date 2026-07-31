@@ -71,6 +71,17 @@ Unified Task projection schema `9.0` exposes the persisted decision on each
 formal operational Run. Reads verify its content hash and Run/routing-policy
 bindings but do not re-run probes or mutate state.
 
+The AWS AI-DLC successor claims its formal Run before collecting preflight.
+That path therefore persists the same decision in a separate single-use
+methodology dispatch attachment instead of modifying the already sealed
+Context Pack. A hash-sealed
+`MethodologyRunDispatchPolicyDecision@1.0` revalidates the exact Run, Context,
+route-activation receipt, repository, runtime pins, and reservation without
+selecting or substituting a route. That per-Run decision supplies the
+routing-decision identity/hash binding, while the same reviewed capability
+declaration supplies the declaration binding. Unified projection schema
+`12.0` exposes that attachment without creating a compatibility Run.
+
 ## Task-scoped read-only preview
 
 `agora task preflight TASK_ID` evaluates the already initialized formal route

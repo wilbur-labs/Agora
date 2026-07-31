@@ -39,6 +39,11 @@ from .methodology_run_claim import (
     MethodologyRunClaimReceipt,
     MethodologyRunClaimRequest,
 )
+from .methodology_run_dispatch import (
+    MethodologyRunDispatchClaim,
+    MethodologyRunDispatchPolicyDecision,
+    MethodologyRunDispatchReceipt,
+)
 from .models import (
     Approval,
     ApprovalStatus,
@@ -106,6 +111,9 @@ __all__ = [
     "MethodologyRouteActivationRequest",
     "MethodologyRunClaimReceipt",
     "MethodologyRunClaimRequest",
+    "MethodologyRunDispatchClaim",
+    "MethodologyRunDispatchPolicyDecision",
+    "MethodologyRunDispatchReceipt",
     "MethodologySeedArtifactRegistration",
     "MethodologyExternalSourceArtifact",
     "MethodologyScopeProfile",

@@ -8,6 +8,9 @@ from typing import Sequence
 
 from agora.control_plane.models import StageRouteDecision
 from agora.protocol.hashing import seal_model_payload
+from agora.protocol.methodology_run_dispatch import (
+    MethodologyRunDispatchPolicyDecision,
+)
 from agora.protocol.models import (
     NativeRuntimeCapabilityObservation,
     PinnedRuntimePreflightCheck,
@@ -40,7 +43,9 @@ def derive_pinned_runtime_preflight(
     observation: NativeRuntimeCapabilityObservation,
     runtimes: dict[str, RuntimeCommand],
     route: StageRouteDecision,
-    routing_policy: RoutingPolicyDecision,
+    routing_policy: (
+        RoutingPolicyDecision | MethodologyRunDispatchPolicyDecision
+    ),
     run_id: str,
     evaluated_at: datetime | None = None,
     platform: str | None = None,

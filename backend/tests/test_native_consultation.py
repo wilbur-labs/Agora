@@ -173,7 +173,7 @@ async def test_native_consultation_registers_only_an_advisory_candidate(tmp_path
     assert after.runs == before.runs
     assert after.decisions == []
     projection = service.unified_status(task.task_id)
-    assert projection.schema_version == "11.0"
+    assert projection.schema_version == "12.0"
     assert projection.consultation_runs == [consultation]
     assert len(projection.consultation_candidates) == 1
     assert projection.consultation_candidate_dispositions == []

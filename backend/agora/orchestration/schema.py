@@ -314,6 +314,70 @@ def initialize_orchestration_schema(db: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_methodology_run_claims_plan_created
             ON orchestration_methodology_run_claims(plan_id, created_at, run_id);
+
+        CREATE TABLE IF NOT EXISTS orchestration_methodology_run_dispatches (
+            dispatch_id TEXT PRIMARY KEY,
+            claim_sha256 TEXT NOT NULL,
+            claim_payload TEXT NOT NULL,
+            task_id TEXT NOT NULL UNIQUE REFERENCES tasks(task_id),
+            plan_id TEXT NOT NULL REFERENCES orchestration_plans(plan_id),
+            run_id TEXT NOT NULL UNIQUE REFERENCES protocol_runs(run_id),
+            stage_key TEXT NOT NULL,
+            runtime TEXT NOT NULL,
+            prompt_sha256 TEXT NOT NULL,
+            dispatch_policy_id TEXT NOT NULL UNIQUE,
+            dispatch_policy_sha256 TEXT NOT NULL,
+            dispatch_policy_payload TEXT NOT NULL,
+            preflight_id TEXT NOT NULL UNIQUE,
+            preflight_sha256 TEXT NOT NULL,
+            preflight_payload TEXT NOT NULL,
+            state TEXT NOT NULL CHECK (
+                state IN ('claimed', 'running', 'terminal_observed', 'settled')
+            ),
+            pid INTEGER,
+            process_started INTEGER NOT NULL DEFAULT 0
+                CHECK (process_started IN (0, 1)),
+            exit_code INTEGER,
+            timed_out INTEGER NOT NULL DEFAULT 0
+                CHECK (timed_out IN (0, 1)),
+            output TEXT NOT NULL DEFAULT '',
+            error_message TEXT,
+            repository_unchanged INTEGER
+                CHECK (repository_unchanged IN (0, 1)),
+            adapter_result_payload TEXT,
+            usage_observation_payload TEXT,
+            receipt_sha256 TEXT,
+            receipt_payload TEXT,
+            claimed_at TEXT NOT NULL,
+            process_attached_at TEXT,
+            terminal_observed_at TEXT,
+            settled_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_methodology_dispatches_plan_claimed
+            ON orchestration_methodology_run_dispatches(
+                plan_id, claimed_at, run_id
+            );
+
+        CREATE TABLE IF NOT EXISTS orchestration_methodology_usage_ledger (
+            entry_id TEXT PRIMARY KEY,
+            dispatch_id TEXT NOT NULL UNIQUE
+                REFERENCES orchestration_methodology_run_dispatches(dispatch_id),
+            task_id TEXT NOT NULL REFERENCES tasks(task_id),
+            plan_id TEXT NOT NULL REFERENCES orchestration_plans(plan_id),
+            stage_key TEXT NOT NULL,
+            run_id TEXT NOT NULL UNIQUE REFERENCES protocol_runs(run_id),
+            tokens INTEGER,
+            token_measurement TEXT NOT NULL,
+            cost_usd REAL,
+            cost_measurement TEXT NOT NULL,
+            adapter TEXT NOT NULL,
+            usage_observation_sha256 TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_methodology_usage_task_created
+            ON orchestration_methodology_usage_ledger(
+                task_id, created_at, entry_id
+            );
         """
     )
     columns = {row[1] for row in db.execute("PRAGMA table_info(orchestration_runs)")}

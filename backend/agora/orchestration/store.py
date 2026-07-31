@@ -46,6 +46,11 @@ from agora.protocol.methodology_run_claim import (
     MethodologyRunClaimReceipt,
     MethodologyRunClaimRequest,
 )
+from agora.protocol.methodology_run_dispatch import (
+    MethodologyRunDispatchClaim,
+    MethodologyRunDispatchPolicyDecision,
+    MethodologyRunDispatchReceipt,
+)
 from agora.protocol.state_machines import GateStatus, StageStatus
 from agora.tasks.models import TaskBudget, TaskState, utc_now
 from agora.tasks.store import TaskNotFoundError, TaskStore
@@ -59,13 +64,16 @@ from .methodology_migration_activation import (
 from .methodology_execution_contract import MethodologyExecutionSnapshot
 from .methodology_route_activation import MethodologyRouteActivationSnapshot
 from .methodology_run_claim import MethodologyRunClaimSnapshot
+from .methodology_run_dispatch import MethodologyRunDispatchSnapshot
 from .models import (
     BudgetAmendment,
     ConsultationRun,
     ConsultationState,
     LedgerEntryType,
     Measurement,
+    MethodologyDispatchState,
     MethodologyMigrationStateSnapshot,
+    MethodologyRunDispatchState,
     OrchestrationPlan,
     OrchestrationRun,
     OrchestrationStage,
@@ -4792,6 +4800,724 @@ class OrchestrationStore:
             )
             return receipt
 
+    def methodology_run_dispatch_snapshot(
+        self,
+        task_id: str,
+        *,
+        control_plane: ControlPlaneStore,
+    ) -> MethodologyRunDispatchSnapshot:
+        """Read all bindings for the one already claimed methodology Run."""
+
+        with closing(self._connect()) as db:
+            db.execute("BEGIN")
+            try:
+                return self._methodology_run_dispatch_snapshot_tx(
+                    db,
+                    task_id,
+                    control_plane=control_plane,
+                )
+            finally:
+                db.rollback()
+
+    def _methodology_run_dispatch_snapshot_tx(
+        self,
+        db: sqlite3.Connection,
+        task_id: str,
+        *,
+        control_plane: ControlPlaneStore,
+    ) -> MethodologyRunDispatchSnapshot:
+        task_row = db.execute(
+            "SELECT * FROM tasks WHERE task_id = ?",
+            (task_id,),
+        ).fetchone()
+        control_task_row = db.execute(
+            "SELECT * FROM control_tasks WHERE task_id = ?",
+            (task_id,),
+        ).fetchone()
+        plan_row = db.execute(
+            "SELECT * FROM orchestration_plans WHERE task_id = ?",
+            (task_id,),
+        ).fetchone()
+        contract_row = db.execute(
+            """
+            SELECT * FROM orchestration_methodology_execution_contracts
+            WHERE task_id = ?
+            """,
+            (task_id,),
+        ).fetchone()
+        activation_row = db.execute(
+            """
+            SELECT * FROM orchestration_methodology_route_activations
+            WHERE task_id = ?
+            """,
+            (task_id,),
+        ).fetchone()
+        claim_row = db.execute(
+            """
+            SELECT * FROM orchestration_methodology_run_claims
+            WHERE task_id = ?
+            """,
+            (task_id,),
+        ).fetchone()
+        if (
+            task_row is None
+            or control_task_row is None
+            or plan_row is None
+            or contract_row is None
+            or activation_row is None
+            or claim_row is None
+        ):
+            raise OrchestrationConflictError(
+                "Methodology Run dispatch requires the complete claimed ledger"
+            )
+        task = self.tasks._manifest(task_row)
+        control_task = control_plane._task_record(control_task_row)
+        plan = self._plan(plan_row)
+        inventory = control_plane.stage_inventory_snapshot(db, task_id)
+        if inventory is None:
+            raise OrchestrationConflictError(
+                "Methodology Run dispatch Stage inventory is unavailable"
+            )
+        contract = MethodologyExecutionContract.model_validate_json(
+            contract_row["contract_payload"]
+        )
+        activation = MethodologyRouteActivationReceipt.model_validate_json(
+            activation_row["receipt_payload"]
+        )
+        claim = MethodologyRunClaimReceipt.model_validate_json(
+            claim_row["receipt_payload"]
+        )
+        protocol_row = db.execute(
+            "SELECT * FROM protocol_runs WHERE run_id = ?",
+            (claim.run_id,),
+        ).fetchone()
+        stage_row = db.execute(
+            """
+            SELECT * FROM control_stages
+            WHERE task_id = ? AND stage_key = ?
+            """,
+            (task_id, claim.first_stage_key),
+        ).fetchone()
+        gate_row = db.execute(
+            """
+            SELECT * FROM control_gates
+            WHERE task_id = ? AND gate_key = ?
+            """,
+            (task_id, claim.first_gate_key),
+        ).fetchone()
+        if protocol_row is None or stage_row is None or gate_row is None:
+            raise OrchestrationConflictError(
+                "Methodology Run dispatch formal Run, Stage, or Gate is unavailable"
+            )
+        if (
+            contract.contract_id != contract_row["contract_id"]
+            or contract.content_sha256 != contract_row["contract_sha256"]
+            or activation.receipt_id != activation_row["receipt_id"]
+            or activation.content_sha256 != activation_row["receipt_sha256"]
+            or claim.receipt_id != claim_row["receipt_id"]
+            or claim.content_sha256 != claim_row["receipt_sha256"]
+            or claim.run_id != claim_row["run_id"]
+            or claim.context_pack_id != claim_row["context_pack_id"]
+            or claim.context_pack_sha256 != claim_row["context_pack_sha256"]
+            or bool(claim_row["process_started"])
+        ):
+            raise OrchestrationValidationError(
+                "Methodology Run dispatch persisted provenance drifted"
+            )
+        route = control_plane._stage_route_decision_tx(
+            db,
+            task_id,
+            required=True,
+        )
+        if route is None:
+            raise OrchestrationConflictError(
+                "Methodology Run dispatch authoritative route is unavailable"
+            )
+        return MethodologyRunDispatchSnapshot(
+            task=task,
+            control_task=control_task,
+            plan=plan,
+            inventory=inventory,
+            execution_contract=contract,
+            route_activation_receipt=activation,
+            run_claim_receipt=claim,
+            protocol_run=control_plane._protocol_run(protocol_row),
+            route=route,
+            formal_stage=control_plane._stage(stage_row),
+            formal_gate=control_plane._gate_record(db, gate_row),
+        )
+
+    def get_methodology_run_dispatch(
+        self,
+        task_id: str,
+    ) -> MethodologyRunDispatchState | None:
+        with closing(self._connect()) as db:
+            row = db.execute(
+                """
+                SELECT * FROM orchestration_methodology_run_dispatches
+                WHERE task_id = ?
+                """,
+                (task_id,),
+            ).fetchone()
+        return self._methodology_dispatch(row) if row is not None else None
+
+    def claim_methodology_run_dispatch(
+        self,
+        task_id: str,
+        *,
+        control_plane: ControlPlaneStore,
+        recheck: Callable[
+            [MethodologyRunDispatchSnapshot, str],
+            MethodologyRunDispatchClaim,
+        ],
+    ) -> MethodologyRunDispatchState:
+        """Atomically consume the sole spawn attachment for an existing Run."""
+
+        now = utc_now()
+        with self._transaction() as db:
+            existing = db.execute(
+                """
+                SELECT * FROM orchestration_methodology_run_dispatches
+                WHERE task_id = ?
+                """,
+                (task_id,),
+            ).fetchone()
+            if existing is not None:
+                raise OrchestrationConflictError(
+                    "Methodology Run already has a process dispatch attachment"
+                )
+            snapshot = self._methodology_run_dispatch_snapshot_tx(
+                db,
+                task_id,
+                control_plane=control_plane,
+            )
+            try:
+                claim = recheck(snapshot, now)
+            except (
+                ControlPlaneConflictError,
+                OrchestrationConflictError,
+                OrchestrationValidationError,
+                ValueError,
+            ) as exc:
+                if isinstance(
+                    exc,
+                    (OrchestrationConflictError, OrchestrationValidationError),
+                ):
+                    raise
+                raise OrchestrationConflictError(str(exc)) from exc
+            if claim.task_id != task_id:
+                raise OrchestrationValidationError(
+                    "Methodology dispatch claim crosses its Task scope"
+                )
+            compatibility = db.execute(
+                "SELECT 1 FROM orchestration_runs WHERE run_id = ? OR task_id = ?",
+                (claim.run_id, task_id),
+            ).fetchone()
+            if compatibility is not None:
+                raise OrchestrationConflictError(
+                    "Methodology dispatch cannot create or reuse a compatibility Run"
+                )
+            db.execute(
+                """
+                INSERT INTO orchestration_methodology_run_dispatches (
+                    dispatch_id, claim_sha256, claim_payload,
+                    task_id, plan_id, run_id, stage_key, runtime,
+                    prompt_sha256, dispatch_policy_id,
+                    dispatch_policy_sha256, dispatch_policy_payload,
+                    preflight_id, preflight_sha256, preflight_payload,
+                    state, claimed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    claim.dispatch_id,
+                    claim.content_sha256,
+                    self._json(claim.model_dump(mode="json")),
+                    task_id,
+                    claim.plan_id,
+                    claim.run_id,
+                    claim.first_stage_key,
+                    claim.runtime,
+                    claim.prompt_sha256,
+                    claim.dispatch_policy.decision_id,
+                    claim.dispatch_policy.content_sha256,
+                    self._json(
+                        claim.dispatch_policy.model_dump(mode="json")
+                    ),
+                    claim.runtime_preflight.decision_id,
+                    claim.runtime_preflight.content_sha256,
+                    self._json(
+                        claim.runtime_preflight.model_dump(mode="json")
+                    ),
+                    MethodologyDispatchState.CLAIMED.value,
+                    now,
+                ),
+            )
+            self.tasks._insert_event(
+                db,
+                task_id=task_id,
+                event_type="methodology_run_dispatch_claimed",
+                actor="orchestrator",
+                payload={
+                    "dispatch_id": claim.dispatch_id,
+                    "dispatch_sha256": claim.content_sha256,
+                    "run_id": claim.run_id,
+                    "context_pack_id": claim.context_pack_id,
+                    "runtime": claim.runtime,
+                    "dispatch_policy_id": claim.dispatch_policy.decision_id,
+                    "dispatch_policy_sha256": (
+                        claim.dispatch_policy.content_sha256
+                    ),
+                    "preflight_id": claim.runtime_preflight.decision_id,
+                    "preflight_sha256": (
+                        claim.runtime_preflight.content_sha256
+                    ),
+                    "process_started": False,
+                    "provider_substitution": False,
+                },
+                created_at=now,
+            )
+            control_plane._event(
+                db,
+                event_key=f"methodology.run.dispatch.claimed:{claim.dispatch_id}",
+                task_id=task_id,
+                project_id=claim.project_id,
+                event_type="methodology.run_dispatch_claimed",
+                actor="orchestrator",
+                payload={
+                    "dispatch_id": claim.dispatch_id,
+                    "dispatch_sha256": claim.content_sha256,
+                    "run_id": claim.run_id,
+                    "stage_key": claim.first_stage_key,
+                    "runtime": claim.runtime,
+                    "dispatch_policy_sha256": (
+                        claim.dispatch_policy.content_sha256
+                    ),
+                    "preflight_sha256": (
+                        claim.runtime_preflight.content_sha256
+                    ),
+                    "existing_formal_run_reused": True,
+                    "existing_context_pack_reused": True,
+                    "compatibility_run_created": False,
+                    "process_spawn_authority": True,
+                },
+                now=now,
+            )
+            row = db.execute(
+                """
+                SELECT * FROM orchestration_methodology_run_dispatches
+                WHERE dispatch_id = ?
+                """,
+                (claim.dispatch_id,),
+            ).fetchone()
+        assert row is not None
+        return self._methodology_dispatch(row)
+
+    def attach_methodology_run_pid(
+        self,
+        dispatch_id: str,
+        pid: int,
+    ) -> MethodologyRunDispatchState:
+        if pid < 1:
+            raise OrchestrationValidationError(
+                "Methodology dispatch PID must be positive"
+            )
+        now = utc_now()
+        with self._transaction() as db:
+            row = db.execute(
+                """
+                SELECT * FROM orchestration_methodology_run_dispatches
+                WHERE dispatch_id = ?
+                """,
+                (dispatch_id,),
+            ).fetchone()
+            if row is None:
+                raise OrchestrationNotFoundError(dispatch_id)
+            if (
+                row["state"] == MethodologyDispatchState.RUNNING.value
+                and row["pid"] == pid
+                and bool(row["process_started"])
+            ):
+                return self._methodology_dispatch(row)
+            if (
+                row["state"] != MethodologyDispatchState.CLAIMED.value
+                or row["pid"] is not None
+                or bool(row["process_started"])
+            ):
+                raise OrchestrationConflictError(
+                    "Methodology Run dispatch is not attachable"
+                )
+            cursor = db.execute(
+                """
+                UPDATE orchestration_methodology_run_dispatches
+                SET state = ?, pid = ?, process_started = 1,
+                    process_attached_at = ?
+                WHERE dispatch_id = ? AND state = ? AND pid IS NULL
+                  AND process_started = 0
+                """,
+                (
+                    MethodologyDispatchState.RUNNING.value,
+                    pid,
+                    now,
+                    dispatch_id,
+                    MethodologyDispatchState.CLAIMED.value,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise OrchestrationConflictError(
+                    "Methodology Run dispatch changed before PID attachment"
+                )
+            claim = MethodologyRunDispatchClaim.model_validate_json(
+                row["claim_payload"]
+            )
+            self.tasks._insert_event(
+                db,
+                task_id=row["task_id"],
+                event_type="methodology_run_process_attached",
+                actor="orchestrator",
+                payload={
+                    "dispatch_id": dispatch_id,
+                    "run_id": row["run_id"],
+                    "pid": pid,
+                    "process_started": True,
+                },
+                created_at=now,
+            )
+            updated = db.execute(
+                """
+                SELECT * FROM orchestration_methodology_run_dispatches
+                WHERE dispatch_id = ?
+                """,
+                (claim.dispatch_id,),
+            ).fetchone()
+        assert updated is not None
+        return self._methodology_dispatch(updated)
+
+    def observe_methodology_run_terminal(
+        self,
+        dispatch_id: str,
+        *,
+        process_started: bool,
+        exit_code: int | None,
+        timed_out: bool,
+        output: str,
+        error_message: str | None,
+        repository_unchanged: bool,
+        adapter_result: AgentAdapterResult,
+        usage_observation: ProviderUsageObservation,
+    ) -> MethodologyRunDispatchState:
+        """Persist terminal runner facts before authoritative protocol settlement."""
+
+        now = utc_now()
+        safe_output = redact_text(output)[-64 * 1024:]
+        safe_error = (
+            redact_text(error_message)[-4_000:] if error_message else None
+        )
+        with self._transaction() as db:
+            row = db.execute(
+                """
+                SELECT * FROM orchestration_methodology_run_dispatches
+                WHERE dispatch_id = ?
+                """,
+                (dispatch_id,),
+            ).fetchone()
+            if row is None:
+                raise OrchestrationNotFoundError(dispatch_id)
+            existing = self._methodology_dispatch(row)
+            if existing.state in {
+                MethodologyDispatchState.TERMINAL_OBSERVED,
+                MethodologyDispatchState.SETTLED,
+            }:
+                if (
+                    existing.process_started != process_started
+                    or existing.exit_code != exit_code
+                    or existing.timed_out != timed_out
+                    or existing.output != safe_output
+                    or existing.error_message != safe_error
+                    or existing.repository_unchanged != repository_unchanged
+                    or existing.adapter_result != adapter_result
+                    or existing.usage_observation != usage_observation
+                ):
+                    raise OrchestrationConflictError(
+                        "Methodology terminal observation replay differs"
+                    )
+                return existing
+            if existing.state not in {
+                MethodologyDispatchState.CLAIMED,
+                MethodologyDispatchState.RUNNING,
+            }:
+                raise OrchestrationConflictError(
+                    "Methodology dispatch cannot accept terminal facts"
+                )
+            if process_started != existing.process_started:
+                raise OrchestrationValidationError(
+                    "Methodology terminal process fact differs from its attachment"
+                )
+            if process_started and existing.pid is None:
+                raise OrchestrationValidationError(
+                    "Attached methodology process must settle as started"
+                )
+            if (
+                adapter_result.protocol_state.run_id != existing.claim.run_id
+                or usage_observation.run_id != existing.claim.run_id
+                or usage_observation.adapter != existing.claim.runtime
+            ):
+                raise OrchestrationValidationError(
+                    "Methodology terminal observation crosses its Run binding"
+                )
+            cursor = db.execute(
+                """
+                UPDATE orchestration_methodology_run_dispatches
+                SET state = ?, process_started = ?, exit_code = ?,
+                    timed_out = ?, output = ?, error_message = ?,
+                    repository_unchanged = ?, adapter_result_payload = ?,
+                    usage_observation_payload = ?, terminal_observed_at = ?
+                WHERE dispatch_id = ? AND state IN (?, ?)
+                """,
+                (
+                    MethodologyDispatchState.TERMINAL_OBSERVED.value,
+                    int(process_started),
+                    exit_code,
+                    int(timed_out),
+                    safe_output,
+                    safe_error,
+                    int(repository_unchanged),
+                    self._json(adapter_result.model_dump(mode="json")),
+                    self._json(usage_observation.model_dump(mode="json")),
+                    now,
+                    dispatch_id,
+                    MethodologyDispatchState.CLAIMED.value,
+                    MethodologyDispatchState.RUNNING.value,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise OrchestrationConflictError(
+                    "Methodology dispatch changed before terminal observation"
+                )
+            self.tasks._insert_event(
+                db,
+                task_id=row["task_id"],
+                event_type="methodology_run_terminal_observed",
+                actor="orchestrator",
+                payload={
+                    "dispatch_id": dispatch_id,
+                    "run_id": row["run_id"],
+                    "process_started": process_started,
+                    "exit_code": exit_code,
+                    "timed_out": timed_out,
+                    "repository_unchanged": repository_unchanged,
+                    "protocol_state": adapter_result.protocol_state.model_dump(
+                        mode="json"
+                    ),
+                    "usage_observation_sha256": (
+                        usage_observation.content_sha256
+                    ),
+                },
+                created_at=now,
+            )
+            updated = db.execute(
+                """
+                SELECT * FROM orchestration_methodology_run_dispatches
+                WHERE dispatch_id = ?
+                """,
+                (dispatch_id,),
+            ).fetchone()
+        assert updated is not None
+        return self._methodology_dispatch(updated)
+
+    def finish_methodology_run_dispatch(
+        self,
+        dispatch_id: str,
+        *,
+        settlement: RunSettlementReceipt,
+        control_plane: ControlPlaneStore,
+    ) -> MethodologyRunDispatchReceipt:
+        """Finalize the process attachment and its separate usage ledger exactly once."""
+
+        now = utc_now()
+        with self._transaction() as db:
+            row = db.execute(
+                """
+                SELECT * FROM orchestration_methodology_run_dispatches
+                WHERE dispatch_id = ?
+                """,
+                (dispatch_id,),
+            ).fetchone()
+            if row is None:
+                raise OrchestrationNotFoundError(dispatch_id)
+            state = self._methodology_dispatch(row)
+            if state.state == MethodologyDispatchState.SETTLED:
+                assert state.receipt is not None
+                return state.receipt
+            if (
+                state.state != MethodologyDispatchState.TERMINAL_OBSERVED
+                or state.adapter_result is None
+                or state.usage_observation is None
+                or state.repository_unchanged is None
+            ):
+                raise OrchestrationConflictError(
+                    "Methodology dispatch has no complete terminal observation"
+                )
+            protocol_row = db.execute(
+                "SELECT * FROM protocol_runs WHERE run_id = ?",
+                (state.claim.run_id,),
+            ).fetchone()
+            if protocol_row is None:
+                raise OrchestrationConflictError(
+                    "Settled methodology protocol Run is unavailable"
+                )
+            protocol_run = control_plane._protocol_run(protocol_row)
+            normalized = settlement.model_copy(update={"replayed": False})
+            if (
+                normalized.run != protocol_run
+                or normalized.run.protocol_state
+                != state.adapter_result.protocol_state
+                or normalized.run.run_id != state.claim.run_id
+                or normalized.stage.task_id != state.claim.task_id
+                or normalized.stage.stage_key != state.claim.first_stage_key
+                or normalized.gate.task_id != state.claim.task_id
+                or normalized.gate.gate_key != state.claim.first_gate_key
+            ):
+                raise OrchestrationValidationError(
+                    "Methodology dispatch settlement differs from terminal facts"
+                )
+            receipt_payload = {
+                "schema_version": "1.0",
+                "receipt_id": f"methodology-dispatch-receipt:{state.dispatch_id}",
+                "settled_at": now,
+                "dispatch_claim": state.claim,
+                "pid": state.pid,
+                "process_started": state.process_started,
+                "exit_code": state.exit_code,
+                "timed_out": state.timed_out,
+                "output_sha256": hashlib.sha256(
+                    state.output.encode("utf-8")
+                ).hexdigest(),
+                "error_sha256": hashlib.sha256(
+                    (state.error_message or "").encode("utf-8")
+                ).hexdigest(),
+                "repository_unchanged": state.repository_unchanged,
+                "usage_observation": state.usage_observation,
+                "protocol_state": state.adapter_result.protocol_state,
+                "handoff_pack_id": (
+                    protocol_run.handoff_pack.pack_id
+                    if protocol_run.handoff_pack is not None
+                    else None
+                ),
+                "handoff_pack_sha256": (
+                    protocol_run.handoff_pack.content_sha256
+                    if protocol_run.handoff_pack is not None
+                    else None
+                ),
+                "stage_status": normalized.stage.status,
+                "gate_status": normalized.gate.status,
+                "artifact_ids": sorted(normalized.artifact_ids),
+                "evidence_ids": sorted(normalized.evidence_ids),
+                "active_evidence_ids": sorted(normalized.active_evidence_ids),
+                "next_stage_key": (
+                    normalized.next_stage_route.stage_key
+                    if normalized.next_stage_route is not None
+                    else None
+                ),
+                "existing_formal_run_reused": True,
+                "existing_context_pack_reused": True,
+                "compatibility_run_created": False,
+                "protocol_settled": True,
+                "process_spawn_authority_consumed": True,
+                "provider_substitution": False,
+            }
+            receipt = MethodologyRunDispatchReceipt.model_validate(
+                seal_model_payload(
+                    MethodologyRunDispatchReceipt,
+                    receipt_payload,
+                )
+            )
+            usage = state.usage_observation
+            db.execute(
+                """
+                INSERT INTO orchestration_methodology_usage_ledger (
+                    entry_id, dispatch_id, task_id, plan_id, stage_key,
+                    run_id, tokens, token_measurement, cost_usd,
+                    cost_measurement, adapter, usage_observation_sha256,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    self._id("methodology-usage"),
+                    dispatch_id,
+                    state.claim.task_id,
+                    state.claim.plan_id,
+                    state.claim.first_stage_key,
+                    state.claim.run_id,
+                    usage.total_tokens,
+                    usage.token_measurement,
+                    usage.cost_usd,
+                    usage.cost_measurement,
+                    state.claim.runtime,
+                    usage.content_sha256,
+                    now,
+                ),
+            )
+            cursor = db.execute(
+                """
+                UPDATE orchestration_methodology_run_dispatches
+                SET state = ?, receipt_sha256 = ?, receipt_payload = ?,
+                    settled_at = ?
+                WHERE dispatch_id = ? AND state = ?
+                """,
+                (
+                    MethodologyDispatchState.SETTLED.value,
+                    receipt.content_sha256,
+                    self._json(receipt.model_dump(mode="json")),
+                    now,
+                    dispatch_id,
+                    MethodologyDispatchState.TERMINAL_OBSERVED.value,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise OrchestrationConflictError(
+                    "Methodology dispatch changed before finalization"
+                )
+            self.tasks._insert_event(
+                db,
+                task_id=state.claim.task_id,
+                event_type="methodology_run_dispatch_settled",
+                actor="orchestrator",
+                payload={
+                    "dispatch_id": dispatch_id,
+                    "receipt_id": receipt.receipt_id,
+                    "receipt_sha256": receipt.content_sha256,
+                    "run_id": state.claim.run_id,
+                    "process_started": state.process_started,
+                    "protocol_state": receipt.protocol_state.model_dump(
+                        mode="json"
+                    ),
+                    "gate_status": receipt.gate_status.value,
+                    "stage_status": receipt.stage_status.value,
+                    "usage_observation_sha256": usage.content_sha256,
+                },
+                created_at=now,
+            )
+            control_plane._event(
+                db,
+                event_key=(
+                    f"methodology.run.dispatch.settled:{state.claim.dispatch_id}"
+                ),
+                task_id=state.claim.task_id,
+                project_id=state.claim.project_id,
+                event_type="methodology.run_dispatch_settled",
+                actor="orchestrator",
+                payload={
+                    "dispatch_id": dispatch_id,
+                    "receipt_id": receipt.receipt_id,
+                    "receipt_sha256": receipt.content_sha256,
+                    "run_id": state.claim.run_id,
+                    "protocol_settled": True,
+                    "provider_substitution": False,
+                },
+                now=now,
+            )
+        return receipt
+
     def require_run(self, run_id: str) -> OrchestrationRun:
         with closing(self._connect()) as db:
             row = db.execute("SELECT * FROM orchestration_runs WHERE run_id = ?", (run_id,)).fetchone()
@@ -5334,6 +6060,92 @@ class OrchestrationStore:
         return disposition
 
     @staticmethod
+    def _methodology_dispatch(
+        row: sqlite3.Row,
+    ) -> MethodologyRunDispatchState:
+        claim = MethodologyRunDispatchClaim.model_validate_json(
+            row["claim_payload"]
+        )
+        dispatch_policy = MethodologyRunDispatchPolicyDecision.model_validate_json(
+            row["dispatch_policy_payload"]
+        )
+        preflight = PinnedRuntimePreflightDecision.model_validate_json(
+            row["preflight_payload"]
+        )
+        receipt = (
+            MethodologyRunDispatchReceipt.model_validate_json(
+                row["receipt_payload"]
+            )
+            if row["receipt_payload"] is not None
+            else None
+        )
+        adapter_result = (
+            AgentAdapterResult.model_validate_json(
+                row["adapter_result_payload"]
+            )
+            if row["adapter_result_payload"] is not None
+            else None
+        )
+        usage_observation = (
+            ProviderUsageObservation.model_validate_json(
+                row["usage_observation_payload"]
+            )
+            if row["usage_observation_payload"] is not None
+            else None
+        )
+        if (
+            claim.dispatch_id != row["dispatch_id"]
+            or claim.content_sha256 != row["claim_sha256"]
+            or claim.task_id != row["task_id"]
+            or claim.plan_id != row["plan_id"]
+            or claim.run_id != row["run_id"]
+            or claim.first_stage_key != row["stage_key"]
+            or claim.runtime != row["runtime"]
+            or claim.prompt_sha256 != row["prompt_sha256"]
+            or claim.dispatch_policy != dispatch_policy
+            or dispatch_policy.decision_id != row["dispatch_policy_id"]
+            or dispatch_policy.content_sha256
+            != row["dispatch_policy_sha256"]
+            or claim.runtime_preflight != preflight
+            or preflight.decision_id != row["preflight_id"]
+            or preflight.content_sha256 != row["preflight_sha256"]
+            or (receipt is None) != (row["receipt_sha256"] is None)
+            or (
+                receipt is not None
+                and (
+                    receipt.content_sha256 != row["receipt_sha256"]
+                    or receipt.dispatch_claim != claim
+                )
+            )
+        ):
+            raise OrchestrationValidationError(
+                "Persisted methodology dispatch binding drifted"
+            )
+        return MethodologyRunDispatchState(
+            dispatch_id=row["dispatch_id"],
+            state=MethodologyDispatchState(row["state"]),
+            claim=claim,
+            receipt=receipt,
+            pid=row["pid"],
+            process_started=bool(row["process_started"]),
+            exit_code=row["exit_code"],
+            timed_out=bool(row["timed_out"]),
+            output=row["output"],
+            error_message=row["error_message"],
+            repository_unchanged=(
+                bool(row["repository_unchanged"])
+                if row["repository_unchanged"] is not None
+                else None
+            ),
+            adapter_result=adapter_result,
+            usage_observation=usage_observation,
+            claimed_at=row["claimed_at"],
+            process_attached_at=row["process_attached_at"],
+            terminal_observed_at=row["terminal_observed_at"],
+            settled_at=row["settled_at"],
+        )
+
+    @staticmethod
     def _provider_budget_snapshot(db, plan_id: str) -> dict[str, float | int]:
         formal = db.execute(
             """SELECT
@@ -5381,15 +6193,46 @@ class OrchestrationStore:
                WHERE plan_id = ? AND state = ?""",
             (plan_id, ConsultationState.RUNNING.value),
         ).fetchone()
+        methodology = db.execute(
+            """SELECT
+                   COALESCE(SUM(CASE
+                       WHEN usage.token_measurement = 'unavailable'
+                            OR usage.tokens IS NULL
+                           THEN claims.token_reserved
+                       ELSE usage.tokens END), 0) AS settled_tokens,
+                   COALESCE(SUM(CASE
+                       WHEN usage.cost_measurement = 'unavailable'
+                            OR usage.cost_usd IS NULL
+                           THEN COALESCE(claims.cost_reserved_usd, 0)
+                       ELSE usage.cost_usd END), 0) AS settled_cost
+               FROM orchestration_methodology_usage_ledger AS usage
+               JOIN orchestration_methodology_run_claims AS claims
+                 ON claims.run_id = usage.run_id
+               WHERE usage.plan_id = ?""",
+            (plan_id,),
+        ).fetchone()
+        methodology_active = db.execute(
+            """SELECT COALESCE(SUM(claims.token_reserved), 0) AS tokens,
+                      COALESCE(SUM(claims.cost_reserved_usd), 0) AS cost
+               FROM orchestration_methodology_run_claims AS claims
+               LEFT JOIN orchestration_methodology_usage_ledger AS usage
+                 ON usage.run_id = claims.run_id
+               WHERE claims.plan_id = ? AND usage.run_id IS NULL""",
+            (plan_id,),
+        ).fetchone()
         return {
             "settled_tokens": int(formal["settled_tokens"])
-            + int(consultations["settled_tokens"]),
+            + int(consultations["settled_tokens"])
+            + int(methodology["settled_tokens"]),
             "settled_cost": float(formal["settled_cost"])
-            + float(consultations["settled_cost"]),
+            + float(consultations["settled_cost"])
+            + float(methodology["settled_cost"]),
             "active_tokens": int(formal_active["tokens"])
-            + int(consultation_active["tokens"]),
+            + int(consultation_active["tokens"])
+            + int(methodology_active["tokens"]),
             "active_cost": float(formal_active["cost"])
-            + float(consultation_active["cost"]),
+            + float(consultation_active["cost"])
+            + float(methodology_active["cost"]),
         }
 
     @staticmethod

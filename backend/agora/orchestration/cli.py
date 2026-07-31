@@ -149,6 +149,23 @@ def parser() -> argparse.ArgumentParser:
         help="Environment variable containing a configured Control Plane token",
     )
 
+    migration_run_dispatch = commands.add_parser(
+        "migration-run-dispatch",
+        help=(
+            "Attach one pinned native process to the already claimed first "
+            "AWS AI-DLC formal Run and settle its Handoff"
+        ),
+    )
+    migration_run_dispatch.add_argument("task_id")
+    migration_run_dispatch.add_argument(
+        "--allow-unbounded-native-usage",
+        action="store_true",
+        help=(
+            "Acknowledge that provider usage is not hard-capped by the "
+            "methodology Run Token reservation"
+        ),
+    )
+
     start = commands.add_parser("start", help="Create a Task and attach the provisional method")
     start.add_argument("title", nargs="?")
     start.add_argument("--description", default="")
@@ -307,7 +324,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         provider_dispatch_requested = (
             (args.command == "start" and args.run)
-            or args.command in {"consult", "next", "run"}
+            or args.command
+            in {"consult", "next", "run", "migration-run-dispatch"}
         )
         if (
             provider_dispatch_requested
@@ -424,6 +442,23 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.task_id,
                 request,
                 principal=principal,
+            )
+            print(
+                json.dumps(
+                    receipt.model_dump(mode="json"),
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return 0
+        if args.command == "migration-run-dispatch":
+            receipt = asyncio.run(
+                service.dispatch_methodology_first_run(
+                    args.task_id,
+                    allow_unbounded_native_usage=(
+                        args.allow_unbounded_native_usage
+                    ),
+                )
             )
             print(
                 json.dumps(
