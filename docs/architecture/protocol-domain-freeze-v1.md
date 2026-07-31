@@ -45,6 +45,8 @@ the Pydantic models in `backend/agora/protocol/`:
 - `methodology-migration-activation-receipt.schema.json`
 - `methodology-migration-preview-request.schema.json`
 - `methodology-migration-preview-decision.schema.json`
+- `methodology-route-activation-receipt.schema.json`
+- `methodology-route-activation-request.schema.json`
 - `methodology-source-graph.schema.json`
 - `stage-inventory.schema.json`
 - `provider-usage-observation.schema.json`
@@ -149,9 +151,13 @@ expands each source-bound Stage instance into Context/Handoff templates,
 deterministic input routing, Run reservations, and repository-scoped
 Evidence/Gate requirements. Production Handoffs may contain only production
 Evidence; the final Stage Gate separately requires Claude correctness and Kiro
-methodology completion Evidence before human Task approval. The contract
-retains routing and dispatch authority as false, so first-route activation
-remains a later reviewed transaction.
+methodology completion Evidence before human Task approval. The immutable
+contract retains routing and dispatch authority as false. A later authenticated
+`MethodologyRouteActivationRequest@1.0` now atomically rechecks the live
+contract/repository/runtime bindings, registers only first-Stage external seed
+Artifact references, configures the exact first Stage/Gate, and records
+`MethodologyRouteActivationReceipt@1.0`. It activates no later Stage, creates no
+Run or protocol Artifact/Evidence, and retains dispatch authority as false.
 
 For a Task with a sealed grouped inventory, Agora routes the first incomplete
 Stage in inventory order and only that route may start a formal Run. Successful

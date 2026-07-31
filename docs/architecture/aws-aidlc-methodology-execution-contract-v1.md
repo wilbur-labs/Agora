@@ -1,7 +1,7 @@
 # AWS AI-DLC methodology execution contract v1
 
-Status: authenticated successor contract materializer; no route activation or
-runtime dispatch
+Status: reviewed execution-contract baseline; first-route activation is
+defined separately and runtime dispatch remains deferred
 
 ## Purpose and entry point
 
@@ -118,9 +118,10 @@ routing_authority = false
 dispatch_authority = false
 ```
 
-The next separately reviewed slice must authenticate a route-activation
-request, recheck this contract and every live dependency, register any required
-seed Artifact references, configure only the first Stage/Gate from the sealed
-contract, and activate that exact route. HTTP, UI, provider substitution,
-automatic cross-Stage rework, and native AI-DLC file installation remain
-deferred.
+The separately reviewed first-route transaction is defined in
+`aws-aidlc-methodology-route-activation-v1.md`. It authenticates a hash-sealed
+activation request, rechecks this contract and every live dependency,
+registers only the first Stage's required seed Artifact references, configures
+the exact first Stage/Gate, and activates that route without dispatch.
+HTTP, UI, provider substitution, automatic cross-Stage rework, and native
+AI-DLC file installation remain deferred.

@@ -44,6 +44,10 @@ from agora.protocol.methodology_migration import (
     MethodologyMigrationPreviewRequest,
 )
 from agora.protocol.methodology_execution import MethodologyExecutionContract
+from agora.protocol.methodology_route_activation import (
+    MethodologyRouteActivationReceipt,
+    MethodologyRouteActivationRequest,
+)
 from agora.protocol.state_machines import StageStatus, TaskStatus
 from agora.tasks.models import CreateTaskRequest, TaskBudget, TaskManifest, TaskRisk, utc_now
 from agora.tasks.store import TaskStore
@@ -64,6 +68,9 @@ from .methodology_migration_activation import (
 )
 from .methodology_execution_contract import (
     build_methodology_execution_contract,
+)
+from .methodology_route_activation import (
+    validate_methodology_route_activation,
 )
 from .models import (
     BudgetAmendment,
@@ -1209,6 +1216,71 @@ class TaskOrchestrationService:
             principal=principal,
             control_plane=self.control_plane,
             materialize=materialize,
+        )
+
+    def activate_methodology_first_route(
+        self,
+        task_id: str,
+        request: MethodologyRouteActivationRequest,
+        *,
+        principal: ControlPrincipal,
+    ) -> MethodologyRouteActivationReceipt:
+        """Authenticate and atomically activate only the first sealed route."""
+
+        task = self.tasks.get(task_id)
+        if task is None:
+            raise OrchestrationConflictError("Task not found")
+        try:
+            project = self.projects.get(task.project_id)
+        except KeyError as exc:
+            raise OrchestrationConflictError(
+                "Methodology successor project is not registered"
+            ) from exc
+
+        def recheck(snapshot, _activated_at: str):
+            try:
+                repository_before = self.revision_resolver(
+                    project.root,
+                    snapshot.task.project_id,
+                )
+            except (KeyError, TypeError, ValueError):
+                repository_before = None
+            artifacts = [
+                *snapshot.migration_request.seed_artifacts,
+                snapshot.migration_gate.assertion.migration_artifact,
+            ]
+            observed_artifact_sha256s = observe_migration_artifacts(
+                project.root,
+                artifacts,
+            )
+            try:
+                repository_after = self.revision_resolver(
+                    project.root,
+                    snapshot.task.project_id,
+                )
+            except (KeyError, TypeError, ValueError):
+                repository_after = None
+            repository = (
+                repository_after
+                if repository_before is not None
+                and repository_after == repository_before
+                else None
+            )
+            return validate_methodology_route_activation(
+                snapshot=snapshot,
+                request=request,
+                principal=principal,
+                repository=repository,
+                observed_artifact_sha256s=observed_artifact_sha256s,
+                runtimes=self.runtimes,
+            )
+
+        return self.store.activate_methodology_first_route(
+            task_id,
+            request,
+            principal=principal,
+            control_plane=self.control_plane,
+            recheck=recheck,
         )
 
     async def run_until_blocked(

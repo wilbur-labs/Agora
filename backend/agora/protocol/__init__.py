@@ -30,6 +30,11 @@ from .methodology_migration import (
     MethodologyMigrationPreviewDecision,
     MethodologyMigrationPreviewRequest,
 )
+from .methodology_route_activation import (
+    MethodologyRouteActivationReceipt,
+    MethodologyRouteActivationRequest,
+    MethodologySeedArtifactRegistration,
+)
 from .models import (
     Approval,
     ApprovalStatus,
@@ -93,6 +98,9 @@ __all__ = [
     "MethodologyMigrationGateAssertion",
     "MethodologyMigrationPreviewDecision",
     "MethodologyMigrationPreviewRequest",
+    "MethodologyRouteActivationReceipt",
+    "MethodologyRouteActivationRequest",
+    "MethodologySeedArtifactRegistration",
     "MethodologyExternalSourceArtifact",
     "MethodologyScopeProfile",
     "MethodologySourceArtifact",

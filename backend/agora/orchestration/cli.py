@@ -23,6 +23,9 @@ from agora.tasks.store import TaskNotFoundError, TaskStore
 
 from .contracts import load_task_contract
 from .methodology_migration import load_methodology_migration_request
+from .methodology_route_activation import (
+    load_methodology_route_activation_request,
+)
 from .models import Measurement, PlanState
 from .runtime import ReadOnlyCliRunner, build_runtime_registry
 from .runtime_capabilities import collect_native_runtime_capabilities
@@ -102,6 +105,25 @@ def parser() -> argparse.ArgumentParser:
     )
     migration_contract.add_argument("task_id")
     migration_contract.add_argument(
+        "--credential-env",
+        required=True,
+        help="Environment variable containing a configured Control Plane token",
+    )
+
+    migration_route_activate = commands.add_parser(
+        "migration-route-activate",
+        help=(
+            "Authenticate and atomically configure/activate only the first "
+            "sealed AWS AI-DLC Stage route without dispatch"
+        ),
+    )
+    migration_route_activate.add_argument("task_id")
+    migration_route_activate.add_argument(
+        "--request",
+        type=Path,
+        required=True,
+    )
+    migration_route_activate.add_argument(
         "--credential-env",
         required=True,
         help="Environment variable containing a configured Control Plane token",
@@ -278,7 +300,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         migration_activation = None
         methodology_contract_principal = None
-        if args.command in {"migration-activate", "migration-contract"}:
+        methodology_route_activation = None
+        if args.command in {
+            "migration-activate",
+            "migration-contract",
+            "migration-route-activate",
+        }:
             if re.fullmatch(
                 r"[A-Za-z_][A-Za-z0-9_]{0,127}",
                 args.credential_env,
@@ -295,8 +322,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                     load_methodology_migration_request(args.request),
                     principal,
                 )
-            else:
+            elif args.command == "migration-contract":
                 methodology_contract_principal = principal
+            else:
+                methodology_route_activation = (
+                    load_methodology_route_activation_request(args.request),
+                    principal,
+                )
         service = build_service()
         if args.command == "migration-preview":
             request = load_methodology_migration_request(args.request)
@@ -337,6 +369,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(
                 json.dumps(
                     contract.model_dump(mode="json"),
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return 0
+        if args.command == "migration-route-activate":
+            assert methodology_route_activation is not None
+            request, principal = methodology_route_activation
+            receipt = service.activate_methodology_first_route(
+                args.task_id,
+                request,
+                principal=principal,
+            )
+            print(
+                json.dumps(
+                    receipt.model_dump(mode="json"),
                     ensure_ascii=False,
                     indent=2,
                 )

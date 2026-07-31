@@ -240,6 +240,49 @@ def initialize_orchestration_schema(db: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_methodology_execution_contracts_task
             ON orchestration_methodology_execution_contracts(task_id, created_at);
+
+        CREATE TABLE IF NOT EXISTS orchestration_methodology_route_activations (
+            request_id TEXT PRIMARY KEY,
+            request_sha256 TEXT NOT NULL,
+            request_payload TEXT NOT NULL,
+            receipt_id TEXT NOT NULL UNIQUE,
+            receipt_sha256 TEXT NOT NULL,
+            receipt_payload TEXT NOT NULL,
+            task_id TEXT NOT NULL UNIQUE REFERENCES tasks(task_id),
+            execution_contract_id TEXT NOT NULL UNIQUE
+                REFERENCES orchestration_methodology_execution_contracts(contract_id),
+            execution_contract_sha256 TEXT NOT NULL,
+            authenticated_principal_id TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_methodology_route_activations_task
+            ON orchestration_methodology_route_activations(task_id, created_at);
+
+        CREATE TABLE IF NOT EXISTS orchestration_methodology_seed_artifact_refs (
+            task_id TEXT NOT NULL REFERENCES tasks(task_id),
+            consumer_stage_key TEXT NOT NULL,
+            source_artifact_id TEXT NOT NULL,
+            artifact_id TEXT NOT NULL,
+            artifact_version INTEGER NOT NULL,
+            artifact_sha256 TEXT NOT NULL,
+            artifact_kind TEXT NOT NULL,
+            repository_id TEXT NOT NULL,
+            ref TEXT NOT NULL,
+            commit_sha TEXT NOT NULL,
+            path TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            payload_sha256 TEXT NOT NULL,
+            execution_contract_id TEXT NOT NULL
+                REFERENCES orchestration_methodology_execution_contracts(contract_id),
+            activation_request_id TEXT NOT NULL
+                REFERENCES orchestration_methodology_route_activations(request_id),
+            registered_at TEXT NOT NULL,
+            PRIMARY KEY (task_id, consumer_stage_key, source_artifact_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_methodology_seed_artifact_refs_contract
+            ON orchestration_methodology_seed_artifact_refs(
+                execution_contract_id, consumer_stage_key
+            );
         """
     )
     columns = {row[1] for row in db.execute("PRAGMA table_info(orchestration_runs)")}

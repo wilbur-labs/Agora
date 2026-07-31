@@ -1,5 +1,77 @@
 # Agora Control Plane Development Progress
 
+## 2026-07-31 - AWS AI-DLC first Stage route activation (reviewed)
+
+### Bounded implementation
+
+- [x] Added hash-sealed `MethodologyRouteActivationRequest@1.0` and
+  `MethodologyRouteActivationReceipt@1.0` contracts plus checked-in JSON
+  Schemas. The request binds the exact live Task, Control Task, Plan,
+  inventory, execution-contract hash, repository revision, and first
+  Stage/Gate and structurally cannot request runtime dispatch.
+- [x] Added
+  `agora task migration-route-activate SUCCESSOR_TASK_ID --request PATH
+  --credential-env NAME`. The credential is authenticated before
+  service/storage initialization; the principal must retain
+  `control_plane.approve`, exact Project scope, and identity equality with the
+  migration Gate and execution contract.
+- [x] The writer uses one immediate transaction and revalidates the complete
+  migration/contract/Task/Plan/inventory ledger, exact unconfigured first
+  route, current repository before/after bounded Artifact hashing, runtime
+  registry/command hashes, and absence of any Stage/Gate, Run, consultation,
+  protocol Artifact, or Evidence state.
+- [x] Configured only inventory position one: one pending formal Stage, its
+  exact execution-contract Gate requirements, then the pending-to-ready route
+  transition and frozen Task lifecycle reconciliation. Compatibility Plan and
+  Stage rows remain unchanged and do not select the route.
+- [x] Registered only the first Stage's external Task seed
+  `ArtifactVersionRef` bindings in a separate provenance table. No fabricated
+  producer `Artifact`, Run, or Evidence row is created.
+- [x] Recorded explicit Task metadata/version and immutable receipt bindings
+  while retaining `methodology_dispatch_authority=false`. Exact concurrent
+  replay serializes to one receipt/Stage/Gate and rechecks current
+  authorization; changed requests or drift fail closed.
+- [x] Documented the boundary in
+  `docs/architecture/aws-aidlc-methodology-route-activation-v1.md`.
+  Context Pack materialization, formal Run claim, runtime spawn, HTTP, UI,
+  provider substitution, automatic cross-Stage rework, and native AI-DLC file
+  installation remain deferred.
+
+### Verification and review state
+
+- [x] Focused migration/route activation and Control Plane routing
+  regressions: 79 passed.
+- [x] Related methodology, Stage routing, Task orchestration, and formal
+  protocol regression suite: 206 passed.
+- [x] Exact complete non-integration backend suite:
+  641 passed, 18 deselected, with only the existing Starlette/httpx and Windows
+  Proactor cleanup warnings.
+- [x] Protocol Schema export/check, system-Temp-isolated `compileall`,
+  migration-route-activate CLI help, and `git diff --check` passed.
+- [x] Kiro CLI session `151a4305-8497-45e9-897c-2a7ffff77b21`
+  independently reviewed AI-DLC methodology fidelity, authority boundaries,
+  transaction/replay behavior, exact bindings, seed-reference provenance,
+  schemas, and non-dispatch guarantees and returned `VERDICT: APPROVE` with no
+  high/medium findings. Its LOW requests were resolved by explicitly
+  preserving dispatch authority as false and adding a real two-thread
+  concurrent replay regression; targeted final re-review returned
+  `VERDICT: APPROVE`.
+- [x] Independent Claude Code safe-mode review inspected the complete
+  implementation, DDL, authentication, transaction/rollback, optimistic
+  bindings, Control Plane lifecycle, schema/model invariants, refactoring
+  regression risk, and tests and returned `VERDICT: APPROVE` with no
+  high/medium findings. Its actionable LOW unrelated CLI indentation change
+  was reverted; targeted final confirmation returned `VERDICT: APPROVE`.
+
+### Current checkpoint and next safe action
+
+Implementation, automated verification, actionable-finding resolution, and
+both review gates are complete on baseline `75c0c88`. This bounded first-route
+activation is ready for its reviewed commit/push. The next backend slice is a
+contract-hash-bound transaction that materializes and claims the first formal
+Run and exact Context Pack from the activated Stage template and registered
+seed references, while keeping provider process spawn separate.
+
 ## 2026-07-31 - AWS AI-DLC successor execution contract (reviewed)
 
 ### Bounded implementation

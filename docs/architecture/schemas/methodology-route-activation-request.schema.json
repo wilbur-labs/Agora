@@ -1,0 +1,186 @@
+{
+  "$defs": {
+    "MigrationRepositoryBinding": {
+      "additionalProperties": false,
+      "properties": {
+        "commit_sha": {
+          "title": "Commit Sha",
+          "type": "string"
+        },
+        "ref": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "title": "Ref",
+          "type": "string"
+        },
+        "repository_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Repository Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repository_id",
+        "ref",
+        "commit_sha"
+      ],
+      "title": "MigrationRepositoryBinding",
+      "type": "object"
+    },
+    "TaskStatus": {
+      "enum": [
+        "backlog",
+        "ready",
+        "active",
+        "blocked",
+        "needs_review",
+        "completed",
+        "failed",
+        "cancelled"
+      ],
+      "title": "TaskStatus",
+      "type": "string"
+    }
+  },
+  "$id": "https://agora.local/schemas/v1/methodology-route-activation-request.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Explicit request to configure and activate only the first sealed route.",
+  "properties": {
+    "activate_first_route": {
+      "const": true,
+      "default": true,
+      "title": "Activate First Route",
+      "type": "boolean"
+    },
+    "content_sha256": {
+      "title": "Content Sha256",
+      "type": "string"
+    },
+    "dispatch_runtime": {
+      "const": false,
+      "default": false,
+      "title": "Dispatch Runtime",
+      "type": "boolean"
+    },
+    "execution_contract_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Execution Contract Id",
+      "type": "string"
+    },
+    "execution_contract_sha256": {
+      "title": "Execution Contract Sha256",
+      "type": "string"
+    },
+    "expected_control_task_status": {
+      "$ref": "#/$defs/TaskStatus"
+    },
+    "expected_control_task_version": {
+      "minimum": 1,
+      "title": "Expected Control Task Version",
+      "type": "integer"
+    },
+    "expected_plan_version": {
+      "minimum": 1,
+      "title": "Expected Plan Version",
+      "type": "integer"
+    },
+    "expected_task_version": {
+      "minimum": 1,
+      "title": "Expected Task Version",
+      "type": "integer"
+    },
+    "first_gate_key": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "First Gate Key",
+      "type": "string"
+    },
+    "first_stage_key": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "First Stage Key",
+      "type": "string"
+    },
+    "inventory_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Inventory Id",
+      "type": "string"
+    },
+    "inventory_sha256": {
+      "title": "Inventory Sha256",
+      "type": "string"
+    },
+    "plan_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Plan Id",
+      "type": "string"
+    },
+    "project_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Project Id",
+      "type": "string"
+    },
+    "repository": {
+      "$ref": "#/$defs/MigrationRepositoryBinding"
+    },
+    "request_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Request Id",
+      "type": "string"
+    },
+    "requested_at": {
+      "format": "date-time",
+      "title": "Requested At",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "task_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Task Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "content_sha256",
+    "request_id",
+    "requested_at",
+    "project_id",
+    "task_id",
+    "expected_task_version",
+    "expected_control_task_version",
+    "expected_control_task_status",
+    "plan_id",
+    "expected_plan_version",
+    "inventory_id",
+    "inventory_sha256",
+    "execution_contract_id",
+    "execution_contract_sha256",
+    "repository",
+    "first_stage_key",
+    "first_gate_key"
+  ],
+  "title": "MethodologyRouteActivationRequest",
+  "type": "object"
+}

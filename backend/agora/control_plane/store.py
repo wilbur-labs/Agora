@@ -571,6 +571,117 @@ class ControlPlaneStore:
             )
             return receipt
 
+    def activate_methodology_first_route_tx(
+        self,
+        db: sqlite3.Connection,
+        *,
+        task_id: str,
+        expected_inventory_id: str,
+        expected_inventory_sha256: str,
+        expected_stage_key: str,
+        expected_gate_key: str,
+        requirements: list[GateRequirement],
+        actor: str,
+        event_key_prefix: str,
+        now: str,
+    ) -> tuple[StageActivationReceipt, GateRecord, TaskRecord]:
+        """Configure and activate one exact first route in a caller transaction."""
+
+        self._validate_actor(actor)
+        route = self._stage_route_decision_tx(db, task_id, required=True)
+        if route is None:
+            raise ControlPlaneConflictError(
+                "Every inventory Stage already completed its formal Gate"
+            )
+        if (
+            route.inventory_id != expected_inventory_id
+            or route.inventory_sha256 != expected_inventory_sha256
+            or route.stage_key != expected_stage_key
+            or route.gate_key != expected_gate_key
+        ):
+            raise ControlPlaneConflictError(
+                "Requested methodology Stage is not the exact authoritative route"
+            )
+        if route.inventory_sequence != 1:
+            raise ControlPlaneConflictError(
+                "Methodology route activation may configure only the first Stage"
+            )
+        if route.stage_status is not None or route.gate_status is not None:
+            raise ControlPlaneConflictError(
+                "Methodology first route already has formal Stage or Gate state"
+            )
+
+        task = self._task_row(db, task_id)
+        self._ensure_stage_row(
+            db,
+            task=task,
+            stage_key=route.stage_key,
+            gate_key=route.gate_key,
+            status=StageStatus.PENDING,
+            actor=actor,
+            now=now,
+            authoritative_route_activation=True,
+        )
+        gate = self._configure_gate_tx(
+            db,
+            task=task,
+            gate_key=route.gate_key,
+            stage_key=route.stage_key,
+            requirements=requirements,
+            actor=actor,
+            now=now,
+        )
+        pending_route = self._stage_route_decision_tx(
+            db,
+            task_id,
+            required=True,
+        )
+        assert pending_route is not None
+        activated_route, activated = self._activate_stage_route_tx(
+            db,
+            route=pending_route,
+            actor=actor,
+            event_key_prefix=event_key_prefix,
+            now=now,
+        )
+        if not activated or activated_route.stage_status != StageStatus.READY:
+            raise ControlPlaneConflictError(
+                "Methodology first route did not activate from pending to ready"
+            )
+        lifecycle = self._reconcile_task_lifecycle_tx(
+            db,
+            task_id=task_id,
+            cause=TaskTransitionCause.ORCHESTRATION,
+            actor=actor,
+            event_key_prefix=event_key_prefix,
+            now=now,
+            required=True,
+        )
+        final_route = self._stage_route_decision_tx(
+            db,
+            task_id,
+            required=True,
+        )
+        assert final_route is not None
+        if (
+            final_route.stage_key != expected_stage_key
+            or final_route.gate_key != expected_gate_key
+            or final_route.stage_status != StageStatus.READY
+            or final_route.gate_status != GateStatus.PENDING
+        ):
+            raise ControlPlaneConflictError(
+                "Methodology first route activation result drifted"
+            )
+        return (
+            StageActivationReceipt(
+                route=final_route,
+                previous_status=None,
+                activated=True,
+            ),
+            gate,
+            lifecycle.task,
+        )
+
     def ensure_stage(
         self,
         *,
@@ -612,22 +723,7 @@ class ControlPlaneStore:
         requirements: list[GateRequirement],
         actor: str = "system",
     ) -> GateRecord:
-        if not requirements:
-            raise ControlPlaneValidationError("Gate requires at least one requirement")
-        requirement_ids = sorted(item.requirement_id for item in requirements)
-        if len(requirement_ids) != len(set(requirement_ids)):
-            raise ControlPlaneValidationError("Gate requirement ids must be unique")
-        scopes = {
-            (item.repository_id, item.ref, item.commit_sha)
-            for item in requirements
-        }
-        if len(scopes) != 1:
-            raise ControlPlaneValidationError(
-                "Agora 1.0 gates require one repository/ref/commit scope"
-            )
         now = utc_now()
-        canonical_requirements = sorted(requirements, key=lambda item: item.requirement_id)
-        fingerprint = canonical_sha256(canonical_requirements)
         with self.tasks._transaction() as db:
             task = self._task_row(db, task_id)
             self._ensure_stage_row(
@@ -639,78 +735,13 @@ class ControlPlaneStore:
                 actor=actor,
                 now=now,
             )
-            existing = db.execute(
-                "SELECT * FROM control_gates WHERE task_id = ? AND gate_key = ?",
-                (task_id, gate_key),
-            ).fetchone()
-            if existing:
-                rows = db.execute(
-                    """
-                    SELECT payload_sha256 FROM control_gate_requirements
-                    WHERE task_id = ? AND gate_key = ?
-                    ORDER BY requirement_id
-                    """,
-                    (task_id, gate_key),
-                ).fetchall()
-                existing_fingerprint = canonical_sha256([row["payload_sha256"] for row in rows])
-                expected_fingerprint = canonical_sha256(
-                    [canonical_sha256(item) for item in canonical_requirements]
-                )
-                if (
-                    existing["stage_key"] != stage_key
-                    or existing_fingerprint != expected_fingerprint
-                ):
-                    raise ControlPlaneConflictError(
-                        "Gate already exists with a different Stage or requirements"
-                    )
-                return self._gate_record(db, existing)
-            db.execute(
-                """
-                INSERT INTO control_gates (
-                    task_id, project_id, gate_key, stage_key, status,
-                    version, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, 1, ?, ?)
-                """,
-                (
-                    task_id,
-                    task["project_id"],
-                    gate_key,
-                    stage_key,
-                    GateStatus.PENDING.value,
-                    now,
-                    now,
-                ),
-            )
-            for requirement in canonical_requirements:
-                payload = self._json(requirement)
-                db.execute(
-                    """
-                    INSERT INTO control_gate_requirements (
-                        task_id, gate_key, requirement_id, payload,
-                        payload_sha256, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        task_id,
-                        gate_key,
-                        requirement.requirement_id,
-                        payload,
-                        canonical_sha256(requirement),
-                        now,
-                    ),
-                )
-            self._event(
+            gate = self._configure_gate_tx(
                 db,
-                event_key=f"gate.configure:{task_id}:{gate_key}:{fingerprint}",
-                task_id=task_id,
-                project_id=task["project_id"],
-                event_type="gate.configured",
+                task=task,
+                gate_key=gate_key,
+                stage_key=stage_key,
+                requirements=requirements,
                 actor=actor,
-                payload={
-                    "gate_key": gate_key,
-                    "stage_key": stage_key,
-                    "requirement_ids": requirement_ids,
-                },
                 now=now,
             )
             self._reconcile_task_lifecycle_tx(
@@ -722,12 +753,7 @@ class ControlPlaneStore:
                 now=now,
                 required=False,
             )
-            row = db.execute(
-                "SELECT * FROM control_gates WHERE task_id = ? AND gate_key = ?",
-                (task_id, gate_key),
-            ).fetchone()
-            assert row is not None
-            return self._gate_record(db, row)
+            return gate
 
     def start_protocol_run(
         self,
@@ -2662,6 +2688,143 @@ class ControlPlaneStore:
             transitions=path,
             cause=cause,
         )
+
+    def _configure_gate_tx(
+        self,
+        db: sqlite3.Connection,
+        *,
+        task: sqlite3.Row,
+        gate_key: str,
+        stage_key: str,
+        requirements: list[GateRequirement],
+        actor: str,
+        now: str,
+    ) -> GateRecord:
+        if not requirements:
+            raise ControlPlaneValidationError(
+                "Gate requires at least one requirement"
+            )
+        requirement_ids = sorted(
+            item.requirement_id for item in requirements
+        )
+        if len(requirement_ids) != len(set(requirement_ids)):
+            raise ControlPlaneValidationError(
+                "Gate requirement ids must be unique"
+            )
+        scopes = {
+            (item.repository_id, item.ref, item.commit_sha)
+            for item in requirements
+        }
+        if len(scopes) != 1:
+            raise ControlPlaneValidationError(
+                "Agora 1.0 gates require one repository/ref/commit scope"
+            )
+        task_id = task["task_id"]
+        stage = db.execute(
+            """
+            SELECT * FROM control_stages
+            WHERE task_id = ? AND stage_key = ?
+            """,
+            (task_id, stage_key),
+        ).fetchone()
+        if stage is None or stage["gate_key"] != gate_key:
+            raise ControlPlaneConflictError(
+                "Gate configuration requires its exact formal Stage"
+            )
+
+        canonical_requirements = sorted(
+            requirements,
+            key=lambda item: item.requirement_id,
+        )
+        fingerprint = canonical_sha256(canonical_requirements)
+        existing = db.execute(
+            "SELECT * FROM control_gates WHERE task_id = ? AND gate_key = ?",
+            (task_id, gate_key),
+        ).fetchone()
+        if existing:
+            rows = db.execute(
+                """
+                SELECT payload_sha256 FROM control_gate_requirements
+                WHERE task_id = ? AND gate_key = ?
+                ORDER BY requirement_id
+                """,
+                (task_id, gate_key),
+            ).fetchall()
+            existing_fingerprint = canonical_sha256(
+                [row["payload_sha256"] for row in rows]
+            )
+            expected_fingerprint = canonical_sha256(
+                [
+                    canonical_sha256(item)
+                    for item in canonical_requirements
+                ]
+            )
+            if (
+                existing["stage_key"] != stage_key
+                or existing_fingerprint != expected_fingerprint
+            ):
+                raise ControlPlaneConflictError(
+                    "Gate already exists with a different Stage or requirements"
+                )
+            return self._gate_record(db, existing)
+
+        db.execute(
+            """
+            INSERT INTO control_gates (
+                task_id, project_id, gate_key, stage_key, status,
+                version, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+            """,
+            (
+                task_id,
+                task["project_id"],
+                gate_key,
+                stage_key,
+                GateStatus.PENDING.value,
+                now,
+                now,
+            ),
+        )
+        for requirement in canonical_requirements:
+            payload = self._json(requirement)
+            db.execute(
+                """
+                INSERT INTO control_gate_requirements (
+                    task_id, gate_key, requirement_id, payload,
+                    payload_sha256, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    task_id,
+                    gate_key,
+                    requirement.requirement_id,
+                    payload,
+                    canonical_sha256(requirement),
+                    now,
+                ),
+            )
+        self._event(
+            db,
+            event_key=(
+                f"gate.configure:{task_id}:{gate_key}:{fingerprint}"
+            ),
+            task_id=task_id,
+            project_id=task["project_id"],
+            event_type="gate.configured",
+            actor=actor,
+            payload={
+                "gate_key": gate_key,
+                "stage_key": stage_key,
+                "requirement_ids": requirement_ids,
+            },
+            now=now,
+        )
+        row = db.execute(
+            "SELECT * FROM control_gates WHERE task_id = ? AND gate_key = ?",
+            (task_id, gate_key),
+        ).fetchone()
+        assert row is not None
+        return self._gate_record(db, row)
 
     def _ensure_stage_row(
         self,

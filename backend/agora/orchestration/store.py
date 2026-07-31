@@ -36,6 +36,11 @@ from agora.protocol.methodology_migration import (
     MethodologyMigrationActivationReceipt,
     MethodologyMigrationPreviewRequest,
 )
+from agora.protocol.methodology_route_activation import (
+    MethodologyRouteActivationReceipt,
+    MethodologyRouteActivationRequest,
+    MethodologySeedArtifactRegistration,
+)
 from agora.protocol.state_machines import GateStatus, StageStatus
 from agora.tasks.models import TaskBudget, TaskState, utc_now
 from agora.tasks.store import TaskNotFoundError, TaskStore
@@ -47,6 +52,7 @@ from .methodology_migration_activation import (
     MethodologySuccessorMaterialization,
 )
 from .methodology_execution_contract import MethodologyExecutionSnapshot
+from .methodology_route_activation import MethodologyRouteActivationSnapshot
 from .models import (
     BudgetAmendment,
     ConsultationRun,
@@ -3550,6 +3556,551 @@ class OrchestrationStore:
                 now=now,
             )
             return contract
+
+    def get_methodology_route_activation(
+        self,
+        task_id: str,
+    ) -> MethodologyRouteActivationReceipt | None:
+        """Return one immutable first-route activation receipt."""
+
+        with closing(self._connect()) as db:
+            row = db.execute(
+                """
+                SELECT * FROM orchestration_methodology_route_activations
+                WHERE task_id = ?
+                """,
+                (task_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        receipt = MethodologyRouteActivationReceipt.model_validate_json(
+            row["receipt_payload"]
+        )
+        if (
+            receipt.receipt_id != row["receipt_id"]
+            or receipt.content_sha256 != row["receipt_sha256"]
+            or receipt.request_id != row["request_id"]
+            or receipt.request_sha256 != row["request_sha256"]
+            or receipt.task_id != row["task_id"]
+            or receipt.execution_contract_id
+            != row["execution_contract_id"]
+            or receipt.execution_contract_sha256
+            != row["execution_contract_sha256"]
+            or receipt.authenticated_principal_id
+            != row["authenticated_principal_id"]
+        ):
+            raise OrchestrationValidationError(
+                "Persisted methodology route activation binding drifted"
+            )
+        return receipt
+
+    def activate_methodology_first_route(
+        self,
+        task_id: str,
+        request: MethodologyRouteActivationRequest,
+        *,
+        principal: ControlPrincipal,
+        control_plane: ControlPlaneStore,
+        recheck: Callable[
+            [MethodologyRouteActivationSnapshot, str],
+            tuple[MethodologySeedArtifactRegistration, ...],
+        ],
+    ) -> MethodologyRouteActivationReceipt:
+        """Atomically configure and activate one contract-bound first route."""
+
+        if request.task_id != task_id:
+            raise OrchestrationValidationError(
+                "Methodology route activation Task argument differs from request"
+            )
+        now = utc_now()
+        with self._transaction() as db:
+            existing = db.execute(
+                """
+                SELECT * FROM orchestration_methodology_route_activations
+                WHERE task_id = ?
+                """,
+                (task_id,),
+            ).fetchone()
+            if existing is not None:
+                receipt = MethodologyRouteActivationReceipt.model_validate_json(
+                    existing["receipt_payload"]
+                )
+                if (
+                    request.request_id != existing["request_id"]
+                    or request.content_sha256 != existing["request_sha256"]
+                    or receipt.content_sha256 != existing["receipt_sha256"]
+                    or receipt.receipt_id != existing["receipt_id"]
+                    or receipt.request_id != existing["request_id"]
+                    or receipt.request_sha256 != existing["request_sha256"]
+                    or receipt.task_id != task_id
+                    or receipt.execution_contract_id
+                    != existing["execution_contract_id"]
+                    or receipt.execution_contract_sha256
+                    != existing["execution_contract_sha256"]
+                    or receipt.authenticated_principal_id
+                    != existing["authenticated_principal_id"]
+                ):
+                    raise OrchestrationConflictError(
+                        "Methodology route activation replay binding differs"
+                    )
+                if (
+                    "control_plane.approve" not in principal.permissions
+                    or receipt.project_id not in principal.projects
+                    or principal.principal_id
+                    != existing["authenticated_principal_id"]
+                ):
+                    raise OrchestrationValidationError(
+                        "Methodology route activation replay requires the "
+                        "original currently authorized principal"
+                    )
+                return receipt
+
+            contract_row = db.execute(
+                """
+                SELECT * FROM orchestration_methodology_execution_contracts
+                WHERE task_id = ?
+                """,
+                (task_id,),
+            ).fetchone()
+            if contract_row is None:
+                raise OrchestrationConflictError(
+                    "Methodology successor execution contract is unavailable"
+                )
+            contract = MethodologyExecutionContract.model_validate_json(
+                contract_row["contract_payload"]
+            )
+            if (
+                contract.contract_id != contract_row["contract_id"]
+                or contract.content_sha256 != contract_row["contract_sha256"]
+                or contract.task_id != task_id
+                or request.execution_contract_id != contract.contract_id
+                or request.execution_contract_sha256
+                != contract.content_sha256
+            ):
+                raise OrchestrationValidationError(
+                    "Methodology execution contract binding drifted"
+                )
+            migration = db.execute(
+                """
+                SELECT * FROM orchestration_methodology_migrations
+                WHERE successor_task_id = ?
+                """,
+                (task_id,),
+            ).fetchone()
+            if migration is None:
+                raise OrchestrationConflictError(
+                    "Task is not a migrated methodology successor"
+                )
+            migration_request = (
+                MethodologyMigrationPreviewRequest.model_validate_json(
+                    migration["request_payload"]
+                )
+            )
+            migration_gate = (
+                AuthenticatedMethodologyMigrationGate.model_validate_json(
+                    migration["gate_payload"]
+                )
+            )
+            migration_receipt = (
+                MethodologyMigrationActivationReceipt.model_validate_json(
+                    migration["receipt_payload"]
+                )
+            )
+            if (
+                migration_request.content_sha256
+                != migration["request_sha256"]
+                or migration_gate.content_sha256 != migration["gate_sha256"]
+                or migration_receipt.content_sha256
+                != migration["receipt_sha256"]
+                or contract.migration_request_sha256
+                != migration_request.content_sha256
+                or contract.migration_gate_sha256
+                != migration_gate.content_sha256
+                or contract.migration_receipt_sha256
+                != migration_receipt.content_sha256
+            ):
+                raise OrchestrationValidationError(
+                    "Methodology route activation migration provenance drifted"
+                )
+            if "control_plane.approve" not in principal.permissions:
+                raise OrchestrationValidationError(
+                    "Authenticated principal lacks control_plane.approve permission"
+                )
+            if contract.project_id not in principal.projects:
+                raise OrchestrationValidationError(
+                    "Authenticated principal is not authorized for the successor project"
+                )
+            if (
+                principal.principal_id
+                != contract_row["authenticated_principal_id"]
+                or principal.principal_id
+                != migration["authenticated_principal_id"]
+            ):
+                raise OrchestrationValidationError(
+                    "Route activation principal does not match the migration Gate"
+                )
+
+            task_row = db.execute(
+                "SELECT * FROM tasks WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
+            if task_row is None:
+                raise OrchestrationNotFoundError(task_id)
+            task = self.tasks._manifest(task_row)
+            plan_row = db.execute(
+                """
+                SELECT * FROM orchestration_plans
+                WHERE task_id = ?
+                """,
+                (task_id,),
+            ).fetchone()
+            if plan_row is None:
+                raise OrchestrationValidationError(
+                    "Methodology successor Plan is unavailable"
+                )
+            plan = self._plan(plan_row)
+            plan_stage_rows = db.execute(
+                """
+                SELECT * FROM orchestration_stages
+                WHERE plan_id = ? ORDER BY sequence
+                """,
+                (plan.plan_id,),
+            ).fetchall()
+            plan_stages = tuple(
+                self._stage(row) for row in plan_stage_rows
+            )
+            control_task_row = db.execute(
+                "SELECT * FROM control_tasks WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
+            if control_task_row is None:
+                raise OrchestrationValidationError(
+                    "Methodology successor Control Task is unavailable"
+                )
+            control_task = control_plane._task_record(control_task_row)
+            inventory_row = db.execute(
+                """
+                SELECT * FROM control_stage_inventories
+                WHERE task_id = ?
+                """,
+                (task_id,),
+            ).fetchone()
+            if inventory_row is None:
+                raise OrchestrationValidationError(
+                    "Methodology successor Stage inventory is unavailable"
+                )
+            inventory = StageInventory.model_validate_json(
+                inventory_row["payload"]
+            )
+            if (
+                inventory.content_sha256 != inventory_row["content_sha256"]
+                or inventory.inventory_id != inventory_row["inventory_id"]
+                or inventory.task_id != task_id
+            ):
+                raise OrchestrationValidationError(
+                    "Methodology successor inventory binding drifted"
+                )
+            route = control_plane.stage_route_snapshot(db, task_id)
+            if route is None:
+                raise OrchestrationConflictError(
+                    "Methodology successor first route is unavailable"
+                )
+            for table in (
+                "orchestration_runs",
+                "orchestration_consultations",
+                "control_stages",
+                "control_gates",
+                "protocol_runs",
+                "protocol_artifacts",
+                "protocol_evidence",
+            ):
+                if db.execute(
+                    f"SELECT 1 FROM {table} WHERE task_id = ? LIMIT 1",
+                    (task_id,),
+                ).fetchone() is not None:
+                    raise OrchestrationConflictError(
+                        "Methodology successor execution state already exists"
+                    )
+
+            snapshot = MethodologyRouteActivationSnapshot(
+                task=task,
+                control_task=control_task,
+                plan=plan,
+                plan_stages=plan_stages,
+                inventory=inventory,
+                migration_request=migration_request,
+                migration_gate=migration_gate,
+                migration_receipt=migration_receipt,
+                execution_contract=contract,
+                route=route,
+            )
+            try:
+                seed_artifacts = recheck(snapshot, now)
+            except ValueError as exc:
+                raise OrchestrationConflictError(
+                    f"Methodology route activation blocked: {exc}"
+                ) from exc
+
+            first_stage = contract.stages[0]
+            expected_seed_artifacts = tuple(
+                MethodologySeedArtifactRegistration(
+                    consumer_stage_key=first_stage.stage_key,
+                    source_artifact_id=item.source_artifact_id,
+                    artifact=item.seed_artifact,
+                )
+                for item in first_stage.context.input_contracts
+                if item.resolution == "hash_bound_task_seed"
+                and item.required
+                and item.seed_artifact is not None
+            )
+            if seed_artifacts != expected_seed_artifacts:
+                raise OrchestrationValidationError(
+                    "Methodology route activation seed references differ "
+                    "from the first Stage execution contract"
+                )
+            requirements = [
+                item.requirement
+                for item in first_stage.gate.evidence_contracts
+            ]
+            activation, gate, control_task_after = (
+                control_plane.activate_methodology_first_route_tx(
+                    db,
+                    task_id=task_id,
+                    expected_inventory_id=inventory.inventory_id,
+                    expected_inventory_sha256=inventory.content_sha256,
+                    expected_stage_key=first_stage.stage_key,
+                    expected_gate_key=first_stage.gate_key,
+                    requirements=requirements,
+                    actor=principal.principal_id,
+                    event_key_prefix=(
+                        f"methodology.route.activate:{request.request_id}"
+                    ),
+                    now=now,
+                )
+            )
+            stage_row = db.execute(
+                """
+                SELECT * FROM control_stages
+                WHERE task_id = ? AND stage_key = ?
+                """,
+                (task_id, first_stage.stage_key),
+            ).fetchone()
+            assert stage_row is not None
+            formal_stage = control_plane._stage(stage_row)
+
+            metadata = dict(task.metadata)
+            metadata.update(
+                {
+                    "methodology_route_activated": True,
+                    "methodology_dispatch_authority": False,
+                    "methodology_route_activation_request_id": (
+                        request.request_id
+                    ),
+                    "methodology_route_activation_request_sha256": (
+                        request.content_sha256
+                    ),
+                    "methodology_execution_contract_id": (
+                        contract.contract_id
+                    ),
+                    "methodology_execution_contract_sha256": (
+                        contract.content_sha256
+                    ),
+                    "methodology_first_stage_key": first_stage.stage_key,
+                    "methodology_first_gate_key": first_stage.gate_key,
+                    "methodology_route_activated_by": principal.principal_id,
+                    "methodology_route_activated_at": now,
+                }
+            )
+            task_version_after = task.version + 1
+            updated = db.execute(
+                """
+                UPDATE tasks
+                SET metadata = ?, version = ?, updated_at = ?
+                WHERE task_id = ? AND version = ?
+                """,
+                (
+                    self._json(metadata),
+                    task_version_after,
+                    now,
+                    task_id,
+                    task.version,
+                ),
+            )
+            if updated.rowcount != 1:
+                raise OrchestrationConflictError(
+                    "Methodology successor Task changed during route activation"
+                )
+
+            receipt_payload = {
+                "schema_version": "1.0",
+                "receipt_id": (
+                    f"route-activation-{request.content_sha256[:20]}"
+                ),
+                "activated_at": now,
+                "request_id": request.request_id,
+                "request_sha256": request.content_sha256,
+                "authenticated_principal_id": principal.principal_id,
+                "authenticated_permission": "control_plane.approve",
+                "project_id": task.project_id,
+                "task_id": task_id,
+                "task_version_before": task.version,
+                "task_version_after": task_version_after,
+                "control_task_status_before": control_task.status.value,
+                "control_task_version_before": control_task.version,
+                "control_task_status_after": (
+                    control_task_after.status.value
+                ),
+                "control_task_version_after": control_task_after.version,
+                "plan_id": plan.plan_id,
+                "plan_version": plan.version,
+                "inventory_id": inventory.inventory_id,
+                "inventory_sha256": inventory.content_sha256,
+                "execution_contract_id": contract.contract_id,
+                "execution_contract_sha256": contract.content_sha256,
+                "migration_receipt_id": migration_receipt.receipt_id,
+                "migration_receipt_sha256": (
+                    migration_receipt.content_sha256
+                ),
+                "repository": request.repository.model_dump(mode="json"),
+                "first_stage_key": first_stage.stage_key,
+                "first_stage_version": formal_stage.version,
+                "first_stage_status": formal_stage.status.value,
+                "first_gate_key": first_stage.gate_key,
+                "first_gate_version": gate.version,
+                "first_gate_status": gate.status.value,
+                "seed_artifacts": [
+                    item.model_dump(mode="json")
+                    for item in seed_artifacts
+                ],
+                "request_authenticated": True,
+                "first_stage_configured": True,
+                "first_gate_configured": True,
+                "seed_artifact_references_registered": True,
+                "route_activated": True,
+                "protocol_artifacts_created": False,
+                "run_created": False,
+                "runtime_spawned": False,
+                "dispatch_authority": False,
+                "provider_substitution": False,
+            }
+            receipt = MethodologyRouteActivationReceipt.model_validate(
+                seal_model_payload(
+                    MethodologyRouteActivationReceipt,
+                    receipt_payload,
+                )
+            )
+            if (
+                activation.route.stage_key != receipt.first_stage_key
+                or activation.route.gate_key != receipt.first_gate_key
+                or activation.route.stage_status != StageStatus.READY
+                or activation.route.gate_status != GateStatus.PENDING
+                or not activation.activated
+            ):
+                raise OrchestrationValidationError(
+                    "Methodology route activation receipt differs from Control Plane state"
+                )
+
+            db.execute(
+                """
+                INSERT INTO orchestration_methodology_route_activations (
+                    request_id, request_sha256, request_payload,
+                    receipt_id, receipt_sha256, receipt_payload,
+                    task_id, execution_contract_id,
+                    execution_contract_sha256,
+                    authenticated_principal_id, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    request.request_id,
+                    request.content_sha256,
+                    self._json(request.model_dump(mode="json")),
+                    receipt.receipt_id,
+                    receipt.content_sha256,
+                    self._json(receipt.model_dump(mode="json")),
+                    task_id,
+                    contract.contract_id,
+                    contract.content_sha256,
+                    principal.principal_id,
+                    now,
+                ),
+            )
+            for seed in seed_artifacts:
+                location = seed.artifact.location
+                assert location is not None
+                payload = self._json(seed.model_dump(mode="json"))
+                db.execute(
+                    """
+                    INSERT INTO orchestration_methodology_seed_artifact_refs (
+                        task_id, consumer_stage_key, source_artifact_id,
+                        artifact_id, artifact_version, artifact_sha256,
+                        artifact_kind, repository_id, ref, commit_sha, path,
+                        payload, payload_sha256, execution_contract_id,
+                        activation_request_id, registered_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        task_id,
+                        seed.consumer_stage_key,
+                        seed.source_artifact_id,
+                        seed.artifact.artifact_id,
+                        seed.artifact.version,
+                        seed.artifact.sha256,
+                        seed.artifact.kind,
+                        location.repository_id,
+                        location.ref,
+                        location.commit_sha,
+                        location.path,
+                        payload,
+                        canonical_sha256(seed),
+                        contract.contract_id,
+                        request.request_id,
+                        now,
+                    ),
+                )
+            self.tasks._insert_event(
+                db,
+                task_id=task_id,
+                event_type="methodology_route_activated",
+                actor=principal.principal_id,
+                payload={
+                    "request_id": request.request_id,
+                    "request_sha256": request.content_sha256,
+                    "receipt_id": receipt.receipt_id,
+                    "receipt_sha256": receipt.content_sha256,
+                    "execution_contract_id": contract.contract_id,
+                    "execution_contract_sha256": contract.content_sha256,
+                    "first_stage_key": first_stage.stage_key,
+                    "first_gate_key": first_stage.gate_key,
+                    "version": task_version_after,
+                    "dispatch_authority": False,
+                },
+                created_at=now,
+            )
+            control_plane._event(
+                db,
+                event_key=(
+                    f"methodology.route.activated:{request.request_id}"
+                ),
+                task_id=task_id,
+                project_id=task.project_id,
+                event_type="methodology.route_activated",
+                actor=principal.principal_id,
+                payload={
+                    "request_id": request.request_id,
+                    "request_sha256": request.content_sha256,
+                    "receipt_id": receipt.receipt_id,
+                    "receipt_sha256": receipt.content_sha256,
+                    "execution_contract_id": contract.contract_id,
+                    "execution_contract_sha256": contract.content_sha256,
+                    "first_stage_key": first_stage.stage_key,
+                    "first_gate_key": first_stage.gate_key,
+                    "seed_artifact_reference_count": len(seed_artifacts),
+                    "runtime_spawned": False,
+                    "dispatch_authority": False,
+                },
+                now=now,
+            )
+            return receipt
 
     def require_run(self, run_id: str) -> OrchestrationRun:
         with closing(self._connect()) as db:
