@@ -20,6 +20,7 @@ from agora.control_plane.store import ControlPlaneConflictError, ControlPlaneSto
 from agora.execution.security import redact_text, sanitize_data
 from agora.protocol.agent_adapter import AgentAdapterResult
 from agora.protocol.hashing import canonical_sha256, seal_model_payload
+from agora.protocol.methodology_execution import MethodologyExecutionContract
 from agora.protocol.models import (
     ConsultationCandidate,
     ConsultationCandidateDisposition,
@@ -31,6 +32,7 @@ from agora.protocol.models import (
     StageInventory,
 )
 from agora.protocol.methodology_migration import (
+    AuthenticatedMethodologyMigrationGate,
     MethodologyMigrationActivationReceipt,
     MethodologyMigrationPreviewRequest,
 )
@@ -44,6 +46,7 @@ from .methodology import MethodologyDefinition, methodology_sha256
 from .methodology_migration_activation import (
     MethodologySuccessorMaterialization,
 )
+from .methodology_execution_contract import MethodologyExecutionSnapshot
 from .models import (
     BudgetAmendment,
     ConsultationRun,
@@ -3241,6 +3244,312 @@ class OrchestrationStore:
                 now=now,
             )
             return receipt
+
+    def get_methodology_execution_contract(
+        self,
+        task_id: str,
+    ) -> MethodologyExecutionContract | None:
+        """Return one sealed successor execution contract without mutation."""
+
+        with closing(self._connect()) as db:
+            row = db.execute(
+                """
+                SELECT * FROM orchestration_methodology_execution_contracts
+                WHERE task_id = ?
+                """,
+                (task_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        contract = MethodologyExecutionContract.model_validate_json(
+            row["contract_payload"]
+        )
+        if (
+            contract.contract_id != row["contract_id"]
+            or contract.task_id != row["task_id"]
+            or contract.plan_id != row["plan_id"]
+            or contract.inventory_id != row["inventory_id"]
+            or contract.inventory_sha256 != row["inventory_sha256"]
+            or contract.migration_request_id != row["migration_request_id"]
+            or contract.migration_receipt_sha256
+            != row["migration_receipt_sha256"]
+            or contract.content_sha256 != row["contract_sha256"]
+            or contract.authenticated_principal_id
+            != row["authenticated_principal_id"]
+        ):
+            raise OrchestrationValidationError(
+                "Persisted methodology execution contract binding drifted"
+            )
+        return contract
+
+    def materialize_methodology_execution_contract(
+        self,
+        task_id: str,
+        *,
+        principal: ControlPrincipal,
+        control_plane: ControlPlaneStore,
+        materialize: Callable[
+            [MethodologyExecutionSnapshot, str],
+            MethodologyExecutionContract,
+        ],
+    ) -> MethodologyExecutionContract:
+        """Atomically seal one inert execution contract for a successor Task."""
+
+        now = utc_now()
+        with self._transaction() as db:
+            existing = db.execute(
+                """
+                SELECT * FROM orchestration_methodology_execution_contracts
+                WHERE task_id = ?
+                """,
+                (task_id,),
+            ).fetchone()
+            if existing is not None:
+                contract = MethodologyExecutionContract.model_validate_json(
+                    existing["contract_payload"]
+                )
+                if (
+                    contract.content_sha256 != existing["contract_sha256"]
+                    or contract.contract_id != existing["contract_id"]
+                    or contract.task_id != task_id
+                ):
+                    raise OrchestrationValidationError(
+                        "Persisted methodology execution contract binding drifted"
+                    )
+                if (
+                    "control_plane.approve" not in principal.permissions
+                    or contract.project_id not in principal.projects
+                    or existing["authenticated_principal_id"]
+                    != principal.principal_id
+                ):
+                    raise OrchestrationValidationError(
+                        "Methodology execution contract replay requires the "
+                        "original currently authorized principal"
+                    )
+                return contract
+
+            migration = db.execute(
+                """
+                SELECT * FROM orchestration_methodology_migrations
+                WHERE successor_task_id = ?
+                """,
+                (task_id,),
+            ).fetchone()
+            if migration is None:
+                raise OrchestrationConflictError(
+                    "Task is not a migrated methodology successor"
+                )
+            request = MethodologyMigrationPreviewRequest.model_validate_json(
+                migration["request_payload"]
+            )
+            gate = AuthenticatedMethodologyMigrationGate.model_validate_json(
+                migration["gate_payload"]
+            )
+            receipt = MethodologyMigrationActivationReceipt.model_validate_json(
+                migration["receipt_payload"]
+            )
+            if (
+                request.request_id != migration["request_id"]
+                or request.content_sha256 != migration["request_sha256"]
+                or gate.gate_id != migration["gate_id"]
+                or gate.content_sha256 != migration["gate_sha256"]
+                or receipt.content_sha256 != migration["receipt_sha256"]
+                or receipt.request_id != request.request_id
+                or receipt.request_sha256 != request.content_sha256
+                or receipt.authenticated_gate_id != gate.gate_id
+                or receipt.authenticated_gate_sha256 != gate.content_sha256
+                or migration["authenticated_principal_id"]
+                != gate.authenticated_principal_id
+            ):
+                raise OrchestrationValidationError(
+                    "Methodology migration provenance is unavailable or drifted"
+                )
+            if "control_plane.approve" not in principal.permissions:
+                raise OrchestrationValidationError(
+                    "Authenticated principal lacks control_plane.approve permission"
+                )
+            if request.project_id not in principal.projects:
+                raise OrchestrationValidationError(
+                    "Authenticated principal is not authorized for the successor project"
+                )
+            if (
+                principal.principal_id
+                != migration["authenticated_principal_id"]
+            ):
+                raise OrchestrationValidationError(
+                    "Execution contract principal does not match the migration Gate"
+                )
+
+            task_row = db.execute(
+                "SELECT * FROM tasks WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
+            if task_row is None:
+                raise OrchestrationNotFoundError(task_id)
+            task = self.tasks._manifest(task_row)
+            plan_row = db.execute(
+                """
+                SELECT * FROM orchestration_plans
+                WHERE task_id = ?
+                """,
+                (task_id,),
+            ).fetchone()
+            if plan_row is None:
+                raise OrchestrationValidationError(
+                    "Methodology successor Plan is unavailable"
+                )
+            plan = self._plan(plan_row)
+            stage_rows = db.execute(
+                """
+                SELECT * FROM orchestration_stages
+                WHERE plan_id = ?
+                ORDER BY sequence
+                """,
+                (plan.plan_id,),
+            ).fetchall()
+            plan_stages = tuple(self._stage(row) for row in stage_rows)
+            control_task_row = db.execute(
+                "SELECT * FROM control_tasks WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
+            if control_task_row is None:
+                raise OrchestrationValidationError(
+                    "Methodology successor Control Task is unavailable"
+                )
+            control_task = control_plane._task_record(control_task_row)
+            inventory_row = db.execute(
+                """
+                SELECT * FROM control_stage_inventories
+                WHERE task_id = ?
+                """,
+                (task_id,),
+            ).fetchone()
+            if inventory_row is None:
+                raise OrchestrationValidationError(
+                    "Methodology successor Stage inventory is unavailable"
+                )
+            inventory = StageInventory.model_validate_json(
+                inventory_row["payload"]
+            )
+            if (
+                inventory.content_sha256 != inventory_row["content_sha256"]
+                or inventory.inventory_id != inventory_row["inventory_id"]
+                or inventory.task_id != task_id
+            ):
+                raise OrchestrationValidationError(
+                    "Methodology successor inventory binding drifted"
+                )
+            if (
+                control_task.status.value
+                != receipt.successor_control_task_status.value
+                or control_task.version
+                != receipt.successor_control_task_version
+            ):
+                raise OrchestrationConflictError(
+                    "Methodology successor lifecycle changed before contract materialization"
+                )
+            for table in (
+                "orchestration_runs",
+                "orchestration_consultations",
+                "control_stages",
+                "control_gates",
+                "protocol_runs",
+            ):
+                if db.execute(
+                    f"SELECT 1 FROM {table} WHERE task_id = ? LIMIT 1",
+                    (task_id,),
+                ).fetchone() is not None:
+                    raise OrchestrationConflictError(
+                        "Methodology successor execution state already exists"
+                    )
+            if (
+                task.metadata.get("methodology_route_activated") is not False
+                or task.metadata.get("methodology_dispatch_authority") is not False
+                or plan.state != PlanState.READY_FOR_IMPLEMENTATION
+                or any(stage.state != StageState.PENDING for stage in plan_stages)
+            ):
+                raise OrchestrationConflictError(
+                    "Methodology successor is no longer inert"
+                )
+
+            snapshot = MethodologyExecutionSnapshot(
+                task=task,
+                control_task=control_task,
+                plan=plan,
+                plan_stages=plan_stages,
+                inventory=inventory,
+                request=request,
+                gate=gate,
+                receipt=receipt,
+            )
+            contract = materialize(snapshot, now)
+            if (
+                contract.task_id != task_id
+                or contract.project_id != task.project_id
+                or contract.plan_id != plan.plan_id
+                or contract.inventory_id != inventory.inventory_id
+                or contract.inventory_sha256 != inventory.content_sha256
+                or contract.migration_request_id != request.request_id
+                or contract.migration_request_sha256 != request.content_sha256
+                or contract.migration_gate_id != gate.gate_id
+                or contract.migration_gate_sha256 != gate.content_sha256
+                or contract.migration_receipt_id != receipt.receipt_id
+                or contract.migration_receipt_sha256 != receipt.content_sha256
+                or contract.authenticated_principal_id
+                != principal.principal_id
+                or contract.route_activated
+                or contract.runtime_spawned
+                or contract.routing_authority
+                or contract.dispatch_authority
+            ):
+                raise OrchestrationValidationError(
+                    "Materialized methodology execution contract binding differs"
+                )
+            db.execute(
+                """
+                INSERT INTO orchestration_methodology_execution_contracts (
+                    contract_id, task_id, plan_id, inventory_id,
+                    inventory_sha256, migration_request_id,
+                    migration_receipt_sha256, contract_sha256,
+                    contract_payload, authenticated_principal_id, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    contract.contract_id,
+                    task_id,
+                    plan.plan_id,
+                    inventory.inventory_id,
+                    inventory.content_sha256,
+                    request.request_id,
+                    receipt.content_sha256,
+                    contract.content_sha256,
+                    self._json(contract.model_dump(mode="json")),
+                    principal.principal_id,
+                    now,
+                ),
+            )
+            control_plane._event(
+                db,
+                event_key=f"methodology.execution_contract:{task_id}",
+                task_id=task_id,
+                project_id=task.project_id,
+                event_type="methodology.execution_contract_materialized",
+                actor=principal.principal_id,
+                payload={
+                    "contract_id": contract.contract_id,
+                    "contract_sha256": contract.content_sha256,
+                    "plan_id": plan.plan_id,
+                    "inventory_id": inventory.inventory_id,
+                    "inventory_sha256": inventory.content_sha256,
+                    "migration_receipt_id": receipt.receipt_id,
+                    "migration_receipt_sha256": receipt.content_sha256,
+                    "stage_count": len(contract.stages),
+                    "route_activated": False,
+                    "dispatch_authority": False,
+                },
+                now=now,
+            )
+            return contract
 
     def require_run(self, run_id: str) -> OrchestrationRun:
         with closing(self._connect()) as db:

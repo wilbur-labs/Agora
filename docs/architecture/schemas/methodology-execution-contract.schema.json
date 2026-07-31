@@ -1,0 +1,1206 @@
+{
+  "$defs": {
+    "ActivationApprovalPolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "binding_fields": {
+          "items": {
+            "enum": [
+              "repository_id",
+              "ref",
+              "commit_sha",
+              "task_id",
+              "stage_key",
+              "artifact_path",
+              "artifact_hash",
+              "source_graph_hash",
+              "activation_definition_hash"
+            ],
+            "type": "string"
+          },
+          "maxItems": 9,
+          "minItems": 9,
+          "title": "Binding Fields",
+          "type": "array"
+        },
+        "completion_human_approval_required": {
+          "const": true,
+          "default": true,
+          "title": "Completion Human Approval Required",
+          "type": "boolean"
+        },
+        "migration_human_approval_required": {
+          "const": true,
+          "default": true,
+          "title": "Migration Human Approval Required",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "binding_fields"
+      ],
+      "title": "ActivationApprovalPolicy",
+      "type": "object"
+    },
+    "ActivationRoleProfile": {
+      "additionalProperties": false,
+      "properties": {
+        "lead_role": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Lead Role",
+          "type": "string"
+        },
+        "source_reviewer_max_iterations": {
+          "default": 0,
+          "maximum": 10,
+          "minimum": 0,
+          "title": "Source Reviewer Max Iterations",
+          "type": "integer"
+        },
+        "source_reviewer_role": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Reviewer Role"
+        },
+        "support_roles": {
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+            "type": "string"
+          },
+          "maxItems": 32,
+          "title": "Support Roles",
+          "type": "array"
+        }
+      },
+      "required": [
+        "lead_role"
+      ],
+      "title": "ActivationRoleProfile",
+      "type": "object"
+    },
+    "ActivationSensorRequirement": {
+      "additionalProperties": false,
+      "properties": {
+        "match_pattern": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Match Pattern",
+          "type": "string"
+        },
+        "runtime_path": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Runtime Path",
+          "type": "string"
+        },
+        "sensor_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Sensor Id",
+          "type": "string"
+        },
+        "source_path": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Source Path",
+          "type": "string"
+        },
+        "source_sha256": {
+          "title": "Source Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "sensor_id",
+        "source_path",
+        "runtime_path",
+        "source_sha256",
+        "match_pattern"
+      ],
+      "title": "ActivationSensorRequirement",
+      "type": "object"
+    },
+    "ArtifactLocation": {
+      "additionalProperties": false,
+      "properties": {
+        "commit_sha": {
+          "title": "Commit Sha",
+          "type": "string"
+        },
+        "path": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "ref": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "title": "Ref",
+          "type": "string"
+        },
+        "repository_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Repository Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repository_id",
+        "ref",
+        "commit_sha",
+        "path"
+      ],
+      "title": "ArtifactLocation",
+      "type": "object"
+    },
+    "ArtifactVersionRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Artifact Id",
+          "type": "string"
+        },
+        "kind": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Kind",
+          "type": "string"
+        },
+        "location": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactLocation"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "sha256": {
+          "title": "Sha256",
+          "type": "string"
+        },
+        "version": {
+          "minimum": 1,
+          "title": "Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "version",
+        "sha256",
+        "kind"
+      ],
+      "title": "ArtifactVersionRef",
+      "type": "object"
+    },
+    "GateRequirement": {
+      "additionalProperties": false,
+      "properties": {
+        "commit_sha": {
+          "title": "Commit Sha",
+          "type": "string"
+        },
+        "evidence_kind": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Evidence Kind",
+          "type": "string"
+        },
+        "failure_action": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "title": "Failure Action",
+          "type": "string"
+        },
+        "priority": {
+          "default": 100,
+          "maximum": 10000,
+          "minimum": 0,
+          "title": "Priority",
+          "type": "integer"
+        },
+        "ref": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "title": "Ref",
+          "type": "string"
+        },
+        "repository_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Repository Id",
+          "type": "string"
+        },
+        "requirement_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Requirement Id",
+          "type": "string"
+        },
+        "schema_version": {
+          "default": "1.0",
+          "pattern": "^1\\.[0-9]+$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "severity": {
+          "$ref": "#/$defs/RequirementSeverity",
+          "default": "blocker"
+        },
+        "title": {
+          "maxLength": 300,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "requirement_id",
+        "title",
+        "repository_id",
+        "ref",
+        "commit_sha",
+        "evidence_kind",
+        "failure_action"
+      ],
+      "title": "GateRequirement",
+      "type": "object"
+    },
+    "MethodologyStageContextContract": {
+      "additionalProperties": false,
+      "properties": {
+        "budget": {
+          "$ref": "#/$defs/RunBudget"
+        },
+        "context_pack_schema_version": {
+          "const": "1.0",
+          "default": "1.0",
+          "title": "Context Pack Schema Version",
+          "type": "string"
+        },
+        "forbidden_constraints": {
+          "items": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 30,
+          "minItems": 1,
+          "title": "Forbidden Constraints",
+          "type": "array"
+        },
+        "input_contracts": {
+          "items": {
+            "$ref": "#/$defs/MethodologyStageInputContract"
+          },
+          "maxItems": 100,
+          "title": "Input Contracts",
+          "type": "array"
+        },
+        "output_contracts": {
+          "items": {
+            "$ref": "#/$defs/MethodologyStageOutputContract"
+          },
+          "maxItems": 100,
+          "title": "Output Contracts",
+          "type": "array"
+        },
+        "sensors": {
+          "items": {
+            "$ref": "#/$defs/ActivationSensorRequirement"
+          },
+          "maxItems": 32,
+          "title": "Sensors",
+          "type": "array"
+        },
+        "source_inputs_text": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "title": "Source Inputs Text",
+          "type": "string"
+        },
+        "stage_contract": {
+          "$ref": "#/$defs/StageContract"
+        }
+      },
+      "required": [
+        "stage_contract",
+        "source_inputs_text",
+        "forbidden_constraints",
+        "budget"
+      ],
+      "title": "MethodologyStageContextContract",
+      "type": "object"
+    },
+    "MethodologyStageEvidenceContract": {
+      "additionalProperties": false,
+      "properties": {
+        "producer_responsibility": {
+          "enum": [
+            "production_execution",
+            "independent_correctness",
+            "methodology_stewardship"
+          ],
+          "title": "Producer Responsibility",
+          "type": "string"
+        },
+        "producer_runtime": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Producer Runtime",
+          "type": "string"
+        },
+        "requirement": {
+          "$ref": "#/$defs/GateRequirement"
+        },
+        "source": {
+          "enum": [
+            "contract",
+            "output",
+            "sensor",
+            "source_review",
+            "completion_review"
+          ],
+          "title": "Source",
+          "type": "string"
+        },
+        "source_reviewer_max_iterations": {
+          "default": 0,
+          "maximum": 10,
+          "minimum": 0,
+          "title": "Source Reviewer Max Iterations",
+          "type": "integer"
+        },
+        "source_reviewer_role": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Reviewer Role"
+        },
+        "subject_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Subject Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "requirement",
+        "source",
+        "subject_id",
+        "producer_responsibility",
+        "producer_runtime"
+      ],
+      "title": "MethodologyStageEvidenceContract",
+      "type": "object"
+    },
+    "MethodologyStageExecutionContract": {
+      "additionalProperties": false,
+      "properties": {
+        "context": {
+          "$ref": "#/$defs/MethodologyStageContextContract"
+        },
+        "gate": {
+          "$ref": "#/$defs/MethodologyStageGateContract"
+        },
+        "gate_key": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Gate Key",
+          "type": "string"
+        },
+        "handoff": {
+          "$ref": "#/$defs/MethodologyStageHandoffContract"
+        },
+        "instance_count": {
+          "maximum": 100,
+          "minimum": 1,
+          "title": "Instance Count",
+          "type": "integer"
+        },
+        "instance_index": {
+          "maximum": 100,
+          "minimum": 1,
+          "title": "Instance Index",
+          "type": "integer"
+        },
+        "role": {
+          "const": "production_execution",
+          "default": "production_execution",
+          "title": "Role",
+          "type": "string"
+        },
+        "runtime": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Runtime",
+          "type": "string"
+        },
+        "sequence": {
+          "maximum": 200,
+          "minimum": 1,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "source_role_profile": {
+          "$ref": "#/$defs/ActivationRoleProfile"
+        },
+        "source_stage_key": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Source Stage Key",
+          "type": "string"
+        },
+        "stage_key": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Stage Key",
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 300,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "stage_key",
+        "source_stage_key",
+        "gate_key",
+        "sequence",
+        "instance_index",
+        "instance_count",
+        "title",
+        "runtime",
+        "source_role_profile",
+        "context",
+        "handoff",
+        "gate"
+      ],
+      "title": "MethodologyStageExecutionContract",
+      "type": "object"
+    },
+    "MethodologyStageGateContract": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence_contracts": {
+          "items": {
+            "$ref": "#/$defs/MethodologyStageEvidenceContract"
+          },
+          "maxItems": 210,
+          "minItems": 1,
+          "title": "Evidence Contracts",
+          "type": "array"
+        },
+        "gate_key": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Gate Key",
+          "type": "string"
+        }
+      },
+      "required": [
+        "gate_key",
+        "evidence_contracts"
+      ],
+      "title": "MethodologyStageGateContract",
+      "type": "object"
+    },
+    "MethodologyStageHandoffContract": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed_output_kinds": {
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+            "type": "string"
+          },
+          "maxItems": 100,
+          "title": "Allowed Output Kinds",
+          "type": "array"
+        },
+        "evidence_contracts": {
+          "items": {
+            "$ref": "#/$defs/MethodologyStageEvidenceContract"
+          },
+          "maxItems": 200,
+          "minItems": 1,
+          "title": "Evidence Contracts",
+          "type": "array"
+        },
+        "exact_context_echo_required": {
+          "const": true,
+          "default": true,
+          "title": "Exact Context Echo Required",
+          "type": "boolean"
+        },
+        "format_only_repair_attempts": {
+          "const": 1,
+          "default": 1,
+          "title": "Format Only Repair Attempts",
+          "type": "integer"
+        },
+        "handoff_pack_schema_version": {
+          "const": "1.0",
+          "default": "1.0",
+          "title": "Handoff Pack Schema Version",
+          "type": "string"
+        },
+        "native_state_authority": {
+          "const": false,
+          "default": false,
+          "title": "Native State Authority",
+          "type": "boolean"
+        },
+        "producer_runtime": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Producer Runtime",
+          "type": "string"
+        },
+        "required_output_kinds": {
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+            "type": "string"
+          },
+          "maxItems": 100,
+          "title": "Required Output Kinds",
+          "type": "array"
+        },
+        "suggested_next_action_authority": {
+          "const": false,
+          "default": false,
+          "title": "Suggested Next Action Authority",
+          "type": "boolean"
+        },
+        "unbound_output_allowed": {
+          "const": false,
+          "default": false,
+          "title": "Unbound Output Allowed",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "producer_runtime",
+        "evidence_contracts"
+      ],
+      "title": "MethodologyStageHandoffContract",
+      "type": "object"
+    },
+    "MethodologyStageInputContract": {
+      "additionalProperties": false,
+      "properties": {
+        "condition": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Condition"
+        },
+        "instance_binding": {
+          "enum": [
+            "single",
+            "matching_unit",
+            "all_units",
+            "task_seed",
+            "optional_absent"
+          ],
+          "title": "Instance Binding",
+          "type": "string"
+        },
+        "kind": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Kind",
+          "type": "string"
+        },
+        "producer_stage_keys": {
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+            "type": "string"
+          },
+          "maxItems": 100,
+          "title": "Producer Stage Keys",
+          "type": "array"
+        },
+        "required": {
+          "title": "Required",
+          "type": "boolean"
+        },
+        "resolution": {
+          "enum": [
+            "selected_stage_output",
+            "hash_bound_task_seed",
+            "optional_absent"
+          ],
+          "title": "Resolution",
+          "type": "string"
+        },
+        "seed_artifact": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactVersionRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "source_artifact_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Source Artifact Id",
+          "type": "string"
+        },
+        "source_producer_stage_key": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Producer Stage Key"
+        }
+      },
+      "required": [
+        "source_artifact_id",
+        "kind",
+        "required",
+        "resolution",
+        "instance_binding"
+      ],
+      "title": "MethodologyStageInputContract",
+      "type": "object"
+    },
+    "MethodologyStageOutputContract": {
+      "additionalProperties": false,
+      "properties": {
+        "applicable_unit_kinds": {
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+            "type": "string"
+          },
+          "maxItems": 16,
+          "title": "Applicable Unit Kinds",
+          "type": "array"
+        },
+        "artifact_identity_strategy": {
+          "const": "task_stage_run_template_sha256_v1",
+          "default": "task_stage_run_template_sha256_v1",
+          "title": "Artifact Identity Strategy",
+          "type": "string"
+        },
+        "kind": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Kind",
+          "type": "string"
+        },
+        "required": {
+          "title": "Required",
+          "type": "boolean"
+        },
+        "source_output_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Source Output Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_output_id",
+        "kind",
+        "required"
+      ],
+      "title": "MethodologyStageOutputContract",
+      "type": "object"
+    },
+    "MigrationRepositoryBinding": {
+      "additionalProperties": false,
+      "properties": {
+        "commit_sha": {
+          "title": "Commit Sha",
+          "type": "string"
+        },
+        "ref": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "title": "Ref",
+          "type": "string"
+        },
+        "repository_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Repository Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repository_id",
+        "ref",
+        "commit_sha"
+      ],
+      "title": "MigrationRepositoryBinding",
+      "type": "object"
+    },
+    "MigrationRuntimePin": {
+      "additionalProperties": false,
+      "properties": {
+        "responsibility": {
+          "enum": [
+            "production_execution",
+            "independent_correctness",
+            "methodology_stewardship"
+          ],
+          "title": "Responsibility",
+          "type": "string"
+        },
+        "runtime": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Runtime",
+          "type": "string"
+        },
+        "runtime_command_sha256": {
+          "title": "Runtime Command Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "responsibility",
+        "runtime",
+        "runtime_command_sha256"
+      ],
+      "title": "MigrationRuntimePin",
+      "type": "object"
+    },
+    "RequirementSeverity": {
+      "enum": [
+        "blocker",
+        "warning"
+      ],
+      "title": "RequirementSeverity",
+      "type": "string"
+    },
+    "RunBudget": {
+      "additionalProperties": false,
+      "properties": {
+        "max_cost_usd": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Cost Usd"
+        },
+        "max_model_tokens": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Model Tokens"
+        },
+        "max_output_bytes": {
+          "default": 1000000,
+          "maximum": 50000000,
+          "minimum": 1024,
+          "title": "Max Output Bytes",
+          "type": "integer"
+        },
+        "max_seconds": {
+          "maximum": 86400,
+          "minimum": 1,
+          "title": "Max Seconds",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "max_seconds"
+      ],
+      "title": "RunBudget",
+      "type": "object"
+    },
+    "StageContract": {
+      "additionalProperties": false,
+      "properties": {
+        "completion_conditions": {
+          "items": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 100,
+          "minItems": 1,
+          "title": "Completion Conditions",
+          "type": "array"
+        },
+        "contract_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Contract Id",
+          "type": "string"
+        },
+        "objective": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "title": "Objective",
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 300,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "contract_id",
+        "title",
+        "objective",
+        "completion_conditions"
+      ],
+      "title": "StageContract",
+      "type": "object"
+    }
+  },
+  "$id": "https://agora.local/schemas/v1/methodology-execution-contract.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "One exact, non-dispatching execution contract for a sealed successor.",
+  "properties": {
+    "activation_definition_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Activation Definition Sha256",
+      "type": "string"
+    },
+    "activation_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Activation Id",
+      "type": "string"
+    },
+    "approval_policy": {
+      "$ref": "#/$defs/ActivationApprovalPolicy"
+    },
+    "authenticated_permission": {
+      "const": "control_plane.approve",
+      "default": "control_plane.approve",
+      "title": "Authenticated Permission",
+      "type": "string"
+    },
+    "authenticated_principal_id": {
+      "maxLength": 256,
+      "minLength": 1,
+      "title": "Authenticated Principal Id",
+      "type": "string"
+    },
+    "completion_stage_key": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Completion Stage Key",
+      "type": "string"
+    },
+    "content_sha256": {
+      "title": "Content Sha256",
+      "type": "string"
+    },
+    "contract_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Contract Id",
+      "type": "string"
+    },
+    "control_task_version": {
+      "minimum": 1,
+      "title": "Control Task Version",
+      "type": "integer"
+    },
+    "dispatch_authority": {
+      "const": false,
+      "default": false,
+      "title": "Dispatch Authority",
+      "type": "boolean"
+    },
+    "inventory_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Inventory Id",
+      "type": "string"
+    },
+    "inventory_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Inventory Sha256",
+      "type": "string"
+    },
+    "materialized_at": {
+      "format": "date-time",
+      "title": "Materialized At",
+      "type": "string"
+    },
+    "methodology_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Methodology Id",
+      "type": "string"
+    },
+    "methodology_version": {
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "title": "Methodology Version",
+      "type": "string"
+    },
+    "migration_gate_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Migration Gate Id",
+      "type": "string"
+    },
+    "migration_gate_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Migration Gate Sha256",
+      "type": "string"
+    },
+    "migration_receipt_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Migration Receipt Id",
+      "type": "string"
+    },
+    "migration_receipt_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Migration Receipt Sha256",
+      "type": "string"
+    },
+    "migration_request_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Migration Request Id",
+      "type": "string"
+    },
+    "migration_request_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Migration Request Sha256",
+      "type": "string"
+    },
+    "plan_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Plan Id",
+      "type": "string"
+    },
+    "plan_version": {
+      "minimum": 1,
+      "title": "Plan Version",
+      "type": "integer"
+    },
+    "project_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Project Id",
+      "type": "string"
+    },
+    "repository": {
+      "$ref": "#/$defs/MigrationRepositoryBinding"
+    },
+    "route_activated": {
+      "const": false,
+      "default": false,
+      "title": "Route Activated",
+      "type": "boolean"
+    },
+    "routing_authority": {
+      "const": false,
+      "default": false,
+      "title": "Routing Authority",
+      "type": "boolean"
+    },
+    "runtime_pins": {
+      "items": {
+        "$ref": "#/$defs/MigrationRuntimePin"
+      },
+      "maxItems": 3,
+      "minItems": 3,
+      "title": "Runtime Pins",
+      "type": "array"
+    },
+    "runtime_spawned": {
+      "const": false,
+      "default": false,
+      "title": "Runtime Spawned",
+      "type": "boolean"
+    },
+    "schema_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "selected_scope": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Selected Scope",
+      "type": "string"
+    },
+    "source_graph_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Source Graph Sha256",
+      "type": "string"
+    },
+    "source_profiles_are_routing_authority": {
+      "const": false,
+      "default": false,
+      "title": "Source Profiles Are Routing Authority",
+      "type": "boolean"
+    },
+    "stages": {
+      "items": {
+        "$ref": "#/$defs/MethodologyStageExecutionContract"
+      },
+      "maxItems": 200,
+      "minItems": 1,
+      "title": "Stages",
+      "type": "array"
+    },
+    "task_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Task Id",
+      "type": "string"
+    },
+    "task_version": {
+      "minimum": 1,
+      "title": "Task Version",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "content_sha256",
+    "contract_id",
+    "materialized_at",
+    "authenticated_principal_id",
+    "project_id",
+    "task_id",
+    "task_version",
+    "control_task_version",
+    "plan_id",
+    "plan_version",
+    "inventory_id",
+    "inventory_sha256",
+    "migration_request_id",
+    "migration_request_sha256",
+    "migration_gate_id",
+    "migration_gate_sha256",
+    "migration_receipt_id",
+    "migration_receipt_sha256",
+    "repository",
+    "activation_id",
+    "methodology_id",
+    "methodology_version",
+    "source_graph_sha256",
+    "activation_definition_sha256",
+    "selected_scope",
+    "runtime_pins",
+    "stages",
+    "completion_stage_key",
+    "approval_policy"
+  ],
+  "title": "MethodologyExecutionContract",
+  "type": "object"
+}

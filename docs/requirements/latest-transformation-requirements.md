@@ -232,14 +232,17 @@ The source-bound AWS AI-DLC increments now include the pinned source graph,
 inert activation definition, read-only migration preview, and authenticated
 transactional successor writer. The writer persists the Gate and seals the
 successor Task/Plan/inventory, but intentionally stops before route activation
-or provider dispatch.
+or provider dispatch. The subsequent authenticated contract materializer binds
+that unchanged inventory to exact per-Stage Context/Handoff templates,
+input/output routing, Run reservations, and formal Evidence/Gate requirements.
+It still creates no route, Run, or dispatch authority.
 
 Still required:
 
-- an executable per-Stage Context/Handoff, Evidence, and Gate contract for the
-  sealed AWS AI-DLC successor, followed by a separately reviewed first-route
-  activation path; the migration writer creates the successor but deliberately
-  grants no runtime dispatch authority;
+- a separately reviewed first-route activation path that rechecks the sealed
+  AWS AI-DLC successor execution contract and grants only the exact first route;
+  the migration writer and contract materializer deliberately grant no runtime
+  dispatch authority;
 - a concrete Task contract with roles, process, Context/Handoff expectations,
   acceptance criteria, and required Artifacts/Evidence/Gates;
 - consult and decide/adopt semantics under the authoritative Task;

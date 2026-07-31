@@ -93,6 +93,20 @@ def parser() -> argparse.ArgumentParser:
         help="Environment variable containing a configured Control Plane token",
     )
 
+    migration_contract = commands.add_parser(
+        "migration-contract",
+        help=(
+            "Authenticate and seal the Context/Handoff/Evidence/Gate contract "
+            "for an inert AWS AI-DLC successor without activating its route"
+        ),
+    )
+    migration_contract.add_argument("task_id")
+    migration_contract.add_argument(
+        "--credential-env",
+        required=True,
+        help="Environment variable containing a configured Control Plane token",
+    )
+
     start = commands.add_parser("start", help="Create a Task and attach the provisional method")
     start.add_argument("title", nargs="?")
     start.add_argument("--description", default="")
@@ -263,7 +277,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "are admission-control reservations, not native hard caps"
             )
         migration_activation = None
-        if args.command == "migration-activate":
+        methodology_contract_principal = None
+        if args.command in {"migration-activate", "migration-contract"}:
             if re.fullmatch(
                 r"[A-Za-z_][A-Za-z0-9_]{0,127}",
                 args.credential_env,
@@ -274,10 +289,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 raise ValueError(
                     "Configured migration credential environment variable is absent"
                 )
-            migration_activation = (
-                load_methodology_migration_request(args.request),
-                authenticate_control_plane_token(credential),
-            )
+            principal = authenticate_control_plane_token(credential)
+            if args.command == "migration-activate":
+                migration_activation = (
+                    load_methodology_migration_request(args.request),
+                    principal,
+                )
+            else:
+                methodology_contract_principal = principal
         service = build_service()
         if args.command == "migration-preview":
             request = load_methodology_migration_request(args.request)
@@ -304,6 +323,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(
                 json.dumps(
                     receipt.model_dump(mode="json"),
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return 0
+        if args.command == "migration-contract":
+            assert methodology_contract_principal is not None
+            contract = service.materialize_methodology_execution_contract(
+                args.task_id,
+                principal=methodology_contract_principal,
+            )
+            print(
+                json.dumps(
+                    contract.model_dump(mode="json"),
                     ensure_ascii=False,
                     indent=2,
                 )

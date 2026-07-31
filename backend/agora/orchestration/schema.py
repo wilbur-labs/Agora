@@ -223,6 +223,23 @@ def initialize_orchestration_schema(db: sqlite3.Connection) -> None:
             ON orchestration_methodology_migrations(
                 successor_task_id, created_at
             );
+
+        CREATE TABLE IF NOT EXISTS orchestration_methodology_execution_contracts (
+            contract_id TEXT PRIMARY KEY,
+            task_id TEXT NOT NULL UNIQUE REFERENCES tasks(task_id),
+            plan_id TEXT NOT NULL UNIQUE REFERENCES orchestration_plans(plan_id),
+            inventory_id TEXT NOT NULL UNIQUE,
+            inventory_sha256 TEXT NOT NULL,
+            migration_request_id TEXT NOT NULL UNIQUE
+                REFERENCES orchestration_methodology_migrations(request_id),
+            migration_receipt_sha256 TEXT NOT NULL,
+            contract_sha256 TEXT NOT NULL,
+            contract_payload TEXT NOT NULL,
+            authenticated_principal_id TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_methodology_execution_contracts_task
+            ON orchestration_methodology_execution_contracts(task_id, created_at);
         """
     )
     columns = {row[1] for row in db.execute("PRAGMA table_info(orchestration_runs)")}

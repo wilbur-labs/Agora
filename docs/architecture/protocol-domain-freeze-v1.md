@@ -41,6 +41,7 @@ the Pydantic models in `backend/agora/protocol/`:
 - `runner-isolation-contract.schema.json`
 - `authenticated-methodology-migration-gate.schema.json`
 - `methodology-activation-definition.schema.json`
+- `methodology-execution-contract.schema.json`
 - `methodology-migration-activation-receipt.schema.json`
 - `methodology-migration-preview-request.schema.json`
 - `methodology-migration-preview-decision.schema.json`
@@ -142,7 +143,15 @@ configured Control Plane credential, persists an
 inside one write transaction, and atomically creates a distinct successor
 Task, activation-hash-bound Plan, and sealed grouped inventory. The predecessor
 is not mutated. The successor Plan remains non-dispatching and its first route
-is not activated until a later reviewed execution-contract increment.
+is not activated. A separate authenticated materializer now seals one
+`MethodologyExecutionContract@1.0` against the unchanged inventory hash. It
+expands each source-bound Stage instance into Context/Handoff templates,
+deterministic input routing, Run reservations, and repository-scoped
+Evidence/Gate requirements. Production Handoffs may contain only production
+Evidence; the final Stage Gate separately requires Claude correctness and Kiro
+methodology completion Evidence before human Task approval. The contract
+retains routing and dispatch authority as false, so first-route activation
+remains a later reviewed transaction.
 
 For a Task with a sealed grouped inventory, Agora routes the first incomplete
 Stage in inventory order and only that route may start a formal Run. Successful

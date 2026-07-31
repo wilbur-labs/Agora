@@ -4,6 +4,7 @@ import hashlib
 import json
 import sqlite3
 import sys
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -22,6 +23,11 @@ from agora.orchestration.methodology_migration import (
     migration_budget_sha256,
     migration_seed_artifacts_sha256,
 )
+from agora.orchestration.methodology_execution_contract import (
+    MethodologyExecutionSnapshot,
+    _bind_selected_producer_instances,
+    build_methodology_execution_contract,
+)
 from agora.orchestration.models import PlanState
 from agora.orchestration.protocol_context import RepositoryRevision
 from agora.orchestration.runtime import RuntimeCommand
@@ -36,6 +42,7 @@ from agora.orchestration.store import (
 )
 from agora.projects import ProjectRegistry
 from agora.protocol.hashing import seal_model_payload
+from agora.protocol.methodology_execution import MethodologyExecutionContract
 from agora.protocol.methodology_migration import (
     AuthenticatedMethodologyMigrationGate,
     MethodologyMigrationActivationReceipt,
@@ -1139,4 +1146,740 @@ def test_methodology_migration_activation_schemas_are_registered():
     assert (
         SCHEMA_MODELS["methodology-migration-activation-receipt"]
         is MethodologyMigrationActivationReceipt
+    )
+
+
+def _activated_successor(
+    service: TaskOrchestrationService,
+    task,
+    root: Path,
+    proposal_path: Path,
+    *,
+    scope: str = "enterprise",
+):
+    request = _request(
+        service,
+        task.task_id,
+        root,
+        proposal_path,
+        scope=scope,
+    )
+    receipt = service.activate_methodology_migration(
+        task.task_id,
+        request,
+        principal=_migration_principal(),
+    )
+    return request, receipt
+
+
+def _execution_snapshot(
+    tasks: TaskStore,
+    service: TaskOrchestrationService,
+    task_id: str,
+) -> MethodologyExecutionSnapshot:
+    task = tasks.get(task_id)
+    control_task = service.control_plane.get_task_state(task_id)
+    inventory = service.control_plane.get_stage_inventory(task_id)
+    status = service.status(task_id)
+    assert task is not None
+    assert control_task is not None
+    assert inventory is not None
+    with sqlite3.connect(tasks.db_path) as db:
+        db.row_factory = sqlite3.Row
+        migration = db.execute(
+            """
+            SELECT * FROM orchestration_methodology_migrations
+            WHERE successor_task_id = ?
+            """,
+            (task_id,),
+        ).fetchone()
+    assert migration is not None
+    return MethodologyExecutionSnapshot(
+        task=task,
+        control_task=control_task,
+        plan=status.plan,
+        plan_stages=tuple(status.stages),
+        inventory=inventory,
+        request=MethodologyMigrationPreviewRequest.model_validate_json(
+            migration["request_payload"]
+        ),
+        gate=AuthenticatedMethodologyMigrationGate.model_validate_json(
+            migration["gate_payload"]
+        ),
+        receipt=MethodologyMigrationActivationReceipt.model_validate_json(
+            migration["receipt_payload"]
+        ),
+    )
+
+
+def _snapshot_with_request(
+    snapshot: MethodologyExecutionSnapshot,
+    request: MethodologyMigrationPreviewRequest,
+) -> MethodologyExecutionSnapshot:
+    decision_payload = snapshot.receipt.recheck_decision.model_dump(mode="json")
+    decision_payload["request_sha256"] = request.content_sha256
+    decision = MethodologyMigrationPreviewDecision.model_validate(
+        seal_model_payload(
+            MethodologyMigrationPreviewDecision,
+            decision_payload,
+        )
+    )
+    receipt_payload = snapshot.receipt.model_dump(mode="json")
+    receipt_payload["request_sha256"] = request.content_sha256
+    receipt_payload["recheck_decision"] = decision.model_dump(mode="json")
+    receipt = MethodologyMigrationActivationReceipt.model_validate(
+        seal_model_payload(
+            MethodologyMigrationActivationReceipt,
+            receipt_payload,
+        )
+    )
+    metadata = dict(snapshot.task.metadata)
+    metadata["methodology_migration_request_sha256"] = request.content_sha256
+    task = snapshot.task.model_copy(update={"metadata": metadata})
+    return replace(
+        snapshot,
+        task=task,
+        request=request,
+        receipt=receipt,
+    )
+
+
+def _build_execution_contract_direct(
+    service: TaskOrchestrationService,
+    snapshot: MethodologyExecutionSnapshot,
+) -> MethodologyExecutionContract:
+    artifacts = [
+        *snapshot.request.seed_artifacts,
+        snapshot.gate.assertion.migration_artifact,
+    ]
+    return build_methodology_execution_contract(
+        snapshot=snapshot,
+        principal=_migration_principal(),
+        repository=REVISION,
+        observed_artifact_sha256s={
+            artifact.path: artifact.sha256 for artifact in artifacts
+        },
+        runtimes=service.runtimes,
+        timeout_seconds=service.timeout_seconds,
+        max_output_bytes=1_000_000,
+        materialized_at=FIXED_TIME,
+    )
+
+
+def test_methodology_execution_contract_seals_stage_context_handoff_and_gates(
+    tmp_path,
+):
+    tasks, service, task, root, proposal_path = _system(tmp_path)
+    request, receipt = _activated_successor(
+        service,
+        task,
+        root,
+        proposal_path,
+    )
+    successor_before = tasks.get(receipt.successor_task_id)
+    status_before = service.status(receipt.successor_task_id)
+    inventory_before = service.control_plane.get_stage_inventory(
+        receipt.successor_task_id
+    )
+    route_before = service.control_plane.get_stage_route(receipt.successor_task_id)
+
+    contract = service.materialize_methodology_execution_contract(
+        receipt.successor_task_id,
+        principal=_migration_principal(),
+    )
+
+    assert isinstance(contract, MethodologyExecutionContract)
+    assert contract.task_id == receipt.successor_task_id
+    assert contract.inventory_sha256 == receipt.successor_inventory_sha256
+    assert contract.migration_request_sha256 == request.content_sha256
+    assert contract.migration_gate_sha256 == receipt.authenticated_gate_sha256
+    assert contract.migration_receipt_sha256 == receipt.content_sha256
+    assert contract.route_activated is False
+    assert contract.runtime_spawned is False
+    assert contract.routing_authority is False
+    assert contract.dispatch_authority is False
+    assert contract.authenticated_principal_id == "user"
+    assert [pin.responsibility for pin in contract.runtime_pins] == [
+        "production_execution",
+        "independent_correctness",
+        "methodology_stewardship",
+    ]
+    assert [pin.runtime for pin in contract.runtime_pins] == [
+        "codex",
+        "claude",
+        "kiro",
+    ]
+    assert len(contract.stages) == len(status_before.stages)
+    assert [stage.stage_key for stage in contract.stages] == [
+        stage.stage_key for stage in status_before.stages
+    ]
+    assert all(stage.runtime == "codex" for stage in contract.stages)
+    assert all(
+        stage.context.context_pack_schema_version == "1.0"
+        and stage.handoff.handoff_pack_schema_version == "1.0"
+        and stage.handoff.exact_context_echo_required
+        and not stage.handoff.unbound_output_allowed
+        and not stage.handoff.native_state_authority
+        and not stage.handoff.suggested_next_action_authority
+        and stage.handoff.format_only_repair_attempts == 1
+        for stage in contract.stages
+    )
+    completion_reviews = [
+        evidence
+        for evidence in contract.stages[-1].gate.evidence_contracts
+        if evidence.source == "completion_review"
+    ]
+    assert [
+        (item.producer_responsibility, item.producer_runtime)
+        for item in completion_reviews
+    ] == [
+        ("independent_correctness", "claude"),
+        ("methodology_stewardship", "kiro"),
+    ]
+    assert not any(
+        evidence.source == "completion_review"
+        for stage in contract.stages[:-1]
+        for evidence in stage.gate.evidence_contracts
+    )
+    assert not any(
+        evidence.source == "completion_review"
+        for evidence in contract.stages[-1].handoff.evidence_contracts
+    )
+
+    matching_unit = next(
+        item
+        for item in next(
+            stage
+            for stage in contract.stages
+            if stage.stage_key == "nfr-requirements-unit-001"
+        ).context.input_contracts
+        if item.source_artifact_id == "business-logic-model"
+    )
+    assert matching_unit.instance_binding == "matching_unit"
+    assert matching_unit.producer_stage_keys == ["functional-design-unit-001"]
+    all_units = next(
+        item
+        for item in next(
+            stage
+            for stage in contract.stages
+            if stage.stage_key == "build-and-test"
+        ).context.input_contracts
+        if item.source_artifact_id == "code-summary"
+    )
+    assert all_units.instance_binding == "all_units"
+    assert all_units.producer_stage_keys == [
+        "code-generation-unit-001",
+        "code-generation-unit-002",
+    ]
+    single = next(
+        item
+        for item in next(
+            stage
+            for stage in contract.stages
+            if stage.stage_key == "nfr-requirements-unit-001"
+        ).context.input_contracts
+        if item.source_artifact_id == "requirements"
+    )
+    assert single.instance_binding == "single"
+    assert single.producer_stage_keys == ["requirements-analysis"]
+
+    assert tasks.get(receipt.successor_task_id) == successor_before
+    assert service.status(receipt.successor_task_id) == status_before
+    assert (
+        service.control_plane.get_stage_inventory(receipt.successor_task_id)
+        == inventory_before
+    )
+    assert service.control_plane.get_stage_route(receipt.successor_task_id) == route_before
+    assert service.store.get_methodology_execution_contract(
+        receipt.successor_task_id
+    ) == contract
+    with sqlite3.connect(tasks.db_path) as db:
+        assert db.execute(
+            """
+            SELECT COUNT(*) FROM orchestration_methodology_execution_contracts
+            WHERE task_id = ?
+            """,
+            (receipt.successor_task_id,),
+        ).fetchone()[0] == 1
+        assert db.execute(
+            "SELECT COUNT(*) FROM control_stages WHERE task_id = ?",
+            (receipt.successor_task_id,),
+        ).fetchone()[0] == 0
+        assert db.execute(
+            "SELECT COUNT(*) FROM control_gates WHERE task_id = ?",
+            (receipt.successor_task_id,),
+        ).fetchone()[0] == 0
+        assert db.execute(
+            "SELECT COUNT(*) FROM protocol_runs WHERE task_id = ?",
+            (receipt.successor_task_id,),
+        ).fetchone()[0] == 0
+
+
+def test_methodology_execution_contract_binds_scope_seed_artifacts(tmp_path):
+    _, service, task, root, proposal_path = _system(tmp_path)
+    request, receipt = _activated_successor(
+        service,
+        task,
+        root,
+        proposal_path,
+        scope="bugfix",
+    )
+
+    contract = service.materialize_methodology_execution_contract(
+        receipt.successor_task_id,
+        principal=_migration_principal(),
+    )
+
+    seed_inputs = [
+        item
+        for stage in contract.stages
+        for item in stage.context.input_contracts
+        if item.resolution == "hash_bound_task_seed"
+    ]
+    assert seed_inputs
+    optional_absent_inputs = [
+        item
+        for stage in contract.stages
+        for item in stage.context.input_contracts
+        if item.resolution == "optional_absent"
+    ]
+    assert optional_absent_inputs
+    assert all(
+        not item.required
+        and item.instance_binding == "optional_absent"
+        and not item.producer_stage_keys
+        and item.seed_artifact is None
+        for item in optional_absent_inputs
+    )
+    expected = {
+        (seed.consumer_stage_key, seed.artifact_id): seed
+        for seed in request.seed_artifacts
+    }
+    for stage in contract.stages:
+        for item in stage.context.input_contracts:
+            if item.resolution != "hash_bound_task_seed":
+                continue
+            seed = expected[(stage.source_stage_key, item.source_artifact_id)]
+            assert item.instance_binding == "task_seed"
+            assert item.seed_artifact is not None
+            assert item.seed_artifact.sha256 == seed.sha256
+            assert item.seed_artifact.location is not None
+            assert item.seed_artifact.location.path == seed.path
+
+
+def test_methodology_execution_contract_rejects_unused_scope_seed(tmp_path):
+    tasks, service, task, root, proposal_path = _system(tmp_path)
+    request, receipt = _activated_successor(
+        service,
+        task,
+        root,
+        proposal_path,
+        scope="bugfix",
+    )
+    snapshot = _execution_snapshot(tasks, service, receipt.successor_task_id)
+    payload = request.model_dump(mode="json")
+    extra = dict(payload["seed_artifacts"][0])
+    extra["consumer_stage_key"] = "unused-consumer"
+    payload["seed_artifacts"].append(extra)
+    request_with_orphan = _reseal_request(payload)
+    snapshot = _snapshot_with_request(snapshot, request_with_orphan)
+
+    with pytest.raises(
+        ValueError,
+        match="unused or missing bindings",
+    ):
+        _build_execution_contract_direct(service, snapshot)
+
+
+def test_methodology_execution_contract_rejects_missing_required_seed(tmp_path):
+    tasks, service, task, root, proposal_path = _system(tmp_path)
+    request, receipt = _activated_successor(
+        service,
+        task,
+        root,
+        proposal_path,
+        scope="bugfix",
+    )
+    snapshot = _execution_snapshot(tasks, service, receipt.successor_task_id)
+    payload = request.model_dump(mode="json")
+    payload["seed_artifacts"] = []
+    request_without_seed = _reseal_request(payload)
+    snapshot = _snapshot_with_request(snapshot, request_without_seed)
+
+    with pytest.raises(
+        ValueError,
+        match="Required successor Stage input lacks its Task seed",
+    ):
+        _build_execution_contract_direct(service, snapshot)
+
+
+def test_methodology_execution_contract_rejects_scope_budget_drift(tmp_path):
+    tasks, service, task, root, proposal_path = _system(tmp_path)
+    request, receipt = _activated_successor(
+        service,
+        task,
+        root,
+        proposal_path,
+    )
+    snapshot = _execution_snapshot(tasks, service, receipt.successor_task_id)
+    payload = request.model_dump(mode="json")
+    payload["budget"]["stage_allocations"] = payload["budget"][
+        "stage_allocations"
+    ][:-1]
+    request_without_stage_budget = _reseal_request(payload)
+    snapshot = _snapshot_with_request(snapshot, request_without_stage_budget)
+
+    with pytest.raises(
+        ValueError,
+        match="Stage allocations differ from scope",
+    ):
+        _build_execution_contract_direct(service, snapshot)
+
+
+def test_methodology_execution_contract_rejects_plan_stage_order_drift(tmp_path):
+    tasks, service, task, root, proposal_path = _system(tmp_path)
+    _, receipt = _activated_successor(
+        service,
+        task,
+        root,
+        proposal_path,
+    )
+    snapshot = _execution_snapshot(tasks, service, receipt.successor_task_id)
+    snapshot = replace(
+        snapshot,
+        plan_stages=tuple(reversed(snapshot.plan_stages)),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Stage order differs",
+    ):
+        _build_execution_contract_direct(service, snapshot)
+
+
+def test_methodology_execution_contract_rejects_dangling_producer_stage(
+    tmp_path,
+):
+    tasks, service, task, root, proposal_path = _system(tmp_path)
+    _, receipt = _activated_successor(
+        service,
+        task,
+        root,
+        proposal_path,
+    )
+    snapshot = _execution_snapshot(tasks, service, receipt.successor_task_id)
+    contract = _build_execution_contract_direct(service, snapshot)
+    payload = contract.model_dump(mode="json")
+    selected_input = next(
+        item
+        for stage in payload["stages"]
+        for item in stage["context"]["input_contracts"]
+        if item["resolution"] == "selected_stage_output"
+    )
+    selected_input["producer_stage_keys"] = ["unknown-stage"]
+
+    with pytest.raises(
+        ValidationError,
+        match="unknown producer Stage",
+    ):
+        MethodologyExecutionContract.model_validate(
+            seal_model_payload(MethodologyExecutionContract, payload)
+        )
+
+
+def test_methodology_execution_contract_rejects_expanded_count_mismatch():
+    with pytest.raises(
+        ValueError,
+        match="matching unit counts",
+    ):
+        _bind_selected_producer_instances(
+            producer_stage_keys=["producer-unit-001", "producer-unit-002"],
+            consumer_stage_keys=[
+                "consumer-unit-001",
+                "consumer-unit-002",
+                "consumer-unit-003",
+            ],
+            instance_index=1,
+        )
+
+
+def test_methodology_execution_contract_is_exactly_idempotent(tmp_path):
+    tasks, service, task, root, proposal_path = _system(tmp_path)
+    _, receipt = _activated_successor(
+        service,
+        task,
+        root,
+        proposal_path,
+    )
+    principal = _migration_principal()
+    first = service.materialize_methodology_execution_contract(
+        receipt.successor_task_id,
+        principal=principal,
+    )
+    after_first = _database_dump(tasks)
+
+    second = service.materialize_methodology_execution_contract(
+        receipt.successor_task_id,
+        principal=principal,
+    )
+
+    assert second == first
+    assert _database_dump(tasks) == after_first
+
+
+def test_methodology_execution_contract_replay_rechecks_authorization(tmp_path):
+    tasks, service, task, root, proposal_path = _system(tmp_path)
+    _, receipt = _activated_successor(
+        service,
+        task,
+        root,
+        proposal_path,
+    )
+    service.materialize_methodology_execution_contract(
+        receipt.successor_task_id,
+        principal=_migration_principal(),
+    )
+    before = _database_dump(tasks)
+
+    with pytest.raises(
+        OrchestrationValidationError,
+        match="currently authorized principal",
+    ):
+        service.materialize_methodology_execution_contract(
+            receipt.successor_task_id,
+            principal=_migration_principal(permissions=frozenset()),
+        )
+
+    assert _database_dump(tasks) == before
+
+
+@pytest.mark.parametrize(
+    "principal",
+    [
+        _migration_principal(permissions=frozenset()),
+        _migration_principal(projects=frozenset()),
+        _migration_principal(principal_id="different-user"),
+    ],
+)
+def test_methodology_execution_contract_requires_original_gate_principal(
+    tmp_path,
+    principal,
+):
+    tasks, service, task, root, proposal_path = _system(tmp_path)
+    _, receipt = _activated_successor(
+        service,
+        task,
+        root,
+        proposal_path,
+    )
+    before = _database_dump(tasks)
+
+    with pytest.raises(
+        OrchestrationValidationError,
+        match="permission|authorized|migration Gate",
+    ):
+        service.materialize_methodology_execution_contract(
+            receipt.successor_task_id,
+            principal=principal,
+        )
+
+    assert _database_dump(tasks) == before
+
+
+def test_methodology_execution_contract_rechecks_migration_artifacts(tmp_path):
+    tasks, service, task, root, proposal_path = _system(tmp_path)
+    _, receipt = _activated_successor(
+        service,
+        task,
+        root,
+        proposal_path,
+    )
+    proposal_path.write_text("changed after migration", encoding="utf-8")
+    before = _database_dump(tasks)
+
+    with pytest.raises(
+        OrchestrationConflictError,
+        match="Artifact binding is stale",
+    ):
+        service.materialize_methodology_execution_contract(
+            receipt.successor_task_id,
+            principal=_migration_principal(),
+        )
+
+    assert _database_dump(tasks) == before
+
+
+def test_methodology_execution_contract_rechecks_runtime_commands(tmp_path):
+    tasks, service, task, root, proposal_path = _system(tmp_path)
+    _, receipt = _activated_successor(
+        service,
+        task,
+        root,
+        proposal_path,
+    )
+    service.runtimes["codex"] = RuntimeCommand(
+        adapter="codex",
+        command_template=(sys.executable, "changed", "{prompt}"),
+    )
+    before = _database_dump(tasks)
+
+    with pytest.raises(
+        OrchestrationConflictError,
+        match="runtime registry binding is stale",
+    ):
+        service.materialize_methodology_execution_contract(
+            receipt.successor_task_id,
+            principal=_migration_principal(),
+        )
+
+    assert _database_dump(tasks) == before
+
+
+def test_methodology_execution_contract_requires_inert_successor(tmp_path):
+    tasks, service, task, root, proposal_path = _system(tmp_path)
+    _, receipt = _activated_successor(
+        service,
+        task,
+        root,
+        proposal_path,
+    )
+    with sqlite3.connect(tasks.db_path) as db:
+        row = db.execute(
+            "SELECT metadata FROM tasks WHERE task_id = ?",
+            (receipt.successor_task_id,),
+        ).fetchone()
+        metadata = json.loads(row[0])
+        metadata["methodology_route_activated"] = True
+        db.execute(
+            "UPDATE tasks SET metadata = ? WHERE task_id = ?",
+            (
+                json.dumps(metadata, sort_keys=True, separators=(",", ":")),
+                receipt.successor_task_id,
+            ),
+        )
+    before = _database_dump(tasks)
+
+    with pytest.raises(
+        OrchestrationConflictError,
+        match="no longer inert",
+    ):
+        service.materialize_methodology_execution_contract(
+            receipt.successor_task_id,
+            principal=_migration_principal(),
+        )
+
+    assert _database_dump(tasks) == before
+
+
+def test_methodology_execution_contract_rolls_back_event_failure(
+    tmp_path,
+    monkeypatch,
+):
+    tasks, service, task, root, proposal_path = _system(tmp_path)
+    _, receipt = _activated_successor(
+        service,
+        task,
+        root,
+        proposal_path,
+    )
+    before = _database_dump(tasks)
+
+    def fail_event(*_args, **_kwargs):
+        raise RuntimeError("injected execution contract event failure")
+
+    monkeypatch.setattr(service.control_plane, "_event", fail_event)
+
+    with pytest.raises(RuntimeError, match="injected execution contract"):
+        service.materialize_methodology_execution_contract(
+            receipt.successor_task_id,
+            principal=_migration_principal(),
+        )
+
+    assert _database_dump(tasks) == before
+
+
+def test_methodology_execution_contract_cli_authenticates_without_secret_leak(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    tasks, service, task, root, proposal_path = _system(tmp_path)
+    _, receipt = _activated_successor(
+        service,
+        task,
+        root,
+        proposal_path,
+    )
+    secret = "execution-contract-control-secret"
+    monkeypatch.setenv("AGORA_TEST_EXECUTION_CONTRACT_TOKEN", secret)
+    monkeypatch.setattr(orchestration_cli, "build_service", lambda: service)
+    monkeypatch.setattr(
+        "agora.control_plane.auth.get_config",
+        lambda: {
+            "control_plane": {
+                "auth": {
+                    "credentials": [
+                        {
+                            "secret_ref": "AGORA_TEST_EXECUTION_CONTRACT_TOKEN",
+                            "principal": "user",
+                            "permissions": ["control_plane.approve"],
+                            "projects": ["alpha"],
+                        }
+                    ]
+                }
+            }
+        },
+    )
+
+    code = orchestration_cli.main(
+        [
+            "migration-contract",
+            receipt.successor_task_id,
+            "--credential-env",
+            "AGORA_TEST_EXECUTION_CONTRACT_TOKEN",
+        ]
+    )
+    output = capsys.readouterr().out
+    payload = json.loads(output)
+
+    assert code == 0
+    assert payload["task_id"] == receipt.successor_task_id
+    assert payload["dispatch_authority"] is False
+    assert secret not in output
+    assert secret not in _database_dump(tasks)
+
+
+def test_methodology_execution_contract_cli_authenticates_before_store_init(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    monkeypatch.delenv("AGORA_MISSING_EXECUTION_CONTRACT_TOKEN", raising=False)
+    built = False
+
+    def build_forbidden():
+        nonlocal built
+        built = True
+        raise AssertionError("service must not be built before authentication")
+
+    monkeypatch.setattr(orchestration_cli, "build_service", build_forbidden)
+
+    code = orchestration_cli.main(
+        [
+            "migration-contract",
+            "task-successor",
+            "--credential-env",
+            "AGORA_MISSING_EXECUTION_CONTRACT_TOKEN",
+        ]
+    )
+
+    assert code == 2
+    assert built is False
+    assert "credential environment variable is absent" in capsys.readouterr().out
+
+
+def test_methodology_execution_contract_schema_is_registered():
+    assert (
+        SCHEMA_MODELS["methodology-execution-contract"]
+        is MethodologyExecutionContract
     )

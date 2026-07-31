@@ -1,5 +1,78 @@
 # Agora Control Plane Development Progress
 
+## 2026-07-31 - AWS AI-DLC successor execution contract (reviewed)
+
+### Bounded implementation
+
+- [x] Added hash-sealed `MethodologyExecutionContract@1.0` and its checked-in
+  JSON Schema. It binds the authenticated migration request/Gate/receipt,
+  successor Task/Control Task/Plan versions, unchanged grouped-inventory hash,
+  repository revision, activation/source hashes, runtime pins, and selected
+  scope.
+- [x] Added
+  `agora task migration-contract SUCCESSOR_TASK_ID --credential-env NAME`.
+  The credential is authenticated before service/storage initialization; the
+  principal must retain `control_plane.approve`, Project scope, and exact
+  identity equality with the persisted migration Gate.
+- [x] The writer uses one immediate transaction, revalidates the complete
+  successor/migration ledger, requires every compatibility Stage pending and
+  no Control Stage/Gate, orchestration Run, consultation, or protocol Run, and
+  rechecks Git before/after bounded migration Artifact hashing plus current
+  Codex/Claude/Kiro command hashes.
+- [x] Materialized each selected inventory Stage instance into source-bound
+  Context/Handoff/Gate templates with exact Run reservations, source role
+  profiles, sensors, required/optional outputs, and deterministic
+  `single`/`matching_unit`/`all_units` dependency routing.
+- [x] Required inputs outside the selected scope retain exact hash-bound Task
+  seed `ArtifactVersionRef` values; only optional absent inputs can remain
+  unbound. Required seed drift or dependency misrouting fails closed.
+- [x] Production Handoffs contain only Evidence attributable to the pinned
+  Codex Run. The final Stage Gate separately requires formal independent
+  correctness Evidence from Claude and methodology stewardship Evidence from
+  Kiro before existing human Task completion approval.
+- [x] The contract is stored separately and does not rewrite the
+  migration-receipt-bound inventory. Insert/event failure rolls back, exact
+  replay is immutable but rechecks current authorization, and no Task/Plan/
+  inventory, route, Stage/Gate, Run, Artifact/Evidence, Approval, charge,
+  runtime, HTTP, or UI state is created.
+- [x] Documented the boundary in
+  `docs/architecture/aws-aidlc-methodology-execution-contract-v1.md`.
+  First-route authorization/activation remains a separate reviewed increment.
+
+### Verification and review state
+
+- [x] Migration and successor execution-contract regressions: 54 passed.
+- [x] Related methodology/protocol/Control Plane regression suite:
+  268 passed.
+- [x] Exact complete non-integration backend suite:
+  626 passed, 18 deselected, with only the existing Starlette/httpx and Windows
+  Proactor cleanup warnings.
+- [x] Protocol Schema export/check, system-Temp-isolated `compileall`,
+  migration-contract CLI help, and `git diff --check` passed.
+- [x] Kiro CLI session `9c580e57-c3c3-4d58-85f9-aa9df7f69149`
+  independently reviewed source fidelity, instance/input closure,
+  Handoff/Gate producer separation, transaction/lifecycle behavior, schemas,
+  and non-authority flags. Its initial process emitted no visible verdict, so
+  the same session was resumed; it returned `VERDICT: APPROVE` with no
+  actionable findings. Targeted final re-review also returned
+  `VERDICT: APPROVE` after the defensive fixes.
+- [x] Independent Claude Code safe-mode review inspected the complete final
+  implementation, DDL/schema, docs, authentication, transaction, dependency
+  routing, and adversarial tests and returned `VERDICT: APPROVE` with no
+  high/medium findings. Its three LOW items were fixed by rejecting unused
+  seeds, validating producer Stage references in the sealed model, and adding
+  direct coverage for single/optional inputs plus missing/extra seed,
+  allocation/order, dangling-producer, and unit-count drift. Targeted re-review
+  confirmed all LOW items resolved and returned `VERDICT: APPROVE`.
+
+### Current checkpoint and next safe action
+
+Implementation, automated verification, actionable-finding resolution, and
+both review gates are complete on baseline `472cc38`. This bounded contract
+materializer is ready for its reviewed commit/push. The next backend slice is
+an authenticated, contract-hash-bound transaction that configures and
+activates only the exact first Stage route without dispatching a provider.
+
 ## 2026-07-30 - AWS AI-DLC transactional successor activation (reviewed)
 
 ### Bounded implementation

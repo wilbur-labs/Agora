@@ -22,6 +22,7 @@ from .methodology_activation import (
     MethodologyActivationDefinition,
     validate_activation_source_binding,
 )
+from .methodology_execution import MethodologyExecutionContract
 from .methodology_migration import (
     AuthenticatedMethodologyMigrationGate,
     MethodologyMigrationActivationReceipt,
@@ -87,6 +88,7 @@ __all__ = [
     "M2UpdateAction",
     "AuthenticatedMethodologyMigrationGate",
     "MethodologyActivationDefinition",
+    "MethodologyExecutionContract",
     "MethodologyMigrationActivationReceipt",
     "MethodologyMigrationGateAssertion",
     "MethodologyMigrationPreviewDecision",

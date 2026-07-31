@@ -128,4 +128,9 @@ binding, authenticates and persists the migration Gate, and atomically seals a
 distinct successor Task, Plan, and grouped Stage inventory. That command is
 authority granted by the reviewed writer transaction, not by this inert
 definition. It does not activate a route or dispatch a runtime. HTTP and UI
-remain deferred.
+remain deferred. The subsequent Task-scoped materializer in
+`aws-aidlc-methodology-execution-contract-v1.md` binds every selected Stage
+instance to Context/Handoff templates, exact input/output routing, formal
+Evidence/Gate requirements, and the approved Run reservations. It retains all
+four authority flags as false; a later reviewed command must separately
+authorize the first route.

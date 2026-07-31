@@ -116,7 +116,10 @@ grant the activation definition authority of its own, mutate the predecessor,
 dispatch a provider, create completion Evidence, substitute a runtime, or
 claim that an AWS AI-DLC Stage completed.
 
-The next reviewed backend slice must materialize the executable per-Stage
-Context/Handoff and Gate contract for the sealed successor, then explicitly
-authorize and activate its first route. HTTP, UI, automatic provider
-substitution, and native AI-DLC file installation remain deferred.
+The separately reviewed materializer in
+`aws-aidlc-methodology-execution-contract-v1.md` now seals the executable
+per-Stage Context/Handoff/Evidence/Gate templates against this exact
+successor inventory without changing it or activating a route. The next
+backend slice must explicitly authorize and activate the first route. HTTP,
+UI, automatic provider substitution, and native AI-DLC file installation
+remain deferred.

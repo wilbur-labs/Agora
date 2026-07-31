@@ -43,6 +43,7 @@ from agora.protocol.methodology_migration import (
     MethodologyMigrationPreviewDecision,
     MethodologyMigrationPreviewRequest,
 )
+from agora.protocol.methodology_execution import MethodologyExecutionContract
 from agora.protocol.state_machines import StageStatus, TaskStatus
 from agora.tasks.models import CreateTaskRequest, TaskBudget, TaskManifest, TaskRisk, utc_now
 from agora.tasks.store import TaskStore
@@ -60,6 +61,9 @@ from .methodology_migration import (
 )
 from .methodology_migration_activation import (
     build_methodology_successor_materialization,
+)
+from .methodology_execution_contract import (
+    build_methodology_execution_contract,
 )
 from .models import (
     BudgetAmendment,
@@ -1135,6 +1139,76 @@ class TaskOrchestrationService:
             principal=principal,
             control_plane=self.control_plane,
             recheck=recheck,
+        )
+
+    def materialize_methodology_execution_contract(
+        self,
+        task_id: str,
+        *,
+        principal: ControlPrincipal,
+    ) -> MethodologyExecutionContract:
+        """Seal successor execution templates without activating a route."""
+
+        task = self.tasks.get(task_id)
+        if task is None:
+            raise OrchestrationConflictError("Task not found")
+        try:
+            project = self.projects.get(task.project_id)
+        except KeyError as exc:
+            raise OrchestrationConflictError(
+                "Methodology successor project is not registered"
+            ) from exc
+
+        def materialize(snapshot, materialized_at: str):
+            try:
+                repository_before = self.revision_resolver(
+                    project.root,
+                    snapshot.task.project_id,
+                )
+            except (KeyError, TypeError, ValueError):
+                repository_before = None
+            artifacts = [
+                *snapshot.request.seed_artifacts,
+                snapshot.gate.assertion.migration_artifact,
+            ]
+            observed_artifact_sha256s = observe_migration_artifacts(
+                project.root,
+                artifacts,
+            )
+            try:
+                repository_after = self.revision_resolver(
+                    project.root,
+                    snapshot.task.project_id,
+                )
+            except (KeyError, TypeError, ValueError):
+                repository_after = None
+            repository = (
+                repository_after
+                if repository_before is not None
+                and repository_after == repository_before
+                else None
+            )
+            try:
+                return build_methodology_execution_contract(
+                    snapshot=snapshot,
+                    principal=principal,
+                    repository=repository,
+                    observed_artifact_sha256s=observed_artifact_sha256s,
+                    runtimes=self.runtimes,
+                    timeout_seconds=self.timeout_seconds,
+                    max_output_bytes=OUTPUT_LIMIT,
+                    materialized_at=materialized_at,
+                )
+            except ValueError as exc:
+                raise OrchestrationConflictError(
+                    f"Methodology execution contract materialization blocked: {exc}"
+                ) from exc
+
+        return self.store.materialize_methodology_execution_contract(
+            task_id,
+            principal=principal,
+            control_plane=self.control_plane,
+            materialize=materialize,
         )
 
     async def run_until_blocked(
