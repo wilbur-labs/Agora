@@ -26,6 +26,7 @@ from .methodology_migration import load_methodology_migration_request
 from .methodology_route_activation import (
     load_methodology_route_activation_request,
 )
+from .methodology_run_claim import load_methodology_run_claim_request
 from .models import Measurement, PlanState
 from .runtime import ReadOnlyCliRunner, build_runtime_registry
 from .runtime_capabilities import collect_native_runtime_capabilities
@@ -124,6 +125,25 @@ def parser() -> argparse.ArgumentParser:
         required=True,
     )
     migration_route_activate.add_argument(
+        "--credential-env",
+        required=True,
+        help="Environment variable containing a configured Control Plane token",
+    )
+
+    migration_run_claim = commands.add_parser(
+        "migration-run-claim",
+        help=(
+            "Authenticate and atomically materialize/claim the first formal "
+            "AWS AI-DLC Run and Context Pack without starting a process"
+        ),
+    )
+    migration_run_claim.add_argument("task_id")
+    migration_run_claim.add_argument(
+        "--request",
+        type=Path,
+        required=True,
+    )
+    migration_run_claim.add_argument(
         "--credential-env",
         required=True,
         help="Environment variable containing a configured Control Plane token",
@@ -301,10 +321,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         migration_activation = None
         methodology_contract_principal = None
         methodology_route_activation = None
+        methodology_run_claim = None
         if args.command in {
             "migration-activate",
             "migration-contract",
             "migration-route-activate",
+            "migration-run-claim",
         }:
             if re.fullmatch(
                 r"[A-Za-z_][A-Za-z0-9_]{0,127}",
@@ -324,9 +346,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             elif args.command == "migration-contract":
                 methodology_contract_principal = principal
-            else:
+            elif args.command == "migration-route-activate":
                 methodology_route_activation = (
                     load_methodology_route_activation_request(args.request),
+                    principal,
+                )
+            else:
+                methodology_run_claim = (
+                    load_methodology_run_claim_request(args.request),
                     principal,
                 )
         service = build_service()
@@ -378,6 +405,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             assert methodology_route_activation is not None
             request, principal = methodology_route_activation
             receipt = service.activate_methodology_first_route(
+                args.task_id,
+                request,
+                principal=principal,
+            )
+            print(
+                json.dumps(
+                    receipt.model_dump(mode="json"),
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return 0
+        if args.command == "migration-run-claim":
+            assert methodology_run_claim is not None
+            request, principal = methodology_run_claim
+            receipt = service.claim_methodology_first_run(
                 args.task_id,
                 request,
                 principal=principal,

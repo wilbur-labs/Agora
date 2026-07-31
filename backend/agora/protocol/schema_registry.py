@@ -18,6 +18,10 @@ from .methodology_route_activation import (
     MethodologyRouteActivationReceipt,
     MethodologyRouteActivationRequest,
 )
+from .methodology_run_claim import (
+    MethodologyRunClaimReceipt,
+    MethodologyRunClaimRequest,
+)
 from .models import (
     Approval,
     Artifact,
@@ -61,6 +65,8 @@ SCHEMA_MODELS: dict[str, SchemaModel] = {
     "methodology-migration-preview-request": MethodologyMigrationPreviewRequest,
     "methodology-route-activation-receipt": MethodologyRouteActivationReceipt,
     "methodology-route-activation-request": MethodologyRouteActivationRequest,
+    "methodology-run-claim-receipt": MethodologyRunClaimReceipt,
+    "methodology-run-claim-request": MethodologyRunClaimRequest,
     "methodology-source-graph": MethodologySourceGraph,
     "native-runtime-capability-observation": NativeRuntimeCapabilityObservation,
     "native-state-snapshot": NativeStateSnapshot,

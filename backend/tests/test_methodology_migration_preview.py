@@ -33,6 +33,10 @@ from agora.orchestration.methodology_execution_contract import (
 from agora.orchestration.methodology_route_activation import (
     load_methodology_route_activation_request,
 )
+from agora.orchestration.methodology_run_claim import (
+    _context_entry,
+    load_methodology_run_claim_request,
+)
 from agora.orchestration.models import PlanState
 from agora.orchestration.protocol_context import RepositoryRevision
 from agora.orchestration.runtime import RuntimeCommand
@@ -58,6 +62,10 @@ from agora.protocol.methodology_migration import (
 from agora.protocol.methodology_route_activation import (
     MethodologyRouteActivationReceipt,
     MethodologyRouteActivationRequest,
+)
+from agora.protocol.methodology_run_claim import (
+    MethodologyRunClaimReceipt,
+    MethodologyRunClaimRequest,
 )
 from agora.protocol.schema_registry import SCHEMA_MODELS
 from agora.tasks.store import TaskStore
@@ -2457,4 +2465,624 @@ def test_methodology_route_activation_schemas_are_registered():
     assert (
         SCHEMA_MODELS["methodology-route-activation-receipt"]
         is MethodologyRouteActivationReceipt
+    )
+
+
+def _run_claim_request(
+    tasks: TaskStore,
+    service: TaskOrchestrationService,
+    contract: MethodologyExecutionContract,
+    activation: MethodologyRouteActivationReceipt,
+) -> MethodologyRunClaimRequest:
+    task = tasks.get(contract.task_id)
+    control_task = service.control_plane.get_task_state(contract.task_id)
+    status = service.status(contract.task_id)
+    inventory = service.control_plane.get_stage_inventory(contract.task_id)
+    assert task is not None
+    assert control_task is not None
+    assert inventory is not None
+    first_stage = contract.stages[0]
+    run_id = f"methodology-run-{contract.content_sha256[:20]}"
+    payload = {
+        "schema_version": "1.0",
+        "request_id": f"run-claim-request-{contract.content_sha256[:20]}",
+        "requested_at": FIXED_TIME,
+        "project_id": task.project_id,
+        "task_id": task.task_id,
+        "expected_task_version": task.version,
+        "expected_control_task_version": control_task.version,
+        "expected_control_task_status": control_task.status.value,
+        "plan_id": status.plan.plan_id,
+        "expected_plan_version": status.plan.version,
+        "inventory_id": inventory.inventory_id,
+        "inventory_sha256": inventory.content_sha256,
+        "execution_contract_id": contract.contract_id,
+        "execution_contract_sha256": contract.content_sha256,
+        "route_activation_receipt_id": activation.receipt_id,
+        "route_activation_receipt_sha256": activation.content_sha256,
+        "repository": contract.repository.model_dump(mode="json"),
+        "first_stage_key": first_stage.stage_key,
+        "first_gate_key": first_stage.gate_key,
+        "runtime": first_stage.runtime,
+        "run_id": run_id,
+        "context_pack_id": f"context:{run_id}",
+        "context_pack_schema_version": "1.0",
+        "claim_formal_run": True,
+        "start_runtime_process": False,
+    }
+    return MethodologyRunClaimRequest.model_validate(
+        seal_model_payload(MethodologyRunClaimRequest, payload)
+    )
+
+
+def _activated_route(
+    tasks: TaskStore,
+    service: TaskOrchestrationService,
+    task,
+    root: Path,
+    proposal_path: Path,
+    *,
+    scope: str = "bugfix",
+):
+    _, contract, route_request = _contracted_successor(
+        tasks,
+        service,
+        task,
+        root,
+        proposal_path,
+        scope=scope,
+    )
+    activation = service.activate_methodology_first_route(
+        contract.task_id,
+        route_request,
+        principal=_migration_principal(),
+    )
+    claim_request = _run_claim_request(
+        tasks,
+        service,
+        contract,
+        activation,
+    )
+    return contract, activation, claim_request
+
+
+def test_methodology_first_run_claim_is_atomic_and_non_spawning(tmp_path):
+    tasks, service, task, root, proposal_path = _system(tmp_path)
+    contract, activation, request = _activated_route(
+        tasks,
+        service,
+        task,
+        root,
+        proposal_path,
+    )
+    task_before = tasks.get(contract.task_id)
+    control_before = service.control_plane.get_task_state(contract.task_id)
+    stage_before = service.control_plane.get_stage(
+        contract.task_id,
+        contract.stages[0].stage_key,
+    )
+    assert task_before is not None
+    assert control_before is not None
+    assert stage_before is not None
+
+    receipt = service.claim_methodology_first_run(
+        contract.task_id,
+        request,
+        principal=_migration_principal(),
+    )
+
+    assert isinstance(receipt, MethodologyRunClaimReceipt)
+    assert receipt.request_id == request.request_id
+    assert receipt.request_sha256 == request.content_sha256
+    assert receipt.route_activation_receipt_id == activation.receipt_id
+    assert receipt.route_activation_receipt_sha256 == activation.content_sha256
+    assert receipt.task_version_before == task_before.version
+    assert receipt.task_version_after == task_before.version + 1
+    assert receipt.control_task_version_before == control_before.version
+    assert receipt.first_stage_version_before == stage_before.version
+    assert receipt.first_stage_version_after == stage_before.version + 1
+    assert receipt.first_stage_status_before.value == "ready"
+    assert receipt.first_stage_status_after.value == "running"
+    assert receipt.context_pack_materialized is True
+    assert receipt.formal_run_created is True
+    assert receipt.usage_reservation_recorded is True
+    assert receipt.compatibility_run_created is False
+    assert receipt.protocol_artifacts_created is False
+    assert receipt.runtime_preflight_created is False
+    assert receipt.process_started is False
+    assert receipt.runtime_spawned is False
+    assert receipt.process_spawn_authority is False
+    assert receipt.provider_substitution is False
+
+    protocol_run = service.control_plane.get_protocol_run(receipt.run_id)
+    assert protocol_run is not None
+    context = protocol_run.context_pack
+    first_stage = contract.stages[0]
+    assert context.pack_id == receipt.context_pack_id
+    assert context.content_sha256 == receipt.context_pack_sha256
+    assert context.stage_contract == first_stage.context.stage_contract
+    assert context.input_artifacts == [
+        item.artifact for item in activation.seed_artifacts
+    ]
+    assert context.required_outputs == receipt.required_outputs
+    assert [item.kind for item in context.required_outputs] == [
+        item.kind for item in first_stage.context.output_contracts
+    ]
+    assert [item.required for item in context.required_outputs] == [
+        item.required for item in first_stage.context.output_contracts
+    ]
+    assert context.forbidden_constraints == (
+        first_stage.context.forbidden_constraints
+    )
+    assert context.budget == first_stage.context.budget
+    assert context.task_memory == []
+    assert context.project_knowledge == []
+    assert context.user_preferences == []
+    with sqlite3.connect(tasks.db_path) as db:
+        migration_payload = db.execute(
+            """
+            SELECT request_payload
+            FROM orchestration_methodology_migrations
+            WHERE successor_task_id = ?
+            """,
+            (contract.task_id,),
+        ).fetchone()[0]
+    migration_request = MethodologyMigrationPreviewRequest.model_validate_json(
+        migration_payload
+    )
+    migration_seed_sha256_by_path = {
+        item.path: item.sha256 for item in migration_request.seed_artifacts
+    }
+    assert all(
+        item.location is not None
+        and migration_seed_sha256_by_path.get(item.location.path) == item.sha256
+        for item in context.input_artifacts
+    )
+
+    task_after = tasks.get(contract.task_id)
+    stage_after = service.control_plane.get_stage(
+        contract.task_id,
+        first_stage.stage_key,
+    )
+    control_after = service.control_plane.get_task_state(contract.task_id)
+    assert task_after is not None
+    assert stage_after is not None
+    assert control_after is not None
+    assert task_after.version == task_before.version + 1
+    assert task_after.metadata["methodology_run_claimed"] is True
+    assert task_after.metadata["methodology_run_id"] == receipt.run_id
+    assert task_after.metadata["methodology_dispatch_authority"] is False
+    assert stage_after.status.value == "running"
+    assert control_after.status.value == "active"
+    assert service.store.get_methodology_run_claim(contract.task_id) == receipt
+
+    compatibility = service.status(contract.task_id)
+    assert compatibility.plan.state == PlanState.READY_FOR_IMPLEMENTATION
+    assert all(item.state.value == "pending" for item in compatibility.stages)
+    assert compatibility.runs == []
+    unified = service.unified_status(contract.task_id)
+    assert len(unified.runs) == 1
+    assert unified.runs[0].run_id == receipt.run_id
+    assert unified.runs[0].runtime == first_stage.runtime
+    assert (
+        unified.runs[0].token_reserved
+        == first_stage.context.budget.max_model_tokens
+    )
+    assert (
+        unified.budget.token_reserved
+        == first_stage.context.budget.max_model_tokens
+    )
+    with sqlite3.connect(tasks.db_path) as db:
+        assert db.execute(
+            """
+            SELECT COUNT(*) FROM orchestration_methodology_run_claims
+            WHERE task_id = ? AND process_started = 0
+            """,
+            (contract.task_id,),
+        ).fetchone()[0] == 1
+        assert db.execute(
+            "SELECT COUNT(*) FROM protocol_runs WHERE task_id = ?",
+            (contract.task_id,),
+        ).fetchone()[0] == 1
+        assert db.execute(
+            "SELECT COUNT(*) FROM orchestration_runs WHERE task_id = ?",
+            (contract.task_id,),
+        ).fetchone()[0] == 0
+        assert db.execute(
+            "SELECT COUNT(*) FROM protocol_artifacts WHERE task_id = ?",
+            (contract.task_id,),
+        ).fetchone()[0] == 0
+
+
+@pytest.mark.parametrize(
+    "principal",
+    [
+        _migration_principal(permissions=frozenset()),
+        _migration_principal(projects=frozenset()),
+        _migration_principal(principal_id="different-user"),
+    ],
+)
+def test_methodology_first_run_claim_requires_migration_principal(
+    tmp_path,
+    principal,
+):
+    tasks, service, task, root, proposal_path = _system(tmp_path)
+    contract, _, request = _activated_route(
+        tasks,
+        service,
+        task,
+        root,
+        proposal_path,
+    )
+    before = _database_dump(tasks)
+
+    with pytest.raises(
+        OrchestrationValidationError,
+        match="permission|authorized|migration Gate",
+    ):
+        service.claim_methodology_first_run(
+            contract.task_id,
+            request,
+            principal=principal,
+        )
+
+    assert _database_dump(tasks) == before
+
+
+def test_methodology_first_run_claim_rechecks_artifacts_and_runtime(tmp_path):
+    tasks, service, task, root, proposal_path = _system(tmp_path)
+    contract, _, request = _activated_route(
+        tasks,
+        service,
+        task,
+        root,
+        proposal_path,
+    )
+    proposal_path.write_text("changed before Run claim", encoding="utf-8")
+    before = _database_dump(tasks)
+
+    with pytest.raises(
+        OrchestrationConflictError,
+        match="Artifact binding is stale",
+    ):
+        service.claim_methodology_first_run(
+            contract.task_id,
+            request,
+            principal=_migration_principal(),
+        )
+    assert _database_dump(tasks) == before
+
+    proposal_path.write_text(
+        json.dumps({"proposal": "migrate to AWS AI-DLC v2.3.0"}),
+        encoding="utf-8",
+    )
+    service.runtimes["codex"] = RuntimeCommand(
+        adapter="codex",
+        command_template=(sys.executable, "changed", "{prompt}"),
+    )
+    with pytest.raises(
+        OrchestrationConflictError,
+        match="runtime registry binding is stale",
+    ):
+        service.claim_methodology_first_run(
+            contract.task_id,
+            request,
+            principal=_migration_principal(),
+        )
+    assert _database_dump(tasks) == before
+
+
+def test_methodology_first_run_claim_rejects_stale_request_without_mutation(
+    tmp_path,
+):
+    tasks, service, task, root, proposal_path = _system(tmp_path)
+    contract, _, request = _activated_route(
+        tasks,
+        service,
+        task,
+        root,
+        proposal_path,
+    )
+    payload = request.model_dump(mode="json")
+    payload["expected_task_version"] += 1
+    stale = MethodologyRunClaimRequest.model_validate(
+        seal_model_payload(MethodologyRunClaimRequest, payload)
+    )
+    before = _database_dump(tasks)
+
+    with pytest.raises(
+        OrchestrationConflictError,
+        match="request binding is stale or differs",
+    ):
+        service.claim_methodology_first_run(
+            contract.task_id,
+            stale,
+            principal=_migration_principal(),
+        )
+
+    assert _database_dump(tasks) == before
+
+
+def test_methodology_first_run_claim_is_exactly_idempotent_and_serialized(
+    tmp_path,
+):
+    tasks, service, task, root, proposal_path = _system(tmp_path)
+    contract, _, request = _activated_route(
+        tasks,
+        service,
+        task,
+        root,
+        proposal_path,
+    )
+    barrier = Barrier(2)
+
+    def claim():
+        barrier.wait(timeout=10)
+        return service.claim_methodology_first_run(
+            contract.task_id,
+            request,
+            principal=_migration_principal(),
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        receipts = list(executor.map(lambda _index: claim(), range(2)))
+
+    assert receipts[0] == receipts[1]
+    after = _database_dump(tasks)
+    assert (
+        service.claim_methodology_first_run(
+            contract.task_id,
+            request,
+            principal=_migration_principal(),
+        )
+        == receipts[0]
+    )
+    assert _database_dump(tasks) == after
+    with sqlite3.connect(tasks.db_path) as db:
+        assert db.execute(
+            "SELECT COUNT(*) FROM orchestration_methodology_run_claims"
+        ).fetchone()[0] == 1
+        assert db.execute(
+            "SELECT COUNT(*) FROM protocol_runs WHERE task_id = ?",
+            (contract.task_id,),
+        ).fetchone()[0] == 1
+
+
+def test_methodology_first_run_claim_rejects_different_replay_request(
+    tmp_path,
+):
+    tasks, service, task, root, proposal_path = _system(tmp_path)
+    contract, _, request = _activated_route(
+        tasks,
+        service,
+        task,
+        root,
+        proposal_path,
+    )
+    service.claim_methodology_first_run(
+        contract.task_id,
+        request,
+        principal=_migration_principal(),
+    )
+    payload = request.model_dump(mode="json")
+    payload["request_id"] = f"{request.request_id}-different"
+    changed = MethodologyRunClaimRequest.model_validate(
+        seal_model_payload(MethodologyRunClaimRequest, payload)
+    )
+    before = _database_dump(tasks)
+
+    with pytest.raises(
+        OrchestrationConflictError,
+        match="replay binding differs",
+    ):
+        service.claim_methodology_first_run(
+            contract.task_id,
+            changed,
+            principal=_migration_principal(),
+        )
+
+    assert _database_dump(tasks) == before
+
+
+def test_methodology_first_run_claim_replay_rechecks_authorization(tmp_path):
+    tasks, service, task, root, proposal_path = _system(tmp_path)
+    contract, _, request = _activated_route(
+        tasks,
+        service,
+        task,
+        root,
+        proposal_path,
+    )
+    service.claim_methodology_first_run(
+        contract.task_id,
+        request,
+        principal=_migration_principal(),
+    )
+    before = _database_dump(tasks)
+
+    with pytest.raises(
+        OrchestrationValidationError,
+        match="currently authorized principal",
+    ):
+        service.claim_methodology_first_run(
+            contract.task_id,
+            request,
+            principal=_migration_principal(permissions=frozenset()),
+        )
+
+    assert _database_dump(tasks) == before
+
+
+def test_methodology_first_run_claim_rolls_back_event_failure(
+    tmp_path,
+    monkeypatch,
+):
+    tasks, service, task, root, proposal_path = _system(tmp_path)
+    contract, _, request = _activated_route(
+        tasks,
+        service,
+        task,
+        root,
+        proposal_path,
+    )
+    before = _database_dump(tasks)
+    original_event = service.control_plane._event
+
+    def fail_last_event(*args, **kwargs):
+        if kwargs.get("event_type") == "methodology.run_claimed":
+            raise RuntimeError("injected Run claim event failure")
+        return original_event(*args, **kwargs)
+
+    monkeypatch.setattr(service.control_plane, "_event", fail_last_event)
+    with pytest.raises(RuntimeError, match="injected Run claim"):
+        service.claim_methodology_first_run(
+            contract.task_id,
+            request,
+            principal=_migration_principal(),
+        )
+
+    assert _database_dump(tasks) == before
+
+
+def test_methodology_first_run_claim_rejects_oversized_context_entry_atomically(
+    tmp_path,
+    monkeypatch,
+):
+    tasks, service, task, root, proposal_path = _system(tmp_path)
+    contract, _, request = _activated_route(
+        tasks,
+        service,
+        task,
+        root,
+        proposal_path,
+    )
+    before = _database_dump(tasks)
+
+    def oversized_context(**_kwargs):
+        return _context_entry(
+            prefix="oversized",
+            title="Oversized methodology Context entry",
+            content="x" * 20_001,
+            source_ref="test:oversized-context-entry",
+        )
+
+    monkeypatch.setattr(
+        "agora.orchestration.service.build_methodology_run_claim_context",
+        oversized_context,
+    )
+    with pytest.raises(
+        OrchestrationConflictError,
+        match="exceeds 20,000 characters",
+    ):
+        service.claim_methodology_first_run(
+            contract.task_id,
+            request,
+            principal=_migration_principal(),
+        )
+
+    assert _database_dump(tasks) == before
+
+
+def test_methodology_run_claim_request_loader_is_strict(tmp_path):
+    path = tmp_path / "run-claim.json"
+    path.write_text("{}", encoding="utf-8")
+    with pytest.raises(ValidationError):
+        load_methodology_run_claim_request(path)
+
+
+def test_methodology_first_run_claim_cli_authenticates_without_secret(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    tasks, service, task, root, proposal_path = _system(tmp_path)
+    contract, _, request = _activated_route(
+        tasks,
+        service,
+        task,
+        root,
+        proposal_path,
+    )
+    request_path = tmp_path / "run-claim.json"
+    request_path.write_text(request.model_dump_json(), encoding="utf-8")
+    secret = "run-claim-control-secret"
+    monkeypatch.setenv("AGORA_TEST_RUN_CLAIM_TOKEN", secret)
+    monkeypatch.setattr(orchestration_cli, "build_service", lambda: service)
+    monkeypatch.setattr(
+        "agora.control_plane.auth.get_config",
+        lambda: {
+            "control_plane": {
+                "auth": {
+                    "credentials": [
+                        {
+                            "secret_ref": "AGORA_TEST_RUN_CLAIM_TOKEN",
+                            "principal": "user",
+                            "permissions": ["control_plane.approve"],
+                            "projects": ["alpha"],
+                        }
+                    ]
+                }
+            }
+        },
+    )
+
+    code = orchestration_cli.main(
+        [
+            "migration-run-claim",
+            contract.task_id,
+            "--request",
+            str(request_path),
+            "--credential-env",
+            "AGORA_TEST_RUN_CLAIM_TOKEN",
+        ]
+    )
+    output = capsys.readouterr().out
+    payload = json.loads(output)
+
+    assert code == 0
+    assert payload["task_id"] == contract.task_id
+    assert payload["formal_run_created"] is True
+    assert payload["process_started"] is False
+    assert secret not in output
+    assert secret not in _database_dump(tasks)
+
+
+def test_methodology_first_run_claim_cli_authenticates_before_store(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    monkeypatch.delenv("AGORA_MISSING_RUN_CLAIM_TOKEN", raising=False)
+    built = False
+
+    def build_forbidden():
+        nonlocal built
+        built = True
+        raise AssertionError("service must not be built before authentication")
+
+    monkeypatch.setattr(orchestration_cli, "build_service", build_forbidden)
+    code = orchestration_cli.main(
+        [
+            "migration-run-claim",
+            "task-successor",
+            "--request",
+            str(tmp_path / "missing.json"),
+            "--credential-env",
+            "AGORA_MISSING_RUN_CLAIM_TOKEN",
+        ]
+    )
+
+    assert code == 2
+    assert built is False
+    assert "credential environment variable is absent" in capsys.readouterr().out
+
+
+def test_methodology_run_claim_schemas_are_registered():
+    assert (
+        SCHEMA_MODELS["methodology-run-claim-request"]
+        is MethodologyRunClaimRequest
+    )
+    assert (
+        SCHEMA_MODELS["methodology-run-claim-receipt"]
+        is MethodologyRunClaimReceipt
     )

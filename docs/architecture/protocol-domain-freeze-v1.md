@@ -280,6 +280,15 @@ candidate is considered independently, so a non-fitting item stays explicitly
 reference-only while a smaller older item may still fit; content is never
 truncated, summarized, or silently dropped.
 
+An externally produced Task seed may enter a first Context Pack only through a
+separate hash-bound registration that preserves repository/ref/commit/path and
+consumer Stage. Because no Agora producer Run exists for that seed, registration
+must not fabricate a protocol Artifact. The formal Run claim must revalidate
+the exact registration in the same transaction that seals the Context Pack and
+advances the authoritative Stage; generic Run start continues to require
+registered protocol Artifacts unless its caller supplies those already
+transaction-validated external bindings explicitly.
+
 A Handoff Pack is immutable output from one Run. It includes:
 
 - semantic Stage result;

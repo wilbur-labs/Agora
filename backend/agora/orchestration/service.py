@@ -48,6 +48,10 @@ from agora.protocol.methodology_route_activation import (
     MethodologyRouteActivationReceipt,
     MethodologyRouteActivationRequest,
 )
+from agora.protocol.methodology_run_claim import (
+    MethodologyRunClaimReceipt,
+    MethodologyRunClaimRequest,
+)
 from agora.protocol.state_machines import StageStatus, TaskStatus
 from agora.tasks.models import CreateTaskRequest, TaskBudget, TaskManifest, TaskRisk, utc_now
 from agora.tasks.store import TaskStore
@@ -72,6 +76,7 @@ from .methodology_execution_contract import (
 from .methodology_route_activation import (
     validate_methodology_route_activation,
 )
+from .methodology_run_claim import build_methodology_run_claim_context
 from .models import (
     BudgetAmendment,
     ConsultationRun,
@@ -1276,6 +1281,72 @@ class TaskOrchestrationService:
             )
 
         return self.store.activate_methodology_first_route(
+            task_id,
+            request,
+            principal=principal,
+            control_plane=self.control_plane,
+            recheck=recheck,
+        )
+
+    def claim_methodology_first_run(
+        self,
+        task_id: str,
+        request: MethodologyRunClaimRequest,
+        *,
+        principal: ControlPrincipal,
+    ) -> MethodologyRunClaimReceipt:
+        """Authenticate and atomically claim one formal first Run."""
+
+        task = self.tasks.get(task_id)
+        if task is None:
+            raise OrchestrationConflictError("Task not found")
+        try:
+            project = self.projects.get(task.project_id)
+        except KeyError as exc:
+            raise OrchestrationConflictError(
+                "Methodology successor project is not registered"
+            ) from exc
+
+        def recheck(snapshot, claimed_at: str):
+            try:
+                repository_before = self.revision_resolver(
+                    project.root,
+                    snapshot.task.project_id,
+                )
+            except (KeyError, TypeError, ValueError):
+                repository_before = None
+            artifacts = [
+                *snapshot.migration_request.seed_artifacts,
+                snapshot.migration_gate.assertion.migration_artifact,
+            ]
+            observed_artifact_sha256s = observe_migration_artifacts(
+                project.root,
+                artifacts,
+            )
+            try:
+                repository_after = self.revision_resolver(
+                    project.root,
+                    snapshot.task.project_id,
+                )
+            except (KeyError, TypeError, ValueError):
+                repository_after = None
+            repository = (
+                repository_after
+                if repository_before is not None
+                and repository_after == repository_before
+                else None
+            )
+            return build_methodology_run_claim_context(
+                snapshot=snapshot,
+                request=request,
+                principal=principal,
+                repository=repository,
+                observed_artifact_sha256s=observed_artifact_sha256s,
+                runtimes=self.runtimes,
+                claimed_at=claimed_at,
+            )
+
+        return self.store.claim_methodology_first_run(
             task_id,
             request,
             principal=principal,

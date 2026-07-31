@@ -249,11 +249,13 @@ class TaskProjectionStore:
         )
         operational_runs = self._operational_runs(db, run_ids)
         protocol_runs = self._protocol_runs(db, run_ids)
+        methodology_claims = self._methodology_run_claims(db, run_ids)
         runs = [
             self._run_projection(
                 run_id,
                 operational_runs.get(run_id),
                 protocol_runs.get(run_id),
+                methodology_claims.get(run_id),
                 snapshot_at,
             )
             for run_id in run_ids
@@ -617,11 +619,26 @@ class TaskProjectionStore:
         ).fetchall()
         return {row["run_id"]: self.control_plane._protocol_run(row) for row in rows}
 
+    @staticmethod
+    def _methodology_run_claims(db, run_ids):
+        if not run_ids:
+            return {}
+        placeholders = ",".join("?" for _ in run_ids)
+        rows = db.execute(
+            f"""
+            SELECT * FROM orchestration_methodology_run_claims
+            WHERE run_id IN ({placeholders})
+            """,
+            tuple(run_ids),
+        ).fetchall()
+        return {row["run_id"]: row for row in rows}
+
     def _run_projection(
         self,
         run_id: str,
         operational,
         protocol: ProtocolRunRecord | None,
+        methodology_claim,
         snapshot_at: str,
     ) -> UnifiedRunProjection:
         protocol_state = protocol.protocol_state if protocol else None
@@ -648,6 +665,8 @@ class TaskProjectionStore:
         runtime = operational.adapter if operational is not None else None
         if runtime is None and handoff is not None:
             runtime = handoff.producer.runtime.value
+        if runtime is None and methodology_claim is not None:
+            runtime = methodology_claim["runtime"]
         return UnifiedRunProjection(
             run_id=run_id,
             stage_key=(
@@ -696,10 +715,22 @@ class TaskProjectionStore:
             ),
             attention_required=protocol.attention_required if protocol else False,
             attention_item_id=protocol.attention_item_id if protocol else None,
-            token_reserved=operational.token_reserved if operational else None,
+            token_reserved=(
+                operational.token_reserved
+                if operational
+                else methodology_claim["token_reserved"]
+                if methodology_claim is not None
+                else None
+            ),
             token_settled=operational.token_used if operational else None,
             token_measurement=operational.token_measurement if operational else None,
-            cost_reserved_usd=(operational.cost_reserved_usd if operational else None),
+            cost_reserved_usd=(
+                operational.cost_reserved_usd
+                if operational
+                else methodology_claim["cost_reserved_usd"]
+                if methodology_claim is not None
+                else None
+            ),
             cost_settled_usd=operational.cost_used_usd if operational else None,
             cost_measurement=operational.cost_measurement if operational else None,
             routing_policy=(operational.routing_policy if operational else None),
@@ -971,6 +1002,17 @@ class TaskProjectionStore:
                WHERE plan_id = ? AND state = ?""",
             (plan.plan_id, ConsultationState.RUNNING.value),
         ).fetchone()
+        active_methodology_claims = db.execute(
+            """SELECT COUNT(*) AS count,
+                      COALESCE(SUM(c.token_reserved), 0) AS token_reserved,
+                      SUM(CASE WHEN c.cost_reserved_usd IS NULL THEN 1 ELSE 0 END)
+                          AS unavailable_costs,
+                      COALESCE(SUM(c.cost_reserved_usd), 0) AS cost_reserved
+               FROM orchestration_methodology_run_claims c
+               JOIN protocol_runs r ON r.run_id = c.run_id
+               WHERE c.plan_id = ? AND r.settled_at IS NULL""",
+            (plan.plan_id,),
+        ).fetchone()
         settled_runs = db.execute(
             """SELECT COUNT(*) AS count,
                       COALESCE(SUM(CASE WHEN tokens IS NOT NULL THEN tokens ELSE 0 END), 0)
@@ -1011,14 +1053,17 @@ class TaskProjectionStore:
         active_token_reserved = (
             active_runs["token_reserved"]
             + active_consultations["token_reserved"]
+            + active_methodology_claims["token_reserved"]
         )
         active_unavailable_costs = (
             (active_runs["unavailable_costs"] or 0)
             + (active_consultations["unavailable_costs"] or 0)
+            + (active_methodology_claims["unavailable_costs"] or 0)
         )
         active_cost_reserved = (
             active_runs["cost_reserved"]
             + active_consultations["cost_reserved"]
+            + active_methodology_claims["cost_reserved"]
         )
         settled_count = (
             settled_runs["count"] + settled_consultations["count"]

@@ -283,6 +283,37 @@ def initialize_orchestration_schema(db: sqlite3.Connection) -> None:
             ON orchestration_methodology_seed_artifact_refs(
                 execution_contract_id, consumer_stage_key
             );
+
+        CREATE TABLE IF NOT EXISTS orchestration_methodology_run_claims (
+            request_id TEXT PRIMARY KEY,
+            request_sha256 TEXT NOT NULL,
+            request_payload TEXT NOT NULL,
+            receipt_id TEXT NOT NULL UNIQUE,
+            receipt_sha256 TEXT NOT NULL,
+            receipt_payload TEXT NOT NULL,
+            task_id TEXT NOT NULL UNIQUE REFERENCES tasks(task_id),
+            plan_id TEXT NOT NULL REFERENCES orchestration_plans(plan_id),
+            execution_contract_id TEXT NOT NULL UNIQUE
+                REFERENCES orchestration_methodology_execution_contracts(contract_id),
+            route_activation_request_id TEXT NOT NULL UNIQUE
+                REFERENCES orchestration_methodology_route_activations(request_id),
+            route_activation_receipt_id TEXT NOT NULL UNIQUE,
+            run_id TEXT NOT NULL UNIQUE REFERENCES protocol_runs(run_id),
+            stage_key TEXT NOT NULL,
+            runtime TEXT NOT NULL,
+            context_pack_id TEXT NOT NULL UNIQUE,
+            context_pack_sha256 TEXT NOT NULL,
+            token_reserved INTEGER NOT NULL CHECK (token_reserved >= 0),
+            cost_reserved_usd REAL CHECK (
+                cost_reserved_usd IS NULL OR cost_reserved_usd >= 0
+            ),
+            authenticated_principal_id TEXT NOT NULL,
+            process_started INTEGER NOT NULL DEFAULT 0
+                CHECK (process_started = 0),
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_methodology_run_claims_plan_created
+            ON orchestration_methodology_run_claims(plan_id, created_at, run_id);
         """
     )
     columns = {row[1] for row in db.execute("PRAGMA table_info(orchestration_runs)")}

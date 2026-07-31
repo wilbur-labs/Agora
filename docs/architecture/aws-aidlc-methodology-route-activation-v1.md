@@ -101,8 +101,9 @@ provider_substitution = false
 ```
 
 No Context Pack is instantiated, no Run reservation or runtime preflight is
-created, and no provider process is launched. The next reviewed slice must
-materialize and claim the first formal Run from the exact Stage execution
-template and registered seed references while keeping process launch separate.
-HTTP, UI, provider substitution, automatic cross-Stage rework, and native
-AI-DLC file installation remain deferred.
+created, and no provider process is launched. The reviewed successor slice is
+`aws-aidlc-methodology-run-claim-v1.md`: it materializes and claims the first
+formal Run from the exact Stage execution template and registered seed
+references while keeping process launch separate. HTTP, UI, provider
+substitution, automatic cross-Stage rework, and native AI-DLC file installation
+remain deferred.

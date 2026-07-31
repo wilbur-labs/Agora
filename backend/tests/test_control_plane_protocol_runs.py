@@ -13,6 +13,7 @@ from agora.control_plane.store import (
 from agora.protocol.agent_adapter import TerminalRunnerObservation, adapt_agent_output
 from agora.protocol.hashing import seal_model_payload
 from agora.protocol.models import (
+    ArtifactVersionRef,
     ContextPack,
     Evidence,
     GateRequirement,
@@ -323,6 +324,32 @@ def test_context_start_rejects_unregistered_input_without_partial_state(tmp_path
 
     with pytest.raises(ControlPlaneValidationError, match="not registered"):
         _start(store, context)
+
+    assert store.get_protocol_run(context.run_id) is None
+    assert store.get_stage(task_id, "implementation").status == StageStatus.READY
+
+
+def test_external_context_input_escape_rejects_unused_registration(tmp_path):
+    tasks, store, task_id = _stores(tmp_path)
+    context = _context(task_id)
+    external = ArtifactVersionRef(
+        artifact_id="external-seed",
+        version=1,
+        sha256="b" * 64,
+        kind="requirements",
+        location=None,
+    )
+
+    with tasks._transaction() as db:
+        with pytest.raises(
+            ControlPlaneValidationError,
+            match="external Context input is not used",
+        ):
+            store._assert_context_inputs(
+                db,
+                context,
+                registered_external_inputs=[external],
+            )
 
     assert store.get_protocol_run(context.run_id) is None
     assert store.get_stage(task_id, "implementation").status == StageStatus.READY

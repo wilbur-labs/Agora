@@ -35,6 +35,10 @@ from .methodology_route_activation import (
     MethodologyRouteActivationRequest,
     MethodologySeedArtifactRegistration,
 )
+from .methodology_run_claim import (
+    MethodologyRunClaimReceipt,
+    MethodologyRunClaimRequest,
+)
 from .models import (
     Approval,
     ApprovalStatus,
@@ -100,6 +104,8 @@ __all__ = [
     "MethodologyMigrationPreviewRequest",
     "MethodologyRouteActivationReceipt",
     "MethodologyRouteActivationRequest",
+    "MethodologyRunClaimReceipt",
+    "MethodologyRunClaimRequest",
     "MethodologySeedArtifactRegistration",
     "MethodologyExternalSourceArtifact",
     "MethodologyScopeProfile",

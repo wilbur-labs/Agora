@@ -1,0 +1,586 @@
+{
+  "$defs": {
+    "ArtifactLocation": {
+      "additionalProperties": false,
+      "properties": {
+        "commit_sha": {
+          "title": "Commit Sha",
+          "type": "string"
+        },
+        "path": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "ref": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "title": "Ref",
+          "type": "string"
+        },
+        "repository_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Repository Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repository_id",
+        "ref",
+        "commit_sha",
+        "path"
+      ],
+      "title": "ArtifactLocation",
+      "type": "object"
+    },
+    "ArtifactVersionRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Artifact Id",
+          "type": "string"
+        },
+        "kind": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Kind",
+          "type": "string"
+        },
+        "location": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactLocation"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "sha256": {
+          "title": "Sha256",
+          "type": "string"
+        },
+        "version": {
+          "minimum": 1,
+          "title": "Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "version",
+        "sha256",
+        "kind"
+      ],
+      "title": "ArtifactVersionRef",
+      "type": "object"
+    },
+    "MethodologySeedArtifactRegistration": {
+      "additionalProperties": false,
+      "description": "One external Task seed bound to a selected consumer Stage input.",
+      "properties": {
+        "artifact": {
+          "$ref": "#/$defs/ArtifactVersionRef"
+        },
+        "consumer_stage_key": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Consumer Stage Key",
+          "type": "string"
+        },
+        "source_artifact_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Source Artifact Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "consumer_stage_key",
+        "source_artifact_id",
+        "artifact"
+      ],
+      "title": "MethodologySeedArtifactRegistration",
+      "type": "object"
+    },
+    "MigrationRepositoryBinding": {
+      "additionalProperties": false,
+      "properties": {
+        "commit_sha": {
+          "title": "Commit Sha",
+          "type": "string"
+        },
+        "ref": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "title": "Ref",
+          "type": "string"
+        },
+        "repository_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Repository Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repository_id",
+        "ref",
+        "commit_sha"
+      ],
+      "title": "MigrationRepositoryBinding",
+      "type": "object"
+    },
+    "RequiredOutput": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Kind",
+          "type": "string"
+        },
+        "output_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Output Id",
+          "type": "string"
+        },
+        "required": {
+          "default": true,
+          "title": "Required",
+          "type": "boolean"
+        },
+        "schema_uri": {
+          "anyOf": [
+            {
+              "maxLength": 2000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Schema Uri"
+        }
+      },
+      "required": [
+        "output_id",
+        "kind"
+      ],
+      "title": "RequiredOutput",
+      "type": "object"
+    },
+    "RunBudget": {
+      "additionalProperties": false,
+      "properties": {
+        "max_cost_usd": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Cost Usd"
+        },
+        "max_model_tokens": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Model Tokens"
+        },
+        "max_output_bytes": {
+          "default": 1000000,
+          "maximum": 50000000,
+          "minimum": 1024,
+          "title": "Max Output Bytes",
+          "type": "integer"
+        },
+        "max_seconds": {
+          "maximum": 86400,
+          "minimum": 1,
+          "title": "Max Seconds",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "max_seconds"
+      ],
+      "title": "RunBudget",
+      "type": "object"
+    },
+    "TaskStatus": {
+      "enum": [
+        "backlog",
+        "ready",
+        "active",
+        "blocked",
+        "needs_review",
+        "completed",
+        "failed",
+        "cancelled"
+      ],
+      "title": "TaskStatus",
+      "type": "string"
+    }
+  },
+  "$id": "https://agora.local/schemas/v1/methodology-run-claim-receipt.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Authoritative receipt for one atomic, non-spawning formal Run claim.",
+  "properties": {
+    "authenticated_permission": {
+      "const": "control_plane.approve",
+      "default": "control_plane.approve",
+      "title": "Authenticated Permission",
+      "type": "string"
+    },
+    "authenticated_principal_id": {
+      "maxLength": 256,
+      "minLength": 1,
+      "title": "Authenticated Principal Id",
+      "type": "string"
+    },
+    "budget": {
+      "$ref": "#/$defs/RunBudget"
+    },
+    "claimed_at": {
+      "format": "date-time",
+      "title": "Claimed At",
+      "type": "string"
+    },
+    "compatibility_run_created": {
+      "const": false,
+      "default": false,
+      "title": "Compatibility Run Created",
+      "type": "boolean"
+    },
+    "content_sha256": {
+      "title": "Content Sha256",
+      "type": "string"
+    },
+    "context_pack_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Context Pack Id",
+      "type": "string"
+    },
+    "context_pack_materialized": {
+      "const": true,
+      "default": true,
+      "title": "Context Pack Materialized",
+      "type": "boolean"
+    },
+    "context_pack_sha256": {
+      "title": "Context Pack Sha256",
+      "type": "string"
+    },
+    "control_task_status_after": {
+      "$ref": "#/$defs/TaskStatus"
+    },
+    "control_task_status_before": {
+      "$ref": "#/$defs/TaskStatus"
+    },
+    "control_task_version_after": {
+      "minimum": 1,
+      "title": "Control Task Version After",
+      "type": "integer"
+    },
+    "control_task_version_before": {
+      "minimum": 1,
+      "title": "Control Task Version Before",
+      "type": "integer"
+    },
+    "execution_contract_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Execution Contract Id",
+      "type": "string"
+    },
+    "execution_contract_sha256": {
+      "title": "Execution Contract Sha256",
+      "type": "string"
+    },
+    "first_gate_key": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "First Gate Key",
+      "type": "string"
+    },
+    "first_gate_status": {
+      "const": "pending",
+      "default": "pending",
+      "title": "First Gate Status",
+      "type": "string"
+    },
+    "first_gate_version": {
+      "minimum": 1,
+      "title": "First Gate Version",
+      "type": "integer"
+    },
+    "first_stage_key": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "First Stage Key",
+      "type": "string"
+    },
+    "first_stage_status_after": {
+      "const": "running",
+      "default": "running",
+      "title": "First Stage Status After",
+      "type": "string"
+    },
+    "first_stage_status_before": {
+      "const": "ready",
+      "default": "ready",
+      "title": "First Stage Status Before",
+      "type": "string"
+    },
+    "first_stage_version_after": {
+      "minimum": 2,
+      "title": "First Stage Version After",
+      "type": "integer"
+    },
+    "first_stage_version_before": {
+      "minimum": 1,
+      "title": "First Stage Version Before",
+      "type": "integer"
+    },
+    "formal_run_created": {
+      "const": true,
+      "default": true,
+      "title": "Formal Run Created",
+      "type": "boolean"
+    },
+    "inventory_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Inventory Id",
+      "type": "string"
+    },
+    "inventory_sha256": {
+      "title": "Inventory Sha256",
+      "type": "string"
+    },
+    "plan_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Plan Id",
+      "type": "string"
+    },
+    "plan_version": {
+      "minimum": 1,
+      "title": "Plan Version",
+      "type": "integer"
+    },
+    "process_spawn_authority": {
+      "const": false,
+      "default": false,
+      "title": "Process Spawn Authority",
+      "type": "boolean"
+    },
+    "process_started": {
+      "const": false,
+      "default": false,
+      "title": "Process Started",
+      "type": "boolean"
+    },
+    "project_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Project Id",
+      "type": "string"
+    },
+    "protocol_artifacts_created": {
+      "const": false,
+      "default": false,
+      "title": "Protocol Artifacts Created",
+      "type": "boolean"
+    },
+    "provider_substitution": {
+      "const": false,
+      "default": false,
+      "title": "Provider Substitution",
+      "type": "boolean"
+    },
+    "receipt_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Receipt Id",
+      "type": "string"
+    },
+    "repository": {
+      "$ref": "#/$defs/MigrationRepositoryBinding"
+    },
+    "request_authenticated": {
+      "const": true,
+      "default": true,
+      "title": "Request Authenticated",
+      "type": "boolean"
+    },
+    "request_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Request Id",
+      "type": "string"
+    },
+    "request_sha256": {
+      "title": "Request Sha256",
+      "type": "string"
+    },
+    "required_outputs": {
+      "items": {
+        "$ref": "#/$defs/RequiredOutput"
+      },
+      "maxItems": 100,
+      "title": "Required Outputs",
+      "type": "array"
+    },
+    "route_activation_receipt_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Route Activation Receipt Id",
+      "type": "string"
+    },
+    "route_activation_receipt_sha256": {
+      "title": "Route Activation Receipt Sha256",
+      "type": "string"
+    },
+    "run_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Run Id",
+      "type": "string"
+    },
+    "runtime": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Runtime",
+      "type": "string"
+    },
+    "runtime_preflight_created": {
+      "const": false,
+      "default": false,
+      "title": "Runtime Preflight Created",
+      "type": "boolean"
+    },
+    "runtime_spawned": {
+      "const": false,
+      "default": false,
+      "title": "Runtime Spawned",
+      "type": "boolean"
+    },
+    "schema_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "seed_artifacts": {
+      "items": {
+        "$ref": "#/$defs/MethodologySeedArtifactRegistration"
+      },
+      "maxItems": 100,
+      "title": "Seed Artifacts",
+      "type": "array"
+    },
+    "task_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Task Id",
+      "type": "string"
+    },
+    "task_version_after": {
+      "minimum": 2,
+      "title": "Task Version After",
+      "type": "integer"
+    },
+    "task_version_before": {
+      "minimum": 1,
+      "title": "Task Version Before",
+      "type": "integer"
+    },
+    "usage_reservation_recorded": {
+      "const": true,
+      "default": true,
+      "title": "Usage Reservation Recorded",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "content_sha256",
+    "receipt_id",
+    "claimed_at",
+    "request_id",
+    "request_sha256",
+    "authenticated_principal_id",
+    "project_id",
+    "task_id",
+    "task_version_before",
+    "task_version_after",
+    "control_task_status_before",
+    "control_task_version_before",
+    "control_task_status_after",
+    "control_task_version_after",
+    "plan_id",
+    "plan_version",
+    "inventory_id",
+    "inventory_sha256",
+    "execution_contract_id",
+    "execution_contract_sha256",
+    "route_activation_receipt_id",
+    "route_activation_receipt_sha256",
+    "repository",
+    "first_stage_key",
+    "first_stage_version_before",
+    "first_stage_version_after",
+    "first_gate_key",
+    "first_gate_version",
+    "runtime",
+    "run_id",
+    "context_pack_id",
+    "context_pack_sha256",
+    "budget"
+  ],
+  "title": "MethodologyRunClaimReceipt",
+  "type": "object"
+}

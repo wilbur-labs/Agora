@@ -6,6 +6,7 @@ import re
 import sqlite3
 import uuid
 from collections import defaultdict
+from collections.abc import Sequence
 from contextlib import closing
 from typing import Any
 
@@ -19,6 +20,7 @@ from agora.protocol.models import (
     Approval,
     ApprovalStatus,
     Artifact,
+    ArtifactVersionRef,
     ContextPack,
     Evidence,
     GateEvaluation,
@@ -779,153 +781,13 @@ class ControlPlaneStore:
             if replay is not None:
                 return ProtocolRunRecord.model_validate(replay["run"])
 
-            task = self._task_row(db, context_pack.task_id)
-            self._assert_project(task, context_pack.project_id)
-            route = self._stage_route_decision_tx(
+            run = self._start_protocol_run_tx(
                 db,
-                context_pack.task_id,
-                required=True,
-            )
-            if route is None or route.stage_key != context_pack.stage_key:
-                raise ControlPlaneConflictError(
-                    "Context Pack Stage is not the authoritative current inventory route"
-                )
-            lifecycle = self._task_lifecycle_decision_tx(
-                db,
-                context_pack.task_id,
-                required=True,
-            )
-            assert lifecycle is not None
-            frozen_task = db.execute(
-                "SELECT status FROM control_tasks WHERE task_id = ?",
-                (context_pack.task_id,),
-            ).fetchone()
-            assert frozen_task is not None
-            if frozen_task["status"] != lifecycle.target_status.value:
-                raise ControlPlaneConflictError(
-                    "Frozen Task lifecycle requires explicit resume before dispatch"
-                )
-            if lifecycle.target_status not in {TaskStatus.READY, TaskStatus.ACTIVE}:
-                raise ControlPlaneConflictError(
-                    f"Frozen Task lifecycle is {lifecycle.target_status.value}, not dispatchable"
-                )
-            stage = db.execute(
-                """
-                SELECT * FROM control_stages
-                WHERE task_id = ? AND stage_key = ?
-                """,
-                (context_pack.task_id, context_pack.stage_key),
-            ).fetchone()
-            if stage is None:
-                raise ControlPlaneNotFoundError(
-                    f"Stage not found: {context_pack.stage_key}"
-                )
-            gate = self._gate_row(db, context_pack.task_id, gate_key)
-            if stage["gate_key"] != gate_key or gate["stage_key"] != context_pack.stage_key:
-                raise ControlPlaneValidationError(
-                    "Context Pack Stage does not match its configured Gate"
-                )
-            current_stage = StageStatus(stage["status"])
-            if current_stage != StageStatus.READY or not route.runnable:
-                raise ControlPlaneConflictError(
-                    f"Protocol Run requires a ready Stage, current status is "
-                    f"{current_stage.value}"
-                )
-            self._assert_context_inputs(db, context_pack)
-            existing = db.execute(
-                """
-                SELECT run_id, context_pack_id FROM protocol_runs
-                WHERE run_id = ? OR context_pack_id = ?
-                """,
-                (context_pack.run_id, context_pack.pack_id),
-            ).fetchone()
-            if existing is not None:
-                raise ControlPlaneConflictError(
-                    "Protocol Run or Context Pack identity already exists"
-                )
-
-            db.execute(
-                """
-                INSERT INTO protocol_runs (
-                    run_id, project_id, task_id, stage_key, gate_key,
-                    context_pack_id, context_payload, context_sha256,
-                    attention_required, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
-                """,
-                (
-                    context_pack.run_id,
-                    context_pack.project_id,
-                    context_pack.task_id,
-                    context_pack.stage_key,
-                    gate_key,
-                    context_pack.pack_id,
-                    self._json(context_pack),
-                    context_pack.content_sha256,
-                    now,
-                ),
-            )
-            next_stage = transition_stage(current_stage, StageStatus.RUNNING)
-            cursor = db.execute(
-                """
-                UPDATE control_stages
-                SET status = ?, version = version + 1, updated_at = ?
-                WHERE task_id = ? AND stage_key = ? AND version = ?
-                """,
-                (
-                    next_stage.value,
-                    now,
-                    context_pack.task_id,
-                    context_pack.stage_key,
-                    stage["version"],
-                ),
-            )
-            if cursor.rowcount != 1:
-                raise ControlPlaneConflictError("Stage changed before Run start")
-            self._event(
-                db,
-                event_key=f"{operation_key}:run.context_sealed",
-                task_id=context_pack.task_id,
-                project_id=context_pack.project_id,
-                event_type="run.context_sealed",
-                actor=actor,
-                payload={
-                    "run_id": context_pack.run_id,
-                    "stage_key": context_pack.stage_key,
-                    "gate_key": gate_key,
-                    "context_pack_id": context_pack.pack_id,
-                    "context_sha256": context_pack.content_sha256,
-                },
-                now=now,
-            )
-            self._event(
-                db,
-                event_key=f"{operation_key}:stage.started",
-                task_id=context_pack.task_id,
-                project_id=context_pack.project_id,
-                event_type="stage.started",
-                actor=actor,
-                payload={
-                    "run_id": context_pack.run_id,
-                    "stage_key": context_pack.stage_key,
-                    "from": current_stage.value,
-                    "to": next_stage.value,
-                },
-                now=now,
-            )
-            self._reconcile_task_lifecycle_tx(
-                db,
-                task_id=context_pack.task_id,
-                cause=TaskTransitionCause.ORCHESTRATION,
+                context_pack=context_pack,
+                gate_key=gate_key,
                 actor=actor,
                 event_key_prefix=operation_key,
                 now=now,
-                required=False,
-            )
-            run = self._protocol_run(
-                db.execute(
-                    "SELECT * FROM protocol_runs WHERE run_id = ?",
-                    (context_pack.run_id,),
-                ).fetchone()
             )
             self._complete_operation(
                 db,
@@ -935,6 +797,176 @@ class ControlPlaneStore:
                 now,
             )
             return run
+
+    def _start_protocol_run_tx(
+        self,
+        db: sqlite3.Connection,
+        *,
+        context_pack: ContextPack,
+        gate_key: str,
+        actor: str,
+        event_key_prefix: str,
+        now: str,
+        registered_external_inputs: Sequence[ArtifactVersionRef] = (),
+    ) -> ProtocolRunRecord:
+        """Start one formal Run inside a caller-owned atomic transaction."""
+
+        task = self._task_row(db, context_pack.task_id)
+        self._assert_project(task, context_pack.project_id)
+        route = self._stage_route_decision_tx(
+            db,
+            context_pack.task_id,
+            required=True,
+        )
+        if route is None or route.stage_key != context_pack.stage_key:
+            raise ControlPlaneConflictError(
+                "Context Pack Stage is not the authoritative current inventory route"
+            )
+        lifecycle = self._task_lifecycle_decision_tx(
+            db,
+            context_pack.task_id,
+            required=True,
+        )
+        assert lifecycle is not None
+        frozen_task = db.execute(
+            "SELECT status FROM control_tasks WHERE task_id = ?",
+            (context_pack.task_id,),
+        ).fetchone()
+        assert frozen_task is not None
+        if frozen_task["status"] != lifecycle.target_status.value:
+            raise ControlPlaneConflictError(
+                "Frozen Task lifecycle requires explicit resume before dispatch"
+            )
+        if lifecycle.target_status not in {TaskStatus.READY, TaskStatus.ACTIVE}:
+            raise ControlPlaneConflictError(
+                f"Frozen Task lifecycle is {lifecycle.target_status.value}, "
+                "not dispatchable"
+            )
+        stage = db.execute(
+            """
+            SELECT * FROM control_stages
+            WHERE task_id = ? AND stage_key = ?
+            """,
+            (context_pack.task_id, context_pack.stage_key),
+        ).fetchone()
+        if stage is None:
+            raise ControlPlaneNotFoundError(
+                f"Stage not found: {context_pack.stage_key}"
+            )
+        gate = self._gate_row(db, context_pack.task_id, gate_key)
+        if (
+            stage["gate_key"] != gate_key
+            or gate["stage_key"] != context_pack.stage_key
+        ):
+            raise ControlPlaneValidationError(
+                "Context Pack Stage does not match its configured Gate"
+            )
+        current_stage = StageStatus(stage["status"])
+        if current_stage != StageStatus.READY or not route.runnable:
+            raise ControlPlaneConflictError(
+                f"Protocol Run requires a ready Stage, current status is "
+                f"{current_stage.value}"
+            )
+        self._assert_context_inputs(
+            db,
+            context_pack,
+            registered_external_inputs=registered_external_inputs,
+        )
+        existing = db.execute(
+            """
+            SELECT run_id, context_pack_id FROM protocol_runs
+            WHERE run_id = ? OR context_pack_id = ?
+            """,
+            (context_pack.run_id, context_pack.pack_id),
+        ).fetchone()
+        if existing is not None:
+            raise ControlPlaneConflictError(
+                "Protocol Run or Context Pack identity already exists"
+            )
+
+        db.execute(
+            """
+            INSERT INTO protocol_runs (
+                run_id, project_id, task_id, stage_key, gate_key,
+                context_pack_id, context_payload, context_sha256,
+                attention_required, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+            """,
+            (
+                context_pack.run_id,
+                context_pack.project_id,
+                context_pack.task_id,
+                context_pack.stage_key,
+                gate_key,
+                context_pack.pack_id,
+                self._json(context_pack),
+                context_pack.content_sha256,
+                now,
+            ),
+        )
+        next_stage = transition_stage(current_stage, StageStatus.RUNNING)
+        cursor = db.execute(
+            """
+            UPDATE control_stages
+            SET status = ?, version = version + 1, updated_at = ?
+            WHERE task_id = ? AND stage_key = ? AND version = ?
+            """,
+            (
+                next_stage.value,
+                now,
+                context_pack.task_id,
+                context_pack.stage_key,
+                stage["version"],
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise ControlPlaneConflictError("Stage changed before Run start")
+        self._event(
+            db,
+            event_key=f"{event_key_prefix}:run.context_sealed",
+            task_id=context_pack.task_id,
+            project_id=context_pack.project_id,
+            event_type="run.context_sealed",
+            actor=actor,
+            payload={
+                "run_id": context_pack.run_id,
+                "stage_key": context_pack.stage_key,
+                "gate_key": gate_key,
+                "context_pack_id": context_pack.pack_id,
+                "context_sha256": context_pack.content_sha256,
+            },
+            now=now,
+        )
+        self._event(
+            db,
+            event_key=f"{event_key_prefix}:stage.started",
+            task_id=context_pack.task_id,
+            project_id=context_pack.project_id,
+            event_type="stage.started",
+            actor=actor,
+            payload={
+                "run_id": context_pack.run_id,
+                "stage_key": context_pack.stage_key,
+                "from": current_stage.value,
+                "to": next_stage.value,
+            },
+            now=now,
+        )
+        self._reconcile_task_lifecycle_tx(
+            db,
+            task_id=context_pack.task_id,
+            cause=TaskTransitionCause.ORCHESTRATION,
+            actor=actor,
+            event_key_prefix=event_key_prefix,
+            now=now,
+            required=False,
+        )
+        return self._protocol_run(
+            db.execute(
+                "SELECT * FROM protocol_runs WHERE run_id = ?",
+                (context_pack.run_id,),
+            ).fetchone()
+        )
 
     def settle_protocol_run(
         self,
@@ -3114,7 +3146,17 @@ class ControlPlaneStore:
         return RegistrationReceipt(entity_id=evidence.evidence_id, created=True)
 
     @staticmethod
-    def _assert_context_inputs(db: sqlite3.Connection, context_pack: ContextPack) -> None:
+    def _assert_context_inputs(
+        db: sqlite3.Connection,
+        context_pack: ContextPack,
+        *,
+        registered_external_inputs: Sequence[ArtifactVersionRef] = (),
+    ) -> None:
+        for binding in registered_external_inputs:
+            if binding not in context_pack.input_artifacts:
+                raise ControlPlaneValidationError(
+                    "Registered external Context input is not used by the Context Pack"
+                )
         for binding in context_pack.input_artifacts:
             row = db.execute(
                 """
@@ -3124,6 +3166,8 @@ class ControlPlaneStore:
                 (binding.artifact_id, binding.version),
             ).fetchone()
             if row is None:
+                if binding in registered_external_inputs:
+                    continue
                 raise ControlPlaneValidationError(
                     f"Context input Artifact is not registered: {binding.artifact_id}"
                 )

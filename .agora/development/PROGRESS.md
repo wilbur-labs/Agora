@@ -1,5 +1,93 @@
 # Agora Control Plane Development Progress
 
+## 2026-07-31 - AWS AI-DLC first formal Run and Context Pack claim (reviewed)
+
+### Bounded implementation
+
+- [x] Added hash-sealed `MethodologyRunClaimRequest@1.0` and
+  `MethodologyRunClaimReceipt@1.0` contracts plus checked-in JSON Schemas.
+  The request binds the exact live Task, Control Task, Plan, inventory,
+  execution contract, route-activation receipt, repository, first
+  Stage/Gate/runtime, and caller-selected stable Run/Context identities. It
+  structurally fixes `start_runtime_process=false`.
+- [x] Added
+  `agora task migration-run-claim SUCCESSOR_TASK_ID --request PATH
+  --credential-env NAME`. Authentication completes before service/storage
+  initialization and requires the original migration-chain principal with
+  current `control_plane.approve` and exact Project scope.
+- [x] One immediate transaction revalidates the complete
+  migration/contract/activation ledger, Task/Control Task/Plan/inventory
+  versions, authoritative ready first route, current repository before/after
+  bounded Artifact hashing, runtime registry/command hashes, and absence of
+  prior execution state. It atomically seals the exact `ContextPack@1.0`,
+  creates the formal `protocol_runs` record, advances the authoritative Stage
+  `ready -> running`, reconciles the Control Task, records the reservation,
+  advances Task metadata/version, and writes both audit streams.
+- [x] The Context Pack copies the Stage Contract, forbidden constraints, and
+  Run budget exactly; retains registered first-Stage seeds in contract order;
+  rejects selected prior-Stage outputs; derives output identities from
+  Task/Stage/Run/source-output template; and carries bounded execution,
+  activation, repository, role, sensor, source-input, Handoff, and Gate policy
+  entries. It injects no transcript, memory, project knowledge, preference,
+  Native State, Artifact, or Evidence.
+- [x] Every materialized first-Stage seed path/hash must be present in the
+  live-rehashed migration seed set and match its immutable registration.
+  External seed references remain separate from `protocol_artifacts`; the
+  generic Control Plane Run-start path still rejects unregistered inputs unless
+  its private caller supplies exact already-transaction-validated bindings.
+- [x] Persisted one immutable methodology claim/reservation record and exposed
+  its pinned runtime and active Token/cost reservation through the unified
+  projection. No compatibility `orchestration_runs` row, PID, prompt process,
+  runtime preflight, provider output, protocol Artifact, or spawn/substitution
+  authority is fabricated.
+- [x] Added exact replay/current-authorization, real two-thread serialization,
+  full rollback, repository/Artifact/runtime drift, stale request, different
+  replay, generic external-input escape, oversized Context-entry, CLI
+  auth-before-store, schema-registration, compatibility, and projection/budget
+  regressions.
+- [x] Documented the boundary in
+  `docs/architecture/aws-aidlc-methodology-run-claim-v1.md` and updated the
+  frozen Context/external-seed contract.
+
+### Verification and review state
+
+- [x] Final focused negative/security regression selection: 16 passed,
+  81 deselected.
+- [x] Related methodology, Control Plane Run/routing/lifecycle, protocol
+  orchestration, and Task orchestration suite: 252 passed.
+- [x] Exact complete non-integration backend suite: 657 passed, 18 deselected,
+  with only the existing Starlette/httpx and Windows Proactor cleanup warnings.
+- [x] Protocol Schema export/check, system-Temp-isolated `compileall`, and
+  `git diff --check` passed.
+- [x] Kiro CLI sessions `d51e88be-e85a-4e66-98e4-8516de097ec7` and
+  `a7d2fa58-4114-42da-9e4d-8f3ac45c47bb` independently reviewed the
+  methodology/Context boundary and the transaction, Control Plane, schema,
+  projection, CLI, and regression surface. Their only non-blocking seed-set
+  recommendation became an explicit live-rehash guard. Final verified
+  post-fix session `03ae8ea2-fc01-433e-aadc-993127404dc3` read the exact final
+  security-test surface, reran the 16 focused cases, and returned
+  `VERDICT: APPROVE`.
+- [x] Independent Claude Code safe-mode review found no implementation defect
+  but initially returned `VERDICT: REQUEST_CHANGES` for four direct
+  security-regression gaps. The generic external-input boundary, stale request,
+  different replay, and 20,001-character Context rollback tests were added;
+  targeted review of the exact final files and results returned
+  `VERDICT: APPROVE` with no remaining actionable findings.
+
+### Current checkpoint and next safe action
+
+Implementation, automated verification, all actionable-finding resolution, and
+both review gates are complete on baseline `4f9dcc9`. This bounded first formal
+Run/Context claim is ready for its reviewed commit/push. The next backend slice
+must attach process dispatch to this already claimed Run without creating a
+second Run or Context Pack: collect a fresh pinned-runtime observation and
+preflight outside the SQLite write transaction, require the existing explicit
+unbounded-native-usage acknowledgement, immediately recheck the exact
+repository/registry/command/resolved-launch binding before spawn, and preserve
+no-substitution/fail-closed settlement. HTTP, UI, automatic cross-Stage rework,
+dynamic provider substitution, and native AI-DLC file installation remain
+deferred.
+
 ## 2026-07-31 - AWS AI-DLC first Stage route activation (reviewed)
 
 ### Bounded implementation
@@ -66,11 +154,9 @@
 ### Current checkpoint and next safe action
 
 Implementation, automated verification, actionable-finding resolution, and
-both review gates are complete on baseline `75c0c88`. This bounded first-route
-activation is ready for its reviewed commit/push. The next backend slice is a
-contract-hash-bound transaction that materializes and claims the first formal
-Run and exact Context Pack from the activated Stage template and registered
-seed references, while keeping provider process spawn separate.
+both review gates were completed on baseline `75c0c88`; the bounded first-route
+activation was committed and pushed as `4f9dcc9`. The succeeding formal
+Run/Context Pack claim is recorded in the active section above.
 
 ## 2026-07-31 - AWS AI-DLC successor execution contract (reviewed)
 
