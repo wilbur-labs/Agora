@@ -121,8 +121,12 @@ The reviewed succeeding increment is defined in
 `aws-aidlc-methodology-next-stage-gate-v1.md`. A successful first settlement
 activates the next inventory Stage, but Stage readiness is not a substitute
 for its formal Gate. The authenticated next-Stage operation configures only
-that exact contract-bound Gate and still creates no Run or process.
+that exact contract-bound Gate and still creates no Run or process. The
+subsequent formal claim is defined in
+`aws-aidlc-methodology-stage-run-claim-v1.md`; it creates the exact sequence-2
+Run and Context Pack without dispatching a process.
 
-Automatic cross-Stage rework, claiming/dispatch of later methodology Stages,
-dynamic provider substitution, authenticated HTTP, Task Workbench UI, and
-native AWS AI-DLC file installation remain separate reviewed increments.
+Automatic cross-Stage rework, dispatch and settlement of the sequence-2 Run,
+claim/dispatch generalization across later methodology Stages, dynamic
+provider substitution, authenticated HTTP, Task Workbench UI, and native AWS
+AI-DLC file installation remain separate reviewed increments.

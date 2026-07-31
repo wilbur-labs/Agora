@@ -28,6 +28,9 @@ from .methodology_route_activation import (
 )
 from .methodology_run_claim import load_methodology_run_claim_request
 from .methodology_stage_gate import load_methodology_stage_gate_request
+from .methodology_stage_run_claim import (
+    load_methodology_stage_run_claim_request,
+)
 from .models import Measurement, PlanState
 from .runtime import ReadOnlyCliRunner, build_runtime_registry
 from .runtime_capabilities import collect_native_runtime_capabilities
@@ -181,6 +184,25 @@ def parser() -> argparse.ArgumentParser:
         required=True,
     )
     migration_next_stage_gate.add_argument(
+        "--credential-env",
+        required=True,
+        help="Environment variable containing a configured Control Plane token",
+    )
+
+    migration_next_stage_run_claim = commands.add_parser(
+        "migration-next-stage-run-claim",
+        help=(
+            "Authenticate and claim the exact sequence-2 AWS AI-DLC formal "
+            "Run and Context Pack without starting a process"
+        ),
+    )
+    migration_next_stage_run_claim.add_argument("task_id")
+    migration_next_stage_run_claim.add_argument(
+        "--request",
+        type=Path,
+        required=True,
+    )
+    migration_next_stage_run_claim.add_argument(
         "--credential-env",
         required=True,
         help="Environment variable containing a configured Control Plane token",
@@ -361,12 +383,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         methodology_route_activation = None
         methodology_run_claim = None
         methodology_stage_gate = None
+        methodology_stage_run_claim = None
         if args.command in {
             "migration-activate",
             "migration-contract",
             "migration-route-activate",
             "migration-run-claim",
             "migration-next-stage-gate",
+            "migration-next-stage-run-claim",
         }:
             if re.fullmatch(
                 r"[A-Za-z_][A-Za-z0-9_]{0,127}",
@@ -396,9 +420,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                     load_methodology_run_claim_request(args.request),
                     principal,
                 )
-            else:
+            elif args.command == "migration-next-stage-gate":
                 methodology_stage_gate = (
                     load_methodology_stage_gate_request(args.request),
+                    principal,
+                )
+            else:
+                methodology_stage_run_claim = (
+                    load_methodology_stage_run_claim_request(args.request),
                     principal,
                 )
         service = build_service()
@@ -499,6 +528,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             assert methodology_stage_gate is not None
             request, principal = methodology_stage_gate
             receipt = service.configure_methodology_next_stage_gate(
+                args.task_id,
+                request,
+                principal=principal,
+            )
+            print(
+                json.dumps(
+                    receipt.model_dump(mode="json"),
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return 0
+        if args.command == "migration-next-stage-run-claim":
+            assert methodology_stage_run_claim is not None
+            request, principal = methodology_stage_run_claim
+            receipt = service.claim_methodology_next_stage_run(
                 args.task_id,
                 request,
                 principal=principal,

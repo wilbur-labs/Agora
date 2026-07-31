@@ -56,6 +56,10 @@ from agora.protocol.methodology_stage_gate import (
     MethodologyStageGateReceipt,
     MethodologyStageGateRequest,
 )
+from agora.protocol.methodology_stage_run_claim import (
+    MethodologyStageRunClaimReceipt,
+    MethodologyStageRunClaimRequest,
+)
 from agora.protocol.state_machines import GateStatus, StageStatus
 from agora.tasks.models import TaskBudget, TaskState, utc_now
 from agora.tasks.store import TaskNotFoundError, TaskStore
@@ -71,6 +75,7 @@ from .methodology_route_activation import MethodologyRouteActivationSnapshot
 from .methodology_run_claim import MethodologyRunClaimSnapshot
 from .methodology_run_dispatch import MethodologyRunDispatchSnapshot
 from .methodology_stage_gate import MethodologyStageGateSnapshot
+from .methodology_stage_run_claim import MethodologyStageRunClaimSnapshot
 from .models import (
     BudgetAmendment,
     ConsultationRun,
@@ -6195,6 +6200,803 @@ class OrchestrationStore:
             )
             return receipt
 
+    def get_methodology_stage_run_claim(
+        self,
+        task_id: str,
+        stage_key: str,
+    ) -> MethodologyStageRunClaimReceipt | None:
+        """Return one immutable later-Stage formal Run-claim receipt."""
+
+        with closing(self._connect()) as db:
+            row = db.execute(
+                """
+                SELECT c.*, r.context_pack_id AS protocol_context_pack_id,
+                       r.context_sha256 AS protocol_context_sha256
+                FROM orchestration_methodology_stage_run_claims c
+                LEFT JOIN protocol_runs r ON r.run_id = c.run_id
+                WHERE c.task_id = ? AND c.stage_key = ?
+                """,
+                (task_id, stage_key),
+            ).fetchone()
+        if row is None:
+            return None
+        request = MethodologyStageRunClaimRequest.model_validate_json(
+            row["request_payload"]
+        )
+        receipt = MethodologyStageRunClaimReceipt.model_validate_json(
+            row["receipt_payload"]
+        )
+        if (
+            request.request_id != row["request_id"]
+            or request.content_sha256 != row["request_sha256"]
+            or receipt.receipt_id != row["receipt_id"]
+            or receipt.content_sha256 != row["receipt_sha256"]
+            or receipt.request_id != row["request_id"]
+            or receipt.request_sha256 != row["request_sha256"]
+            or receipt.task_id != row["task_id"]
+            or receipt.plan_id != row["plan_id"]
+            or receipt.execution_contract_id
+            != row["execution_contract_id"]
+            or receipt.stage_gate_receipt_id
+            != row["stage_gate_receipt_id"]
+            or receipt.predecessor_dispatch_receipt_id
+            != row["predecessor_dispatch_receipt_id"]
+            or receipt.stage_sequence != row["stage_sequence"]
+            or receipt.stage_key != row["stage_key"]
+            or receipt.gate_key != row["gate_key"]
+            or receipt.runtime != row["runtime"]
+            or receipt.run_id != row["run_id"]
+            or receipt.context_pack_id != row["context_pack_id"]
+            or receipt.context_pack_id != row["protocol_context_pack_id"]
+            or receipt.context_pack_sha256 != row["context_pack_sha256"]
+            or receipt.context_pack_sha256
+            != row["protocol_context_sha256"]
+            or receipt.budget.max_model_tokens != row["token_reserved"]
+            or receipt.budget.max_cost_usd != row["cost_reserved_usd"]
+            or receipt.authenticated_principal_id
+            != row["authenticated_principal_id"]
+            or bool(row["process_started"])
+        ):
+            raise OrchestrationValidationError(
+                "Persisted methodology Stage Run claim binding drifted"
+            )
+        return receipt
+
+    def claim_methodology_next_stage_run(
+        self,
+        task_id: str,
+        request: MethodologyStageRunClaimRequest,
+        *,
+        principal: ControlPrincipal,
+        control_plane: ControlPlaneStore,
+        recheck: Callable[
+            [MethodologyStageRunClaimSnapshot, str],
+            ContextPack,
+        ],
+    ) -> MethodologyStageRunClaimReceipt:
+        """Atomically materialize and claim the sequence-2 formal Run."""
+
+        if request.task_id != task_id:
+            raise OrchestrationValidationError(
+                "Methodology Stage Run claim Task argument differs from request"
+            )
+        now = utc_now()
+        with self._transaction() as db:
+            identity_row = db.execute(
+                """
+                SELECT * FROM orchestration_methodology_stage_run_claims
+                WHERE request_id = ?
+                """,
+                (request.request_id,),
+            ).fetchone()
+            if identity_row is not None and (
+                identity_row["task_id"] != task_id
+                or identity_row["stage_key"] != request.stage_key
+            ):
+                raise OrchestrationConflictError(
+                    "Methodology Stage Run request identity is already bound "
+                    "to another Task or Stage"
+                )
+            existing = db.execute(
+                """
+                SELECT c.*, r.context_pack_id AS protocol_context_pack_id,
+                       r.context_sha256 AS protocol_context_sha256
+                FROM orchestration_methodology_stage_run_claims c
+                LEFT JOIN protocol_runs r ON r.run_id = c.run_id
+                WHERE c.task_id = ? AND c.stage_key = ?
+                """,
+                (task_id, request.stage_key),
+            ).fetchone()
+            if existing is not None:
+                persisted_request = (
+                    MethodologyStageRunClaimRequest.model_validate_json(
+                        existing["request_payload"]
+                    )
+                )
+                receipt = MethodologyStageRunClaimReceipt.model_validate_json(
+                    existing["receipt_payload"]
+                )
+                if (
+                    persisted_request != request
+                    or request.request_id != existing["request_id"]
+                    or request.content_sha256 != existing["request_sha256"]
+                    or receipt.receipt_id != existing["receipt_id"]
+                    or receipt.content_sha256 != existing["receipt_sha256"]
+                    or receipt.request_id != existing["request_id"]
+                    or receipt.request_sha256 != existing["request_sha256"]
+                    or receipt.task_id != task_id
+                    or receipt.plan_id != existing["plan_id"]
+                    or receipt.execution_contract_id
+                    != existing["execution_contract_id"]
+                    or receipt.stage_gate_receipt_id
+                    != existing["stage_gate_receipt_id"]
+                    or receipt.predecessor_dispatch_receipt_id
+                    != existing["predecessor_dispatch_receipt_id"]
+                    or receipt.stage_sequence != existing["stage_sequence"]
+                    or receipt.stage_key != request.stage_key
+                    or receipt.gate_key != request.gate_key
+                    or receipt.runtime != existing["runtime"]
+                    or receipt.run_id != existing["run_id"]
+                    or receipt.context_pack_id != existing["context_pack_id"]
+                    or receipt.context_pack_id
+                    != existing["protocol_context_pack_id"]
+                    or receipt.context_pack_sha256
+                    != existing["context_pack_sha256"]
+                    or receipt.context_pack_sha256
+                    != existing["protocol_context_sha256"]
+                    or receipt.budget.max_model_tokens
+                    != existing["token_reserved"]
+                    or receipt.budget.max_cost_usd
+                    != existing["cost_reserved_usd"]
+                    or receipt.authenticated_principal_id
+                    != existing["authenticated_principal_id"]
+                    or bool(existing["process_started"])
+                ):
+                    raise OrchestrationConflictError(
+                        "Methodology Stage Run claim replay binding differs"
+                    )
+                if (
+                    "control_plane.approve" not in principal.permissions
+                    or receipt.project_id not in principal.projects
+                    or principal.principal_id
+                    != existing["authenticated_principal_id"]
+                ):
+                    raise OrchestrationValidationError(
+                        "Methodology Stage Run replay requires the original "
+                        "currently authorized principal"
+                    )
+                return receipt
+
+            sequence_row = db.execute(
+                """
+                SELECT request_id FROM
+                    orchestration_methodology_stage_run_claims
+                WHERE task_id = ?
+                  AND (stage_sequence = ? OR gate_key = ?)
+                """,
+                (task_id, request.stage_sequence, request.gate_key),
+            ).fetchone()
+            if sequence_row is not None:
+                raise OrchestrationConflictError(
+                    "Methodology Stage Run sequence or Gate is already claimed"
+                )
+
+            task_row = db.execute(
+                "SELECT * FROM tasks WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
+            control_task_row = db.execute(
+                "SELECT * FROM control_tasks WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
+            plan_row = db.execute(
+                "SELECT * FROM orchestration_plans WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
+            inventory_row = db.execute(
+                """
+                SELECT * FROM control_stage_inventories
+                WHERE task_id = ?
+                """,
+                (task_id,),
+            ).fetchone()
+            contract_row = db.execute(
+                """
+                SELECT * FROM orchestration_methodology_execution_contracts
+                WHERE task_id = ?
+                """,
+                (task_id,),
+            ).fetchone()
+            migration_row = db.execute(
+                """
+                SELECT * FROM orchestration_methodology_migrations
+                WHERE successor_task_id = ?
+                """,
+                (task_id,),
+            ).fetchone()
+            if (
+                task_row is None
+                or control_task_row is None
+                or plan_row is None
+                or inventory_row is None
+                or contract_row is None
+                or migration_row is None
+            ):
+                raise OrchestrationConflictError(
+                    "Methodology Stage Run authoritative chain is unavailable"
+                )
+            task = self.tasks._manifest(task_row)
+            control_task = control_plane._task_record(control_task_row)
+            plan = self._plan(plan_row)
+            plan_stages = tuple(
+                self._stage(row)
+                for row in db.execute(
+                    """
+                    SELECT * FROM orchestration_stages
+                    WHERE plan_id = ? ORDER BY sequence
+                    """,
+                    (plan.plan_id,),
+                ).fetchall()
+            )
+            inventory = StageInventory.model_validate_json(
+                inventory_row["payload"]
+            )
+            contract = MethodologyExecutionContract.model_validate_json(
+                contract_row["contract_payload"]
+            )
+            migration_request = (
+                MethodologyMigrationPreviewRequest.model_validate_json(
+                    migration_row["request_payload"]
+                )
+            )
+            migration_gate = (
+                AuthenticatedMethodologyMigrationGate.model_validate_json(
+                    migration_row["gate_payload"]
+                )
+            )
+            migration_receipt = (
+                MethodologyMigrationActivationReceipt.model_validate_json(
+                    migration_row["receipt_payload"]
+                )
+            )
+            if (
+                inventory.inventory_id != inventory_row["inventory_id"]
+                or inventory.content_sha256
+                != inventory_row["content_sha256"]
+                or inventory.task_id != task_id
+                or contract.contract_id != contract_row["contract_id"]
+                or contract.content_sha256 != contract_row["contract_sha256"]
+                or contract.task_id != task_id
+                or migration_request.content_sha256
+                != migration_row["request_sha256"]
+                or migration_gate.content_sha256
+                != migration_row["gate_sha256"]
+                or migration_receipt.content_sha256
+                != migration_row["receipt_sha256"]
+            ):
+                raise OrchestrationValidationError(
+                    "Methodology Stage Run persisted authority binding drifted"
+                )
+            if (
+                "control_plane.approve" not in principal.permissions
+                or contract.project_id not in principal.projects
+                or principal.principal_id
+                != contract_row["authenticated_principal_id"]
+                or principal.principal_id
+                != migration_row["authenticated_principal_id"]
+            ):
+                raise OrchestrationValidationError(
+                    "Stage Run principal does not match the migration Gate"
+                )
+
+            stage_gate_row = db.execute(
+                """
+                SELECT * FROM orchestration_methodology_stage_gates
+                WHERE task_id = ? AND stage_key = ?
+                """,
+                (task_id, request.stage_key),
+            ).fetchone()
+            if stage_gate_row is None:
+                raise OrchestrationConflictError(
+                    "Methodology Stage Gate configuration is unavailable"
+                )
+            stage_gate_request = (
+                MethodologyStageGateRequest.model_validate_json(
+                    stage_gate_row["request_payload"]
+                )
+            )
+            stage_gate_receipt = (
+                MethodologyStageGateReceipt.model_validate_json(
+                    stage_gate_row["receipt_payload"]
+                )
+            )
+            if (
+                stage_gate_request.request_id
+                != stage_gate_row["request_id"]
+                or stage_gate_request.content_sha256
+                != stage_gate_row["request_sha256"]
+                or stage_gate_receipt.receipt_id
+                != stage_gate_row["receipt_id"]
+                or stage_gate_receipt.content_sha256
+                != stage_gate_row["receipt_sha256"]
+                or stage_gate_receipt.request_id
+                != stage_gate_request.request_id
+                or stage_gate_receipt.request_sha256
+                != stage_gate_request.content_sha256
+                or stage_gate_row["authenticated_principal_id"]
+                != principal.principal_id
+                or request.stage_gate_receipt_id
+                != stage_gate_receipt.receipt_id
+                or request.stage_gate_receipt_sha256
+                != stage_gate_receipt.content_sha256
+            ):
+                raise OrchestrationValidationError(
+                    "Methodology Stage Gate receipt binding drifted"
+                )
+
+            dispatch_row = db.execute(
+                """
+                SELECT * FROM orchestration_methodology_run_dispatches
+                WHERE task_id = ?
+                """,
+                (task_id,),
+            ).fetchone()
+            first_claim_row = db.execute(
+                """
+                SELECT * FROM orchestration_methodology_run_claims
+                WHERE task_id = ?
+                """,
+                (task_id,),
+            ).fetchone()
+            if dispatch_row is None or first_claim_row is None:
+                raise OrchestrationConflictError(
+                    "Methodology predecessor Run chain is unavailable"
+                )
+            dispatch_state = self._methodology_dispatch(dispatch_row)
+            if (
+                dispatch_state.state != MethodologyDispatchState.SETTLED
+                or dispatch_state.receipt is None
+            ):
+                raise OrchestrationConflictError(
+                    "Methodology predecessor dispatch is not settled"
+                )
+            dispatch_receipt = dispatch_state.receipt
+            if (
+                dispatch_receipt.receipt_id
+                != stage_gate_receipt.predecessor_dispatch_receipt_id
+                or dispatch_receipt.content_sha256
+                != stage_gate_receipt.predecessor_dispatch_receipt_sha256
+                or request.predecessor_dispatch_receipt_id
+                != dispatch_receipt.receipt_id
+                or request.predecessor_dispatch_receipt_sha256
+                != dispatch_receipt.content_sha256
+                or first_claim_row["receipt_id"]
+                != dispatch_receipt.dispatch_claim.run_claim_receipt_id
+                or first_claim_row["receipt_sha256"]
+                != dispatch_receipt.dispatch_claim.run_claim_receipt_sha256
+                or first_claim_row["authenticated_principal_id"]
+                != principal.principal_id
+            ):
+                raise OrchestrationValidationError(
+                    "Methodology predecessor dispatch binding drifted"
+                )
+
+            protocol_row = db.execute(
+                "SELECT * FROM protocol_runs WHERE run_id = ?",
+                (dispatch_receipt.dispatch_claim.run_id,),
+            ).fetchone()
+            predecessor_stage_row = db.execute(
+                """
+                SELECT * FROM control_stages
+                WHERE task_id = ? AND stage_key = ?
+                """,
+                (
+                    task_id,
+                    dispatch_receipt.dispatch_claim.first_stage_key,
+                ),
+            ).fetchone()
+            predecessor_gate_row = db.execute(
+                """
+                SELECT * FROM control_gates
+                WHERE task_id = ? AND gate_key = ?
+                """,
+                (
+                    task_id,
+                    dispatch_receipt.dispatch_claim.first_gate_key,
+                ),
+            ).fetchone()
+            route = control_plane._stage_route_decision_tx(
+                db,
+                task_id,
+                required=True,
+            )
+            if route is None:
+                raise OrchestrationConflictError(
+                    "Methodology Stage Run route is unavailable"
+                )
+            stage_row = db.execute(
+                """
+                SELECT * FROM control_stages
+                WHERE task_id = ? AND stage_key = ?
+                """,
+                (task_id, route.stage_key),
+            ).fetchone()
+            gate_row = db.execute(
+                """
+                SELECT * FROM control_gates
+                WHERE task_id = ? AND gate_key = ?
+                """,
+                (task_id, route.gate_key),
+            ).fetchone()
+            if (
+                protocol_row is None
+                or predecessor_stage_row is None
+                or predecessor_gate_row is None
+                or stage_row is None
+                or gate_row is None
+            ):
+                raise OrchestrationConflictError(
+                    "Methodology Stage Run formal state is unavailable"
+                )
+            for table in (
+                "orchestration_runs",
+                "orchestration_consultations",
+                "protocol_runs",
+                "protocol_artifacts",
+                "protocol_evidence",
+            ):
+                if db.execute(
+                    f"""
+                    SELECT 1 FROM {table}
+                    WHERE task_id = ? AND stage_key = ? LIMIT 1
+                    """,
+                    (task_id, route.stage_key),
+                ).fetchone() is not None:
+                    raise OrchestrationConflictError(
+                        "Methodology Stage Run execution state already exists"
+                    )
+
+            snapshot = MethodologyStageRunClaimSnapshot(
+                task=task,
+                control_task=control_task,
+                plan=plan,
+                plan_stages=plan_stages,
+                inventory=inventory,
+                migration_request=migration_request,
+                migration_gate=migration_gate,
+                migration_receipt=migration_receipt,
+                execution_contract=contract,
+                stage_gate_request=stage_gate_request,
+                stage_gate_receipt=stage_gate_receipt,
+                predecessor_dispatch_receipt=dispatch_receipt,
+                predecessor_protocol_run=control_plane._protocol_run(
+                    protocol_row
+                ),
+                predecessor_stage=control_plane._stage(
+                    predecessor_stage_row
+                ),
+                predecessor_gate=control_plane._gate_record(
+                    db,
+                    predecessor_gate_row,
+                ),
+                route=route,
+                formal_stage=control_plane._stage(stage_row),
+                formal_gate=control_plane._gate_record(db, gate_row),
+                input_artifact_bindings=(),
+            )
+            try:
+                context_pack = recheck(snapshot, now)
+            except ValueError as exc:
+                raise OrchestrationConflictError(
+                    f"Methodology Stage Run claim blocked: {exc}"
+                ) from exc
+            stage_contract = contract.stages[1]
+            if (
+                context_pack.project_id != task.project_id
+                or context_pack.task_id != task_id
+                or context_pack.stage_key != stage_contract.stage_key
+                or context_pack.run_id != request.run_id
+                or context_pack.pack_id != request.context_pack_id
+                or context_pack.budget != stage_contract.context.budget
+                or context_pack.input_artifacts
+                or context_pack.required_outputs
+            ):
+                raise OrchestrationValidationError(
+                    "Methodology Context Pack differs from the Stage Run claim"
+                )
+            if (
+                context_pack.budget.max_model_tokens is None
+                or context_pack.budget.max_model_tokens <= 0
+            ):
+                raise OrchestrationValidationError(
+                    "Methodology Stage Run claim requires a positive "
+                    "Token reservation"
+                )
+            provider_budget = self._provider_budget_snapshot(
+                db,
+                plan.plan_id,
+            )
+            if (
+                int(provider_budget["settled_tokens"])
+                + int(provider_budget["active_tokens"])
+                + context_pack.budget.max_model_tokens
+                > plan.total_token_budget
+            ):
+                raise OrchestrationConflictError(
+                    "Methodology Stage Run Token reservation exceeds the "
+                    "remaining Plan budget"
+                )
+            reservation_cost = context_pack.budget.max_cost_usd
+            if (
+                plan.total_cost_budget_usd is not None
+                and (
+                    reservation_cost is None
+                    or float(provider_budget["settled_cost"])
+                    + float(provider_budget["active_cost"])
+                    + reservation_cost
+                    > plan.total_cost_budget_usd
+                )
+            ):
+                raise OrchestrationConflictError(
+                    "Methodology Stage Run cost reservation exceeds the "
+                    "remaining Plan budget"
+                )
+
+            protocol_run = control_plane._start_protocol_run_tx(
+                db,
+                context_pack=context_pack,
+                gate_key=stage_contract.gate_key,
+                actor=principal.principal_id,
+                event_key_prefix=(
+                    f"methodology.stage.run.claim:{request.request_id}"
+                ),
+                now=now,
+            )
+            stage_after_row = db.execute(
+                """
+                SELECT * FROM control_stages
+                WHERE task_id = ? AND stage_key = ?
+                """,
+                (task_id, stage_contract.stage_key),
+            ).fetchone()
+            control_after_row = db.execute(
+                "SELECT * FROM control_tasks WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
+            assert stage_after_row is not None
+            assert control_after_row is not None
+            stage_after = control_plane._stage(stage_after_row)
+            control_after = control_plane._task_record(control_after_row)
+
+            metadata = dict(task.metadata)
+            metadata.update(
+                {
+                    "methodology_current_stage_run_claimed": True,
+                    "methodology_current_stage_sequence": (
+                        stage_contract.sequence
+                    ),
+                    "methodology_current_stage_key": stage_contract.stage_key,
+                    "methodology_current_gate_key": stage_contract.gate_key,
+                    "methodology_current_run_claim_request_id": (
+                        request.request_id
+                    ),
+                    "methodology_current_run_claim_request_sha256": (
+                        request.content_sha256
+                    ),
+                    "methodology_current_run_id": context_pack.run_id,
+                    "methodology_current_context_pack_id": (
+                        context_pack.pack_id
+                    ),
+                    "methodology_current_context_pack_sha256": (
+                        context_pack.content_sha256
+                    ),
+                    "methodology_current_run_claimed_by": (
+                        principal.principal_id
+                    ),
+                    "methodology_current_run_claimed_at": now,
+                    "methodology_dispatch_authority": False,
+                }
+            )
+            task_version_after = task.version + 1
+            cursor = db.execute(
+                """
+                UPDATE tasks
+                SET metadata = ?, version = ?, updated_at = ?
+                WHERE task_id = ? AND version = ?
+                """,
+                (
+                    self._json(metadata),
+                    task_version_after,
+                    now,
+                    task_id,
+                    task.version,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise OrchestrationConflictError(
+                    "Methodology Task changed during Stage Run claim"
+                )
+
+            receipt_payload = {
+                "schema_version": "1.0",
+                "receipt_id": (
+                    f"stage-run-claim-{request.content_sha256[:20]}"
+                ),
+                "claimed_at": now,
+                "request_id": request.request_id,
+                "request_sha256": request.content_sha256,
+                "authenticated_principal_id": principal.principal_id,
+                "authenticated_permission": "control_plane.approve",
+                "project_id": task.project_id,
+                "task_id": task_id,
+                "task_version_before": task.version,
+                "task_version_after": task_version_after,
+                "control_task_status_before": control_task.status.value,
+                "control_task_version_before": control_task.version,
+                "control_task_status_after": control_after.status.value,
+                "control_task_version_after": control_after.version,
+                "plan_id": plan.plan_id,
+                "plan_version": plan.version,
+                "inventory_id": inventory.inventory_id,
+                "inventory_sha256": inventory.content_sha256,
+                "execution_contract_id": contract.contract_id,
+                "execution_contract_sha256": contract.content_sha256,
+                "stage_gate_receipt_id": stage_gate_receipt.receipt_id,
+                "stage_gate_receipt_sha256": (
+                    stage_gate_receipt.content_sha256
+                ),
+                "predecessor_dispatch_receipt_id": dispatch_receipt.receipt_id,
+                "predecessor_dispatch_receipt_sha256": (
+                    dispatch_receipt.content_sha256
+                ),
+                "repository": request.repository.model_dump(mode="json"),
+                "stage_sequence": stage_contract.sequence,
+                "stage_key": stage_contract.stage_key,
+                "stage_version_before": snapshot.formal_stage.version,
+                "stage_status_before": snapshot.formal_stage.status.value,
+                "stage_version_after": stage_after.version,
+                "stage_status_after": stage_after.status.value,
+                "gate_key": stage_contract.gate_key,
+                "gate_version": snapshot.formal_gate.version,
+                "gate_status": snapshot.formal_gate.status.value,
+                "runtime": stage_contract.runtime,
+                "run_id": context_pack.run_id,
+                "context_pack_id": context_pack.pack_id,
+                "context_pack_sha256": context_pack.content_sha256,
+                "input_artifact_bindings": [],
+                "required_outputs": [
+                    item.model_dump(mode="json")
+                    for item in context_pack.required_outputs
+                ],
+                "budget": context_pack.budget.model_dump(mode="json"),
+                "request_authenticated": True,
+                "stage_gate_receipt_reused": True,
+                "predecessor_dispatch_receipt_reused": True,
+                "context_pack_materialized": True,
+                "formal_run_created": True,
+                "usage_reservation_recorded": True,
+                "compatibility_run_created": False,
+                "protocol_artifacts_created": False,
+                "protocol_evidence_created": False,
+                "runtime_preflight_created": False,
+                "process_started": False,
+                "runtime_spawned": False,
+                "process_spawn_authority": False,
+                "provider_substitution": False,
+            }
+            receipt = MethodologyStageRunClaimReceipt.model_validate(
+                seal_model_payload(
+                    MethodologyStageRunClaimReceipt,
+                    receipt_payload,
+                )
+            )
+            if (
+                protocol_run.run_id != receipt.run_id
+                or protocol_run.context_pack.pack_id
+                != receipt.context_pack_id
+                or protocol_run.context_pack.content_sha256
+                != receipt.context_pack_sha256
+                or stage_after.status != StageStatus.RUNNING
+                or snapshot.formal_gate.status != GateStatus.PENDING
+            ):
+                raise OrchestrationValidationError(
+                    "Methodology Stage Run receipt differs from Control Plane state"
+                )
+
+            db.execute(
+                """
+                INSERT INTO orchestration_methodology_stage_run_claims (
+                    request_id, request_sha256, request_payload,
+                    receipt_id, receipt_sha256, receipt_payload,
+                    task_id, plan_id, execution_contract_id,
+                    stage_gate_request_id, stage_gate_receipt_id,
+                    predecessor_dispatch_id,
+                    predecessor_dispatch_receipt_id,
+                    stage_sequence, stage_key, gate_key, runtime,
+                    run_id, context_pack_id, context_pack_sha256,
+                    token_reserved, cost_reserved_usd,
+                    authenticated_principal_id, process_started, created_at
+                ) VALUES (
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, 0, ?
+                )
+                """,
+                (
+                    request.request_id,
+                    request.content_sha256,
+                    self._json(request.model_dump(mode="json")),
+                    receipt.receipt_id,
+                    receipt.content_sha256,
+                    self._json(receipt.model_dump(mode="json")),
+                    task_id,
+                    plan.plan_id,
+                    contract.contract_id,
+                    stage_gate_request.request_id,
+                    stage_gate_receipt.receipt_id,
+                    dispatch_receipt.dispatch_claim.dispatch_id,
+                    dispatch_receipt.receipt_id,
+                    stage_contract.sequence,
+                    stage_contract.stage_key,
+                    stage_contract.gate_key,
+                    stage_contract.runtime,
+                    context_pack.run_id,
+                    context_pack.pack_id,
+                    context_pack.content_sha256,
+                    context_pack.budget.max_model_tokens,
+                    context_pack.budget.max_cost_usd,
+                    principal.principal_id,
+                    now,
+                ),
+            )
+            self.tasks._insert_event(
+                db,
+                task_id=task_id,
+                event_type="methodology_stage_run_claimed",
+                actor=principal.principal_id,
+                payload={
+                    "request_id": request.request_id,
+                    "request_sha256": request.content_sha256,
+                    "receipt_id": receipt.receipt_id,
+                    "receipt_sha256": receipt.content_sha256,
+                    "stage_sequence": receipt.stage_sequence,
+                    "stage_key": receipt.stage_key,
+                    "gate_key": receipt.gate_key,
+                    "run_id": receipt.run_id,
+                    "context_pack_id": receipt.context_pack_id,
+                    "context_pack_sha256": receipt.context_pack_sha256,
+                    "version": task_version_after,
+                    "process_started": False,
+                },
+                created_at=now,
+            )
+            control_plane._event(
+                db,
+                event_key=(
+                    f"methodology.stage.run.claimed:{request.request_id}"
+                ),
+                task_id=task_id,
+                project_id=task.project_id,
+                event_type="methodology.stage_run_claimed",
+                actor=principal.principal_id,
+                payload={
+                    "request_id": request.request_id,
+                    "request_sha256": request.content_sha256,
+                    "receipt_id": receipt.receipt_id,
+                    "receipt_sha256": receipt.content_sha256,
+                    "stage_sequence": receipt.stage_sequence,
+                    "stage_key": receipt.stage_key,
+                    "gate_key": receipt.gate_key,
+                    "run_id": receipt.run_id,
+                    "context_pack_id": receipt.context_pack_id,
+                    "token_reserved": receipt.budget.max_model_tokens,
+                    "cost_reserved_usd": receipt.budget.max_cost_usd,
+                    "process_started": False,
+                    "process_spawn_authority": False,
+                },
+                now=now,
+            )
+            return receipt
+
     def require_run(self, run_id: str) -> OrchestrationRun:
         with closing(self._connect()) as db:
             row = db.execute("SELECT * FROM orchestration_runs WHERE run_id = ?", (run_id,)).fetchone()
@@ -6897,6 +7699,13 @@ class OrchestrationStore:
                WHERE claims.plan_id = ? AND usage.run_id IS NULL""",
             (plan_id,),
         ).fetchone()
+        methodology_stage_active = db.execute(
+            """SELECT COALESCE(SUM(token_reserved), 0) AS tokens,
+                      COALESCE(SUM(cost_reserved_usd), 0) AS cost
+               FROM orchestration_methodology_stage_run_claims
+               WHERE plan_id = ?""",
+            (plan_id,),
+        ).fetchone()
         return {
             "settled_tokens": int(formal["settled_tokens"])
             + int(consultations["settled_tokens"])
@@ -6906,10 +7715,12 @@ class OrchestrationStore:
             + float(methodology["settled_cost"]),
             "active_tokens": int(formal_active["tokens"])
             + int(consultation_active["tokens"])
-            + int(methodology_active["tokens"]),
+            + int(methodology_active["tokens"])
+            + int(methodology_stage_active["tokens"]),
             "active_cost": float(formal_active["cost"])
             + float(consultation_active["cost"])
-            + float(methodology_active["cost"]),
+            + float(methodology_active["cost"])
+            + float(methodology_stage_active["cost"]),
         }
 
     @staticmethod

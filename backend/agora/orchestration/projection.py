@@ -630,10 +630,15 @@ class TaskProjectionStore:
         placeholders = ",".join("?" for _ in run_ids)
         rows = db.execute(
             f"""
-            SELECT * FROM orchestration_methodology_run_claims
+            SELECT run_id, runtime, token_reserved, cost_reserved_usd
+            FROM orchestration_methodology_run_claims
+            WHERE run_id IN ({placeholders})
+            UNION ALL
+            SELECT run_id, runtime, token_reserved, cost_reserved_usd
+            FROM orchestration_methodology_stage_run_claims
             WHERE run_id IN ({placeholders})
             """,
-            tuple(run_ids),
+            (*run_ids, *run_ids),
         ).fetchall()
         return {row["run_id"]: row for row in rows}
 
@@ -1158,11 +1163,20 @@ class TaskProjectionStore:
                       SUM(CASE WHEN c.cost_reserved_usd IS NULL THEN 1 ELSE 0 END)
                           AS unavailable_costs,
                       COALESCE(SUM(c.cost_reserved_usd), 0) AS cost_reserved
-               FROM orchestration_methodology_run_claims c
-               LEFT JOIN orchestration_methodology_usage_ledger u
-                 ON u.run_id = c.run_id
-               WHERE c.plan_id = ? AND u.run_id IS NULL""",
-            (plan.plan_id,),
+               FROM (
+                   SELECT first_claim.plan_id, first_claim.token_reserved,
+                          first_claim.cost_reserved_usd
+                   FROM orchestration_methodology_run_claims first_claim
+                   LEFT JOIN orchestration_methodology_usage_ledger usage
+                     ON usage.run_id = first_claim.run_id
+                   WHERE first_claim.plan_id = ? AND usage.run_id IS NULL
+                   UNION ALL
+                   SELECT stage_claim.plan_id, stage_claim.token_reserved,
+                          stage_claim.cost_reserved_usd
+                   FROM orchestration_methodology_stage_run_claims stage_claim
+                   WHERE stage_claim.plan_id = ?
+               ) c""",
+            (plan.plan_id, plan.plan_id),
         ).fetchone()
         settled_runs = db.execute(
             """SELECT COUNT(*) AS count,

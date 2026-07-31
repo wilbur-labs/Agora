@@ -1,5 +1,94 @@
 # Agora Control Plane Development Progress
 
+## 2026-07-31 - AWS AI-DLC sequence-2 formal Run/Context claim (reviewed)
+
+### Bounded implementation
+
+- [x] Added hash-sealed `MethodologyStageRunClaimRequest@1.0` and
+  `MethodologyStageRunClaimReceipt@1.0`, deterministic later-Stage Run
+  identity derivation, executable registry entries, and checked-in JSON
+  Schemas.
+- [x] Added
+  `agora task migration-next-stage-run-claim SUCCESSOR_TASK_ID --request PATH
+  --credential-env NAME`. Authentication and bounded request loading finish
+  before service/storage initialization; the original migration-chain
+  principal must retain `control_plane.approve` and exact Project scope.
+- [x] One immediate transaction revalidates the live Task/Control
+  Task/Plan/inventory/contract, immutable sequence-2 Gate receipt, settled
+  sequence-1 dispatch/Run/Handoff/Stage/Gate chain, clean repository before
+  and after bounded source hashing, complete runtime pins, exact current
+  route, canonical Gate requirements, absence of sequence-2 execution state,
+  and remaining Token/cost budget.
+- [x] The transaction seals the exact `workspace-detection` Context Pack,
+  creates one formal `protocol_runs` row, advances only the authoritative
+  sequence-2 Stage `READY -> RUNNING`, reconciles Control Task lifecycle,
+  advances Task metadata/version once, and records the active reservation,
+  immutable claim ledger, and both audit streams. Any failure rolls back every
+  effect.
+- [x] The frozen sequence-2 contract has no input or output contracts, so the
+  claim enforces exact empty `input_artifacts` and `required_outputs`; it does
+  not fabricate a predecessor Artifact. The Context carries five bounded
+  contract/Gate/Handoff/Stage policy entries and injects no transcript,
+  memory, knowledge, preference, native state, Artifact, Evidence, preflight,
+  provider output, compatibility Run, or process authority.
+- [x] Unified projection includes the second protocol-only Run with pinned
+  runtime and active reservation. Exact replay requires the same request and
+  currently authorized original principal; different identity, ledger drift,
+  stale authority, repository/runtime drift, insufficient budget, event
+  failure, and concurrent callers fail closed or converge without partial
+  writes.
+- [x] Documented the boundary in
+  `docs/architecture/aws-aidlc-methodology-stage-run-claim-v1.md`, linked it
+  from the prior Gate/dispatch documents, and kept the normative Schema list
+  exact.
+
+### Verification and review state
+
+- [x] Focused sequence-2 claim selection: 29 passed, 127 deselected,
+  including the post-Claude cost-budget and pre-existing execution-state
+  regressions.
+- [x] Complete AWS AI-DLC methodology module: 156 passed.
+- [x] Related methodology, Control Plane protocol/Stage routing/lifecycle,
+  protocol orchestration/freeze, Task orchestration, provider usage, runtime
+  capability/preflight, and projection suite: 413 passed.
+- [x] Exact complete non-integration backend suite: 730 passed, 18 deselected,
+  with only the existing Starlette/httpx and Windows Proactor cleanup
+  warnings. A restricted-sandbox pass first showed four environment-only
+  default-database/`/tmp` permission failures; the same suite passed completely
+  in the approved outer environment.
+- [x] Protocol freeze suite: 34 passed. Protocol Schema export/check,
+  system-Temp-isolated `compileall`, CLI help, and `git diff --check` passed.
+- [x] Kiro CLI remained unavailable: its review attempt produced no findings
+  or verdict and reported `Authentication failed. Your session may have
+  expired`; an independent `kiro-cli profile` check returned `No profiles
+  available`. The user explicitly directed Agora to stop using Kiro
+  temporarily and authorized an independent Codex methodology/protocol review
+  as the replacement gate for this checkpoint. The read-only Codex reviewer
+  inspected the exact frozen worktree, reported no actionable finding, and
+  returned `CODEX_APPROVE`. This records a scoped user-authorized substitution,
+  not a Kiro approval.
+- [x] Independent Claude Code safe-mode review inspected the complete tracked
+  diff and all untracked implementation/Schema files, transaction/replay/
+  tamper/concurrency paths, exact empty sequence-2 contracts, budget/projection
+  behavior, documentation, and tests. It found no actionable HIGH, MEDIUM, or
+  LOW defect and returned `CLAUDE_APPROVE`. Its two non-blocking coverage
+  suggestions were implemented as cost-budget-exhaustion and pre-existing
+  execution-state zero-write regressions; focused, module, and complete suites
+  were rerun successfully afterward.
+
+### Current checkpoint and next safe action
+
+Implementation, automated validation, independent Claude review, and the
+user-authorized independent Codex replacement gate are complete on baseline
+`f97a485`. This sequence-2 formal Run/Context claim increment is ready for its
+reviewed commit/push. The next bounded backend slice may dispatch and settle
+exactly this already claimed sequence-2 Run while preserving the pinned
+runtime/repository, single-process attachment, formal Handoff/Gate authority,
+recovery semantics, and truthful usage settlement. It must not create a second
+Run or Context Pack. Later inventory positions, cross-Stage rework, HTTP, UI,
+dynamic provider substitution, and native AI-DLC file installation remain
+deferred.
+
 ## 2026-07-31 - AWS AI-DLC next-Stage formal Gate configuration (reviewed)
 
 ### Bounded implementation

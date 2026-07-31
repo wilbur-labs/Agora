@@ -87,8 +87,12 @@ or provider substitution was created.
 ## Deferred boundaries
 
 This increment configures only execution contract sequence 2 after the
-successfully settled first Run. Claiming and dispatching the sequence-2 Run,
-generalizing the same transition across the remaining grouped inventory,
-automatic rework, dynamic provider substitution, authenticated HTTP, Task
-Workbench UI, and native AWS AI-DLC file installation remain separate reviewed
-increments.
+successfully settled first Run. The reviewed succeeding claim boundary is
+defined in `aws-aidlc-methodology-stage-run-claim-v1.md`. It consumes this
+immutable Gate receipt, seals the exact sequence-2 Context Pack, and creates
+only the formal Run without starting a process.
+
+Dispatching the sequence-2 Run, generalizing the same transition across the
+remaining grouped inventory, automatic rework, dynamic provider substitution,
+authenticated HTTP, Task Workbench UI, and native AWS AI-DLC file installation
+remain separate reviewed increments.

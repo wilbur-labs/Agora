@@ -44,6 +44,9 @@ from agora.orchestration.methodology_run_dispatch import (
 from agora.orchestration.methodology_stage_gate import (
     load_methodology_stage_gate_request,
 )
+from agora.orchestration.methodology_stage_run_claim import (
+    load_methodology_stage_run_claim_request,
+)
 from agora.orchestration.models import MethodologyDispatchState, PlanState
 from agora.orchestration.processes import ProcessState
 from agora.orchestration.protocol_context import RepositoryRevision
@@ -88,6 +91,11 @@ from agora.protocol.methodology_run_dispatch import (
 from agora.protocol.methodology_stage_gate import (
     MethodologyStageGateReceipt,
     MethodologyStageGateRequest,
+)
+from agora.protocol.methodology_stage_run_claim import (
+    MethodologyStageRunClaimReceipt,
+    MethodologyStageRunClaimRequest,
+    methodology_stage_run_id,
 )
 from agora.protocol.models import ContextPack, HandoffPack
 from agora.protocol.schema_registry import SCHEMA_MODELS
@@ -4438,4 +4446,887 @@ def test_methodology_stage_gate_schemas_are_registered():
     assert (
         SCHEMA_MODELS["methodology-stage-gate-receipt"]
         is MethodologyStageGateReceipt
+    )
+
+
+async def _configured_next_methodology_stage(tmp_path):
+    tasks, service, contract, first_claim, dispatch = (
+        await _settled_first_methodology_run(tmp_path)
+    )
+    gate_request = _stage_gate_request(
+        tasks,
+        service,
+        contract,
+        dispatch,
+    )
+    gate_receipt = service.configure_methodology_next_stage_gate(
+        contract.task_id,
+        gate_request,
+        principal=_migration_principal(),
+    )
+    return (
+        tasks,
+        service,
+        contract,
+        first_claim,
+        dispatch,
+        gate_receipt,
+    )
+
+
+def _stage_run_claim_request(
+    tasks: TaskStore,
+    service: TaskOrchestrationService,
+    contract: MethodologyExecutionContract,
+    dispatch: MethodologyRunDispatchReceipt,
+    stage_gate: MethodologyStageGateReceipt,
+) -> MethodologyStageRunClaimRequest:
+    task = tasks.get(contract.task_id)
+    control_task = service.control_plane.get_task_state(contract.task_id)
+    inventory = service.control_plane.get_stage_inventory(contract.task_id)
+    route = service.control_plane.get_stage_route(contract.task_id)
+    status = service.status(contract.task_id)
+    assert task is not None
+    assert control_task is not None
+    assert inventory is not None
+    assert route is not None
+    formal_stage = service.control_plane.get_stage(
+        contract.task_id,
+        route.stage_key,
+    )
+    formal_gate = service.control_plane.get_gate(
+        contract.task_id,
+        route.gate_key,
+    )
+    assert formal_stage is not None
+    assert formal_gate is not None
+    stage = contract.stages[1]
+    run_id = methodology_stage_run_id(
+        task_id=task.task_id,
+        execution_contract_sha256=contract.content_sha256,
+        stage_sequence=stage.sequence,
+        stage_key=stage.stage_key,
+    )
+    payload = {
+        "schema_version": "1.0",
+        "request_id": f"stage-run-request-{contract.content_sha256[:20]}",
+        "requested_at": FIXED_TIME,
+        "project_id": task.project_id,
+        "task_id": task.task_id,
+        "expected_task_version": task.version,
+        "expected_control_task_version": control_task.version,
+        "expected_control_task_status": control_task.status.value,
+        "plan_id": status.plan.plan_id,
+        "expected_plan_version": status.plan.version,
+        "inventory_id": inventory.inventory_id,
+        "inventory_sha256": inventory.content_sha256,
+        "execution_contract_id": contract.contract_id,
+        "execution_contract_sha256": contract.content_sha256,
+        "stage_gate_receipt_id": stage_gate.receipt_id,
+        "stage_gate_receipt_sha256": stage_gate.content_sha256,
+        "predecessor_dispatch_receipt_id": dispatch.receipt_id,
+        "predecessor_dispatch_receipt_sha256": dispatch.content_sha256,
+        "repository": contract.repository.model_dump(mode="json"),
+        "stage_sequence": stage.sequence,
+        "stage_key": stage.stage_key,
+        "gate_key": stage.gate_key,
+        "runtime": stage.runtime,
+        "expected_stage_version": formal_stage.version,
+        "expected_gate_version": formal_gate.version,
+        "expected_gate_status": formal_gate.status.value,
+        "run_id": run_id,
+        "context_pack_id": f"context:{run_id}",
+        "context_pack_schema_version": "1.0",
+        "claim_formal_run": True,
+        "start_runtime_process": False,
+    }
+    return MethodologyStageRunClaimRequest.model_validate(
+        seal_model_payload(MethodologyStageRunClaimRequest, payload)
+    )
+
+
+def _reseal_stage_run_claim_request(
+    request: MethodologyStageRunClaimRequest,
+    **updates,
+) -> MethodologyStageRunClaimRequest:
+    payload = request.model_dump(mode="json")
+    payload.pop("content_sha256")
+    payload.update(updates)
+    return MethodologyStageRunClaimRequest.model_validate(
+        seal_model_payload(MethodologyStageRunClaimRequest, payload)
+    )
+
+
+@pytest.mark.asyncio
+async def test_methodology_sequence_two_run_claim_is_atomic_non_spawning(
+    tmp_path,
+):
+    (
+        tasks,
+        service,
+        contract,
+        first_claim,
+        dispatch,
+        stage_gate,
+    ) = await _configured_next_methodology_stage(tmp_path)
+    request = _stage_run_claim_request(
+        tasks,
+        service,
+        contract,
+        dispatch,
+        stage_gate,
+    )
+    task_before = tasks.get(contract.task_id)
+    control_before = service.control_plane.get_task_state(contract.task_id)
+    stage_before = service.control_plane.get_stage(
+        contract.task_id,
+        request.stage_key,
+    )
+    gate_before = service.control_plane.get_gate(
+        contract.task_id,
+        request.gate_key,
+    )
+    assert task_before is not None
+    assert control_before is not None
+    assert stage_before is not None
+    assert gate_before is not None
+    assert contract.stages[1].context.input_contracts == []
+    assert contract.stages[1].context.output_contracts == []
+    with sqlite3.connect(tasks.db_path) as db:
+        before_counts = {
+            table: db.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE task_id = ?",
+                (contract.task_id,),
+            ).fetchone()[0]
+            for table in (
+                "protocol_runs",
+                "protocol_artifacts",
+                "protocol_evidence",
+                "orchestration_runs",
+                "orchestration_consultations",
+            )
+        }
+
+    receipt = service.claim_methodology_next_stage_run(
+        contract.task_id,
+        request,
+        principal=_migration_principal(),
+    )
+
+    assert isinstance(receipt, MethodologyStageRunClaimReceipt)
+    assert receipt.request_id == request.request_id
+    assert receipt.request_sha256 == request.content_sha256
+    assert receipt.stage_gate_receipt_id == stage_gate.receipt_id
+    assert receipt.stage_gate_receipt_sha256 == stage_gate.content_sha256
+    assert receipt.predecessor_dispatch_receipt_id == dispatch.receipt_id
+    assert receipt.predecessor_dispatch_receipt_sha256 == dispatch.content_sha256
+    assert receipt.stage_sequence == 2
+    assert receipt.stage_key == contract.stages[1].stage_key
+    assert receipt.gate_key == contract.stages[1].gate_key
+    assert receipt.input_artifact_bindings == []
+    assert receipt.required_outputs == []
+    assert receipt.formal_run_created is True
+    assert receipt.process_started is False
+    assert receipt.process_spawn_authority is False
+    task_after = tasks.get(contract.task_id)
+    control_after = service.control_plane.get_task_state(contract.task_id)
+    stage_after = service.control_plane.get_stage(
+        contract.task_id,
+        request.stage_key,
+    )
+    gate_after = service.control_plane.get_gate(
+        contract.task_id,
+        request.gate_key,
+    )
+    protocol_run = service.control_plane.get_protocol_run(receipt.run_id)
+    assert task_after is not None
+    assert task_after.version == task_before.version + 1
+    assert task_after.metadata["methodology_run_id"] == first_claim.run_id
+    assert task_after.metadata["methodology_current_stage_run_claimed"] is True
+    assert task_after.metadata["methodology_current_stage_sequence"] == 2
+    assert task_after.metadata["methodology_current_run_id"] == receipt.run_id
+    assert control_after is not None
+    assert control_after.status.value == "active"
+    assert control_after.version >= control_before.version
+    assert stage_after is not None
+    assert stage_after.status.value == "running"
+    assert stage_after.version == stage_before.version + 1
+    assert gate_after == gate_before
+    assert protocol_run is not None
+    assert protocol_run.context_pack.pack_id == receipt.context_pack_id
+    assert (
+        protocol_run.context_pack.content_sha256
+        == receipt.context_pack_sha256
+    )
+    assert protocol_run.context_pack.input_artifacts == []
+    assert protocol_run.context_pack.required_outputs == []
+    assert protocol_run.protocol_state is None
+    assert protocol_run.handoff_pack is None
+    assert len(protocol_run.context_pack.policies) == 5
+    assert protocol_run.context_pack.task_memory == []
+    assert protocol_run.context_pack.project_knowledge == []
+    assert protocol_run.context_pack.user_preferences == []
+    with sqlite3.connect(tasks.db_path) as db:
+        after_counts = {
+            table: db.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE task_id = ?",
+                (contract.task_id,),
+            ).fetchone()[0]
+            for table in before_counts
+        }
+        claims = db.execute(
+            """
+            SELECT COUNT(*) FROM orchestration_methodology_stage_run_claims
+            WHERE task_id = ?
+            """,
+            (contract.task_id,),
+        ).fetchone()[0]
+    assert after_counts["protocol_runs"] == before_counts["protocol_runs"] + 1
+    for table in (
+        "protocol_artifacts",
+        "protocol_evidence",
+        "orchestration_runs",
+        "orchestration_consultations",
+    ):
+        assert after_counts[table] == before_counts[table]
+    assert claims == 1
+    assert (
+        service.store.get_methodology_stage_run_claim(
+            contract.task_id,
+            request.stage_key,
+        )
+        == receipt
+    )
+    unified = service.unified_status(contract.task_id)
+    assert len(unified.runs) == 2
+    projected = next(item for item in unified.runs if item.run_id == receipt.run_id)
+    assert projected.stage_key == receipt.stage_key
+    assert projected.runtime == receipt.runtime
+    assert projected.token_reserved == receipt.budget.max_model_tokens
+    assert projected.runtime_preflight is None
+    assert unified.budget.token_reserved == receipt.budget.max_model_tokens
+
+
+@pytest.mark.asyncio
+async def test_methodology_sequence_two_run_claim_replay_and_conflict(
+    tmp_path,
+):
+    tasks, service, contract, _, dispatch, stage_gate = (
+        await _configured_next_methodology_stage(tmp_path)
+    )
+    request = _stage_run_claim_request(
+        tasks,
+        service,
+        contract,
+        dispatch,
+        stage_gate,
+    )
+    receipt = service.claim_methodology_next_stage_run(
+        contract.task_id,
+        request,
+        principal=_migration_principal(),
+    )
+    before = _database_dump(tasks)
+
+    replay = service.claim_methodology_next_stage_run(
+        contract.task_id,
+        request,
+        principal=_migration_principal(),
+    )
+
+    assert replay == receipt
+    assert _database_dump(tasks) == before
+    changed = _reseal_stage_run_claim_request(
+        request,
+        request_id=f"{request.request_id}-different",
+    )
+    with pytest.raises(
+        OrchestrationConflictError,
+        match="replay binding differs",
+    ):
+        service.claim_methodology_next_stage_run(
+            contract.task_id,
+            changed,
+            principal=_migration_principal(),
+        )
+    with pytest.raises(
+        OrchestrationValidationError,
+        match="original currently authorized principal",
+    ):
+        service.claim_methodology_next_stage_run(
+            contract.task_id,
+            request,
+            principal=_migration_principal(principal_id="other"),
+        )
+    assert _database_dump(tasks) == before
+
+
+@pytest.mark.asyncio
+async def test_methodology_sequence_two_run_claim_replay_rejects_ledger_drift(
+    tmp_path,
+):
+    tasks, service, contract, _, dispatch, stage_gate = (
+        await _configured_next_methodology_stage(tmp_path)
+    )
+    request = _stage_run_claim_request(
+        tasks,
+        service,
+        contract,
+        dispatch,
+        stage_gate,
+    )
+    service.claim_methodology_next_stage_run(
+        contract.task_id,
+        request,
+        principal=_migration_principal(),
+    )
+    with sqlite3.connect(tasks.db_path) as db:
+        db.execute(
+            """
+            UPDATE orchestration_methodology_stage_run_claims
+            SET context_pack_sha256 = ?
+            WHERE task_id = ?
+            """,
+            ("0" * 64, contract.task_id),
+        )
+        db.commit()
+    before = _database_dump(tasks)
+
+    with pytest.raises(
+        OrchestrationConflictError,
+        match="replay binding differs",
+    ):
+        service.claim_methodology_next_stage_run(
+            contract.task_id,
+            request,
+            principal=_migration_principal(),
+        )
+    with pytest.raises(
+        OrchestrationValidationError,
+        match="Persisted methodology Stage Run claim binding drifted",
+    ):
+        service.store.get_methodology_stage_run_claim(
+            contract.task_id,
+            request.stage_key,
+        )
+
+    assert _database_dump(tasks) == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("expected_task_version", 999),
+        ("expected_control_task_version", 999),
+        ("expected_plan_version", 999),
+        ("inventory_sha256", "0" * 64),
+        ("execution_contract_sha256", "0" * 64),
+        ("stage_gate_receipt_sha256", "0" * 64),
+        ("predecessor_dispatch_receipt_sha256", "0" * 64),
+        ("stage_key", "wrong-stage"),
+        ("gate_key", "wrong-gate"),
+        ("runtime", "wrong-runtime"),
+        ("expected_stage_version", 999),
+        ("expected_gate_version", 999),
+        ("run_id", "wrong-run"),
+    ],
+)
+async def test_methodology_sequence_two_run_claim_stale_is_zero_write(
+    tmp_path,
+    field,
+    value,
+):
+    tasks, service, contract, _, dispatch, stage_gate = (
+        await _configured_next_methodology_stage(tmp_path)
+    )
+    request = _stage_run_claim_request(
+        tasks,
+        service,
+        contract,
+        dispatch,
+        stage_gate,
+    )
+    updates = {field: value}
+    if field == "run_id":
+        updates["context_pack_id"] = f"context:{value}"
+    changed = _reseal_stage_run_claim_request(request, **updates)
+    before = _database_dump(tasks)
+
+    with pytest.raises(
+        (OrchestrationConflictError, OrchestrationValidationError),
+        match="binding|route|unavailable|blocked|differs",
+    ):
+        service.claim_methodology_next_stage_run(
+            contract.task_id,
+            changed,
+            principal=_migration_principal(),
+        )
+
+    assert _database_dump(tasks) == before
+    assert (
+        service.control_plane.get_protocol_run(changed.run_id)
+        is None
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "principal",
+    [
+        _migration_principal(permissions=frozenset()),
+        _migration_principal(projects=frozenset()),
+        _migration_principal(principal_id="other"),
+    ],
+)
+async def test_methodology_sequence_two_run_claim_auth_is_zero_write(
+    tmp_path,
+    principal,
+):
+    tasks, service, contract, _, dispatch, stage_gate = (
+        await _configured_next_methodology_stage(tmp_path)
+    )
+    request = _stage_run_claim_request(
+        tasks,
+        service,
+        contract,
+        dispatch,
+        stage_gate,
+    )
+    before = _database_dump(tasks)
+
+    with pytest.raises(
+        (OrchestrationConflictError, OrchestrationValidationError),
+        match="permission|authorized|principal|Gate",
+    ):
+        service.claim_methodology_next_stage_run(
+            contract.task_id,
+            request,
+            principal=principal,
+        )
+
+    assert _database_dump(tasks) == before
+
+
+@pytest.mark.asyncio
+async def test_methodology_sequence_two_run_claim_requires_gate_ledger(
+    tmp_path,
+):
+    tasks, service, contract, _, dispatch = (
+        await _settled_first_methodology_run(tmp_path)
+    )
+    task = tasks.get(contract.task_id)
+    control_task = service.control_plane.get_task_state(contract.task_id)
+    status = service.status(contract.task_id)
+    inventory = service.control_plane.get_stage_inventory(contract.task_id)
+    route = service.control_plane.get_stage_route(contract.task_id)
+    assert task is not None
+    assert control_task is not None
+    assert inventory is not None
+    assert route is not None
+    run_id = "premature-stage-run"
+    payload = {
+        "schema_version": "1.0",
+        "request_id": "premature-stage-run-request",
+        "requested_at": FIXED_TIME,
+        "project_id": task.project_id,
+        "task_id": task.task_id,
+        "expected_task_version": task.version,
+        "expected_control_task_version": control_task.version,
+        "expected_control_task_status": control_task.status.value,
+        "plan_id": status.plan.plan_id,
+        "expected_plan_version": status.plan.version,
+        "inventory_id": inventory.inventory_id,
+        "inventory_sha256": inventory.content_sha256,
+        "execution_contract_id": contract.contract_id,
+        "execution_contract_sha256": contract.content_sha256,
+        "stage_gate_receipt_id": "missing-stage-gate",
+        "stage_gate_receipt_sha256": "0" * 64,
+        "predecessor_dispatch_receipt_id": dispatch.receipt_id,
+        "predecessor_dispatch_receipt_sha256": dispatch.content_sha256,
+        "repository": contract.repository.model_dump(mode="json"),
+        "stage_sequence": 2,
+        "stage_key": contract.stages[1].stage_key,
+        "gate_key": contract.stages[1].gate_key,
+        "runtime": contract.stages[1].runtime,
+        "expected_stage_version": 2,
+        "expected_gate_version": 1,
+        "expected_gate_status": "pending",
+        "run_id": run_id,
+        "context_pack_id": f"context:{run_id}",
+        "context_pack_schema_version": "1.0",
+        "claim_formal_run": True,
+        "start_runtime_process": False,
+    }
+    request = MethodologyStageRunClaimRequest.model_validate(
+        seal_model_payload(MethodologyStageRunClaimRequest, payload)
+    )
+    before = _database_dump(tasks)
+
+    with pytest.raises(
+        OrchestrationConflictError,
+        match="Gate configuration is unavailable",
+    ):
+        service.claim_methodology_next_stage_run(
+            contract.task_id,
+            request,
+            principal=_migration_principal(),
+        )
+
+    assert _database_dump(tasks) == before
+
+
+@pytest.mark.asyncio
+async def test_methodology_sequence_two_run_claim_repository_runtime_drift(
+    tmp_path,
+):
+    tasks, service, contract, _, dispatch, stage_gate = (
+        await _configured_next_methodology_stage(tmp_path)
+    )
+    request = _stage_run_claim_request(
+        tasks,
+        service,
+        contract,
+        dispatch,
+        stage_gate,
+    )
+    before = _database_dump(tasks)
+    service.revision_resolver = (
+        lambda _root, _repository_id: replace(
+            REVISION,
+            commit_sha="b" * 40,
+        )
+    )
+    with pytest.raises(OrchestrationConflictError, match="repository binding"):
+        service.claim_methodology_next_stage_run(
+            contract.task_id,
+            request,
+            principal=_migration_principal(),
+        )
+    assert _database_dump(tasks) == before
+
+    service.revision_resolver = lambda _root, _repository_id: REVISION
+    service.runtimes["codex"] = RuntimeCommand(
+        adapter="codex",
+        command_template=(sys.executable, "changed", "{prompt}"),
+    )
+    with pytest.raises(OrchestrationConflictError, match="runtime"):
+        service.claim_methodology_next_stage_run(
+            contract.task_id,
+            request,
+            principal=_migration_principal(),
+        )
+    assert _database_dump(tasks) == before
+
+
+@pytest.mark.asyncio
+async def test_methodology_sequence_two_run_claim_budget_is_zero_write(
+    tmp_path,
+):
+    tasks, service, contract, _, dispatch, stage_gate = (
+        await _configured_next_methodology_stage(tmp_path)
+    )
+    with sqlite3.connect(tasks.db_path) as db:
+        db.execute(
+            """
+            UPDATE orchestration_plans SET total_token_budget = 1
+            WHERE task_id = ?
+            """,
+            (contract.task_id,),
+        )
+        db.commit()
+    request = _stage_run_claim_request(
+        tasks,
+        service,
+        contract,
+        dispatch,
+        stage_gate,
+    )
+    before = _database_dump(tasks)
+
+    with pytest.raises(
+        OrchestrationConflictError,
+        match="Token reservation exceeds",
+    ):
+        service.claim_methodology_next_stage_run(
+            contract.task_id,
+            request,
+            principal=_migration_principal(),
+        )
+
+    assert _database_dump(tasks) == before
+
+
+@pytest.mark.asyncio
+async def test_methodology_sequence_two_run_claim_cost_budget_is_zero_write(
+    tmp_path,
+):
+    tasks, service, contract, _, dispatch, stage_gate = (
+        await _configured_next_methodology_stage(tmp_path)
+    )
+    with sqlite3.connect(tasks.db_path) as db:
+        db.execute(
+            """
+            UPDATE orchestration_plans SET total_cost_budget_usd = 0
+            WHERE task_id = ?
+            """,
+            (contract.task_id,),
+        )
+        db.commit()
+    request = _stage_run_claim_request(
+        tasks,
+        service,
+        contract,
+        dispatch,
+        stage_gate,
+    )
+    before = _database_dump(tasks)
+
+    with pytest.raises(
+        OrchestrationConflictError,
+        match="cost reservation exceeds",
+    ):
+        service.claim_methodology_next_stage_run(
+            contract.task_id,
+            request,
+            principal=_migration_principal(),
+        )
+
+    assert _database_dump(tasks) == before
+
+
+@pytest.mark.asyncio
+async def test_methodology_sequence_two_run_claim_rejects_execution_state(
+    tmp_path,
+):
+    tasks, service, contract, _, dispatch, stage_gate = (
+        await _configured_next_methodology_stage(tmp_path)
+    )
+    request = _stage_run_claim_request(
+        tasks,
+        service,
+        contract,
+        dispatch,
+        stage_gate,
+    )
+    with sqlite3.connect(tasks.db_path) as db:
+        db.execute(
+            """
+            INSERT INTO protocol_artifacts (
+                artifact_id, version, project_id, task_id, stage_key,
+                run_id, kind, storage, sha256, payload, payload_sha256,
+                created_at
+            ) VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "unexpected-sequence-two-artifact",
+                request.project_id,
+                request.task_id,
+                request.stage_key,
+                "unexpected-sequence-two-run",
+                "unexpected-output",
+                "managed",
+                "0" * 64,
+                "{}",
+                "0" * 64,
+                FIXED_TIME.isoformat(),
+            ),
+        )
+        db.commit()
+    before = _database_dump(tasks)
+
+    with pytest.raises(
+        OrchestrationConflictError,
+        match="execution state already exists",
+    ):
+        service.claim_methodology_next_stage_run(
+            contract.task_id,
+            request,
+            principal=_migration_principal(),
+        )
+
+    assert _database_dump(tasks) == before
+
+
+@pytest.mark.asyncio
+async def test_methodology_sequence_two_run_claim_event_failure_rolls_back(
+    tmp_path,
+    monkeypatch,
+):
+    tasks, service, contract, _, dispatch, stage_gate = (
+        await _configured_next_methodology_stage(tmp_path)
+    )
+    request = _stage_run_claim_request(
+        tasks,
+        service,
+        contract,
+        dispatch,
+        stage_gate,
+    )
+    stage_before = service.control_plane.get_stage(
+        contract.task_id,
+        request.stage_key,
+    )
+    before = _database_dump(tasks)
+
+    def fail_event(*_args, **_kwargs):
+        raise RuntimeError("injected Stage Run claim event failure")
+
+    monkeypatch.setattr(service.control_plane, "_event", fail_event)
+    with pytest.raises(RuntimeError, match="injected Stage Run claim"):
+        service.claim_methodology_next_stage_run(
+            contract.task_id,
+            request,
+            principal=_migration_principal(),
+        )
+
+    assert _database_dump(tasks) == before
+    assert (
+        service.control_plane.get_stage(contract.task_id, request.stage_key)
+        == stage_before
+    )
+    assert service.control_plane.get_protocol_run(request.run_id) is None
+
+
+@pytest.mark.asyncio
+async def test_methodology_sequence_two_run_claim_concurrent_replay(
+    tmp_path,
+):
+    tasks, service, contract, _, dispatch, stage_gate = (
+        await _configured_next_methodology_stage(tmp_path)
+    )
+    request = _stage_run_claim_request(
+        tasks,
+        service,
+        contract,
+        dispatch,
+        stage_gate,
+    )
+    barrier = Barrier(2)
+
+    def claim():
+        barrier.wait()
+        return service.claim_methodology_next_stage_run(
+            contract.task_id,
+            request,
+            principal=_migration_principal(),
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        receipts = list(executor.map(lambda _index: claim(), range(2)))
+
+    assert receipts[0] == receipts[1]
+    with sqlite3.connect(tasks.db_path) as db:
+        assert (
+            db.execute(
+                """
+                SELECT COUNT(*) FROM orchestration_methodology_stage_run_claims
+                WHERE task_id = ?
+                """,
+                (contract.task_id,),
+            ).fetchone()[0]
+            == 1
+        )
+
+
+@pytest.mark.asyncio
+async def test_methodology_sequence_two_run_claim_loader_and_cli(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    tasks, service, contract, _, dispatch, stage_gate = (
+        await _configured_next_methodology_stage(tmp_path)
+    )
+    request = _stage_run_claim_request(
+        tasks,
+        service,
+        contract,
+        dispatch,
+        stage_gate,
+    )
+    path = tmp_path / "stage-run-claim.json"
+    path.write_text(request.model_dump_json(), encoding="utf-8")
+    assert load_methodology_stage_run_claim_request(path) == request
+    secret = "stage-run-claim-control-secret"
+    monkeypatch.setenv("AGORA_TEST_STAGE_RUN_TOKEN", secret)
+    monkeypatch.setattr(orchestration_cli, "build_service", lambda: service)
+    monkeypatch.setattr(
+        "agora.control_plane.auth.get_config",
+        lambda: {
+            "control_plane": {
+                "auth": {
+                    "credentials": [
+                        {
+                            "secret_ref": "AGORA_TEST_STAGE_RUN_TOKEN",
+                            "principal": "user",
+                            "permissions": ["control_plane.approve"],
+                            "projects": ["alpha"],
+                        }
+                    ]
+                }
+            }
+        },
+    )
+
+    code = orchestration_cli.main(
+        [
+            "migration-next-stage-run-claim",
+            contract.task_id,
+            "--request",
+            str(path),
+            "--credential-env",
+            "AGORA_TEST_STAGE_RUN_TOKEN",
+        ]
+    )
+    output = capsys.readouterr().out
+    payload = json.loads(output)
+
+    assert code == 0
+    assert payload["stage_sequence"] == 2
+    assert payload["formal_run_created"] is True
+    assert payload["input_artifact_bindings"] == []
+    assert payload["process_started"] is False
+    assert secret not in output
+    assert secret not in _database_dump(tasks)
+
+
+def test_methodology_sequence_two_run_claim_authenticates_before_store(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    monkeypatch.delenv("AGORA_MISSING_STAGE_RUN_TOKEN", raising=False)
+    built = False
+
+    def build_forbidden():
+        nonlocal built
+        built = True
+        raise AssertionError("service must not be built before authentication")
+
+    monkeypatch.setattr(orchestration_cli, "build_service", build_forbidden)
+    code = orchestration_cli.main(
+        [
+            "migration-next-stage-run-claim",
+            "task-successor",
+            "--request",
+            str(tmp_path / "missing.json"),
+            "--credential-env",
+            "AGORA_MISSING_STAGE_RUN_TOKEN",
+        ]
+    )
+
+    assert code == 2
+    assert built is False
+    assert "credential environment variable is absent" in capsys.readouterr().out
+
+
+def test_methodology_stage_run_claim_schemas_are_registered():
+    assert (
+        SCHEMA_MODELS["methodology-stage-run-claim-request"]
+        is MethodologyStageRunClaimRequest
+    )
+    assert (
+        SCHEMA_MODELS["methodology-stage-run-claim-receipt"]
+        is MethodologyStageRunClaimReceipt
     )

@@ -48,6 +48,12 @@ from .methodology_stage_gate import (
     MethodologyStageGateReceipt,
     MethodologyStageGateRequest,
 )
+from .methodology_stage_run_claim import (
+    MethodologyStageInputArtifactBinding,
+    MethodologyStageRunClaimReceipt,
+    MethodologyStageRunClaimRequest,
+    methodology_stage_run_id,
+)
 from .models import (
     Approval,
     ApprovalStatus,
@@ -120,6 +126,10 @@ __all__ = [
     "MethodologyRunDispatchReceipt",
     "MethodologyStageGateReceipt",
     "MethodologyStageGateRequest",
+    "MethodologyStageInputArtifactBinding",
+    "MethodologyStageRunClaimReceipt",
+    "MethodologyStageRunClaimRequest",
+    "methodology_stage_run_id",
     "MethodologySeedArtifactRegistration",
     "MethodologyExternalSourceArtifact",
     "MethodologyScopeProfile",
