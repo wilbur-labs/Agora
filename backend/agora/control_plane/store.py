@@ -974,13 +974,33 @@ class ControlPlaneStore:
         *,
         actor: str,
         operation_key: str,
+        allowed_handoff_requirement_ids: Sequence[str] | None = None,
     ) -> RunSettlementReceipt:
         """Atomically persist a result, evaluate its Gate, and settle its Stage."""
 
         self._validate_operation_key(operation_key)
-        fingerprint = canonical_sha256(
-            {"action": "settle_protocol_run", "result": result}
+        canonical_allowed_requirement_ids = (
+            sorted(allowed_handoff_requirement_ids)
+            if allowed_handoff_requirement_ids is not None
+            else None
         )
+        if (
+            canonical_allowed_requirement_ids is not None
+            and len(canonical_allowed_requirement_ids)
+            != len(set(canonical_allowed_requirement_ids))
+        ):
+            raise ControlPlaneValidationError(
+                "Allowed Handoff Evidence requirement ids must be unique"
+            )
+        fingerprint_payload = {
+            "action": "settle_protocol_run",
+            "result": result,
+        }
+        if canonical_allowed_requirement_ids is not None:
+            fingerprint_payload["allowed_handoff_requirement_ids"] = (
+                canonical_allowed_requirement_ids
+            )
+        fingerprint = canonical_sha256(fingerprint_payload)
         now = utc_now()
         with self.tasks._transaction() as db:
             replay = self._operation_result(db, operation_key, fingerprint)
@@ -1004,6 +1024,17 @@ class ControlPlaneStore:
             handoff = result.handoff_pack
             if handoff is not None:
                 self._assert_handoff_matches_context(context_pack, handoff)
+                if (
+                    canonical_allowed_requirement_ids is not None
+                    and any(
+                        evidence.requirement_id
+                        not in canonical_allowed_requirement_ids
+                        for evidence in handoff.evidence
+                    )
+                ):
+                    raise ControlPlaneValidationError(
+                        "Handoff Evidence exceeds its allowed requirement set"
+                    )
                 if handoff.stage_result.value != result.protocol_state.semantic_stage_result.value:
                     raise ControlPlaneValidationError(
                         "Handoff semantic result does not match Run protocol state"

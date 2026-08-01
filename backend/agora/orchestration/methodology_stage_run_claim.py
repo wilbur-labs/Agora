@@ -272,13 +272,13 @@ def build_methodology_stage_run_claim_context(
         )
 
     if (
-        request.stage_sequence not in {2, 3, 4, 5, 6, 7}
+        request.stage_sequence not in {2, 3, 4, 5, 6, 7, 8}
         or len(contract.stages) < request.stage_sequence
         or predecessor_sequence != request.stage_sequence - 1
     ):
         raise ValueError(
             "This bounded increment may claim only methodology Stage "
-            "sequences 2 through 7 from the immediately preceding dispatch"
+            "sequences 2 through 8 from the immediately preceding dispatch"
         )
     predecessor_contract = contract.stages[request.stage_sequence - 2]
     stage_contract = contract.stages[request.stage_sequence - 1]
@@ -383,46 +383,86 @@ def build_methodology_stage_run_claim_context(
                 "empty input set"
             )
     else:
-        resolved_inputs = [
-            item
-            for item in input_contracts
-            if item.resolution != "optional_absent"
-        ]
-        allowed_resolutions = {"optional_absent", "selected_stage_output"}
-        if request.stage_sequence in {6, 7}:
-            allowed_resolutions.add("hash_bound_task_seed")
-        if any(
-            item.resolution not in allowed_resolutions
-            or (
-                item.resolution == "selected_stage_output"
-                and (
-                    item.instance_binding != "single"
-                    or len(item.producer_stage_keys) != 1
-                    or item.source_producer_stage_key
-                    != item.producer_stage_keys[0]
+        expected_bindings = []
+        for input_contract in input_contracts:
+            if input_contract.resolution == "optional_absent":
+                if (
+                    input_contract.required
+                    or input_contract.instance_binding != "optional_absent"
+                    or input_contract.source_producer_stage_key is not None
+                    or input_contract.producer_stage_keys
+                    or input_contract.seed_artifact is not None
+                ):
+                    raise ValueError(
+                        "Methodology optional-absent input contract drifted"
+                    )
+                continue
+            if input_contract.resolution == "selected_stage_output":
+                expected_producer_stage_keys = [
+                    item.stage_key
+                    for item in contract.stages[
+                        : request.stage_sequence - 1
+                    ]
+                    if item.source_stage_key
+                    == input_contract.source_producer_stage_key
+                ]
+                bounded_single = (
+                    request.stage_sequence in {5, 6, 7}
+                    and input_contract.instance_binding == "single"
+                    and len(input_contract.producer_stage_keys) == 1
+                    and input_contract.source_producer_stage_key
+                    == input_contract.producer_stage_keys[0]
                 )
-            )
-            or (
-                item.resolution == "hash_bound_task_seed"
-                and (
-                    not item.required
-                    or item.instance_binding != "task_seed"
-                    or item.source_producer_stage_key is None
-                    or item.producer_stage_keys
-                    or item.seed_artifact is None
+                bounded_all_units = (
+                    request.stage_sequence == 8
+                    and input_contract.instance_binding == "all_units"
+                    and input_contract.source_producer_stage_key
+                    == "code-generation"
+                    and len(expected_producer_stage_keys) == 2
+                    and input_contract.producer_stage_keys
+                    == expected_producer_stage_keys
                 )
-            )
-            for item in input_contracts
-        ):
+                if (
+                    input_contract.seed_artifact is not None
+                    or not (bounded_single or bounded_all_units)
+                ):
+                    raise ValueError(
+                        "Methodology selected input exceeds its bounded scope"
+                    )
+                expected_bindings.extend(
+                    (input_contract, producer_stage_key)
+                    for producer_stage_key in input_contract.producer_stage_keys
+                )
+                continue
+            if input_contract.resolution == "hash_bound_task_seed":
+                if (
+                    request.stage_sequence not in {6, 7}
+                    or not input_contract.required
+                    or input_contract.instance_binding != "task_seed"
+                    or input_contract.source_producer_stage_key is None
+                    or input_contract.producer_stage_keys
+                    or input_contract.seed_artifact is None
+                ):
+                    raise ValueError(
+                        "Methodology Stage Task seed input exceeds its bounded scope"
+                    )
+                expected_bindings.append(
+                    (
+                        input_contract,
+                        input_contract.source_producer_stage_key,
+                    )
+                )
+                continue
             raise ValueError(
                 "Methodology Stage input resolution exceeds its bounded scope"
             )
-        if len(resolved_inputs) != len(snapshot.input_artifact_bindings):
+
+        if len(expected_bindings) != len(snapshot.input_artifact_bindings):
             raise ValueError(
                 "Methodology Stage resolved input Artifact set differs"
             )
-        for input_contract, binding in zip(
-            resolved_inputs,
+        for (input_contract, producer_stage_key), binding in zip(
+            expected_bindings,
             snapshot.input_artifact_bindings,
             strict=True,
         ):
@@ -430,8 +470,7 @@ def build_methodology_stage_run_claim_context(
                 binding.consumer_stage_key != stage_contract.stage_key
                 or binding.source_artifact_id
                 != input_contract.source_artifact_id
-                or binding.producer_stage_key
-                != input_contract.source_producer_stage_key
+                or binding.producer_stage_key != producer_stage_key
                 or binding.artifact.kind != input_contract.kind
                 or (
                     input_contract.resolution == "selected_stage_output"
@@ -493,6 +532,14 @@ def build_methodology_stage_run_claim_context(
         stage_contract=stage_contract,
         run_id=request.run_id,
     )
+    handoff_requirement_ids = [
+        item.requirement.requirement_id
+        for item in stage_contract.handoff.evidence_contracts
+    ]
+    gate_requirement_ids = [
+        item.requirement.requirement_id
+        for item in stage_contract.gate.evidence_contracts
+    ]
     policies = [
         _context_entry(
             prefix="methodology-contract",
@@ -611,10 +658,19 @@ def build_methodology_stage_run_claim_context(
                         stage_contract.handoff.format_only_repair_attempts
                     ),
                     "gate_key": stage_contract.gate.gate_key,
-                    "gate_requirement_ids": [
-                        item.requirement.requirement_id
-                        for item in stage_contract.gate.evidence_contracts
-                    ],
+                    **(
+                        {"gate_requirement_ids": gate_requirement_ids}
+                        if handoff_requirement_ids == gate_requirement_ids
+                        else {
+                            "handoff_requirement_ids": (
+                                handoff_requirement_ids
+                            ),
+                            "withheld_gate_requirement_count": (
+                                len(gate_requirement_ids)
+                                - len(handoff_requirement_ids)
+                            ),
+                        }
+                    ),
                 }
             ),
             source_ref=(

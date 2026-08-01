@@ -192,8 +192,8 @@ def parser() -> argparse.ArgumentParser:
     migration_next_stage_run_claim = commands.add_parser(
         "migration-next-stage-run-claim",
         help=(
-            "Authenticate and claim the exact sequence-2 AWS AI-DLC formal "
-            "Run and Context Pack without starting a process"
+            "Authenticate and claim the exact current contract-bound AWS "
+            "AI-DLC formal Run and Context Pack without starting a process"
         ),
     )
     migration_next_stage_run_claim.add_argument("task_id")
@@ -211,8 +211,8 @@ def parser() -> argparse.ArgumentParser:
     migration_next_stage_run_dispatch = commands.add_parser(
         "migration-next-stage-run-dispatch",
         help=(
-            "Dispatch and settle the already claimed sequence-2 AWS AI-DLC "
-            "formal Run without creating a compatibility Run"
+            "Dispatch and settle the already claimed current contract-bound "
+            "AWS AI-DLC formal Run without creating a compatibility Run"
         ),
     )
     migration_next_stage_run_dispatch.add_argument("task_id")

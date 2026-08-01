@@ -1,12 +1,12 @@
 # AWS AI-DLC methodology later-Stage Run claim v1
 
-Status: reviewed implementation; sequences 2 through 7; no runtime process
+Status: reviewed implementation; sequences 2 through 8; no runtime process
 
 ## Purpose and entry point
 
 After the immediately preceding methodology Run settles successfully and the
 next formal Gate is configured, the authenticated Control Plane may claim the
-exact execution-contract sequence-2 through sequence-7 Run:
+exact execution-contract sequence-2 through sequence-8 Run:
 
 ```powershell
 agora task migration-next-stage-run-claim SUCCESSOR_TASK_ID `
@@ -110,6 +110,20 @@ sequence-5 `requirements` version, while its binding names the distinct
 The settled sequence-6 dispatch remains the direct lifecycle predecessor; it is
 not substituted as the producer of sequence-7 `requirements`.
 
+Sequence 8 is the aggregate `build-and-test` Stage. Its two selected input
+contracts each use `all_units` and expand in frozen input-contract order, then
+producer-instance order: the sequence-6 and sequence-7
+`code-generation-plan` versions followed by the sequence-6 and sequence-7
+`code-summary` versions. Every binding retains its concrete producer Stage and
+Run. Resolution recomputes the same settled dispatch, formal claim,
+deterministic required output, sealed Handoff, and registered Artifact
+authority used by `single` inputs; one unit cannot substitute for a missing or
+tampered sibling. The Context therefore carries four distinct exact version
+references and materializes the seven frozen build/test outputs. The Handoff
+projection exposes only production-owned requirement ids and the count of
+withheld formal-Gate requirements; the two independent completion-review ids
+remain outside the production Context and Handoff contract.
+
 Five bounded policy entries preserve:
 
 - the execution-contract and repository binding;
@@ -133,7 +147,7 @@ usage, Artifact, Evidence, Gate evaluation, or dispatch authority is created.
 The compatibility Plan and Stage rows remain unchanged.
 
 The immutable claim ledger records the active Token/cost reservation. Unified
-Task projection includes each protocol-only sequence-2/3/4/5/6/7 Run with its pinned
+Task projection includes each protocol-only sequence-2/3/4/5/6/7/8 Run with its pinned
 runtime and reservation while the formal Run remains unsettled. The receipt
 fixes:
 
@@ -153,7 +167,7 @@ provider_substitution = false
 
 ## Succeeding process boundary
 
-Sequence-2 through sequence-7 dispatch are defined in
+Sequence-2 through sequence-8 dispatch are defined in
 `aws-aidlc-methodology-stage-run-dispatch-v1.md`. It attaches exactly one pinned
 runtime process to each existing formal Run and settles it through
 the unchanged Handoff parser and Control Plane Gate evaluator. It uses a
@@ -161,7 +175,8 @@ separate later-Stage dispatch/recovery ledger without changing the frozen
 first-Run contracts, creating a second Run or Context Pack, or inferring
 semantic success from process exit code.
 
-Positions beyond sequence 7, including `all_units` multi-producer selection,
-cross-Stage rework, dynamic provider substitution, authenticated HTTP, Task
-Workbench UI, and native AWS AI-DLC file installation remain separate reviewed
-increments.
+Sequence 8 exhausts the selected bugfix inventory, but its production claim
+does not authorize completion-review Evidence. Independent completion-review
+dispatch/finalization, cross-Stage rework, dynamic provider substitution,
+authenticated HTTP, Task Workbench UI, and native AWS AI-DLC file installation
+remain separate reviewed increments.

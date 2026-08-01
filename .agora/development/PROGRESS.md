@@ -1,5 +1,79 @@
 # Agora Control Plane Development Progress
 
+## 2026-07-31 - AWS AI-DLC sequence-8 all-units aggregation (reviewed)
+
+### Bounded implementation
+
+- [x] Extended the authenticated Gate, formal Run claim, native dispatch/
+  recovery, settlement, usage, and projection chain to exact execution-contract
+  sequence 8 (`build-and-test`), the final selected Stage in the exercised
+  bugfix inventory.
+- [x] Added bounded `all_units` resolution for exactly the two selected
+  `code-generation` instances. The Context order is input-contract order then
+  producer-instance order: sequence-6/7 `code-generation-plan`, followed by
+  sequence-6/7 `code-summary`.
+- [x] Reused one extracted selected-output authority path for both historical
+  `single` inputs and the four aggregate bindings. Every binding recomputes the
+  concrete producer Stage/Run, settled dispatch, deterministic required
+  output, sealed Handoff, and registered Artifact payload/version/hash; no unit
+  can substitute for a missing or tampered sibling.
+- [x] Preserved the independent completion-review boundary. The sequence-8
+  production prompt/Handoff exposes only production-owned requirements; the
+  formal Gate retains the Claude correctness and methodology-stewardship
+  requirements. A valid production settlement registers its seven outputs but
+  leaves the final Gate/Stage and Task `blocked` pending those reviews, with no
+  next route.
+- [x] Enforced the same production Evidence subset in the runtime adapter and
+  again in the Control Plane before any Artifact/Evidence registration. A
+  production Handoff that forges completion-review Evidence is a protocol
+  failure with zero registration.
+- [x] Added end-to-end final-inventory settlement/replay and one-producer
+  Artifact-tamper zero-write coverage. Updated the Gate, claim, dispatch, and
+  first-dispatch architecture notes through sequence 8.
+- [x] Updated the two later-Stage CLI summaries from the obsolete
+  `sequence-2` wording to the exact current contract-bound Stage; command and
+  protocol surfaces are unchanged.
+
+### Verification and review state
+
+- [x] Sequence-8 focused selection after the review fix: 3 passed, 217
+  deselected. Control Plane Handoff-subset selection: 3 passed, 11 deselected.
+- [x] Focused sequence-5/6/7/8 regression selection passed 13 tests; complete
+  adapter/protocol-orchestration coverage passed 94 tests; complete
+  methodology coverage passed 220 tests.
+- [x] Complete Control Plane protocol-run coverage passed 15 tests, including
+  both zero-registration rejection of out-of-scope Handoff Evidence and an
+  exact legacy settlement-operation fingerprint assertion.
+- [x] Final complete non-integration backend suite: 797 passed, 18 deselected,
+  with only the existing Starlette/httpx deprecation and Windows Proactor
+  cleanup warnings.
+- [x] Protocol freeze: 34 passed. Protocol Schema export/check,
+  system-Temp-isolated `compileall`, all relevant CLI help checks, and
+  `git diff --check` passed.
+- [x] Independent Codex methodology/protocol review found one HIGH completion-
+  review authority bypass; the production-prompt, adapter, Control Plane, and
+  regression fixes closed it. Its closure review then found one MEDIUM replay-
+  compatibility issue because the new allow-list had changed legacy operation
+  fingerprints. The default path now preserves the exact legacy fingerprint,
+  only sequence 8 opts into the bounded allow-list, and focused plus complete
+  validation pass. The final re-review returned `CODEX_APPROVE` with no
+  actionable finding.
+- [x] Independent Claude Code reviewed the complete final diff across
+  production, tests, architecture docs, and PROGRESS. It confirmed aggregate
+  producer authority, the independent completion-review boundary, zero-write
+  rejection, atomicity, replay compatibility, deterministic identity/order,
+  and regression coverage, then returned `CLAUDE_APPROVE` with no actionable
+  finding. No Kiro review was used, per the user's current instruction.
+
+### Current checkpoint and next safe action
+
+Implementation, complete validation, the user-authorized independent Codex
+replacement gate, and the independent Claude gate are complete on clean pushed
+baseline `7466b53`. This increment is ready for an exact-file commit/push. The
+next bounded slice is the independently authorized completion-review Evidence
+and final-Stage finalization path without allowing the production Run to
+impersonate a reviewer or inventing automatic rework semantics.
+
 ## 2026-07-31 - AWS AI-DLC sequence-7 repeated-unit isolation (reviewed)
 
 ### Bounded implementation

@@ -1,10 +1,10 @@
 # AWS AI-DLC methodology later-Stage Run dispatch v1
 
-Status: reviewed implementation; sequences 2 through 7
+Status: reviewed implementation; sequences 2 through 8
 
 ## Purpose and entry point
 
-After an authenticated sequence-2 through sequence-7 claim has created
+After an authenticated sequence-2 through sequence-8 claim has created
 one formal Run and sealed Context Pack, the orchestrator may attach exactly one
 pinned native process and settle that same Run:
 
@@ -31,7 +31,7 @@ Before any durable dispatch claim, the service reads and checks:
 - the immutable execution contract, current Gate and Run-claim receipts, and
   settled immediately preceding dispatch receipt;
 - the exact unsettled formal Run and sealed Context Pack;
-- the current authoritative sequence-2/3/4/5/6/7 `RUNNING` Stage, `PENDING` Gate,
+- the current authoritative sequence-2/3/4/5/6/7/8 `RUNNING` Stage, `PENDING` Gate,
   and non-runnable route;
 - the clean repository/ref/commit before and after native capability
   collection;
@@ -55,7 +55,7 @@ five-minute recovery lease. The formal Run-claim ledger remains immutable with
 The current Run is selected by the highest formal later-Stage claim and is
 cross-checked against the Task's compatibility cursor and authoritative route.
 Every later-Stage dispatch row retains the sequence-1 dispatch id as its
-compatibility lineage root. For sequences 3 through 7, the process claim also
+compatibility lineage root. For sequences 3 through 8, the process claim also
 reuses and validates the foreign-keyed immediately preceding later-Stage
 dispatch binding from the Gate/Run-claim chain. Authority validation walks
 that chain toward sequence 1, so a tampered transitive predecessor cannot
@@ -88,7 +88,7 @@ the next Stage. Usage normalization uses the claim's sealed result format, not
 a mutable in-memory runtime registry.
 
 Unified Task projection merges first-Run and later-Stage dispatches by formal
-Run identity. Each sequence-2/3/4/5/6/7 reservation becomes settled usage only when
+Run identity. Each sequence-2/3/4/5/6/7/8 reservation becomes settled usage only when
 its later usage ledger exists; unavailable native measurements consume the
 original reservation rather than being recorded as zero. Projection and admission reads
 cross-check the denormalized reservation and usage rows against their sealed
@@ -123,7 +123,7 @@ does not match its sealed payload fails closed.
 ## Bounded authority and next boundary
 
 This implementation dispatches sequence 2 (`workspace-detection`), sequence 3
-(`state-init`), and the exact selected sequence-4 through sequence-7
+(`state-init`), and the exact selected sequence-4 through sequence-8
 Stages.
 Sequence 4 is the first bounded later-Stage position with non-empty required
 outputs; successful
@@ -148,7 +148,14 @@ Context, and disjoint deterministic output ids. Its settled direct predecessor
 is sequence 6; sequence-6 output cannot substitute for the sequence-5
 `requirements` producer.
 
-The next reviewed slice may extend the same chain to the exact sequence-8
-contract and add its `all_units` multi-producer selection without weakening the
-frozen sequence-1 through sequence-7 receipts. Cross-Stage rework remains a
-separate explicit authority path.
+Sequence 8 consumes the four ordered, exact sequence-6/7 plan and summary
+version references selected by `all_units`. Its production prompt and adapter
+accept only the exact `stage.handoff.evidence_contracts`; the two formal-Gate
+completion reviews remain assigned to Claude and the methodology steward. The
+Control Plane repeats that allowed-requirement check before any Handoff
+Artifact or Evidence registration. A production Handoff that forges reviewer
+Evidence is a protocol failure with zero registration. A valid production
+Handoff registers the seven declared build/test outputs and its production
+Evidence, then the still-unsatisfied formal Gate and final Stage remain
+`BLOCKED` with no next route. Independent review/finalization and cross-Stage
+rework remain separate authority paths.

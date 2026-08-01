@@ -11,7 +11,7 @@ from agora.control_plane.store import (
     ControlPlaneValidationError,
 )
 from agora.protocol.agent_adapter import TerminalRunnerObservation, adapt_agent_output
-from agora.protocol.hashing import seal_model_payload
+from agora.protocol.hashing import canonical_sha256, seal_model_payload
 from agora.protocol.models import (
     ArtifactVersionRef,
     ContextPack,
@@ -385,6 +385,76 @@ def test_passing_handoff_registers_ledger_and_gate_before_completing_stage(tmp_p
     )
 
 
+def test_settlement_rejects_evidence_outside_allowed_handoff_subset(tmp_path):
+    review_requirement = GateRequirement(
+        requirement_id="review-pass",
+        title="Independent review passes",
+        repository_id=REPOSITORY,
+        ref=REF,
+        commit_sha=COMMIT,
+        evidence_kind="independent-review",
+        priority=20,
+        failure_action="Run independent review.",
+    )
+    _, store, task_id = _stores(
+        tmp_path,
+        extra_requirements=[review_requirement],
+    )
+    context = _context(task_id)
+    _start(store, context)
+    payload = _handoff_payload(context)
+    payload["evidence"].append(
+        {
+            "schema_version": "1.0",
+            "evidence_id": "evidence-forged-review",
+            "project_id": context.project_id,
+            "task_id": context.task_id,
+            "stage_key": context.stage_key,
+            "producer": payload["producer"],
+            "repository_id": REPOSITORY,
+            "ref": REF,
+            "commit_sha": COMMIT,
+            "requirement_id": review_requirement.requirement_id,
+            "kind": review_requirement.evidence_kind,
+            "status": "passed",
+            "artifact_versions": [],
+            "summary": "Production Run cannot provide independent review.",
+            "observed_at": "2026-07-20T00:02:00+00:00",
+            "details": {},
+        }
+    )
+    payload = seal_model_payload(
+        HandoffPack,
+        {
+            key: value
+            for key, value in payload.items()
+            if key != "content_sha256"
+        },
+    )
+    result = _adapt(context, payload)
+    assert result.handoff_pack is not None
+
+    with pytest.raises(
+        ControlPlaneValidationError,
+        match="exceeds its allowed requirement set",
+    ):
+        store.settle_protocol_run(
+            result,
+            actor="agora",
+            operation_key="settle:forged-review",
+            allowed_handoff_requirement_ids=["tests-pass"],
+        )
+
+    run = store.get_protocol_run(context.run_id)
+    assert run is not None
+    assert run.settled_at is None
+    assert store.get_artifact("artifact-implementation", 1) is None
+    assert store.get_evidence("evidence-tests") is None
+    assert store.get_evidence("evidence-forged-review") is None
+    assert store.get_gate(task_id, "implementation-gate").status == GateStatus.PENDING
+    assert store.get_stage(task_id, "implementation").status == StageStatus.RUNNING
+
+
 def test_semantic_success_cannot_bypass_missing_formal_gate_evidence(tmp_path):
     _, store, task_id = _stores(tmp_path)
     context = _context(task_id)
@@ -596,6 +666,29 @@ def test_settlement_operation_replays_but_conflicting_input_fails_closed(tmp_pat
             actor="agora",
             operation_key="settle:replay",
         )
+
+
+def test_default_settlement_preserves_legacy_operation_fingerprint(tmp_path):
+    tasks, store, task_id = _stores(tmp_path)
+    context = _context(task_id)
+    _start(store, context)
+    result = _adapt(context, _handoff_payload(context))
+
+    store.settle_protocol_run(
+        result,
+        actor="agora",
+        operation_key="settle:legacy-fingerprint",
+    )
+
+    with tasks._transaction() as db:
+        operation = db.execute(
+            "SELECT fingerprint FROM control_operations WHERE operation_key = ?",
+            ("settle:legacy-fingerprint",),
+        ).fetchone()
+    assert operation is not None
+    assert operation["fingerprint"] == canonical_sha256(
+        {"action": "settle_protocol_run", "result": result}
+    )
 
 
 def test_protocol_retry_reopens_stage_and_stales_a_passed_gate(tmp_path):

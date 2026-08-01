@@ -79,10 +79,9 @@ def adapt_runtime_result(
     requirements = {item.requirement_id: item for item in gate_requirements}
     for evidence in adapted.handoff_pack.evidence:
         requirement = requirements.get(evidence.requirement_id)
-        if requirement is None:
-            continue
         if (
-            evidence.repository_id != requirement.repository_id
+            requirement is None
+            or evidence.repository_id != requirement.repository_id
             or evidence.ref != requirement.ref
             or evidence.commit_sha != requirement.commit_sha
             or evidence.kind != requirement.evidence_kind

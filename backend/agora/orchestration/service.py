@@ -16,6 +16,7 @@ from agora.attention.models import AttentionState, CancelAttentionRequest
 from agora.attention.store import AttentionConflictError, AttentionStore
 from agora.control_plane.auth import ControlPrincipal
 from agora.control_plane.models import (
+    GateRecord,
     ProtocolRunRecord,
     RunSettlementReceipt,
     StageRouteDecision,
@@ -37,6 +38,7 @@ from agora.protocol.hashing import (
 from agora.protocol.models import (
     ConsultationCandidate,
     ConsultationCandidateDisposition,
+    GateRequirement,
     NativeRuntimeCapabilityObservation,
     StageInventory,
 )
@@ -45,7 +47,10 @@ from agora.protocol.methodology_migration import (
     MethodologyMigrationPreviewDecision,
     MethodologyMigrationPreviewRequest,
 )
-from agora.protocol.methodology_execution import MethodologyExecutionContract
+from agora.protocol.methodology_execution import (
+    MethodologyExecutionContract,
+    MethodologyStageExecutionContract,
+)
 from agora.protocol.methodology_route_activation import (
     MethodologyRouteActivationReceipt,
     MethodologyRouteActivationRequest,
@@ -1873,6 +1878,67 @@ class TaskOrchestrationService:
             repository_unchanged=repository_unchanged,
         )
 
+    @staticmethod
+    def _methodology_stage_production_requirements(
+        stage: MethodologyStageExecutionContract,
+        gate: GateRecord,
+    ) -> list[GateRequirement]:
+        """Expose only production-owned Evidence to one native Handoff."""
+
+        expected_gate_requirements = sorted(
+            [item.requirement for item in stage.gate.evidence_contracts],
+            key=lambda item: item.requirement_id,
+        )
+        expected_production_requirements = sorted(
+            [item.requirement for item in stage.handoff.evidence_contracts],
+            key=lambda item: item.requirement_id,
+        )
+        production_requirement_ids = {
+            item.requirement_id for item in expected_production_requirements
+        }
+        production_requirements = [
+            item
+            for item in gate.requirements
+            if item.requirement_id in production_requirement_ids
+        ]
+        if (
+            gate.gate_key != stage.gate_key
+            or gate.stage_key != stage.stage_key
+            or gate.requirements != expected_gate_requirements
+            or production_requirements != expected_production_requirements
+        ):
+            raise OrchestrationValidationError(
+                "Methodology Stage production Evidence contract drifted"
+            )
+        return production_requirements
+
+    def _methodology_dispatch_production_requirements(
+        self,
+        claim: MethodologyStageRunDispatchClaim,
+        gate: GateRecord,
+    ) -> list[GateRequirement]:
+        contract = self.store.get_methodology_execution_contract(claim.task_id)
+        if (
+            contract is None
+            or contract.contract_id != claim.execution_contract_id
+            or contract.content_sha256 != claim.execution_contract_sha256
+            or len(contract.stages) < claim.stage_sequence
+        ):
+            raise OrchestrationValidationError(
+                "Methodology Stage production Evidence authority is unavailable"
+            )
+        stage = contract.stages[claim.stage_sequence - 1]
+        if (
+            stage.sequence != claim.stage_sequence
+            or stage.stage_key != claim.stage_key
+            or stage.gate_key != claim.gate_key
+            or stage.runtime != claim.runtime
+        ):
+            raise OrchestrationValidationError(
+                "Methodology Stage production Evidence authority drifted"
+            )
+        return self._methodology_stage_production_requirements(stage, gate)
+
     async def dispatch_methodology_next_stage_run(
         self,
         task_id: str,
@@ -1915,10 +1981,16 @@ class TaskOrchestrationService:
             snapshot.task.project_id,
             snapshot.execution_contract.repository,
         )
+        production_requirements = (
+            self._methodology_stage_production_requirements(
+                stage,
+                snapshot.formal_gate,
+            )
+        )
         prompt = build_protocol_prompt(
             context_pack=snapshot.protocol_run.context_pack,
             runtime=stage.runtime,
-            requirements=snapshot.formal_gate.requirements,
+            requirements=production_requirements,
         )
         prompt_sha256 = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
         dispatch_policy = derive_methodology_stage_run_dispatch_policy(
@@ -2095,10 +2167,13 @@ class TaskOrchestrationService:
             raise OrchestrationConflictError(
                 "Methodology Stage formal Run or Gate is unavailable"
             )
+        production_requirements = (
+            self._methodology_dispatch_production_requirements(claim, gate)
+        )
         adapted = adapt_runtime_result(
             protocol_run.context_pack,
             result,
-            gate_requirements=gate.requirements,
+            gate_requirements=production_requirements,
             cancelled=cancelled and result.process_started,
             repository_revision_mismatch=not repository_unchanged,
         )
@@ -2140,12 +2215,40 @@ class TaskOrchestrationService:
             raise OrchestrationConflictError(
                 "Methodology Stage dispatch is not ready for settlement"
             )
+        gate = self.control_plane.get_gate(
+            dispatch.claim.task_id,
+            dispatch.claim.gate_key,
+        )
+        if gate is None:
+            raise OrchestrationConflictError(
+                "Methodology Stage formal Gate is unavailable"
+            )
+        production_requirements = (
+            self._methodology_dispatch_production_requirements(
+                dispatch.claim,
+                gate,
+            )
+        )
+        production_requirement_ids = [
+            item.requirement_id for item in production_requirements
+        ]
+        formal_requirement_ids = [
+            item.requirement_id for item in gate.requirements
+        ]
+        allowed_handoff_requirement_ids = (
+            production_requirement_ids
+            if production_requirement_ids != formal_requirement_ids
+            else None
+        )
         settlement = self.control_plane.settle_protocol_run(
             dispatch.adapter_result,
             actor="orchestrator",
             operation_key=(
                 "methodology-stage-protocol-settle:"
                 f"{dispatch.claim.run_id}"
+            ),
+            allowed_handoff_requirement_ids=(
+                allowed_handoff_requirement_ids
             ),
         )
         return self.store.finish_methodology_stage_run_dispatch(
@@ -2167,10 +2270,19 @@ class TaskOrchestrationService:
             dispatch.claim.task_id,
             control_plane=self.control_plane,
         )
+        stage = snapshot.execution_contract.stages[
+            dispatch.claim.stage_sequence - 1
+        ]
+        production_requirements = (
+            self._methodology_stage_production_requirements(
+                stage,
+                snapshot.formal_gate,
+            )
+        )
         prompt = build_protocol_prompt(
             context_pack=snapshot.protocol_run.context_pack,
             runtime=dispatch.claim.runtime,
-            requirements=snapshot.formal_gate.requirements,
+            requirements=production_requirements,
         )
         if hashlib.sha256(prompt.encode("utf-8")).hexdigest() != (
             dispatch.claim.prompt_sha256

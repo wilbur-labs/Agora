@@ -1,6 +1,6 @@
 # AWS AI-DLC methodology first-Run dispatch v1
 
-Status: reviewed implementation candidate
+Status: reviewed implementation
 
 ## Purpose and entry point
 
@@ -124,10 +124,12 @@ for its formal Gate. The authenticated next-Stage operation configures only
 that exact contract-bound Gate and still creates no Run or process. The
 subsequent formal claim is defined in
 `aws-aidlc-methodology-stage-run-claim-v1.md`; it creates the exact sequence-2
-through sequence-7 Run and Context Pack without dispatching a process. The
-sequence-2/3/4/5/6/7 one-shot process and settlement boundary is defined in
+through sequence-8 Run and Context Pack without dispatching a process. The
+sequence-2/3/4/5/6/7/8 one-shot process and settlement boundary is defined in
 `aws-aidlc-methodology-stage-run-dispatch-v1.md`.
 
-Continuation beyond sequence 7, automatic cross-Stage rework, dynamic provider
-substitution, authenticated HTTP, Task Workbench UI, and native AWS AI-DLC file
-installation remain separate reviewed increments.
+Sequence 8 exhausts the selected bugfix inventory, but the production Run
+cannot satisfy its independent completion-review requirements. Review Evidence
+and finalization, automatic cross-Stage rework, dynamic provider substitution,
+authenticated HTTP, Task Workbench UI, and native AWS AI-DLC file installation
+remain separate reviewed increments.
