@@ -3198,7 +3198,15 @@ class ControlPlaneStore:
             raise ControlPlaneValidationError(
                 "Handoff Pack does not match the persisted Context Pack"
             )
+        allowed_outputs = {
+            (output.output_id, output.kind)
+            for output in context_pack.required_outputs
+        }
         for artifact in handoff.output_artifacts:
+            if (artifact.artifact_id, artifact.kind) not in allowed_outputs:
+                raise ControlPlaneValidationError(
+                    "Handoff Artifact is not declared by its Context"
+                )
             if (
                 artifact.project_id != context_pack.project_id
                 or artifact.task_id != context_pack.task_id

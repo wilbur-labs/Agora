@@ -5597,7 +5597,7 @@ class OrchestrationStore:
                 """,
                 (task_id,),
             ).fetchone()
-        elif stage_sequence in {3, 4, 5}:
+        elif stage_sequence in {3, 4, 5, 6}:
             direct_row = db.execute(
                 """
                 SELECT *
@@ -5620,7 +5620,7 @@ class OrchestrationStore:
             ).fetchone()
         else:
             raise OrchestrationConflictError(
-                "Methodology predecessor resolution is bounded to sequences 2 through 5"
+                "Methodology predecessor resolution is bounded to sequences 2 through 6"
             )
 
         if (
@@ -5668,7 +5668,7 @@ class OrchestrationStore:
     ) -> None:
         """Fail closed on the direct predecessor behind one Gate receipt."""
 
-        if receipt.stage_sequence not in {2, 3, 4, 5}:
+        if receipt.stage_sequence not in {2, 3, 4, 5, 6}:
             raise OrchestrationValidationError(
                 "Persisted methodology successor predecessor sequence is unsupported"
             )
@@ -5779,9 +5779,10 @@ class OrchestrationStore:
         task_id: str,
         project_id: str,
         contract: MethodologyExecutionContract,
+        migration_request: MethodologyMigrationPreviewRequest,
         stage_sequence: int,
     ) -> tuple[MethodologyStageInputArtifactBinding, ...]:
-        """Resolve the exact prior-Stage Artifacts for one bounded Context."""
+        """Resolve exact prior outputs and Task seeds for a bounded Context."""
 
         if (
             contract.task_id != task_id
@@ -5799,7 +5800,7 @@ class OrchestrationStore:
                     "Methodology sequence-2/3/4 input contract drifted"
                 )
             return ()
-        if stage_sequence != 5:
+        if stage_sequence not in {5, 6}:
             raise OrchestrationValidationError(
                 "Methodology input Artifact resolution exceeds its bounded scope"
             )
@@ -5818,6 +5819,71 @@ class OrchestrationStore:
                         "Methodology optional-absent input contract drifted"
                     )
                 continue
+            if input_contract.resolution == "hash_bound_task_seed":
+                seed_artifact = input_contract.seed_artifact
+                if (
+                    stage_sequence != 6
+                    or not input_contract.required
+                    or input_contract.instance_binding != "task_seed"
+                    or input_contract.source_producer_stage_key is None
+                    or input_contract.producer_stage_keys
+                    or seed_artifact is None
+                    or seed_artifact.location is None
+                ):
+                    raise OrchestrationValidationError(
+                        "Methodology Stage Task seed input exceeds its bounded scope"
+                    )
+                seed_matches = [
+                    seed
+                    for seed in migration_request.seed_artifacts
+                    if seed.consumer_stage_key
+                    == stage_contract.source_stage_key
+                    and seed.artifact_id
+                    == input_contract.source_artifact_id
+                    and seed.source_producer_stage_key
+                    == input_contract.source_producer_stage_key
+                ]
+                expected_seed_id = "seed:" + canonical_sha256(
+                    {
+                        "request_sha256": migration_request.content_sha256,
+                        "consumer_stage_key": stage_contract.source_stage_key,
+                        "artifact_id": input_contract.source_artifact_id,
+                        "source_producer_stage_key": (
+                            input_contract.source_producer_stage_key
+                        ),
+                    }
+                )[:32]
+                if len(seed_matches) != 1:
+                    raise OrchestrationValidationError(
+                        "Methodology Stage Task seed provenance is unavailable"
+                    )
+                seed = seed_matches[0]
+                location = seed_artifact.location
+                if (
+                    seed_artifact.artifact_id != expected_seed_id
+                    or seed_artifact.version != 1
+                    or seed_artifact.kind != seed.artifact_id
+                    or seed_artifact.sha256 != seed.sha256
+                    or location.repository_id != seed.repository_id
+                    or location.ref != seed.ref
+                    or location.commit_sha != seed.commit_sha
+                    or location.path != seed.path
+                ):
+                    raise OrchestrationValidationError(
+                        "Methodology Stage Task seed binding drifted"
+                    )
+                bindings.append(
+                    MethodologyStageInputArtifactBinding(
+                        consumer_stage_key=stage_contract.stage_key,
+                        source_artifact_id=input_contract.source_artifact_id,
+                        producer_stage_key=(
+                            input_contract.source_producer_stage_key
+                        ),
+                        producer_run_id=None,
+                        artifact=seed_artifact,
+                    )
+                )
+                continue
             if (
                 input_contract.resolution != "selected_stage_output"
                 or input_contract.instance_binding != "single"
@@ -5827,7 +5893,7 @@ class OrchestrationStore:
                 or input_contract.seed_artifact is not None
             ):
                 raise OrchestrationValidationError(
-                    "Methodology sequence-5 selected input exceeds its bounded scope"
+                    "Methodology selected input exceeds its bounded scope"
                 )
 
             producer_matches = [
@@ -6083,7 +6149,18 @@ class OrchestrationStore:
             "SELECT * FROM protocol_runs WHERE run_id = ?",
             (receipt.run_id,),
         ).fetchone()
-        if contract_row is None or protocol_row is None:
+        migration_row = db.execute(
+            """
+            SELECT * FROM orchestration_methodology_migrations
+            WHERE successor_task_id = ?
+            """,
+            (receipt.task_id,),
+        ).fetchone()
+        if (
+            contract_row is None
+            or protocol_row is None
+            or migration_row is None
+        ):
             raise OrchestrationValidationError(
                 "Methodology Stage Run Context authority is missing"
             )
@@ -6093,11 +6170,17 @@ class OrchestrationStore:
         context_pack = ContextPack.model_validate_json(
             protocol_row["context_payload"]
         )
+        migration_request = (
+            MethodologyMigrationPreviewRequest.model_validate_json(
+                migration_row["request_payload"]
+            )
+        )
         expected_bindings = cls._methodology_stage_input_artifact_bindings_tx(
             db,
             task_id=receipt.task_id,
             project_id=receipt.project_id,
             contract=contract,
+            migration_request=migration_request,
             stage_sequence=receipt.stage_sequence,
         )
         expected_outputs = build_methodology_stage_required_outputs(
@@ -6110,6 +6193,8 @@ class OrchestrationStore:
             or contract.content_sha256 != receipt.execution_contract_sha256
             or contract.project_id != receipt.project_id
             or contract.task_id != receipt.task_id
+            or migration_request.content_sha256
+            != migration_row["request_sha256"]
             or context_pack.content_sha256 != protocol_row["context_sha256"]
             or context_pack.pack_id != protocol_row["context_pack_id"]
             or context_pack.pack_id != receipt.context_pack_id
@@ -7127,6 +7212,7 @@ class OrchestrationStore:
                     task_id=task_id,
                     project_id=task.project_id,
                     contract=contract,
+                    migration_request=migration_request,
                     stage_sequence=request.stage_sequence,
                 )
             )
@@ -7443,6 +7529,11 @@ class OrchestrationStore:
                     f"methodology.stage.run.claim:{request.request_id}"
                 ),
                 now=now,
+                registered_external_inputs=[
+                    item.artifact
+                    for item in input_artifact_bindings
+                    if item.producer_run_id is None
+                ],
             )
             stage_after_row = db.execute(
                 """
@@ -8078,7 +8169,7 @@ class OrchestrationStore:
                 ):
                     raise
                 raise OrchestrationConflictError(str(exc)) from exc
-            if claim.task_id != task_id or claim.stage_sequence not in {2, 3, 4, 5}:
+            if claim.task_id != task_id or claim.stage_sequence not in {2, 3, 4, 5, 6}:
                 raise OrchestrationValidationError(
                     "Methodology Stage dispatch crosses its bounded scope"
                 )

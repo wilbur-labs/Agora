@@ -337,6 +337,40 @@ def test_handoff_rejects_output_artifact_scope_spoofing():
     assert result.attention_required is True
 
 
+def test_handoff_rejects_output_artifact_not_declared_by_context():
+    context = _context()
+    payload = _handoff_payload(context)
+    content = "undeclared adapter output"
+    payload["output_artifacts"] = [
+        {
+            "schema_version": "1.0",
+            "artifact_id": "undeclared-output",
+            "project_id": context.project_id,
+            "task_id": context.task_id,
+            "stage_key": context.stage_key,
+            "producer": payload["producer"],
+            "kind": "report",
+            "storage": "managed",
+            "version": 1,
+            "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+            "media_type": "text/plain",
+            "content": content,
+            "location": None,
+            "created_at": "2026-07-20T00:01:00+00:00",
+        }
+    ]
+    payload = seal_model_payload(
+        HandoffPack,
+        {key: value for key, value in payload.items() if key != "content_sha256"},
+    )
+
+    result = adapt_agent_output(context, _observation(), _json(payload))
+
+    assert result.error_code == AdapterErrorCode.HANDOFF_CONTEXT_MISMATCH
+    assert result.handoff_pack is None
+    assert result.attention_required is True
+
+
 def test_handoff_rejects_evidence_scope_spoofing():
     context = _context()
     payload = _handoff_payload(context, stage_result="blocked")

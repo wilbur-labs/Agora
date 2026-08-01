@@ -272,13 +272,13 @@ def build_methodology_stage_run_claim_context(
         )
 
     if (
-        request.stage_sequence not in {2, 3, 4, 5}
+        request.stage_sequence not in {2, 3, 4, 5, 6}
         or len(contract.stages) < request.stage_sequence
         or predecessor_sequence != request.stage_sequence - 1
     ):
         raise ValueError(
             "This bounded increment may claim only methodology Stage "
-            "sequences 2 through 5 from the immediately preceding dispatch"
+            "sequences 2 through 6 from the immediately preceding dispatch"
         )
     predecessor_contract = contract.stages[request.stage_sequence - 2]
     stage_contract = contract.stages[request.stage_sequence - 1]
@@ -383,16 +383,16 @@ def build_methodology_stage_run_claim_context(
                 "empty input set"
             )
     else:
-        selected_inputs = [
+        resolved_inputs = [
             item
             for item in input_contracts
-            if item.resolution == "selected_stage_output"
+            if item.resolution != "optional_absent"
         ]
+        allowed_resolutions = {"optional_absent", "selected_stage_output"}
+        if request.stage_sequence == 6:
+            allowed_resolutions.add("hash_bound_task_seed")
         if any(
-            item.resolution not in {
-                "optional_absent",
-                "selected_stage_output",
-            }
+            item.resolution not in allowed_resolutions
             or (
                 item.resolution == "selected_stage_output"
                 and (
@@ -402,17 +402,27 @@ def build_methodology_stage_run_claim_context(
                     != item.producer_stage_keys[0]
                 )
             )
+            or (
+                item.resolution == "hash_bound_task_seed"
+                and (
+                    not item.required
+                    or item.instance_binding != "task_seed"
+                    or item.source_producer_stage_key is None
+                    or item.producer_stage_keys
+                    or item.seed_artifact is None
+                )
+            )
             for item in input_contracts
         ):
             raise ValueError(
-                "Methodology sequence-5 input resolution exceeds its bounded scope"
+                "Methodology Stage input resolution exceeds its bounded scope"
             )
-        if len(selected_inputs) != len(snapshot.input_artifact_bindings):
+        if len(resolved_inputs) != len(snapshot.input_artifact_bindings):
             raise ValueError(
-                "Methodology sequence-5 selected input Artifact set differs"
+                "Methodology Stage resolved input Artifact set differs"
             )
         for input_contract, binding in zip(
-            selected_inputs,
+            resolved_inputs,
             snapshot.input_artifact_bindings,
             strict=True,
         ):
@@ -423,9 +433,20 @@ def build_methodology_stage_run_claim_context(
                 or binding.producer_stage_key
                 != input_contract.source_producer_stage_key
                 or binding.artifact.kind != input_contract.kind
+                or (
+                    input_contract.resolution == "selected_stage_output"
+                    and binding.producer_run_id is None
+                )
+                or (
+                    input_contract.resolution == "hash_bound_task_seed"
+                    and (
+                        binding.producer_run_id is not None
+                        or binding.artifact != input_contract.seed_artifact
+                    )
+                )
             ):
                 raise ValueError(
-                    "Methodology sequence-5 input Artifact binding differs"
+                    "Methodology Stage input Artifact binding differs"
                 )
     if request.repository != contract.repository:
         raise ValueError(

@@ -266,6 +266,45 @@ class MethodologyDispatchRunner:
         )
 
 
+class UnboundSeedOutputMethodologyDispatchRunner(MethodologyDispatchRunner):
+    async def run(self, runtime, prompt, **kwargs):
+        result = await super().run(runtime, prompt, **kwargs)
+        context = _context_from_prompt(prompt)
+        seed = next(
+            item
+            for item in context.input_artifacts
+            if item.location is not None
+        )
+        assert seed.location is not None
+        payload = json.loads(result.stdout)
+        payload["output_artifacts"].append(
+            {
+                "schema_version": "1.0",
+                "artifact_id": seed.artifact_id,
+                "project_id": context.project_id,
+                "task_id": context.task_id,
+                "stage_key": context.stage_key,
+                "producer": payload["producer"],
+                "kind": seed.kind,
+                "storage": "referenced",
+                "version": seed.version,
+                "sha256": seed.sha256,
+                "media_type": "application/json",
+                "content": None,
+                "location": seed.location.model_dump(mode="json"),
+                "created_at": utc_now(),
+            }
+        )
+        payload = seal_model_payload(
+            HandoffPack,
+            {key: value for key, value in payload.items() if key != "content_sha256"},
+        )
+        return replace(
+            result,
+            stdout=json.dumps(payload, ensure_ascii=False),
+        )
+
+
 def _database_dump(tasks: TaskStore) -> str:
     with sqlite3.connect(tasks.db_path) as db:
         return "\n".join(db.iterdump())
@@ -7454,6 +7493,58 @@ async def _claimed_sequence_five_methodology_run(tmp_path):
     )
 
 
+async def _settled_sequence_five_methodology_run(tmp_path):
+    claimed = await _claimed_sequence_five_methodology_run(tmp_path)
+    _, service, contract, *_ = claimed
+    service.runner = MethodologyDispatchRunner()
+    dispatch = await service.dispatch_methodology_next_stage_run(
+        contract.task_id,
+        allow_unbounded_native_usage=True,
+    )
+    assert dispatch.dispatch_claim.stage_sequence == 5
+    assert dispatch.stage_status.value == "completed"
+    assert dispatch.gate_status.value == "passed"
+    assert dispatch.next_stage_key == contract.stages[5].stage_key
+    return (*claimed, dispatch)
+
+
+async def _claimed_sequence_six_methodology_run(tmp_path):
+    settled = await _settled_sequence_five_methodology_run(tmp_path)
+    tasks, service, contract, *_, predecessor_dispatch = settled
+    gate_request = _sequence_three_stage_gate_request(
+        tasks,
+        service,
+        contract,
+        predecessor_dispatch,
+        stage_sequence=6,
+    )
+    gate_receipt = service.configure_methodology_next_stage_gate(
+        contract.task_id,
+        gate_request,
+        principal=_migration_principal(),
+    )
+    claim_request = _sequence_three_stage_run_claim_request(
+        tasks,
+        service,
+        contract,
+        predecessor_dispatch,
+        gate_receipt,
+        stage_sequence=6,
+    )
+    claim_receipt = service.claim_methodology_next_stage_run(
+        contract.task_id,
+        claim_request,
+        principal=_migration_principal(),
+    )
+    return (
+        *settled,
+        gate_request,
+        gate_receipt,
+        claim_request,
+        claim_receipt,
+    )
+
+
 @pytest.mark.asyncio
 async def test_methodology_sequence_four_produces_required_artifacts_and_settles(
     tmp_path,
@@ -7917,6 +8008,235 @@ async def test_methodology_sequence_five_handoff_tamper_blocks_consumers(
             "selected input Artifact authority drifted|"
             "Persisted Handoff Pack does not match"
         ),
+    ):
+        await service.dispatch_methodology_next_stage_run(
+            contract.task_id,
+            allow_unbounded_native_usage=True,
+        )
+
+    assert _database_dump(tasks) == before
+
+
+@pytest.mark.asyncio
+async def test_methodology_sequence_six_binds_seed_and_prior_output_and_settles(
+    tmp_path,
+):
+    claimed = await _claimed_sequence_six_methodology_run(tmp_path)
+    _, service, contract = claimed[:3]
+    sequence_five_claim = claimed[21]
+    sequence_five_dispatch = claimed[22]
+    gate_receipt = claimed[-3]
+    claim_receipt = claimed[-1]
+    stage = contract.stages[5]
+
+    assert stage.stage_key == "code-generation-unit-001"
+    assert gate_receipt.stage_sequence == 6
+    assert gate_receipt.predecessor_dispatch_receipt_id == (
+        sequence_five_dispatch.receipt_id
+    )
+    assert claim_receipt.stage_sequence == 6
+    assert [
+        item.source_artifact_id
+        for item in claim_receipt.input_artifact_bindings
+    ] == ["unit-of-work", "requirements"]
+    seed_binding, requirements_binding = (
+        claim_receipt.input_artifact_bindings
+    )
+    seed_contract = next(
+        item
+        for item in stage.context.input_contracts
+        if item.resolution == "hash_bound_task_seed"
+    )
+    assert seed_binding.consumer_stage_key == stage.stage_key
+    assert seed_binding.producer_stage_key == "units-generation"
+    assert seed_binding.producer_run_id is None
+    assert seed_binding.artifact == seed_contract.seed_artifact
+    assert seed_binding.artifact.location is not None
+    assert service.control_plane.get_artifact(
+        seed_binding.artifact.artifact_id,
+        seed_binding.artifact.version,
+    ) is None
+    assert requirements_binding.consumer_stage_key == stage.stage_key
+    assert requirements_binding.producer_stage_key == contract.stages[4].stage_key
+    assert requirements_binding.producer_run_id == sequence_five_claim.run_id
+    requirements_artifact = service.control_plane.get_artifact(
+        requirements_binding.artifact.artifact_id,
+        requirements_binding.artifact.version,
+    )
+    assert requirements_artifact is not None
+    assert requirements_artifact.version_ref() == requirements_binding.artifact
+
+    protocol_run = service.control_plane.get_protocol_run(claim_receipt.run_id)
+    assert protocol_run is not None
+    assert protocol_run.context_pack.input_artifacts == [
+        seed_binding.artifact,
+        requirements_binding.artifact,
+    ]
+    assert [item.kind for item in claim_receipt.required_outputs] == [
+        "code-generation-plan",
+        "code-summary",
+    ]
+
+    runner = MethodologyDispatchRunner()
+    service.runner = runner
+    receipt = await service.dispatch_methodology_next_stage_run(
+        contract.task_id,
+        allow_unbounded_native_usage=True,
+    )
+
+    assert receipt.dispatch_claim.stage_sequence == 6
+    assert receipt.stage_status.value == "completed"
+    assert receipt.gate_status.value == "passed"
+    assert receipt.next_stage_key == contract.stages[6].stage_key
+    assert receipt.artifact_ids == sorted(
+        item.output_id for item in claim_receipt.required_outputs
+    )
+    assert len(receipt.evidence_ids) == len(gate_receipt.requirements)
+    assert runner.calls == 1
+    assert len(runner.prompts[0].encode("utf-8")) <= PROTOCOL_PROMPT_LIMIT
+    unified = service.unified_status(contract.task_id)
+    assert len(unified.runs) == 6
+    assert len(unified.usage) == 6
+    assert unified.budget.token_reserved == 0
+
+    replay = await service.dispatch_methodology_next_stage_run(
+        contract.task_id,
+        allow_unbounded_native_usage=True,
+    )
+    assert replay == receipt
+    assert runner.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_methodology_sequence_six_rejects_seed_as_unbound_output(
+    tmp_path,
+):
+    claimed = await _claimed_sequence_six_methodology_run(tmp_path)
+    tasks, service, contract = claimed[:3]
+    claim_receipt = claimed[-1]
+    seed = claim_receipt.input_artifact_bindings[0].artifact
+    with sqlite3.connect(tasks.db_path) as db:
+        artifact_count_before = db.execute(
+            "SELECT COUNT(*) FROM protocol_artifacts"
+        ).fetchone()[0]
+
+    runner = UnboundSeedOutputMethodologyDispatchRunner()
+    service.runner = runner
+    receipt = await service.dispatch_methodology_next_stage_run(
+        contract.task_id,
+        allow_unbounded_native_usage=True,
+    )
+
+    assert runner.calls == 1
+    assert receipt.protocol_state.schema_status.value == "protocol_failed"
+    assert receipt.protocol_state.semantic_stage_result.value == "blocked"
+    assert receipt.handoff_pack_id is None
+    assert receipt.artifact_ids == []
+    assert receipt.evidence_ids == []
+    assert receipt.stage_status.value == "blocked"
+    assert receipt.gate_status.value == "pending"
+    assert service.control_plane.get_artifact(seed.artifact_id, seed.version) is None
+    with sqlite3.connect(tasks.db_path) as db:
+        assert db.execute(
+            "SELECT COUNT(*) FROM protocol_artifacts"
+        ).fetchone()[0] == artifact_count_before
+
+
+@pytest.mark.asyncio
+async def test_methodology_sequence_six_seed_file_tamper_is_zero_write(
+    tmp_path,
+):
+    settled = await _settled_sequence_five_methodology_run(tmp_path)
+    tasks, service, contract, *_, predecessor_dispatch = settled
+    gate_request = _sequence_three_stage_gate_request(
+        tasks,
+        service,
+        contract,
+        predecessor_dispatch,
+        stage_sequence=6,
+    )
+    gate_receipt = service.configure_methodology_next_stage_gate(
+        contract.task_id,
+        gate_request,
+        principal=_migration_principal(),
+    )
+    claim_request = _sequence_three_stage_run_claim_request(
+        tasks,
+        service,
+        contract,
+        predecessor_dispatch,
+        gate_receipt,
+        stage_sequence=6,
+    )
+    seed_ref = next(
+        item.seed_artifact
+        for item in contract.stages[5].context.input_contracts
+        if item.resolution == "hash_bound_task_seed"
+    )
+    assert seed_ref is not None
+    assert seed_ref.location is not None
+    seed_path = tmp_path / "repo" / seed_ref.location.path
+    seed_path.write_text("tampered sequence-6 seed", encoding="utf-8")
+    before = _database_dump(tasks)
+
+    with pytest.raises(
+        OrchestrationConflictError,
+        match="Artifact binding is stale",
+    ):
+        service.claim_methodology_next_stage_run(
+            contract.task_id,
+            claim_request,
+            principal=_migration_principal(),
+        )
+
+    assert _database_dump(tasks) == before
+
+
+@pytest.mark.asyncio
+async def test_methodology_sequence_six_seed_binding_tamper_blocks_consumers(
+    tmp_path,
+):
+    claimed = await _claimed_sequence_six_methodology_run(tmp_path)
+    tasks, service, contract = claimed[:3]
+    claim_receipt = claimed[-1]
+    payload = claim_receipt.model_dump(mode="json")
+    payload["input_artifact_bindings"][0]["producer_run_id"] = (
+        "forged-seed-producer-run"
+    )
+    forged = MethodologyStageRunClaimReceipt.model_validate(
+        seal_model_payload(MethodologyStageRunClaimReceipt, payload)
+    )
+    with sqlite3.connect(tasks.db_path) as db:
+        db.execute(
+            """
+            UPDATE orchestration_methodology_stage_run_claims
+            SET receipt_payload = ?, receipt_sha256 = ?
+            WHERE task_id = ? AND stage_sequence = 6
+            """,
+            (
+                json.dumps(forged.model_dump(mode="json")),
+                forged.content_sha256,
+                contract.task_id,
+            ),
+        )
+        db.commit()
+    before = _database_dump(tasks)
+
+    for read in (
+        lambda: service.store.get_methodology_stage_run_claim(
+            contract.task_id,
+            claim_receipt.stage_key,
+        ),
+        lambda: service.unified_status(contract.task_id),
+    ):
+        with pytest.raises(
+            OrchestrationValidationError,
+            match="Context or input Artifact authority drifted",
+        ):
+            read()
+    with pytest.raises(
+        OrchestrationValidationError,
+        match="Context or input Artifact authority drifted",
     ):
         await service.dispatch_methodology_next_stage_run(
             contract.task_id,

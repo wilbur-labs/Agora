@@ -361,6 +361,14 @@ def _handoff_matches_context(context: ContextPack, handoff: HandoffPack) -> bool
     ):
         return False
     producer = handoff.producer
+    allowed_outputs = {
+        (output.output_id, output.kind) for output in context.required_outputs
+    }
+    if any(
+        (artifact.artifact_id, artifact.kind) not in allowed_outputs
+        for artifact in handoff.output_artifacts
+    ):
+        return False
     if handoff.stage_result == StageResult.SUCCEEDED:
         outputs = {
             (artifact.artifact_id, artifact.kind)

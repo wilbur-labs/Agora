@@ -40,12 +40,12 @@ def methodology_stage_run_id(
 
 
 class MethodologyStageInputArtifactBinding(ProtocolModel):
-    """One selected prior-Stage Artifact consumed by a later Context Pack."""
+    """One exact prior-Stage output or Task seed consumed by a Context."""
 
     consumer_stage_key: StableId
     source_artifact_id: StableId
     producer_stage_key: StableId
-    producer_run_id: StableId
+    producer_run_id: StableId | None
     artifact: ArtifactVersionRef
 
     @model_validator(mode="after")
@@ -53,6 +53,10 @@ class MethodologyStageInputArtifactBinding(ProtocolModel):
         if self.artifact.kind != self.source_artifact_id:
             raise ValueError(
                 "methodology Stage input Artifact kind must match its source id"
+            )
+        if self.producer_run_id is None and self.artifact.location is None:
+            raise ValueError(
+                "methodology Task seed input requires an external Artifact location"
             )
         return self
 

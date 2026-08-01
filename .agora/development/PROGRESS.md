@@ -1,5 +1,70 @@
 # Agora Control Plane Development Progress
 
+## 2026-07-31 - AWS AI-DLC sequence-6 Task seed and prior output (reviewed)
+
+### Bounded implementation
+
+- [x] Extended the authenticated Gate, formal Run claim, native dispatch/
+  recovery, settlement, usage, and projection chain to exact execution-contract
+  sequence 6 (`code-generation-unit-001`).
+- [x] Generalized the existing input binding without changing old receipt
+  payloads: a non-null producer Run continues to identify a selected formal
+  output, while a null producer Run is accepted only for an exact external
+  Artifact location. The generated receipt Schema now documents that nullable
+  producer-Run boundary.
+- [x] Resolved the sequence-6 Context in frozen order from the hash-bound
+  `unit-of-work` Task seed and the registered sequence-5 `requirements`
+  Artifact. Six unavailable design inputs remain explicitly absent; the seed
+  is never fabricated as a protocol Artifact or attributed to a future Run.
+- [x] Recomputed seed identity/version/hash/repository/ref/commit/path from the
+  persisted migration request and execution contract, rehashed the live seed
+  before claim, and allowed only null-producer refs through the Control Plane's
+  external-input exception. Selected outputs retain the complete recursive
+  dispatch/Handoff/Artifact authority added for sequence 5.
+- [x] Added end-to-end settlement/replay, prompt-bound, six-Run usage,
+  live-seed-tamper zero-write, and resealed seed-as-producer tamper regressions.
+  Updated the Gate, claim, dispatch, first-dispatch, checked Schema, and next
+  repeated-unit boundary documentation.
+- [x] Closed the independent Codex review's high-severity unbound-output
+  finding at both pre-registration boundaries. The Agent adapter now rejects
+  every Artifact id/kind pair outside the Context Pack's complete declared
+  output set, and the Control Plane repeats the same check before registration.
+  A malicious sequence-6 Handoff that returns the external Task seed as a
+  current-Run output settles as protocol-failed/blocked with no Handoff,
+  Artifact, or Evidence registration.
+
+### Verification and review state
+
+- [x] Sequence-6 focused selection: 4 passed, 211 deselected. Combined
+  sequence-5/6 selection: 8 passed, 207 deselected. Combined sequence-4/5/6
+  selection: 11 passed, 204 deselected.
+- [x] Protocol freeze: 34 passed after regenerating the one changed checked
+  Schema.
+- [x] Complete methodology module: 215 passed. Complete non-integration backend
+  suite: 790 passed, 18 deselected, with only the existing Starlette/httpx
+  deprecation and Windows Proactor cleanup warnings.
+- [x] Protocol Schema export/check, system-Temp-isolated `compileall`, all three
+  relevant CLI help checks, and `git diff --check` passed.
+- [x] Independent Codex methodology/protocol replacement review found one
+  high-severity unbound-output registration path. After the adapter and
+  Control Plane checks plus the sequence-6 zero-registration regression were
+  added and final counts corrected, the same reviewer returned
+  `CODEX_APPROVE`.
+- [x] Independent Claude Code review covered the complete final diff in a
+  production/Schema partition and a tests/docs/PROGRESS partition after an API
+  connection failure and two hung attempts produced no verdict and were not
+  counted. The partitions returned `CLAUDE_CORE_APPROVE` and
+  `CLAUDE_COVERAGE_APPROVE`; a final no-tools merge returned
+  `CLAUDE_APPROVE`.
+
+### Current checkpoint and next safe action
+
+Implementation, complete validation, the user-authorized independent Codex
+replacement gate, and the independent Claude gate are complete on clean pushed
+baseline `3217007`. This increment is ready for an exact-file commit/push. The
+next bounded slice is sequence 7 repeated-unit isolation for
+`code-generation-unit-002`.
+
 ## 2026-07-31 - AWS AI-DLC sequence-5 selected input Artifacts (reviewed)
 
 ### Bounded implementation

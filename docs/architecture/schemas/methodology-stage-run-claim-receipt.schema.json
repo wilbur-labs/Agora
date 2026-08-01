@@ -85,7 +85,7 @@
     },
     "MethodologyStageInputArtifactBinding": {
       "additionalProperties": false,
-      "description": "One selected prior-Stage Artifact consumed by a later Context Pack.",
+      "description": "One exact prior-Stage output or Task seed consumed by a Context.",
       "properties": {
         "artifact": {
           "$ref": "#/$defs/ArtifactVersionRef"
@@ -98,11 +98,18 @@
           "type": "string"
         },
         "producer_run_id": {
-          "maxLength": 128,
-          "minLength": 1,
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
-          "title": "Producer Run Id",
-          "type": "string"
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Producer Run Id"
         },
         "producer_stage_key": {
           "maxLength": 128,

@@ -1,12 +1,12 @@
 # AWS AI-DLC methodology later-Stage Run claim v1
 
-Status: reviewed implementation; sequences 2 through 5; no runtime process
+Status: reviewed implementation; sequences 2 through 6; no runtime process
 
 ## Purpose and entry point
 
 After the immediately preceding methodology Run settles successfully and the
 next formal Gate is configured, the authenticated Control Plane may claim the
-exact execution-contract sequence-2, sequence-3, sequence-4, or sequence-5 Run:
+exact execution-contract sequence-2 through sequence-6 Run:
 
 ```powershell
 agora task migration-next-stage-run-claim SUCCESSOR_TASK_ID `
@@ -82,6 +82,26 @@ exact version references are sealed into the sequence-5 Context Pack; Artifact
 content is not copied into policy text. Sequence 5 materializes the two frozen
 `requirements` and `requirements-analysis-questions` outputs.
 
+Sequence 6 is the first selected `code-generation` unit. Six unavailable
+upstream design inputs remain explicitly `optional_absent`. Its two exact
+inputs stay in frozen contract order:
+
+1. the required `unit-of-work` Task seed, whose Artifact id/version/hash and
+   repository/ref/commit/path are derived from and cross-checked against the
+   immutable migration request and execution contract; and
+2. the required `requirements` Artifact produced by the settled sequence-5
+   formal Run.
+
+`MethodologyStageInputArtifactBinding.producer_run_id` is non-null for a
+selected formal producer and null only for an external Task seed with an exact
+repository location. This keeps old sequence-5 receipt payloads and hashes
+stable while allowing the sequence-6 receipt and Context Pack to distinguish a
+real prior Run from a seed that has no producer Run. The claim transaction
+passes only those null-producer references through the Control Plane's bounded
+external-input exception; selected prior outputs still require registered
+`protocol_artifacts` rows. Live repository and seed hashes are rechecked before
+the claim. Sequence 6 materializes `code-generation-plan` and `code-summary`.
+
 Five bounded policy entries preserve:
 
 - the execution-contract and repository binding;
@@ -105,7 +125,7 @@ usage, Artifact, Evidence, Gate evaluation, or dispatch authority is created.
 The compatibility Plan and Stage rows remain unchanged.
 
 The immutable claim ledger records the active Token/cost reservation. Unified
-Task projection includes each protocol-only sequence-2/3/4/5 Run with its pinned
+Task projection includes each protocol-only sequence-2/3/4/5/6 Run with its pinned
 runtime and reservation while the formal Run remains unsettled. The receipt
 fixes:
 
@@ -125,7 +145,7 @@ provider_substitution = false
 
 ## Succeeding process boundary
 
-Sequence-2 through sequence-5 dispatch are defined in
+Sequence-2 through sequence-6 dispatch are defined in
 `aws-aidlc-methodology-stage-run-dispatch-v1.md`. It attaches exactly one pinned
 runtime process to each existing formal Run and settles it through
 the unchanged Handoff parser and Control Plane Gate evaluator. It uses a
@@ -133,7 +153,7 @@ separate later-Stage dispatch/recovery ledger without changing the frozen
 first-Run contracts, creating a second Run or Context Pack, or inferring
 semantic success from process exit code.
 
-Positions beyond sequence 5, including task-seed input resolution,
+Positions beyond sequence 6, including repeated-unit selection,
 cross-Stage rework, dynamic provider substitution, authenticated HTTP, Task
 Workbench UI, and native AWS AI-DLC file installation remain separate reviewed
 increments.
