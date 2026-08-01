@@ -23,10 +23,12 @@ from agora.protocol.agent_adapter import AgentAdapterResult
 from agora.protocol.hashing import canonical_sha256, seal_model_payload
 from agora.protocol.methodology_execution import MethodologyExecutionContract
 from agora.protocol.models import (
+    Artifact,
     ConsultationCandidate,
     ConsultationCandidateDisposition,
     ContextPack,
     GateRequirement,
+    HandoffPack,
     PinnedRuntimePreflightDecision,
     ProcessStatus,
     ProviderUsageObservation,
@@ -58,6 +60,7 @@ from agora.protocol.methodology_stage_gate import (
     MethodologyStageGateRequest,
 )
 from agora.protocol.methodology_stage_run_claim import (
+    MethodologyStageInputArtifactBinding,
     MethodologyStageRunClaimReceipt,
     MethodologyStageRunClaimRequest,
 )
@@ -5594,7 +5597,7 @@ class OrchestrationStore:
                 """,
                 (task_id,),
             ).fetchone()
-        elif stage_sequence in {3, 4}:
+        elif stage_sequence in {3, 4, 5}:
             direct_row = db.execute(
                 """
                 SELECT *
@@ -5617,7 +5620,7 @@ class OrchestrationStore:
             ).fetchone()
         else:
             raise OrchestrationConflictError(
-                "Methodology predecessor resolution is bounded to sequences 2, 3, or 4"
+                "Methodology predecessor resolution is bounded to sequences 2 through 5"
             )
 
         if (
@@ -5665,7 +5668,7 @@ class OrchestrationStore:
     ) -> None:
         """Fail closed on the direct predecessor behind one Gate receipt."""
 
-        if receipt.stage_sequence not in {2, 3, 4}:
+        if receipt.stage_sequence not in {2, 3, 4, 5}:
             raise OrchestrationValidationError(
                 "Persisted methodology successor predecessor sequence is unsupported"
             )
@@ -5769,6 +5772,231 @@ class OrchestrationStore:
         )
 
     @classmethod
+    def _methodology_stage_input_artifact_bindings_tx(
+        cls,
+        db: sqlite3.Connection,
+        *,
+        task_id: str,
+        project_id: str,
+        contract: MethodologyExecutionContract,
+        stage_sequence: int,
+    ) -> tuple[MethodologyStageInputArtifactBinding, ...]:
+        """Resolve the exact prior-Stage Artifacts for one bounded Context."""
+
+        if (
+            contract.task_id != task_id
+            or contract.project_id != project_id
+            or len(contract.stages) < stage_sequence
+        ):
+            raise OrchestrationValidationError(
+                "Methodology Stage input contract scope differs"
+            )
+        stage_contract = contract.stages[stage_sequence - 1]
+        input_contracts = stage_contract.context.input_contracts
+        if stage_sequence <= 4:
+            if input_contracts:
+                raise OrchestrationValidationError(
+                    "Methodology sequence-2/3/4 input contract drifted"
+                )
+            return ()
+        if stage_sequence != 5:
+            raise OrchestrationValidationError(
+                "Methodology input Artifact resolution exceeds its bounded scope"
+            )
+
+        bindings: list[MethodologyStageInputArtifactBinding] = []
+        for input_contract in input_contracts:
+            if input_contract.resolution == "optional_absent":
+                if (
+                    input_contract.required
+                    or input_contract.instance_binding != "optional_absent"
+                    or input_contract.source_producer_stage_key is not None
+                    or input_contract.producer_stage_keys
+                    or input_contract.seed_artifact is not None
+                ):
+                    raise OrchestrationValidationError(
+                        "Methodology optional-absent input contract drifted"
+                    )
+                continue
+            if (
+                input_contract.resolution != "selected_stage_output"
+                or input_contract.instance_binding != "single"
+                or len(input_contract.producer_stage_keys) != 1
+                or input_contract.source_producer_stage_key
+                != input_contract.producer_stage_keys[0]
+                or input_contract.seed_artifact is not None
+            ):
+                raise OrchestrationValidationError(
+                    "Methodology sequence-5 selected input exceeds its bounded scope"
+                )
+
+            producer_matches = [
+                (sequence, item)
+                for sequence, item in enumerate(contract.stages, start=1)
+                if item.stage_key
+                == input_contract.source_producer_stage_key
+            ]
+            if (
+                len(producer_matches) != 1
+                or producer_matches[0][0] >= stage_sequence
+            ):
+                raise OrchestrationValidationError(
+                    "Methodology selected input producer Stage differs"
+                )
+            producer_sequence, producer_stage = producer_matches[0]
+            dispatch_row = db.execute(
+                """
+                SELECT *
+                FROM orchestration_methodology_stage_run_dispatches
+                WHERE task_id = ? AND stage_sequence = ?
+                """,
+                (task_id, producer_sequence),
+            ).fetchone()
+            claim_row = db.execute(
+                """
+                SELECT *
+                FROM orchestration_methodology_stage_run_claims
+                WHERE task_id = ? AND stage_sequence = ? AND stage_key = ?
+                """,
+                (task_id, producer_sequence, producer_stage.stage_key),
+            ).fetchone()
+            if dispatch_row is None or claim_row is None:
+                raise OrchestrationValidationError(
+                    "Methodology selected input producer execution is unavailable"
+                )
+            dispatch = cls._methodology_stage_dispatch(dispatch_row)
+            if (
+                dispatch.state != MethodologyDispatchState.SETTLED
+                or dispatch.receipt is None
+            ):
+                raise OrchestrationValidationError(
+                    "Methodology selected input producer dispatch is not settled"
+                )
+            cls._validate_methodology_stage_dispatch_authority_tx(
+                db,
+                dispatch_row,
+                dispatch,
+            )
+            producer_claim = MethodologyStageRunClaimReceipt.model_validate_json(
+                claim_row["receipt_payload"]
+            )
+            expected_outputs = build_methodology_stage_required_outputs(
+                task_id=task_id,
+                stage_contract=producer_stage,
+                run_id=producer_claim.run_id,
+            )
+            output_matches = [
+                expected
+                for output_contract, expected in zip(
+                    producer_stage.context.output_contracts,
+                    expected_outputs,
+                    strict=True,
+                )
+                if output_contract.source_output_id
+                == input_contract.source_artifact_id
+            ]
+            if (
+                tuple(producer_claim.required_outputs) != expected_outputs
+                or len(output_matches) != 1
+            ):
+                raise OrchestrationValidationError(
+                    "Methodology selected input producer output contract drifted"
+                )
+            expected_output = output_matches[0]
+            if (
+                expected_output.kind != input_contract.kind
+                or expected_output.output_id
+                not in dispatch.receipt.artifact_ids
+            ):
+                raise OrchestrationValidationError(
+                    "Methodology selected input producer receipt differs"
+                )
+
+            artifact_row = db.execute(
+                """
+                SELECT * FROM protocol_artifacts
+                WHERE artifact_id = ? AND version = 1
+                """,
+                (expected_output.output_id,),
+            ).fetchone()
+            protocol_row = db.execute(
+                "SELECT * FROM protocol_runs WHERE run_id = ?",
+                (producer_claim.run_id,),
+            ).fetchone()
+            if (
+                artifact_row is None
+                or protocol_row is None
+                or protocol_row["handoff_payload"] is None
+                or protocol_row["handoff_sha256"] is None
+            ):
+                raise OrchestrationValidationError(
+                    "Methodology selected input Artifact is unavailable"
+                )
+            artifact = Artifact.model_validate_json(artifact_row["payload"])
+            handoff = HandoffPack.model_validate_json(
+                protocol_row["handoff_payload"]
+            )
+            location = artifact.location
+            handoff_matches = [
+                item for item in handoff.output_artifacts if item == artifact
+            ]
+            if (
+                canonical_sha256(artifact) != artifact_row["payload_sha256"]
+                or artifact.artifact_id != expected_output.output_id
+                or artifact.version != 1
+                or artifact.project_id != project_id
+                or artifact.task_id != task_id
+                or artifact.stage_key != producer_stage.stage_key
+                or artifact.producer.run_id != producer_claim.run_id
+                or artifact.producer.stage_key != producer_stage.stage_key
+                or artifact.producer.runtime != producer_stage.runtime
+                or artifact.kind != input_contract.kind
+                or artifact_row["version"] != artifact.version
+                or artifact_row["project_id"] != artifact.project_id
+                or artifact_row["task_id"] != artifact.task_id
+                or artifact_row["stage_key"] != artifact.stage_key
+                or artifact_row["run_id"] != artifact.producer.run_id
+                or artifact_row["kind"] != artifact.kind
+                or artifact_row["storage"] != artifact.storage.value
+                or artifact_row["sha256"] != artifact.sha256
+                or artifact_row["repository_id"]
+                != (location.repository_id if location else None)
+                or artifact_row["ref"] != (location.ref if location else None)
+                or artifact_row["commit_sha"]
+                != (location.commit_sha if location else None)
+                or artifact_row["path"] != (location.path if location else None)
+                or artifact_row["created_at"] != artifact.created_at.isoformat()
+                or handoff.pack_id != dispatch.receipt.handoff_pack_id
+                or handoff.content_sha256
+                != dispatch.receipt.handoff_pack_sha256
+                or handoff.content_sha256 != protocol_row["handoff_sha256"]
+                or protocol_row["project_id"] != project_id
+                or protocol_row["task_id"] != task_id
+                or protocol_row["stage_key"] != producer_stage.stage_key
+                or handoff.project_id != project_id
+                or handoff.task_id != task_id
+                or handoff.stage_key != producer_stage.stage_key
+                or handoff.run_id != producer_claim.run_id
+                or handoff.producer.runtime != producer_stage.runtime
+                or handoff.producer.run_id != producer_claim.run_id
+                or handoff.producer.stage_key != producer_stage.stage_key
+                or len(handoff_matches) != 1
+            ):
+                raise OrchestrationValidationError(
+                    "Methodology selected input Artifact authority drifted"
+                )
+            bindings.append(
+                MethodologyStageInputArtifactBinding(
+                    consumer_stage_key=stage_contract.stage_key,
+                    source_artifact_id=input_contract.source_artifact_id,
+                    producer_stage_key=producer_stage.stage_key,
+                    producer_run_id=producer_claim.run_id,
+                    artifact=artifact.version_ref(),
+                )
+            )
+        return tuple(bindings)
+
+    @classmethod
     def _validate_methodology_stage_run_claim_authority_tx(
         cls,
         db: sqlite3.Connection,
@@ -5844,6 +6072,61 @@ class OrchestrationStore:
             gate_row,
             gate_receipt,
         )
+        contract_row = db.execute(
+            """
+            SELECT * FROM orchestration_methodology_execution_contracts
+            WHERE task_id = ? AND contract_id = ?
+            """,
+            (receipt.task_id, receipt.execution_contract_id),
+        ).fetchone()
+        protocol_row = db.execute(
+            "SELECT * FROM protocol_runs WHERE run_id = ?",
+            (receipt.run_id,),
+        ).fetchone()
+        if contract_row is None or protocol_row is None:
+            raise OrchestrationValidationError(
+                "Methodology Stage Run Context authority is missing"
+            )
+        contract = MethodologyExecutionContract.model_validate_json(
+            contract_row["contract_payload"]
+        )
+        context_pack = ContextPack.model_validate_json(
+            protocol_row["context_payload"]
+        )
+        expected_bindings = cls._methodology_stage_input_artifact_bindings_tx(
+            db,
+            task_id=receipt.task_id,
+            project_id=receipt.project_id,
+            contract=contract,
+            stage_sequence=receipt.stage_sequence,
+        )
+        expected_outputs = build_methodology_stage_required_outputs(
+            task_id=receipt.task_id,
+            stage_contract=contract.stages[receipt.stage_sequence - 1],
+            run_id=receipt.run_id,
+        )
+        if (
+            contract.content_sha256 != contract_row["contract_sha256"]
+            or contract.content_sha256 != receipt.execution_contract_sha256
+            or contract.project_id != receipt.project_id
+            or contract.task_id != receipt.task_id
+            or context_pack.content_sha256 != protocol_row["context_sha256"]
+            or context_pack.pack_id != protocol_row["context_pack_id"]
+            or context_pack.pack_id != receipt.context_pack_id
+            or context_pack.content_sha256 != receipt.context_pack_sha256
+            or context_pack.project_id != receipt.project_id
+            or context_pack.task_id != receipt.task_id
+            or context_pack.stage_key != receipt.stage_key
+            or context_pack.run_id != receipt.run_id
+            or tuple(receipt.input_artifact_bindings) != expected_bindings
+            or tuple(context_pack.input_artifacts)
+            != tuple(item.artifact for item in expected_bindings)
+            or tuple(receipt.required_outputs) != expected_outputs
+            or tuple(context_pack.required_outputs) != expected_outputs
+        ):
+            raise OrchestrationValidationError(
+                "Methodology Stage Run Context or input Artifact authority drifted"
+            )
 
     def get_methodology_stage_gate(
         self,
@@ -6838,6 +7121,15 @@ class OrchestrationStore:
                 raise OrchestrationValidationError(
                     "Methodology Stage Run persisted authority binding drifted"
                 )
+            input_artifact_bindings = (
+                self._methodology_stage_input_artifact_bindings_tx(
+                    db,
+                    task_id=task_id,
+                    project_id=task.project_id,
+                    contract=contract,
+                    stage_sequence=request.stage_sequence,
+                )
+            )
             if (
                 "control_plane.approve" not in principal.permissions
                 or contract.project_id not in principal.projects
@@ -7071,7 +7363,7 @@ class OrchestrationStore:
                 route=route,
                 formal_stage=control_plane._stage(stage_row),
                 formal_gate=control_plane._gate_record(db, gate_row),
-                input_artifact_bindings=(),
+                input_artifact_bindings=input_artifact_bindings,
             )
             try:
                 context_pack = recheck(snapshot, now)
@@ -7094,7 +7386,10 @@ class OrchestrationStore:
                 or context_pack.run_id != request.run_id
                 or context_pack.pack_id != request.context_pack_id
                 or context_pack.budget != stage_contract.context.budget
-                or context_pack.input_artifacts
+                or tuple(context_pack.input_artifacts)
+                != tuple(
+                    item.artifact for item in input_artifact_bindings
+                )
                 or tuple(context_pack.required_outputs)
                 != expected_required_outputs
             ):
@@ -7260,7 +7555,10 @@ class OrchestrationStore:
                 "run_id": context_pack.run_id,
                 "context_pack_id": context_pack.pack_id,
                 "context_pack_sha256": context_pack.content_sha256,
-                "input_artifact_bindings": [],
+                "input_artifact_bindings": [
+                    item.model_dump(mode="json")
+                    for item in input_artifact_bindings
+                ],
                 "required_outputs": [
                     item.model_dump(mode="json")
                     for item in context_pack.required_outputs
@@ -7780,7 +8078,7 @@ class OrchestrationStore:
                 ):
                     raise
                 raise OrchestrationConflictError(str(exc)) from exc
-            if claim.task_id != task_id or claim.stage_sequence not in {2, 3, 4}:
+            if claim.task_id != task_id or claim.stage_sequence not in {2, 3, 4, 5}:
                 raise OrchestrationValidationError(
                     "Methodology Stage dispatch crosses its bounded scope"
                 )

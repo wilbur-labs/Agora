@@ -1,5 +1,60 @@
 # Agora Control Plane Development Progress
 
+## 2026-07-31 - AWS AI-DLC sequence-5 selected input Artifacts (reviewed)
+
+### Bounded implementation
+
+- [x] Extended the authenticated next-Stage Gate, formal Run claim, native
+  dispatch/recovery, Control Plane settlement, usage, and unified projection
+  to exact execution-contract sequence 5 without changing a protocol model or
+  checked JSON Schema.
+- [x] Added deterministic sequence-5 input resolution for exactly the selected
+  sequence-4 `business-overview`, `architecture`, and `code-structure`
+  Artifacts. `intent-statement`, `scope-document`, and `team-practices` remain
+  explicitly absent according to the frozen contract.
+- [x] Bound each selected input to the producer formal Run and Stage,
+  deterministic RequiredOutput, settled dispatch receipt, sealed Handoff,
+  registered Artifact version/payload hash, and consumer Context Pack. Reads,
+  claim replay, budget admission, unified projection, and dispatch all
+  recompute the same transitive authority and fail closed on drift.
+- [x] Added end-to-end coverage for the three exact input bindings, two exact
+  outputs, prompt bound, settlement/replay and five-Run usage projection;
+  source Artifact or producer Handoff ledger tamper blocks every consumer; an
+  unrelated same-kind Artifact cannot substitute for the missing deterministic
+  producer output.
+- [x] Updated the Gate, later-Stage claim/dispatch, and first-dispatch boundary
+  notes through sequence 5. Sequence 6 task-seed resolution, later inventory,
+  rework, HTTP, UI, provider substitution, and native AI-DLC installation
+  remain deferred.
+
+### Verification and review state
+
+- [x] Sequence-5 focused selection: 4 passed, 207 deselected. Combined
+  sequence-4/5 selection: 7 passed, 204 deselected.
+- [x] Complete methodology module: 211 passed. Complete non-integration backend
+  suite: 785 passed, 18 deselected, with only the existing Starlette/httpx
+  deprecation and Windows Proactor cleanup warnings.
+- [x] Protocol freeze: 34 passed. Protocol Schema export/check,
+  system-Temp-isolated `compileall`, all three relevant CLI help checks, and
+  `git diff --check` passed.
+- [x] Independent Codex methodology/protocol replacement review found no code
+  or authority defect. It requested one PROGRESS checkpoint consistency fix;
+  after the final counts and review-pending wording were corrected, it returned
+  `CODEX_APPROVE` on the latest tree.
+- [x] Independent Claude Code reviewed the complete final supplied diff after
+  two earlier tool-driven attempts ended without a verdict and were not
+  counted. It traced contract-order selection, producer dispatch/Handoff/
+  Artifact authority, consumer Context and recursive consumers, compatibility,
+  tests, and docs, found no actionable issue, and returned `CLAUDE_APPROVE`.
+
+### Current checkpoint and next safe action
+
+Implementation, complete validation, the user-authorized independent Codex
+replacement gate, and the independent Claude gate are complete on clean pushed
+baseline `dc994ed`. This increment is ready for an exact-file commit/push. The
+next bounded slice is exact sequence-6 input resolution, including its
+hash-bound Task seed.
+
 ## 2026-07-31 - AWS AI-DLC sequence-4 formal execution (reviewed)
 
 ### Bounded implementation

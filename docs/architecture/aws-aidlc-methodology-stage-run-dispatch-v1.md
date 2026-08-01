@@ -1,10 +1,10 @@
 # AWS AI-DLC methodology later-Stage Run dispatch v1
 
-Status: reviewed implementation; sequences 2 through 4
+Status: reviewed implementation; sequences 2 through 5
 
 ## Purpose and entry point
 
-After an authenticated sequence-2, sequence-3, or sequence-4 claim has created
+After an authenticated sequence-2 through sequence-5 claim has created
 one formal Run and sealed Context Pack, the orchestrator may attach exactly one
 pinned native process and settle that same Run:
 
@@ -31,8 +31,8 @@ Before any durable dispatch claim, the service reads and checks:
 - the immutable execution contract, current Gate and Run-claim receipts, and
   settled immediately preceding dispatch receipt;
 - the exact unsettled formal Run and sealed Context Pack;
-- the current authoritative sequence-2/3/4 `RUNNING` Stage, `PENDING` Gate, and
-  non-runnable route;
+- the current authoritative sequence-2/3/4/5 `RUNNING` Stage, `PENDING` Gate,
+  and non-runnable route;
 - the clean repository/ref/commit before and after native capability
   collection;
 - the complete frozen runtime-registry hash (including result format, version
@@ -55,7 +55,7 @@ five-minute recovery lease. The formal Run-claim ledger remains immutable with
 The current Run is selected by the highest formal later-Stage claim and is
 cross-checked against the Task's compatibility cursor and authoritative route.
 Every later-Stage dispatch row retains the sequence-1 dispatch id as its
-compatibility lineage root. For sequences 3 and 4, the process claim also
+compatibility lineage root. For sequences 3 through 5, the process claim also
 reuses and validates the foreign-keyed immediately preceding later-Stage
 dispatch binding from the Gate/Run-claim chain. Authority validation walks
 that chain toward sequence 1, so a tampered transitive predecessor cannot
@@ -84,7 +84,7 @@ the next Stage. Usage normalization uses the claim's sealed result format, not
 a mutable in-memory runtime registry.
 
 Unified Task projection merges first-Run and later-Stage dispatches by formal
-Run identity. Each sequence-2/3/4 reservation becomes settled usage only when
+Run identity. Each sequence-2/3/4/5 reservation becomes settled usage only when
 its later usage ledger exists; unavailable native measurements consume the
 original reservation rather than being recorded as zero. Projection and admission reads
 cross-check the denormalized reservation and usage rows against their sealed
@@ -119,15 +119,18 @@ does not match its sealed payload fails closed.
 ## Bounded authority and next boundary
 
 This implementation dispatches sequence 2 (`workspace-detection`), sequence 3
-(`state-init`), and the exact selected sequence-4 Stage. Sequence 4 is the first
-bounded later-Stage position with non-empty required outputs; successful
+(`state-init`), and the exact selected sequence-4 and sequence-5 Stages.
+Sequence 4 is the first bounded later-Stage position with non-empty required
+outputs; successful
 settlement registers every required Artifact and the formal Gate Evidence. The
 sealed Context Pack uses a full-hash-bound Handoff/Gate projection so the exact
 requirements and required outputs fit the unchanged Windows 24 KiB prompt
-bound. It creates no automatic rework, changes no native AWS AI-DLC files,
-exposes no HTTP, and adds no Task Workbench UI.
+bound. Sequence 5 consumes only the three exact hash-bound prior Artifact
+version references already sealed into its Context Pack and produces its two
+contract outputs. It creates no automatic rework, changes no native AWS AI-DLC
+files, exposes no HTTP, and adds no Task Workbench UI.
 
-The next reviewed slice may extend the Gate/claim/dispatch chain to sequence 5
-without weakening the frozen sequence-1/2/3/4 receipts, then continue across the
-remaining representable grouped inventory. Cross-Stage rework remains a
-separate explicit authority path.
+The next reviewed slice may extend the same chain to the exact sequence-6 input
+contract, including its hash-bound Task seed, without weakening the frozen
+sequence-1 through sequence-5 receipts. Cross-Stage rework remains a separate
+explicit authority path.

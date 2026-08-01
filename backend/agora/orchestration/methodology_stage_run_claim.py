@@ -272,13 +272,13 @@ def build_methodology_stage_run_claim_context(
         )
 
     if (
-        request.stage_sequence not in {2, 3, 4}
+        request.stage_sequence not in {2, 3, 4, 5}
         or len(contract.stages) < request.stage_sequence
         or predecessor_sequence != request.stage_sequence - 1
     ):
         raise ValueError(
             "This bounded increment may claim only methodology Stage "
-            "sequences 2, 3, or 4 from the immediately preceding dispatch"
+            "sequences 2 through 5 from the immediately preceding dispatch"
         )
     predecessor_contract = contract.stages[request.stage_sequence - 2]
     stage_contract = contract.stages[request.stage_sequence - 1]
@@ -375,14 +375,58 @@ def build_methodology_stage_run_claim_context(
             "Methodology Stage Run formal Gate requirements drifted"
         )
 
-    if (
-        stage_contract.context.input_contracts
-        or snapshot.input_artifact_bindings
-    ):
-        raise ValueError(
-            "Methodology bounded successor contract must retain its exact empty "
-            "input set"
-        )
+    input_contracts = stage_contract.context.input_contracts
+    if request.stage_sequence <= 4:
+        if input_contracts or snapshot.input_artifact_bindings:
+            raise ValueError(
+                "Methodology sequence-2/3/4 contract must retain its exact "
+                "empty input set"
+            )
+    else:
+        selected_inputs = [
+            item
+            for item in input_contracts
+            if item.resolution == "selected_stage_output"
+        ]
+        if any(
+            item.resolution not in {
+                "optional_absent",
+                "selected_stage_output",
+            }
+            or (
+                item.resolution == "selected_stage_output"
+                and (
+                    item.instance_binding != "single"
+                    or len(item.producer_stage_keys) != 1
+                    or item.source_producer_stage_key
+                    != item.producer_stage_keys[0]
+                )
+            )
+            for item in input_contracts
+        ):
+            raise ValueError(
+                "Methodology sequence-5 input resolution exceeds its bounded scope"
+            )
+        if len(selected_inputs) != len(snapshot.input_artifact_bindings):
+            raise ValueError(
+                "Methodology sequence-5 selected input Artifact set differs"
+            )
+        for input_contract, binding in zip(
+            selected_inputs,
+            snapshot.input_artifact_bindings,
+            strict=True,
+        ):
+            if (
+                binding.consumer_stage_key != stage_contract.stage_key
+                or binding.source_artifact_id
+                != input_contract.source_artifact_id
+                or binding.producer_stage_key
+                != input_contract.source_producer_stage_key
+                or binding.artifact.kind != input_contract.kind
+            ):
+                raise ValueError(
+                    "Methodology sequence-5 input Artifact binding differs"
+                )
     if request.repository != contract.repository:
         raise ValueError(
             "Methodology Stage Run repository differs from the contract"

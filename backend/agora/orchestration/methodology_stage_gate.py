@@ -208,13 +208,13 @@ def validate_methodology_stage_gate(
         )
 
     if (
-        request.stage_sequence not in {2, 3, 4}
+        request.stage_sequence not in {2, 3, 4, 5}
         or len(contract.stages) < request.stage_sequence
         or predecessor_sequence != request.stage_sequence - 1
     ):
         raise ValueError(
             "This bounded increment may configure only successor Stage "
-            "sequences 2, 3, or 4 from the immediately preceding dispatch"
+            "sequences 2 through 5 from the immediately preceding dispatch"
         )
     predecessor_contract = contract.stages[request.stage_sequence - 2]
     stage_contract = contract.stages[request.stage_sequence - 1]

@@ -1,6 +1,6 @@
 # AWS AI-DLC methodology next-Stage Gate v1
 
-Status: reviewed implementation; sequences 2 through 4
+Status: reviewed implementation; sequences 2 through 5
 
 ## Purpose and entry point
 
@@ -18,7 +18,7 @@ agora task migration-next-stage-gate SUCCESSOR_TASK_ID `
 ```
 
 The command configures only the Gate for the exact current Stage at execution
-contract sequence 2, 3, or 4. Sequence 2 is authorized by the settled first-Run
+contract sequence 2, 3, 4, or 5. Sequence 2 is authorized by the settled first-Run
 dispatch; each later position is authorized only by the settled immediately
 preceding later-Stage dispatch. It does not create a Run or Context Pack, start
 a process, register an Artifact or Evidence item, or grant dispatch authority.
@@ -30,7 +30,7 @@ a process, register an Artifact or Evidence item, or grant dispatch authority.
 - the live Task, Control Task, Plan, grouped inventory, and execution contract;
 - the repository/ref/commit and pinned production runtime;
 - the immutable predecessor `MethodologyRunDispatchReceipt@1.0` for sequence 2
-  or `MethodologyStageRunDispatchReceipt@1.0` for sequences 3 and 4;
+  or `MethodologyStageRunDispatchReceipt@1.0` for sequences 3 through 5;
 - the settled predecessor Run, completed Stage, passed Gate, and exact Handoff
   identity and hash; and
 - the next Stage sequence, Stage/Gate/runtime identity, and expected formal
@@ -52,7 +52,7 @@ chain. In addition to the request fields, it checks:
 - the predecessor dispatch is durably settled and its receipt agrees with the
   formal Run, protocol result, Handoff, completed Stage, and passed Gate;
 - the Control Plane route is the exact requested sequence-2, sequence-3, or
-  sequence-4 contract Stage in `READY`;
+  sequence-4, or sequence-5 contract Stage in `READY`;
 - the next formal Gate does not already exist; and
 - no compatibility Run, consultation, formal Run, Artifact, or Evidence exists
   for the next Stage.
@@ -68,7 +68,7 @@ The operation and its Task/Control Plane events commit together. An event or
 ledger failure rolls back the Gate and all associated records. Concurrent
 identical callers converge on one immutable receipt; a different request for
 the same Stage conflicts. The original sequence-1 dispatch id remains the
-compatibility lineage root in the existing Gate ledger. Sequences 3 and 4 also
+compatibility lineage root in the existing Gate ledger. Sequences 3 through 5 also
 store a foreign-keyed direct-predecessor row that binds the settled immediately
 preceding dispatch id, receipt id/hash, Run, Stage, Gate, Plan, and adjacency.
 Missing or tampered direct-predecessor authority blocks Gate/Run replay, budget
@@ -96,13 +96,14 @@ or provider substitution was created.
 
 This increment configures execution contract sequence 2 after the successfully
 settled first Run, sequence 3 after the successfully settled sequence-2 Run,
-and sequence 4 after the successfully settled sequence-3 Run. The succeeding
+sequence 4 after the successfully settled sequence-3 Run, and sequence 5 after
+the successfully settled sequence-4 Run. The succeeding
 claim boundary is defined in
 `aws-aidlc-methodology-stage-run-claim-v1.md`. It consumes the immutable Gate
 receipt, seals the exact Context Pack, and creates only the formal Run without
 starting a process.
 
-Generalizing the same transition beyond sequence 4, automatic rework, dynamic
+Generalizing the same transition beyond sequence 5, automatic rework, dynamic
 provider substitution, authenticated HTTP, Task Workbench UI, and native AWS
 AI-DLC file installation remain separate reviewed
 increments.

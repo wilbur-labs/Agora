@@ -123,11 +123,11 @@ activates the next inventory Stage, but Stage readiness is not a substitute
 for its formal Gate. The authenticated next-Stage operation configures only
 that exact contract-bound Gate and still creates no Run or process. The
 subsequent formal claim is defined in
-`aws-aidlc-methodology-stage-run-claim-v1.md`; it creates the exact sequence-2,
-sequence-3, or sequence-4 Run and Context Pack without dispatching a process.
-The sequence-2/3/4 one-shot process and settlement boundary is defined in
+`aws-aidlc-methodology-stage-run-claim-v1.md`; it creates the exact sequence-2
+through sequence-5 Run and Context Pack without dispatching a process. The
+sequence-2/3/4/5 one-shot process and settlement boundary is defined in
 `aws-aidlc-methodology-stage-run-dispatch-v1.md`.
 
-Continuation beyond sequence 4, automatic cross-Stage rework, dynamic provider
+Continuation beyond sequence 5, automatic cross-Stage rework, dynamic provider
 substitution, authenticated HTTP, Task Workbench UI, and native AWS AI-DLC file
 installation remain separate reviewed increments.

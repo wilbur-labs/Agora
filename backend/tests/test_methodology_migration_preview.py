@@ -15,6 +15,7 @@ import pytest
 from pydantic import ValidationError
 
 from agora.control_plane.auth import ControlPrincipal
+from agora.control_plane.store import ControlPlaneValidationError
 from agora.orchestration import cli as orchestration_cli
 from agora.orchestration.aws_aidlc import AWS_AIDLC_V2_3_SOURCE_GRAPH
 from agora.orchestration.aws_aidlc_activation import (
@@ -7401,6 +7402,58 @@ async def _claimed_sequence_four_methodology_run(tmp_path):
     )
 
 
+async def _settled_sequence_four_methodology_run(tmp_path):
+    claimed = await _claimed_sequence_four_methodology_run(tmp_path)
+    _, service, contract, *_ = claimed
+    service.runner = MethodologyDispatchRunner()
+    dispatch = await service.dispatch_methodology_next_stage_run(
+        contract.task_id,
+        allow_unbounded_native_usage=True,
+    )
+    assert dispatch.dispatch_claim.stage_sequence == 4
+    assert dispatch.stage_status.value == "completed"
+    assert dispatch.gate_status.value == "passed"
+    assert dispatch.next_stage_key == contract.stages[4].stage_key
+    return (*claimed, dispatch)
+
+
+async def _claimed_sequence_five_methodology_run(tmp_path):
+    settled = await _settled_sequence_four_methodology_run(tmp_path)
+    tasks, service, contract, *_, predecessor_dispatch = settled
+    gate_request = _sequence_three_stage_gate_request(
+        tasks,
+        service,
+        contract,
+        predecessor_dispatch,
+        stage_sequence=5,
+    )
+    gate_receipt = service.configure_methodology_next_stage_gate(
+        contract.task_id,
+        gate_request,
+        principal=_migration_principal(),
+    )
+    claim_request = _sequence_three_stage_run_claim_request(
+        tasks,
+        service,
+        contract,
+        predecessor_dispatch,
+        gate_receipt,
+        stage_sequence=5,
+    )
+    claim_receipt = service.claim_methodology_next_stage_run(
+        contract.task_id,
+        claim_request,
+        principal=_migration_principal(),
+    )
+    return (
+        *settled,
+        gate_request,
+        gate_receipt,
+        claim_request,
+        claim_receipt,
+    )
+
+
 @pytest.mark.asyncio
 async def test_methodology_sequence_four_produces_required_artifacts_and_settles(
     tmp_path,
@@ -7605,6 +7658,265 @@ async def test_methodology_sequence_four_binding_tamper_blocks_all_consumers(
     with pytest.raises(
         OrchestrationValidationError,
         match="successor predecessor drifted",
+    ):
+        await service.dispatch_methodology_next_stage_run(
+            contract.task_id,
+            allow_unbounded_native_usage=True,
+        )
+
+    assert _database_dump(tasks) == before
+
+
+@pytest.mark.asyncio
+async def test_methodology_sequence_five_binds_selected_artifacts_and_settles(
+    tmp_path,
+):
+    claimed = await _claimed_sequence_five_methodology_run(tmp_path)
+    tasks, service, contract = claimed[:3]
+    sequence_four_claim = claimed[16]
+    sequence_four_dispatch = claimed[17]
+    gate_receipt = claimed[-3]
+    claim_receipt = claimed[-1]
+    stage = contract.stages[4]
+    selected_inputs = [
+        item
+        for item in stage.context.input_contracts
+        if item.resolution == "selected_stage_output"
+    ]
+
+    assert [item.source_artifact_id for item in selected_inputs] == [
+        "business-overview",
+        "architecture",
+        "code-structure",
+    ]
+    assert gate_receipt.stage_sequence == 5
+    assert gate_receipt.predecessor_dispatch_receipt_id == (
+        sequence_four_dispatch.receipt_id
+    )
+    assert claim_receipt.stage_sequence == 5
+    assert [
+        item.source_artifact_id
+        for item in claim_receipt.input_artifact_bindings
+    ] == [item.source_artifact_id for item in selected_inputs]
+    for binding in claim_receipt.input_artifact_bindings:
+        assert binding.consumer_stage_key == stage.stage_key
+        assert binding.producer_stage_key == contract.stages[3].stage_key
+        assert binding.producer_run_id == sequence_four_claim.run_id
+        assert binding.artifact.artifact_id in (
+            sequence_four_dispatch.artifact_ids
+        )
+        artifact = service.control_plane.get_artifact(
+            binding.artifact.artifact_id,
+            binding.artifact.version,
+        )
+        assert artifact is not None
+        assert artifact.version_ref() == binding.artifact
+
+    protocol_run = service.control_plane.get_protocol_run(claim_receipt.run_id)
+    assert protocol_run is not None
+    assert protocol_run.context_pack.input_artifacts == [
+        item.artifact for item in claim_receipt.input_artifact_bindings
+    ]
+    assert protocol_run.context_pack.required_outputs == (
+        claim_receipt.required_outputs
+    )
+    assert [item.kind for item in claim_receipt.required_outputs] == [
+        "requirements",
+        "requirements-analysis-questions",
+    ]
+
+    runner = MethodologyDispatchRunner()
+    service.runner = runner
+    receipt = await service.dispatch_methodology_next_stage_run(
+        contract.task_id,
+        allow_unbounded_native_usage=True,
+    )
+
+    assert receipt.dispatch_claim.stage_sequence == 5
+    assert receipt.stage_status.value == "completed"
+    assert receipt.gate_status.value == "passed"
+    assert receipt.next_stage_key == contract.stages[5].stage_key
+    assert receipt.artifact_ids == sorted(
+        item.output_id for item in claim_receipt.required_outputs
+    )
+    assert len(receipt.evidence_ids) == len(gate_receipt.requirements)
+    assert receipt.active_evidence_ids == receipt.evidence_ids
+    assert runner.calls == 1
+    assert len(runner.prompts[0].encode("utf-8")) <= PROTOCOL_PROMPT_LIMIT
+    unified = service.unified_status(contract.task_id)
+    assert len(unified.runs) == 5
+    assert len(unified.usage) == 5
+    assert unified.budget.token_reserved == 0
+
+    replay = await service.dispatch_methodology_next_stage_run(
+        contract.task_id,
+        allow_unbounded_native_usage=True,
+    )
+    assert replay == receipt
+    assert runner.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_methodology_sequence_five_source_artifact_tamper_blocks_consumers(
+    tmp_path,
+):
+    claimed = await _claimed_sequence_five_methodology_run(tmp_path)
+    tasks, service, contract = claimed[:3]
+    claim_request = claimed[-2]
+    claim_receipt = claimed[-1]
+    source = claim_receipt.input_artifact_bindings[0].artifact
+    with sqlite3.connect(tasks.db_path) as db:
+        db.execute(
+            """
+            UPDATE protocol_artifacts SET payload_sha256 = ?
+            WHERE artifact_id = ? AND version = ?
+            """,
+            ("0" * 64, source.artifact_id, source.version),
+        )
+        db.commit()
+    before = _database_dump(tasks)
+
+    for read in (
+        lambda: service.store.get_methodology_stage_run_claim(
+            contract.task_id,
+            claim_receipt.stage_key,
+        ),
+        lambda: service.claim_methodology_next_stage_run(
+            contract.task_id,
+            claim_request,
+            principal=_migration_principal(),
+        ),
+        lambda: service.unified_status(contract.task_id),
+    ):
+        with pytest.raises(
+            OrchestrationValidationError,
+            match="selected input Artifact authority drifted",
+        ):
+            read()
+    with sqlite3.connect(tasks.db_path) as db:
+        db.row_factory = sqlite3.Row
+        with pytest.raises(
+            OrchestrationValidationError,
+            match="selected input Artifact authority drifted",
+        ):
+            service.store._provider_budget_snapshot(db, claim_receipt.plan_id)
+    with pytest.raises(
+        OrchestrationValidationError,
+        match="selected input Artifact authority drifted",
+    ):
+        await service.dispatch_methodology_next_stage_run(
+            contract.task_id,
+            allow_unbounded_native_usage=True,
+        )
+
+    assert _database_dump(tasks) == before
+
+
+@pytest.mark.asyncio
+async def test_methodology_sequence_five_never_substitutes_same_kind_artifact(
+    tmp_path,
+):
+    settled = await _settled_sequence_four_methodology_run(tmp_path)
+    tasks, service, contract, *_, predecessor_dispatch = settled
+    producer_claim = settled[16]
+    source_output = next(
+        item
+        for item in producer_claim.required_outputs
+        if item.kind == "business-overview"
+    )
+    source = service.control_plane.get_artifact(source_output.output_id, 1)
+    assert source is not None
+    substitute = source.model_copy(
+        update={"artifact_id": "unbound-business-overview"}
+    )
+    service.control_plane.register_artifact(substitute, actor="test")
+    with sqlite3.connect(tasks.db_path) as db:
+        db.execute(
+            """
+            DELETE FROM protocol_artifacts
+            WHERE artifact_id = ? AND version = 1
+            """,
+            (source.artifact_id,),
+        )
+        db.commit()
+
+    gate_request = _sequence_three_stage_gate_request(
+        tasks,
+        service,
+        contract,
+        predecessor_dispatch,
+        stage_sequence=5,
+    )
+    gate_receipt = service.configure_methodology_next_stage_gate(
+        contract.task_id,
+        gate_request,
+        principal=_migration_principal(),
+    )
+    claim_request = _sequence_three_stage_run_claim_request(
+        tasks,
+        service,
+        contract,
+        predecessor_dispatch,
+        gate_receipt,
+        stage_sequence=5,
+    )
+    before = _database_dump(tasks)
+
+    with pytest.raises(
+        OrchestrationValidationError,
+        match="selected input Artifact is unavailable",
+    ):
+        service.claim_methodology_next_stage_run(
+            contract.task_id,
+            claim_request,
+            principal=_migration_principal(),
+        )
+
+    assert _database_dump(tasks) == before
+
+
+@pytest.mark.asyncio
+async def test_methodology_sequence_five_handoff_tamper_blocks_consumers(
+    tmp_path,
+):
+    claimed = await _claimed_sequence_five_methodology_run(tmp_path)
+    tasks, service, contract = claimed[:3]
+    claim_receipt = claimed[-1]
+    producer_run_id = (
+        claim_receipt.input_artifact_bindings[0].producer_run_id
+    )
+    with sqlite3.connect(tasks.db_path) as db:
+        db.execute(
+            """
+            UPDATE protocol_runs SET handoff_sha256 = ?
+            WHERE run_id = ?
+            """,
+            ("0" * 64, producer_run_id),
+        )
+        db.commit()
+    before = _database_dump(tasks)
+
+    for read in (
+        lambda: service.store.get_methodology_stage_run_claim(
+            contract.task_id,
+            claim_receipt.stage_key,
+        ),
+        lambda: service.unified_status(contract.task_id),
+    ):
+        with pytest.raises(
+            (OrchestrationValidationError, ControlPlaneValidationError),
+            match=(
+                "selected input Artifact authority drifted|"
+                "Persisted Handoff Pack does not match"
+            ),
+        ):
+            read()
+    with pytest.raises(
+        (OrchestrationValidationError, ControlPlaneValidationError),
+        match=(
+            "selected input Artifact authority drifted|"
+            "Persisted Handoff Pack does not match"
+        ),
     ):
         await service.dispatch_methodology_next_stage_run(
             contract.task_id,
