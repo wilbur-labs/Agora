@@ -1,6 +1,6 @@
 # AWS AI-DLC methodology next-Stage Gate v1
 
-Status: reviewed implementation candidate
+Status: reviewed implementation; sequences 2 and 3
 
 ## Purpose and entry point
 
@@ -18,8 +18,10 @@ agora task migration-next-stage-gate SUCCESSOR_TASK_ID `
 ```
 
 The command configures only the Gate for the exact current Stage at execution
-contract sequence 2. It does not create a Run or Context Pack, start a process,
-register an Artifact or Evidence item, or grant dispatch authority.
+contract sequence 2 or 3. Sequence 2 is authorized by the settled first-Run
+dispatch; sequence 3 is authorized by the settled sequence-2 later-Stage
+dispatch. It does not create a Run or Context Pack, start a process, register
+an Artifact or Evidence item, or grant dispatch authority.
 
 ## Sealed request and predecessor authority
 
@@ -27,8 +29,8 @@ register an Artifact or Evidence item, or grant dispatch authority.
 
 - the live Task, Control Task, Plan, grouped inventory, and execution contract;
 - the repository/ref/commit and pinned production runtime;
-- the immutable predecessor
-  `MethodologyRunDispatchReceipt@1.0`;
+- the immutable predecessor `MethodologyRunDispatchReceipt@1.0` for sequence 2
+  or `MethodologyStageRunDispatchReceipt@1.0` for sequence 3;
 - the settled predecessor Run, completed Stage, passed Gate, and exact Handoff
   identity and hash; and
 - the next Stage sequence, Stage/Gate/runtime identity, and expected formal
@@ -49,7 +51,8 @@ chain. In addition to the request fields, it checks:
   every command pin remain unchanged;
 - the predecessor dispatch is durably settled and its receipt agrees with the
   formal Run, protocol result, Handoff, completed Stage, and passed Gate;
-- the Control Plane route is the exact sequence-2 contract Stage in `READY`;
+- the Control Plane route is the exact requested sequence-2 or sequence-3
+  contract Stage in `READY`;
 - the next formal Gate does not already exist; and
 - no compatibility Run, consultation, formal Run, Artifact, or Evidence exists
   for the next Stage.
@@ -64,7 +67,12 @@ unchanged.
 The operation and its Task/Control Plane events commit together. An event or
 ledger failure rolls back the Gate and all associated records. Concurrent
 identical callers converge on one immutable receipt; a different request for
-the same Stage conflicts.
+the same Stage conflicts. The original sequence-1 dispatch id remains the
+compatibility lineage root in the existing Gate ledger. Sequence 3 additionally
+stores a foreign-keyed direct-predecessor row that binds the settled sequence-2
+dispatch id, receipt id/hash, Run, Stage, Gate, Plan, and adjacent sequence.
+Missing or tampered direct-predecessor authority blocks Gate/Run replay, budget
+admission, and unified projection.
 
 ## Receipt semantics
 
@@ -86,13 +94,14 @@ or provider substitution was created.
 
 ## Deferred boundaries
 
-This increment configures only execution contract sequence 2 after the
-successfully settled first Run. The reviewed succeeding claim boundary is
-defined in `aws-aidlc-methodology-stage-run-claim-v1.md`. It consumes this
-immutable Gate receipt, seals the exact sequence-2 Context Pack, and creates
-only the formal Run without starting a process.
+This increment configures execution contract sequence 2 after the successfully
+settled first Run and sequence 3 after the successfully settled sequence-2
+Run. The succeeding claim boundary is defined in
+`aws-aidlc-methodology-stage-run-claim-v1.md`. It consumes the immutable Gate
+receipt, seals the exact Context Pack, and creates only the formal Run without
+starting a process.
 
-Dispatching the sequence-2 Run, generalizing the same transition across the
-remaining grouped inventory, automatic rework, dynamic provider substitution,
-authenticated HTTP, Task Workbench UI, and native AWS AI-DLC file installation
-remain separate reviewed increments.
+Dispatching sequence 3, generalizing the same transition beyond sequence 3,
+automatic rework, dynamic provider substitution, authenticated HTTP, Task
+Workbench UI, and native AWS AI-DLC file installation remain separate reviewed
+increments.

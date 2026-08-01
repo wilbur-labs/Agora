@@ -81,6 +81,14 @@ from .methodology_route_activation import MethodologyRouteActivationSnapshot
 from .methodology_run_claim import MethodologyRunClaimSnapshot
 from .methodology_run_dispatch import MethodologyRunDispatchSnapshot
 from .methodology_stage_gate import MethodologyStageGateSnapshot
+from .methodology_stage_predecessor import (
+    MethodologyPredecessorDispatchReceipt,
+    methodology_dispatch_gate_key,
+    methodology_dispatch_run_claim_receipt_id,
+    methodology_dispatch_run_claim_receipt_sha256,
+    methodology_dispatch_sequence,
+    methodology_dispatch_stage_key,
+)
 from .methodology_stage_run_claim import MethodologyStageRunClaimSnapshot
 from .methodology_stage_run_dispatch import MethodologyStageRunDispatchSnapshot
 from .models import (
@@ -5537,6 +5545,282 @@ class OrchestrationStore:
             )
         return receipt
 
+    def _methodology_predecessor_dispatch_tx(
+        self,
+        db: sqlite3.Connection,
+        *,
+        task_id: str,
+        stage_sequence: int,
+        receipt_id: str,
+        receipt_sha256: str,
+    ) -> tuple[
+        MethodologyPredecessorDispatchReceipt,
+        str,
+        str,
+        sqlite3.Row,
+    ]:
+        """Resolve the immediate settled predecessor and lineage root."""
+
+        root_row = db.execute(
+            """
+            SELECT * FROM orchestration_methodology_run_dispatches
+            WHERE task_id = ?
+            """,
+            (task_id,),
+        ).fetchone()
+        if root_row is None:
+            raise OrchestrationConflictError(
+                "Methodology lineage root dispatch is unavailable"
+            )
+        root_state = self._methodology_dispatch(root_row)
+        if (
+            root_state.state != MethodologyDispatchState.SETTLED
+            or root_state.receipt is None
+        ):
+            raise OrchestrationConflictError(
+                "Methodology lineage root dispatch is not settled"
+            )
+
+        if stage_sequence == 2:
+            state = root_state
+            direct_row = root_row
+            claim_row = db.execute(
+                """
+                SELECT * FROM orchestration_methodology_run_claims
+                WHERE task_id = ?
+                """,
+                (task_id,),
+            ).fetchone()
+        elif stage_sequence == 3:
+            direct_row = db.execute(
+                """
+                SELECT *
+                FROM orchestration_methodology_stage_run_dispatches
+                WHERE task_id = ? AND stage_sequence = ?
+                """,
+                (task_id, stage_sequence - 1),
+            ).fetchone()
+            if direct_row is None:
+                raise OrchestrationConflictError(
+                    "Immediate methodology predecessor dispatch is unavailable"
+                )
+            state = self._methodology_stage_dispatch(direct_row)
+            claim_row = db.execute(
+                """
+                SELECT * FROM orchestration_methodology_stage_run_claims
+                WHERE task_id = ? AND stage_sequence = ?
+                """,
+                (task_id, stage_sequence - 1),
+            ).fetchone()
+        else:
+            raise OrchestrationConflictError(
+                "Methodology predecessor resolution is bounded to sequences 2 or 3"
+            )
+
+        if (
+            state.state != MethodologyDispatchState.SETTLED
+            or state.receipt is None
+        ):
+            raise OrchestrationConflictError(
+                "Immediate methodology predecessor dispatch is not settled"
+            )
+        receipt = state.receipt
+        if (
+            receipt.receipt_id != receipt_id
+            or receipt.content_sha256 != receipt_sha256
+            or receipt.dispatch_claim.task_id != task_id
+            or methodology_dispatch_sequence(receipt) != stage_sequence - 1
+            or claim_row is None
+            or claim_row["receipt_id"]
+            != methodology_dispatch_run_claim_receipt_id(receipt)
+            or claim_row["receipt_sha256"]
+            != methodology_dispatch_run_claim_receipt_sha256(receipt)
+            or claim_row["run_id"] != receipt.dispatch_claim.run_id
+        ):
+            raise OrchestrationValidationError(
+                "Methodology immediate predecessor provenance binding drifted"
+            )
+        return (
+            receipt,
+            root_row["dispatch_id"],
+            direct_row["dispatch_id"],
+            claim_row,
+        )
+
+    @classmethod
+    def _validate_methodology_successor_predecessor_tx(
+        cls,
+        db: sqlite3.Connection,
+        gate_row: sqlite3.Row,
+        receipt: MethodologyStageGateReceipt,
+    ) -> None:
+        """Fail closed on the direct predecessor behind one Gate receipt."""
+
+        if receipt.stage_sequence not in {2, 3}:
+            raise OrchestrationValidationError(
+                "Persisted methodology successor predecessor sequence is unsupported"
+            )
+        root_row = db.execute(
+            """
+            SELECT *
+            FROM orchestration_methodology_run_dispatches
+            WHERE task_id = ?
+            """,
+            (receipt.task_id,),
+        ).fetchone()
+        if root_row is None:
+            raise OrchestrationValidationError(
+                "Persisted methodology lineage root is unavailable"
+            )
+        root = cls._methodology_dispatch(root_row)
+        if gate_row["predecessor_dispatch_id"] != root.dispatch_id:
+            raise OrchestrationValidationError(
+                "Persisted methodology successor lineage root drifted"
+            )
+        if receipt.stage_sequence == 2:
+            if (
+                root.state != MethodologyDispatchState.SETTLED
+                or root.receipt is None
+                or root.receipt.receipt_id
+                != receipt.predecessor_dispatch_receipt_id
+                or root.receipt.content_sha256
+                != receipt.predecessor_dispatch_receipt_sha256
+                or root.receipt.dispatch_claim.run_id
+                != receipt.predecessor_run_id
+            ):
+                raise OrchestrationValidationError(
+                    "Persisted methodology sequence-2 predecessor drifted"
+                )
+            return
+
+        binding = db.execute(
+            """
+            SELECT *
+            FROM orchestration_methodology_successor_predecessors
+            WHERE stage_gate_request_id = ?
+            """,
+            (gate_row["request_id"],),
+        ).fetchone()
+        direct_row = (
+            db.execute(
+                """
+                SELECT *
+                FROM orchestration_methodology_stage_run_dispatches
+                WHERE dispatch_id = ?
+                """,
+                (binding["predecessor_dispatch_id"],),
+            ).fetchone()
+            if binding is not None
+            else None
+        )
+        if binding is None or direct_row is None:
+            raise OrchestrationValidationError(
+                "Persisted methodology successor predecessor is unavailable"
+            )
+        direct = cls._methodology_stage_dispatch(direct_row)
+        if (
+            binding["task_id"] != receipt.task_id
+            or binding["plan_id"] != receipt.plan_id
+            or binding["stage_sequence"] != receipt.stage_sequence
+            or binding["predecessor_dispatch_receipt_id"]
+            != receipt.predecessor_dispatch_receipt_id
+            or binding["predecessor_dispatch_receipt_sha256"]
+            != receipt.predecessor_dispatch_receipt_sha256
+            or binding["predecessor_run_id"] != receipt.predecessor_run_id
+            or binding["predecessor_stage_sequence"]
+            != receipt.stage_sequence - 1
+            or binding["predecessor_stage_key"]
+            != receipt.predecessor_stage_key
+            or binding["predecessor_gate_key"]
+            != receipt.predecessor_gate_key
+            or direct.state != MethodologyDispatchState.SETTLED
+            or direct.receipt is None
+            or direct.receipt.receipt_id
+            != receipt.predecessor_dispatch_receipt_id
+            or direct.receipt.content_sha256
+            != receipt.predecessor_dispatch_receipt_sha256
+        ):
+            raise OrchestrationValidationError(
+                "Persisted methodology successor predecessor drifted"
+            )
+
+    @classmethod
+    def _validate_methodology_stage_run_claim_authority_tx(
+        cls,
+        db: sqlite3.Connection,
+        claim_row: sqlite3.Row,
+        receipt: MethodologyStageRunClaimReceipt,
+    ) -> None:
+        """Validate one later-Stage claim's Gate and predecessor authority."""
+
+        gate_row = db.execute(
+            """
+            SELECT *
+            FROM orchestration_methodology_stage_gates
+            WHERE request_id = ?
+            """,
+            (claim_row["stage_gate_request_id"],),
+        ).fetchone()
+        if gate_row is None:
+            raise OrchestrationValidationError(
+                "Methodology Stage Run Gate authority is missing"
+            )
+        gate_request = MethodologyStageGateRequest.model_validate_json(
+            gate_row["request_payload"]
+        )
+        gate_receipt = MethodologyStageGateReceipt.model_validate_json(
+            gate_row["receipt_payload"]
+        )
+        if (
+            gate_request.request_id != gate_row["request_id"]
+            or gate_request.content_sha256 != gate_row["request_sha256"]
+            or gate_receipt.receipt_id != gate_row["receipt_id"]
+            or gate_receipt.content_sha256 != gate_row["receipt_sha256"]
+            or gate_receipt.request_id != gate_request.request_id
+            or gate_receipt.request_sha256 != gate_request.content_sha256
+            or gate_receipt.task_id != gate_row["task_id"]
+            or gate_receipt.plan_id != gate_row["plan_id"]
+            or gate_receipt.execution_contract_id
+            != gate_row["execution_contract_id"]
+            or gate_receipt.predecessor_run_id
+            != gate_row["predecessor_run_id"]
+            or gate_receipt.stage_sequence != gate_row["stage_sequence"]
+            or gate_receipt.stage_key != gate_row["stage_key"]
+            or gate_receipt.gate_key != gate_row["gate_key"]
+            or gate_receipt.authenticated_principal_id
+            != gate_row["authenticated_principal_id"]
+            or gate_receipt.receipt_id != claim_row["stage_gate_receipt_id"]
+            or gate_receipt.receipt_id != receipt.stage_gate_receipt_id
+            or gate_receipt.content_sha256
+            != receipt.stage_gate_receipt_sha256
+            or gate_receipt.task_id != receipt.task_id
+            or gate_receipt.plan_id != receipt.plan_id
+            or gate_receipt.execution_contract_id
+            != receipt.execution_contract_id
+            or gate_receipt.execution_contract_sha256
+            != receipt.execution_contract_sha256
+            or gate_receipt.stage_sequence != receipt.stage_sequence
+            or gate_receipt.stage_key != receipt.stage_key
+            or gate_receipt.gate_key != receipt.gate_key
+            or gate_receipt.runtime != receipt.runtime
+            or gate_receipt.authenticated_principal_id
+            != receipt.authenticated_principal_id
+            or gate_receipt.predecessor_dispatch_receipt_id
+            != receipt.predecessor_dispatch_receipt_id
+            or gate_receipt.predecessor_dispatch_receipt_sha256
+            != receipt.predecessor_dispatch_receipt_sha256
+            or claim_row["predecessor_dispatch_id"]
+            != gate_row["predecessor_dispatch_id"]
+        ):
+            raise OrchestrationValidationError(
+                "Methodology Stage Run Gate or lineage-root binding drifted"
+            )
+        cls._validate_methodology_successor_predecessor_tx(
+            db,
+            gate_row,
+            gate_receipt,
+        )
+
     def get_methodology_stage_gate(
         self,
         task_id: str,
@@ -5598,6 +5882,12 @@ class OrchestrationStore:
         ):
             raise OrchestrationValidationError(
                 "Persisted methodology Stage Gate binding drifted"
+            )
+        with closing(self._connect()) as db:
+            self._validate_methodology_successor_predecessor_tx(
+                db,
+                row,
+                receipt,
             )
         return receipt
 
@@ -5679,6 +5969,11 @@ class OrchestrationStore:
                         "Methodology Stage Gate replay requires the original "
                         "currently authorized principal"
                     )
+                self._validate_methodology_successor_predecessor_tx(
+                    db,
+                    existing,
+                    receipt,
+                )
                 return receipt
 
             sequence_row = db.execute(
@@ -5809,41 +6104,20 @@ class OrchestrationStore:
                     "Methodology Stage Gate migration provenance drifted"
                 )
 
-            dispatch_row = db.execute(
-                """
-                SELECT * FROM orchestration_methodology_run_dispatches
-                WHERE task_id = ?
-                """,
-                (task_id,),
-            ).fetchone()
-            if dispatch_row is None:
-                raise OrchestrationConflictError(
-                    "Settled predecessor methodology dispatch is unavailable"
-                )
-            dispatch_state = self._methodology_dispatch(dispatch_row)
+            (
+                dispatch_receipt,
+                lineage_root_dispatch_id,
+                direct_predecessor_dispatch_id,
+                claim_row,
+            ) = self._methodology_predecessor_dispatch_tx(
+                db,
+                task_id=task_id,
+                stage_sequence=request.stage_sequence,
+                receipt_id=request.predecessor_dispatch_receipt_id,
+                receipt_sha256=request.predecessor_dispatch_receipt_sha256,
+            )
             if (
-                dispatch_state.state != MethodologyDispatchState.SETTLED
-                or dispatch_state.receipt is None
-            ):
-                raise OrchestrationConflictError(
-                    "Predecessor methodology dispatch is not settled"
-                )
-            dispatch_receipt = dispatch_state.receipt
-            claim_row = db.execute(
-                """
-                SELECT * FROM orchestration_methodology_run_claims
-                WHERE task_id = ?
-                """,
-                (task_id,),
-            ).fetchone()
-            if claim_row is None or (
-                claim_row["receipt_id"]
-                != dispatch_receipt.dispatch_claim.run_claim_receipt_id
-                or claim_row["receipt_sha256"]
-                != dispatch_receipt.dispatch_claim.run_claim_receipt_sha256
-                or claim_row["run_id"]
-                != dispatch_receipt.dispatch_claim.run_id
-                or claim_row["authenticated_principal_id"]
+                claim_row["authenticated_principal_id"]
                 != contract_row["authenticated_principal_id"]
             ):
                 raise OrchestrationValidationError(
@@ -5860,7 +6134,7 @@ class OrchestrationStore:
                 """,
                 (
                     task_id,
-                    dispatch_receipt.dispatch_claim.first_stage_key,
+                    methodology_dispatch_stage_key(dispatch_receipt),
                 ),
             ).fetchone()
             predecessor_gate_row = db.execute(
@@ -5870,7 +6144,7 @@ class OrchestrationStore:
                 """,
                 (
                     task_id,
-                    dispatch_receipt.dispatch_claim.first_gate_key,
+                    methodology_dispatch_gate_key(dispatch_receipt),
                 ),
             ).fetchone()
             route = control_plane._stage_route_decision_tx(
@@ -6073,14 +6347,14 @@ class OrchestrationStore:
                 "predecessor_run_id": (
                     dispatch_receipt.dispatch_claim.run_id
                 ),
-                "predecessor_stage_key": (
-                    dispatch_receipt.dispatch_claim.first_stage_key
+                "predecessor_stage_key": methodology_dispatch_stage_key(
+                    dispatch_receipt
                 ),
                 "predecessor_stage_status": (
                     snapshot.predecessor_stage.status.value
                 ),
-                "predecessor_gate_key": (
-                    dispatch_receipt.dispatch_claim.first_gate_key
+                "predecessor_gate_key": methodology_dispatch_gate_key(
+                    dispatch_receipt
                 ),
                 "predecessor_gate_status": (
                     snapshot.predecessor_gate.status.value
@@ -6152,7 +6426,7 @@ class OrchestrationStore:
                     task_id,
                     plan.plan_id,
                     contract.contract_id,
-                    dispatch_receipt.dispatch_claim.dispatch_id,
+                    lineage_root_dispatch_id,
                     dispatch_receipt.dispatch_claim.run_id,
                     request.stage_sequence,
                     request.stage_key,
@@ -6161,6 +6435,34 @@ class OrchestrationStore:
                     now,
                 ),
             )
+            if request.stage_sequence >= 3:
+                db.execute(
+                    """
+                    INSERT INTO
+                        orchestration_methodology_successor_predecessors (
+                        stage_gate_request_id, task_id, plan_id,
+                        stage_sequence, predecessor_dispatch_id,
+                        predecessor_dispatch_receipt_id,
+                        predecessor_dispatch_receipt_sha256,
+                        predecessor_run_id, predecessor_stage_sequence,
+                        predecessor_stage_key, predecessor_gate_key, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        request.request_id,
+                        task_id,
+                        plan.plan_id,
+                        request.stage_sequence,
+                        direct_predecessor_dispatch_id,
+                        dispatch_receipt.receipt_id,
+                        dispatch_receipt.content_sha256,
+                        dispatch_receipt.dispatch_claim.run_id,
+                        methodology_dispatch_sequence(dispatch_receipt),
+                        methodology_dispatch_stage_key(dispatch_receipt),
+                        methodology_dispatch_gate_key(dispatch_receipt),
+                        now,
+                    ),
+                )
             self.tasks._insert_event(
                 db,
                 task_id=task_id,
@@ -6268,6 +6570,28 @@ class OrchestrationStore:
             raise OrchestrationValidationError(
                 "Persisted methodology Stage Run claim binding drifted"
             )
+        with closing(self._connect()) as db:
+            (
+                _,
+                lineage_root_dispatch_id,
+                _,
+                _,
+            ) = self._methodology_predecessor_dispatch_tx(
+                db,
+                task_id=task_id,
+                stage_sequence=receipt.stage_sequence,
+                receipt_id=receipt.predecessor_dispatch_receipt_id,
+                receipt_sha256=receipt.predecessor_dispatch_receipt_sha256,
+            )
+            self._validate_methodology_stage_run_claim_authority_tx(
+                db,
+                row,
+                receipt,
+            )
+        if row["predecessor_dispatch_id"] != lineage_root_dispatch_id:
+            raise OrchestrationValidationError(
+                "Persisted methodology Stage Run lineage root drifted"
+            )
         return receipt
 
     def claim_methodology_next_stage_run(
@@ -6282,7 +6606,7 @@ class OrchestrationStore:
             ContextPack,
         ],
     ) -> MethodologyStageRunClaimReceipt:
-        """Atomically materialize and claim the sequence-2 formal Run."""
+        """Atomically materialize and claim a bounded successor formal Run."""
 
         if request.task_id != task_id:
             raise OrchestrationValidationError(
@@ -6373,6 +6697,11 @@ class OrchestrationStore:
                         "Methodology Stage Run replay requires the original "
                         "currently authorized principal"
                     )
+                self._validate_methodology_stage_run_claim_authority_tx(
+                    db,
+                    existing,
+                    receipt,
+                )
                 return receipt
 
             sequence_row = db.execute(
@@ -6541,34 +6870,24 @@ class OrchestrationStore:
                 raise OrchestrationValidationError(
                     "Methodology Stage Gate receipt binding drifted"
                 )
+            self._validate_methodology_successor_predecessor_tx(
+                db,
+                stage_gate_row,
+                stage_gate_receipt,
+            )
 
-            dispatch_row = db.execute(
-                """
-                SELECT * FROM orchestration_methodology_run_dispatches
-                WHERE task_id = ?
-                """,
-                (task_id,),
-            ).fetchone()
-            first_claim_row = db.execute(
-                """
-                SELECT * FROM orchestration_methodology_run_claims
-                WHERE task_id = ?
-                """,
-                (task_id,),
-            ).fetchone()
-            if dispatch_row is None or first_claim_row is None:
-                raise OrchestrationConflictError(
-                    "Methodology predecessor Run chain is unavailable"
-                )
-            dispatch_state = self._methodology_dispatch(dispatch_row)
-            if (
-                dispatch_state.state != MethodologyDispatchState.SETTLED
-                or dispatch_state.receipt is None
-            ):
-                raise OrchestrationConflictError(
-                    "Methodology predecessor dispatch is not settled"
-                )
-            dispatch_receipt = dispatch_state.receipt
+            (
+                dispatch_receipt,
+                lineage_root_dispatch_id,
+                direct_predecessor_dispatch_id,
+                predecessor_claim_row,
+            ) = self._methodology_predecessor_dispatch_tx(
+                db,
+                task_id=task_id,
+                stage_sequence=request.stage_sequence,
+                receipt_id=request.predecessor_dispatch_receipt_id,
+                receipt_sha256=request.predecessor_dispatch_receipt_sha256,
+            )
             if (
                 dispatch_receipt.receipt_id
                 != stage_gate_receipt.predecessor_dispatch_receipt_id
@@ -6578,16 +6897,54 @@ class OrchestrationStore:
                 != dispatch_receipt.receipt_id
                 or request.predecessor_dispatch_receipt_sha256
                 != dispatch_receipt.content_sha256
-                or first_claim_row["receipt_id"]
-                != dispatch_receipt.dispatch_claim.run_claim_receipt_id
-                or first_claim_row["receipt_sha256"]
-                != dispatch_receipt.dispatch_claim.run_claim_receipt_sha256
-                or first_claim_row["authenticated_principal_id"]
+                or predecessor_claim_row["authenticated_principal_id"]
                 != principal.principal_id
             ):
                 raise OrchestrationValidationError(
                     "Methodology predecessor dispatch binding drifted"
                 )
+            if stage_gate_row["predecessor_dispatch_id"] != (
+                lineage_root_dispatch_id
+            ):
+                raise OrchestrationValidationError(
+                    "Methodology Stage Gate lineage root drifted"
+                )
+            if request.stage_sequence >= 3:
+                predecessor_binding = db.execute(
+                    """
+                    SELECT *
+                    FROM orchestration_methodology_successor_predecessors
+                    WHERE stage_gate_request_id = ?
+                    """,
+                    (stage_gate_request.request_id,),
+                ).fetchone()
+                if predecessor_binding is None or (
+                    predecessor_binding["task_id"] != task_id
+                    or predecessor_binding["plan_id"] != plan.plan_id
+                    or predecessor_binding["stage_sequence"]
+                    != request.stage_sequence
+                    or predecessor_binding["predecessor_dispatch_id"]
+                    != direct_predecessor_dispatch_id
+                    or predecessor_binding[
+                        "predecessor_dispatch_receipt_id"
+                    ]
+                    != dispatch_receipt.receipt_id
+                    or predecessor_binding[
+                        "predecessor_dispatch_receipt_sha256"
+                    ]
+                    != dispatch_receipt.content_sha256
+                    or predecessor_binding["predecessor_run_id"]
+                    != dispatch_receipt.dispatch_claim.run_id
+                    or predecessor_binding["predecessor_stage_sequence"]
+                    != request.stage_sequence - 1
+                    or predecessor_binding["predecessor_stage_key"]
+                    != methodology_dispatch_stage_key(dispatch_receipt)
+                    or predecessor_binding["predecessor_gate_key"]
+                    != methodology_dispatch_gate_key(dispatch_receipt)
+                ):
+                    raise OrchestrationValidationError(
+                        "Methodology successor predecessor binding drifted"
+                    )
 
             protocol_row = db.execute(
                 "SELECT * FROM protocol_runs WHERE run_id = ?",
@@ -6600,7 +6957,7 @@ class OrchestrationStore:
                 """,
                 (
                     task_id,
-                    dispatch_receipt.dispatch_claim.first_stage_key,
+                    methodology_dispatch_stage_key(dispatch_receipt),
                 ),
             ).fetchone()
             predecessor_gate_row = db.execute(
@@ -6610,7 +6967,7 @@ class OrchestrationStore:
                 """,
                 (
                     task_id,
-                    dispatch_receipt.dispatch_claim.first_gate_key,
+                    methodology_dispatch_gate_key(dispatch_receipt),
                 ),
             ).fetchone()
             route = control_plane._stage_route_decision_tx(
@@ -6698,7 +7055,7 @@ class OrchestrationStore:
                 raise OrchestrationConflictError(
                     f"Methodology Stage Run claim blocked: {exc}"
                 ) from exc
-            stage_contract = contract.stages[1]
+            stage_contract = contract.stages[request.stage_sequence - 1]
             if (
                 context_pack.project_id != task.project_id
                 or context_pack.task_id != task_id
@@ -6941,7 +7298,7 @@ class OrchestrationStore:
                     contract.contract_id,
                     stage_gate_request.request_id,
                     stage_gate_receipt.receipt_id,
-                    dispatch_receipt.dispatch_claim.dispatch_id,
+                    lineage_root_dispatch_id,
                     dispatch_receipt.receipt_id,
                     stage_contract.sequence,
                     stage_contract.stage_key,
@@ -8674,6 +9031,11 @@ class OrchestrationStore:
                 raise OrchestrationValidationError(
                     "Methodology Stage reservation row differs from its receipt"
                 )
+            cls._validate_methodology_stage_run_claim_authority_tx(
+                db,
+                claim_row,
+                receipt,
+            )
             dispatch_row = db.execute(
                 """
                 SELECT *

@@ -409,6 +409,35 @@ def initialize_orchestration_schema(db: sqlite3.Connection) -> None:
                 task_id, stage_sequence, created_at
             );
 
+        CREATE TABLE IF NOT EXISTS
+            orchestration_methodology_successor_predecessors (
+            stage_gate_request_id TEXT PRIMARY KEY
+                REFERENCES orchestration_methodology_stage_gates(request_id),
+            task_id TEXT NOT NULL REFERENCES tasks(task_id),
+            plan_id TEXT NOT NULL REFERENCES orchestration_plans(plan_id),
+            stage_sequence INTEGER NOT NULL CHECK (
+                stage_sequence >= 3 AND stage_sequence <= 200
+            ),
+            predecessor_dispatch_id TEXT NOT NULL UNIQUE
+                REFERENCES orchestration_methodology_stage_run_dispatches(dispatch_id),
+            predecessor_dispatch_receipt_id TEXT NOT NULL UNIQUE,
+            predecessor_dispatch_receipt_sha256 TEXT NOT NULL,
+            predecessor_run_id TEXT NOT NULL UNIQUE REFERENCES protocol_runs(run_id),
+            predecessor_stage_sequence INTEGER NOT NULL CHECK (
+                predecessor_stage_sequence >= 2
+                AND predecessor_stage_sequence <= 199
+                AND predecessor_stage_sequence + 1 = stage_sequence
+            ),
+            predecessor_stage_key TEXT NOT NULL,
+            predecessor_gate_key TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(task_id, stage_sequence)
+        );
+        CREATE INDEX IF NOT EXISTS idx_methodology_successor_predecessors_plan
+            ON orchestration_methodology_successor_predecessors(
+                plan_id, stage_sequence, created_at
+            );
+
         CREATE TABLE IF NOT EXISTS orchestration_methodology_stage_run_claims (
             request_id TEXT PRIMARY KEY,
             request_sha256 TEXT NOT NULL,

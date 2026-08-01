@@ -21,7 +21,6 @@ from agora.protocol.methodology_migration import (
     MethodologyMigrationActivationReceipt,
     MethodologyMigrationPreviewRequest,
 )
-from agora.protocol.methodology_run_dispatch import MethodologyRunDispatchReceipt
 from agora.protocol.methodology_stage_gate import (
     MethodologyStageGateReceipt,
     MethodologyStageGateRequest,
@@ -41,6 +40,12 @@ from agora.protocol.state_machines import GateStatus, StageStatus, TaskStatus
 from agora.tasks.models import TaskManifest
 
 from .models import OrchestrationPlan, OrchestrationStage, PlanState, StageState
+from .methodology_stage_predecessor import (
+    MethodologyPredecessorDispatchReceipt,
+    methodology_dispatch_gate_key,
+    methodology_dispatch_sequence,
+    methodology_dispatch_stage_key,
+)
 from .protocol_context import RepositoryRevision
 from .runtime import RuntimeCommand
 from .runtime_capabilities import (
@@ -93,7 +98,7 @@ class MethodologyStageRunClaimSnapshot:
     execution_contract: MethodologyExecutionContract
     stage_gate_request: MethodologyStageGateRequest
     stage_gate_receipt: MethodologyStageGateReceipt
-    predecessor_dispatch_receipt: MethodologyRunDispatchReceipt
+    predecessor_dispatch_receipt: MethodologyPredecessorDispatchReceipt
     predecessor_protocol_run: ProtocolRunRecord
     predecessor_stage: StageRecord
     predecessor_gate: GateRecord
@@ -199,19 +204,33 @@ def build_methodology_stage_run_claim_context(
         raise ValueError(
             "Methodology Stage Run claim migration provenance differs"
         )
+    predecessor_sequence = methodology_dispatch_sequence(dispatch)
+    predecessor_stage_key = methodology_dispatch_stage_key(dispatch)
+    predecessor_gate_key = methodology_dispatch_gate_key(dispatch)
+    current_predecessor_bound = (
+        task.metadata.get("methodology_run_id")
+        == dispatch.dispatch_claim.run_id
+        and task.metadata.get(
+            "methodology_current_stage_run_claimed",
+            False,
+        )
+        is False
+        if predecessor_sequence == 1
+        else task.metadata.get("methodology_current_stage_run_claimed") is True
+        and task.metadata.get("methodology_current_stage_sequence")
+        == predecessor_sequence
+        and task.metadata.get("methodology_current_stage_key")
+        == predecessor_stage_key
+        and task.metadata.get("methodology_current_gate_key")
+        == predecessor_gate_key
+        and task.metadata.get("methodology_current_run_id")
+        == dispatch.dispatch_claim.run_id
+    )
     if (
         task.metadata.get("methodology_route_activated") is not True
         or task.metadata.get("methodology_run_claimed") is not True
-        or task.metadata.get("methodology_run_id")
-        != dispatch.dispatch_claim.run_id
         or task.metadata.get("methodology_dispatch_authority") is not False
-        or (
-            task.metadata.get(
-                "methodology_current_stage_run_claimed",
-                False,
-            )
-            is not False
-        )
+        or not current_predecessor_bound
         or contract.route_activated
         or contract.runtime_spawned
         or contract.routing_authority
@@ -221,12 +240,17 @@ def build_methodology_stage_run_claim_context(
             "Methodology successor is not in the next-Stage claimable state"
         )
 
-    if len(contract.stages) < 2 or request.stage_sequence != 2:
+    if (
+        request.stage_sequence not in {2, 3}
+        or len(contract.stages) < request.stage_sequence
+        or predecessor_sequence != request.stage_sequence - 1
+    ):
         raise ValueError(
-            "This bounded increment may claim only methodology Stage sequence 2"
+            "This bounded increment may claim only methodology Stage "
+            "sequences 2 or 3 from the immediately preceding dispatch"
         )
-    predecessor_contract = contract.stages[0]
-    stage_contract = contract.stages[1]
+    predecessor_contract = contract.stages[request.stage_sequence - 2]
+    stage_contract = contract.stages[request.stage_sequence - 1]
     handoff = protocol_run.handoff_pack
     if (
         stage_gate_receipt.request_id != stage_gate_request.request_id
@@ -247,10 +271,8 @@ def build_methodology_stage_run_claim_context(
         != dispatch.receipt_id
         or stage_gate_receipt.predecessor_dispatch_receipt_sha256
         != dispatch.content_sha256
-        or dispatch.dispatch_claim.first_stage_key
-        != predecessor_contract.stage_key
-        or dispatch.dispatch_claim.first_gate_key
-        != predecessor_contract.gate_key
+        or predecessor_stage_key != predecessor_contract.stage_key
+        or predecessor_gate_key != predecessor_contract.gate_key
         or dispatch.next_stage_key != stage_contract.stage_key
         or dispatch.stage_status != StageStatus.COMPLETED
         or dispatch.gate_status != GateStatus.PASSED
@@ -296,7 +318,7 @@ def build_methodology_stage_run_claim_context(
         or formal_gate.status != GateStatus.PENDING
     ):
         raise ValueError(
-            "Only the exact Gate-configured sequence-2 route may claim a Run"
+            "Only the exact Gate-configured successor route may claim a Run"
         )
     if request.run_id != methodology_stage_run_id(
         task_id=task.task_id,
@@ -327,7 +349,8 @@ def build_methodology_stage_run_claim_context(
         or snapshot.input_artifact_bindings
     ):
         raise ValueError(
-            "Methodology sequence-2 contract must retain its exact empty input set"
+            "Methodology bounded successor contract must retain its exact empty "
+            "input set"
         )
     if request.repository != contract.repository:
         raise ValueError(

@@ -110,11 +110,11 @@ does not match its sealed payload fails closed.
 ## Bounded authority and next boundary
 
 This implementation dispatches sequence 2 (`workspace-detection`) only. It
-does not generalize Gate predecessor storage for sequence 3, create automatic
-rework, change native AWS AI-DLC files, expose HTTP, or add Task Workbench UI.
+does not dispatch sequence 3, create automatic rework, change native AWS AI-DLC
+files, expose HTTP, or add Task Workbench UI.
 
-The next reviewed slice must make later-Stage predecessor identities generic
-without weakening the already frozen sequence-1 and sequence-2 receipts. It may
-then configure and claim sequence 3 from the settled sequence-2 Handoff and
-selected Artifact versions. Cross-Stage rework remains a separate explicit
-authority path.
+The bounded successor-predecessor slice now configures and claims sequence 3
+from the settled sequence-2 Handoff without weakening the frozen sequence-1 or
+sequence-2 receipts. The next reviewed slice may extend this one-shot process,
+recovery, settlement, and usage boundary to that already claimed sequence-3
+Run. Cross-Stage rework remains a separate explicit authority path.

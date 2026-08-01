@@ -1,12 +1,12 @@
 # AWS AI-DLC methodology later-Stage Run claim v1
 
-Status: reviewed implementation; sequence 2 only; no runtime process
+Status: reviewed implementation; sequences 2 and 3; no runtime process
 
 ## Purpose and entry point
 
-After the first methodology Run settles successfully and the next formal Gate
-is configured, the authenticated Control Plane may claim exactly the
-execution-contract sequence-2 Run:
+After the immediately preceding methodology Run settles successfully and the
+next formal Gate is configured, the authenticated Control Plane may claim the
+exact execution-contract sequence-2 or sequence-3 Run:
 
 ```powershell
 agora task migration-next-stage-run-claim SUCCESSOR_TASK_ID `
@@ -32,23 +32,23 @@ chain.
 
 One `BEGIN IMMEDIATE` transaction reloads and revalidates:
 
-- the migration request/Gate/receipt, execution contract, settled first
-  dispatch receipt, first Run/Handoff, completed predecessor Stage, passed
-  predecessor Gate, and immutable sequence-2 Gate request/receipt;
+- the migration request/Gate/receipt, execution contract, settled immediate
+  predecessor dispatch receipt, predecessor Run/Handoff, completed predecessor
+  Stage, passed predecessor Gate, and immutable current Gate request/receipt;
 - the exact Task, frozen Control Task, compatibility Plan/Stages, grouped
-  inventory, sequence-2 `READY` Stage, `PENDING` Gate, and current runnable
+  inventory, requested `READY` Stage, `PENDING` Gate, and current runnable
   route;
 - the clean repository/ref/commit before and after bounded rehashing of every
   migration source file;
 - the complete runtime registry and every pinned runtime command;
 - the canonical Gate requirements and deterministic Run identity;
-- the absence of any earlier sequence-2 claim, formal or compatibility Run,
+- the absence of any earlier same-sequence claim, formal or compatibility Run,
   consultation, Artifact, or Evidence; and
 - sufficient remaining Plan Token and cost budget for the exact Stage
   reservation.
 
 It then seals one `ContextPack@1.0`, invokes the Control Plane's private formal
-Run-start primitive, advances only the authoritative sequence-2 Stage from
+Run-start primitive, advances only the authoritative requested Stage from
 `READY` to `RUNNING`, reconciles the Control Task lifecycle, advances Task
 metadata/version once, and persists one immutable
 `MethodologyStageRunClaimReceipt@1.0` plus both audit streams. Any validation,
@@ -59,18 +59,20 @@ the same currently authorized original principal. Different requests for the
 same Task/Stage, Gate, sequence, Run, or Context identity conflict.
 Concurrent identical callers converge on one row.
 
-## Exact sequence-2 Context
+## Exact bounded Context
 
 The frozen AWS AI-DLC execution contract names sequence 2
-`workspace-detection`. Its input and output contract sets are both empty.
-Consequently this claim must seal the exact empty `input_artifacts` and
-`required_outputs` sets. It must not fabricate a predecessor Artifact merely
-because the predecessor Handoff is part of the authority chain.
+`workspace-detection` and sequence 3 `state-init`. Their representable input
+Artifact and required-output contract sets are both empty. Consequently each
+claim must seal exact empty `input_artifacts` and `required_outputs` sets. It
+must not fabricate a predecessor Artifact merely because the predecessor
+Handoff or source methodology text describes workspace classification or a
+state file.
 
 The protocol retains a versioned `MethodologyStageInputArtifactBinding` shape
 for later contract positions that genuinely consume selected prior outputs,
-but the sequence-2 builder rejects any such binding. Five bounded policy
-entries preserve:
+but the bounded sequence-2/3 builder rejects any such binding. Five bounded
+policy entries preserve:
 
 - the execution-contract and repository binding;
 - the settled predecessor dispatch/Handoff and configured Gate receipt;
@@ -90,8 +92,8 @@ usage, Artifact, Evidence, Gate evaluation, or dispatch authority is created.
 The compatibility Plan and Stage rows remain unchanged.
 
 The immutable claim ledger records the active Token/cost reservation. Unified
-Task projection includes the protocol-only sequence-2 Run with its pinned
-runtime and reservation, while the formal Run remains unsettled. The receipt
+Task projection includes each protocol-only sequence-2/3 Run with its pinned
+runtime and reservation while the formal Run remains unsettled. The receipt
 fixes:
 
 ```text
@@ -110,7 +112,7 @@ provider_substitution = false
 
 ## Succeeding process boundary
 
-The succeeding implementation is defined in
+Sequence-2 dispatch is defined in
 `aws-aidlc-methodology-stage-run-dispatch-v1.md`. It attaches exactly one pinned
 sequence-2 runtime process to this existing formal Run and settles it through
 the unchanged Handoff parser and Control Plane Gate evaluator. It uses a
@@ -118,6 +120,8 @@ separate later-Stage dispatch/recovery ledger without changing the frozen
 first-Run contracts, creating a second Run or Context Pack, or inferring
 semantic success from process exit code.
 
-Later inventory positions, generic predecessor storage, cross-Stage rework,
-dynamic provider substitution, authenticated HTTP, Task Workbench UI, and
-native AWS AI-DLC file installation remain separate reviewed increments.
+The next implementation increment may extend that same dispatch/recovery
+boundary to the already claimed sequence-3 Run. Positions beyond sequence 3,
+cross-Stage rework, dynamic provider substitution, authenticated HTTP, Task
+Workbench UI, and native AWS AI-DLC file installation remain separate reviewed
+increments.

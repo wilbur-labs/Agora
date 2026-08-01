@@ -18,13 +18,18 @@ from agora.protocol.methodology_migration import (
     MethodologyMigrationActivationReceipt,
     MethodologyMigrationPreviewRequest,
 )
-from agora.protocol.methodology_run_dispatch import MethodologyRunDispatchReceipt
 from agora.protocol.methodology_stage_gate import MethodologyStageGateRequest
 from agora.protocol.models import GateRequirement, StageInventory
 from agora.protocol.state_machines import GateStatus, StageStatus, TaskStatus
 from agora.tasks.models import TaskManifest
 
 from .models import OrchestrationPlan, PlanState
+from .methodology_stage_predecessor import (
+    MethodologyPredecessorDispatchReceipt,
+    methodology_dispatch_gate_key,
+    methodology_dispatch_sequence,
+    methodology_dispatch_stage_key,
+)
 from .protocol_context import RepositoryRevision
 from .runtime import RuntimeCommand
 from .runtime_capabilities import (
@@ -74,7 +79,7 @@ class MethodologyStageGateSnapshot:
     migration_receipt: MethodologyMigrationActivationReceipt
     execution_contract: MethodologyExecutionContract
     authenticated_principal_id: str
-    predecessor_dispatch_receipt: MethodologyRunDispatchReceipt
+    predecessor_dispatch_receipt: MethodologyPredecessorDispatchReceipt
     predecessor_protocol_run: ProtocolRunRecord
     predecessor_stage: StageRecord
     predecessor_gate: GateRecord
@@ -171,11 +176,27 @@ def validate_methodology_stage_gate(
         raise ValueError(
             "Methodology Stage Gate migration provenance differs"
         )
+    predecessor_sequence = methodology_dispatch_sequence(dispatch)
+    predecessor_stage_key = methodology_dispatch_stage_key(dispatch)
+    predecessor_gate_key = methodology_dispatch_gate_key(dispatch)
+    predecessor_metadata_bound = (
+        task.metadata.get("methodology_run_id")
+        == dispatch.dispatch_claim.run_id
+        if predecessor_sequence == 1
+        else task.metadata.get("methodology_current_stage_run_claimed") is True
+        and task.metadata.get("methodology_current_stage_sequence")
+        == predecessor_sequence
+        and task.metadata.get("methodology_current_stage_key")
+        == predecessor_stage_key
+        and task.metadata.get("methodology_current_gate_key")
+        == predecessor_gate_key
+        and task.metadata.get("methodology_current_run_id")
+        == dispatch.dispatch_claim.run_id
+    )
     if (
         task.metadata.get("methodology_route_activated") is not True
         or task.metadata.get("methodology_run_claimed") is not True
-        or task.metadata.get("methodology_run_id")
-        != dispatch.dispatch_claim.run_id
+        or not predecessor_metadata_bound
         or task.metadata.get("methodology_dispatch_authority") is not False
         or contract.route_activated
         or contract.runtime_spawned
@@ -183,15 +204,20 @@ def validate_methodology_stage_gate(
         or contract.dispatch_authority
     ):
         raise ValueError(
-            "Methodology successor does not retain the settled first-Run chain"
+            "Methodology successor does not retain the settled predecessor chain"
         )
 
-    if len(contract.stages) < 2 or request.stage_sequence != 2:
+    if (
+        request.stage_sequence not in {2, 3}
+        or len(contract.stages) < request.stage_sequence
+        or predecessor_sequence != request.stage_sequence - 1
+    ):
         raise ValueError(
-            "This bounded increment may configure only successor Stage sequence 2"
+            "This bounded increment may configure only successor Stage "
+            "sequences 2 or 3 from the immediately preceding dispatch"
         )
-    predecessor_contract = contract.stages[0]
-    stage_contract = contract.stages[1]
+    predecessor_contract = contract.stages[request.stage_sequence - 2]
+    stage_contract = contract.stages[request.stage_sequence - 1]
     handoff = protocol_run.handoff_pack
     if (
         dispatch.dispatch_claim.task_id != task.task_id
@@ -199,16 +225,14 @@ def validate_methodology_stage_gate(
         != contract.contract_id
         or dispatch.dispatch_claim.execution_contract_sha256
         != contract.content_sha256
-        or dispatch.dispatch_claim.first_stage_key
-        != predecessor_contract.stage_key
-        or dispatch.dispatch_claim.first_gate_key
-        != predecessor_contract.gate_key
+        or predecessor_stage_key != predecessor_contract.stage_key
+        or predecessor_gate_key != predecessor_contract.gate_key
         or dispatch.next_stage_key != stage_contract.stage_key
         or dispatch.stage_status != StageStatus.COMPLETED
         or dispatch.gate_status != GateStatus.PASSED
         or request.predecessor_run_id != dispatch.dispatch_claim.run_id
-        or request.predecessor_stage_key != predecessor_contract.stage_key
-        or request.predecessor_gate_key != predecessor_contract.gate_key
+        or request.predecessor_stage_key != predecessor_stage_key
+        or request.predecessor_gate_key != predecessor_gate_key
         or request.predecessor_handoff_pack_id != dispatch.handoff_pack_id
         or request.predecessor_handoff_pack_sha256
         != dispatch.handoff_pack_sha256

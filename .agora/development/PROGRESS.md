@@ -1,5 +1,68 @@
 # Agora Control Plane Development Progress
 
+## 2026-07-31 - AWS AI-DLC sequence-3 Gate/formal Run claim (reviewed)
+
+### Bounded implementation
+
+- [x] Generalized the existing `MethodologyStageGateRequest/Receipt@1.0` and
+  `MethodologyStageRunClaimRequest/Receipt@1.0` execution paths to the exact
+  sequence-3 `state-init` position without changing their checked JSON Schemas
+  or the frozen sequence-1/2 receipt semantics.
+- [x] Added common typed accessors over first-Run and later-Stage dispatch
+  receipts. Sequence 3 is accepted only from the settled, immediately adjacent
+  sequence-2 dispatch/Handoff whose Run claim, Stage, Gate, Task, Plan,
+  repository, execution contract, and authenticated principal still match.
+- [x] Added an additive direct-predecessor ledger for sequence 3. Existing Gate
+  and Run-claim rows retain the sequence-1 dispatch id as their compatibility
+  lineage root; the new row foreign-keys the actual sequence-2 dispatch and
+  seals its receipt id/hash, Run, Stage, Gate, Plan, and adjacency.
+- [x] Sequence-3 Gate configuration and formal Run claim reuse the existing
+  authenticated CLI/service operations and immediate transactions. They create
+  no process, compatibility Run, Artifact, Evidence, provider substitution, or
+  dispatch authority. The `state-init` Context Pack preserves the contract's
+  exact empty representable input and required-output sets.
+- [x] Missing or tampered direct-predecessor authority blocks Gate and Run
+  reads/replays, new claims, budget admission, and unified status projection.
+  Event failure rolls back both the formal Gate and the new binding.
+- [x] Addressed the first independent Codex review's two findings by routing
+  Run-claim getter, exact replay, budget admission, and unified projection
+  through one complete Gate/predecessor authority validator. The validator
+  cross-checks the claim's sequence-1 lineage root and every sequence-3 direct
+  predecessor identity; new regressions cover forged lineage roots and
+  Task/Plan/Stage/Gate metadata drift.
+- [x] Updated the Gate, Run-claim, first-dispatch, and later-Stage dispatch
+  architecture notes to record the sequence-3 boundary and leave sequence-3
+  dispatch, positions beyond sequence 3, and rework separate.
+
+### Verification and review state
+
+- [x] Post-review-fix sequence-3 selection: 12 passed, 183 deselected. Existing
+  sequence-2 Gate/Run-claim selection: 52 passed, 143 deselected.
+- [x] Complete methodology module: 195 passed. Complete non-integration backend
+  suite: 769 passed, 18 deselected, with only the existing Starlette/httpx
+  deprecation and Windows Proactor cleanup warnings.
+- [x] Protocol freeze: 34 passed. Protocol Schema export/check,
+  system-Temp-isolated `compileall`, CLI help, and `git diff --check` passed.
+- [x] Independent Codex methodology/protocol replacement review first returned
+  `CODEX_REQUEST_CHANGES` for incomplete claim lineage-root validation and a
+  partial direct-predecessor check in the Run-claim getter. Both findings were
+  fixed with the shared authority validator and new tamper regressions; the
+  frozen-diff re-review returned `CODEX_APPROVE`.
+- [x] Independent Claude Code statically inspected the final complete diff,
+  including the untracked predecessor helper, both Codex fixes, Schema/FKs,
+  transaction/replay/admission/projection paths, tests, and docs. It reported
+  no actionable HIGH, MEDIUM, or LOW finding and returned `CLAUDE_APPROVE`.
+  Its only optional note was future consolidation of two-connection immutable
+  getters; this mirrors existing style and does not weaken fail-closed reads.
+
+### Current checkpoint and next safe action
+
+Implementation, complete post-fix validation, the user-authorized independent
+Codex replacement gate, and the independent Claude gate are complete on
+baseline `c7668c3`. This increment is ready for an exact-file commit/push. The
+next bounded slice may dispatch and settle the already claimed sequence-3 Run
+without generalizing beyond sequence 3 or introducing automatic rework.
+
 ## 2026-07-31 - AWS AI-DLC sequence-2 Run dispatch/settlement (reviewed)
 
 ### Bounded implementation
