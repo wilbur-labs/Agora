@@ -110,7 +110,11 @@ from agora.protocol.methodology_stage_run_dispatch import (
     MethodologyStageRunDispatchPolicyDecision,
     MethodologyStageRunDispatchReceipt,
 )
-from agora.protocol.models import ContextPack, HandoffPack
+from agora.protocol.models import (
+    ContextPack,
+    HandoffPack,
+    ProviderUsageObservation,
+)
 from agora.protocol.schema_registry import SCHEMA_MODELS
 from agora.tasks.models import utc_now
 from agora.tasks.store import TaskStore
@@ -256,6 +260,32 @@ class MethodologyDispatchRunner:
             "blocker_requirement_ids": [],
             "suggested_next_action": None,
         }
+        usage = ProviderUsageObservation.model_validate(
+            seal_model_payload(
+                ProviderUsageObservation,
+                {
+                    "schema_version": "1.0",
+                    "run_id": context.run_id,
+                    "adapter": runtime.adapter,
+                    "provider": "openai",
+                    "source": "codex_exec_jsonl",
+                    "source_payload_sha256": canonical_sha256(
+                        {
+                            "runner": "methodology-test",
+                            "run_id": context.run_id,
+                        }
+                    ),
+                    "input_tokens": 1,
+                    "output_tokens": 1,
+                    "total_tokens": 2,
+                    "token_measurement": "exact",
+                    "token_method": "provider_input_plus_output",
+                    "cost_usd": None,
+                    "cost_measurement": "unavailable",
+                    "cost_method": "unavailable",
+                },
+            )
+        )
         return RuntimeResult(
             0,
             json.dumps(
@@ -263,6 +293,7 @@ class MethodologyDispatchRunner:
                 ensure_ascii=False,
             ),
             "",
+            usage_observation=usage,
         )
 
 
@@ -7545,6 +7576,58 @@ async def _claimed_sequence_six_methodology_run(tmp_path):
     )
 
 
+async def _settled_sequence_six_methodology_run(tmp_path):
+    claimed = await _claimed_sequence_six_methodology_run(tmp_path)
+    _, service, contract, *_ = claimed
+    service.runner = MethodologyDispatchRunner()
+    dispatch = await service.dispatch_methodology_next_stage_run(
+        contract.task_id,
+        allow_unbounded_native_usage=True,
+    )
+    assert dispatch.dispatch_claim.stage_sequence == 6
+    assert dispatch.stage_status.value == "completed"
+    assert dispatch.gate_status.value == "passed"
+    assert dispatch.next_stage_key == contract.stages[6].stage_key
+    return (*claimed, dispatch)
+
+
+async def _claimed_sequence_seven_methodology_run(tmp_path):
+    settled = await _settled_sequence_six_methodology_run(tmp_path)
+    tasks, service, contract, *_, predecessor_dispatch = settled
+    gate_request = _sequence_three_stage_gate_request(
+        tasks,
+        service,
+        contract,
+        predecessor_dispatch,
+        stage_sequence=7,
+    )
+    gate_receipt = service.configure_methodology_next_stage_gate(
+        contract.task_id,
+        gate_request,
+        principal=_migration_principal(),
+    )
+    claim_request = _sequence_three_stage_run_claim_request(
+        tasks,
+        service,
+        contract,
+        predecessor_dispatch,
+        gate_receipt,
+        stage_sequence=7,
+    )
+    claim_receipt = service.claim_methodology_next_stage_run(
+        contract.task_id,
+        claim_request,
+        principal=_migration_principal(),
+    )
+    return (
+        *settled,
+        gate_request,
+        gate_receipt,
+        claim_request,
+        claim_receipt,
+    )
+
+
 @pytest.mark.asyncio
 async def test_methodology_sequence_four_produces_required_artifacts_and_settles(
     tmp_path,
@@ -8140,6 +8223,150 @@ async def test_methodology_sequence_six_rejects_seed_as_unbound_output(
         assert db.execute(
             "SELECT COUNT(*) FROM protocol_artifacts"
         ).fetchone()[0] == artifact_count_before
+
+
+@pytest.mark.asyncio
+async def test_methodology_sequence_seven_isolates_repeated_unit_and_settles(
+    tmp_path,
+):
+    claimed = await _claimed_sequence_seven_methodology_run(tmp_path)
+    _, service, contract = claimed[:3]
+    sequence_six_claim = claimed[-6]
+    sequence_six_dispatch = claimed[-5]
+    gate_receipt = claimed[-3]
+    claim_receipt = claimed[-1]
+    stage = contract.stages[6]
+
+    assert stage.stage_key == "code-generation-unit-002"
+    assert gate_receipt.stage_sequence == 7
+    assert gate_receipt.predecessor_dispatch_receipt_id == (
+        sequence_six_dispatch.receipt_id
+    )
+    assert claim_receipt.stage_sequence == 7
+    assert [
+        item.source_artifact_id
+        for item in claim_receipt.input_artifact_bindings
+    ] == ["unit-of-work", "requirements"]
+    seed_binding, requirements_binding = (
+        claim_receipt.input_artifact_bindings
+    )
+    sequence_six_seed, sequence_six_requirements = (
+        sequence_six_claim.input_artifact_bindings
+    )
+    assert seed_binding.consumer_stage_key == stage.stage_key
+    assert seed_binding.producer_stage_key == "units-generation"
+    assert seed_binding.producer_run_id is None
+    assert seed_binding.consumer_stage_key != (
+        sequence_six_seed.consumer_stage_key
+    )
+    assert seed_binding.artifact == sequence_six_seed.artifact
+    assert service.control_plane.get_artifact(
+        seed_binding.artifact.artifact_id,
+        seed_binding.artifact.version,
+    ) is None
+    assert requirements_binding.consumer_stage_key == stage.stage_key
+    assert requirements_binding.producer_run_id == (
+        sequence_six_requirements.producer_run_id
+    )
+    assert requirements_binding.producer_run_id != sequence_six_claim.run_id
+    assert requirements_binding.artifact == sequence_six_requirements.artifact
+
+    protocol_run = service.control_plane.get_protocol_run(claim_receipt.run_id)
+    assert protocol_run is not None
+    assert protocol_run.context_pack.input_artifacts == [
+        seed_binding.artifact,
+        requirements_binding.artifact,
+    ]
+    assert [item.kind for item in claim_receipt.required_outputs] == [
+        "code-generation-plan",
+        "code-summary",
+    ]
+    assert {
+        item.output_id for item in claim_receipt.required_outputs
+    }.isdisjoint(
+        item.output_id for item in sequence_six_claim.required_outputs
+    )
+
+    runner = MethodologyDispatchRunner()
+    service.runner = runner
+    receipt = await service.dispatch_methodology_next_stage_run(
+        contract.task_id,
+        allow_unbounded_native_usage=True,
+    )
+
+    assert receipt.dispatch_claim.stage_sequence == 7
+    assert receipt.stage_status.value == "completed"
+    assert receipt.gate_status.value == "passed"
+    assert receipt.next_stage_key == contract.stages[7].stage_key
+    assert receipt.artifact_ids == sorted(
+        item.output_id for item in claim_receipt.required_outputs
+    )
+    unified = service.unified_status(contract.task_id)
+    assert len(unified.runs) == 7
+    assert len(unified.usage) == 7
+    assert unified.budget.token_reserved == 0
+
+    replay = await service.dispatch_methodology_next_stage_run(
+        contract.task_id,
+        allow_unbounded_native_usage=True,
+    )
+    assert replay == receipt
+    assert runner.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_methodology_sequence_seven_predecessor_tamper_blocks_consumers(
+    tmp_path,
+):
+    claimed = await _claimed_sequence_seven_methodology_run(tmp_path)
+    tasks, service, contract = claimed[:3]
+    gate_receipt = claimed[-3]
+    claim_receipt = claimed[-1]
+    with sqlite3.connect(tasks.db_path) as db:
+        db.execute(
+            """
+            UPDATE orchestration_methodology_successor_predecessors
+            SET predecessor_dispatch_receipt_sha256 = ?
+            WHERE task_id = ? AND stage_sequence = 7
+            """,
+            ("0" * 64, contract.task_id),
+        )
+        db.commit()
+    before = _database_dump(tasks)
+
+    for read in (
+        lambda: service.store.get_methodology_stage_gate(
+            contract.task_id,
+            gate_receipt.stage_key,
+        ),
+        lambda: service.store.get_methodology_stage_run_claim(
+            contract.task_id,
+            claim_receipt.stage_key,
+        ),
+        lambda: service.unified_status(contract.task_id),
+    ):
+        with pytest.raises(
+            OrchestrationValidationError,
+            match="successor predecessor drifted",
+        ):
+            read()
+    with sqlite3.connect(tasks.db_path) as db:
+        db.row_factory = sqlite3.Row
+        with pytest.raises(
+            OrchestrationValidationError,
+            match="successor predecessor drifted",
+        ):
+            service.store._provider_budget_snapshot(db, claim_receipt.plan_id)
+    with pytest.raises(
+        OrchestrationValidationError,
+        match="successor predecessor drifted",
+    ):
+        await service.dispatch_methodology_next_stage_run(
+            contract.task_id,
+            allow_unbounded_native_usage=True,
+        )
+
+    assert _database_dump(tasks) == before
 
 
 @pytest.mark.asyncio

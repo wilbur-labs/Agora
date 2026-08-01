@@ -5597,7 +5597,7 @@ class OrchestrationStore:
                 """,
                 (task_id,),
             ).fetchone()
-        elif stage_sequence in {3, 4, 5, 6}:
+        elif stage_sequence in {3, 4, 5, 6, 7}:
             direct_row = db.execute(
                 """
                 SELECT *
@@ -5620,7 +5620,7 @@ class OrchestrationStore:
             ).fetchone()
         else:
             raise OrchestrationConflictError(
-                "Methodology predecessor resolution is bounded to sequences 2 through 6"
+                "Methodology predecessor resolution is bounded to sequences 2 through 7"
             )
 
         if (
@@ -5668,7 +5668,7 @@ class OrchestrationStore:
     ) -> None:
         """Fail closed on the direct predecessor behind one Gate receipt."""
 
-        if receipt.stage_sequence not in {2, 3, 4, 5, 6}:
+        if receipt.stage_sequence not in {2, 3, 4, 5, 6, 7}:
             raise OrchestrationValidationError(
                 "Persisted methodology successor predecessor sequence is unsupported"
             )
@@ -5800,7 +5800,7 @@ class OrchestrationStore:
                     "Methodology sequence-2/3/4 input contract drifted"
                 )
             return ()
-        if stage_sequence not in {5, 6}:
+        if stage_sequence not in {5, 6, 7}:
             raise OrchestrationValidationError(
                 "Methodology input Artifact resolution exceeds its bounded scope"
             )
@@ -5822,7 +5822,7 @@ class OrchestrationStore:
             if input_contract.resolution == "hash_bound_task_seed":
                 seed_artifact = input_contract.seed_artifact
                 if (
-                    stage_sequence != 6
+                    stage_sequence not in {6, 7}
                     or not input_contract.required
                     or input_contract.instance_binding != "task_seed"
                     or input_contract.source_producer_stage_key is None
@@ -8169,7 +8169,10 @@ class OrchestrationStore:
                 ):
                     raise
                 raise OrchestrationConflictError(str(exc)) from exc
-            if claim.task_id != task_id or claim.stage_sequence not in {2, 3, 4, 5, 6}:
+            if (
+                claim.task_id != task_id
+                or claim.stage_sequence not in {2, 3, 4, 5, 6, 7}
+            ):
                 raise OrchestrationValidationError(
                     "Methodology Stage dispatch crosses its bounded scope"
                 )

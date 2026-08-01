@@ -1,5 +1,57 @@
 # Agora Control Plane Development Progress
 
+## 2026-07-31 - AWS AI-DLC sequence-7 repeated-unit isolation (reviewed)
+
+### Bounded implementation
+
+- [x] Extended the authenticated Gate, formal Run claim, native dispatch/
+  recovery, settlement, usage, and projection chain to exact execution-contract
+  sequence 7 (`code-generation-unit-002`) without changing a protocol model or
+  checked JSON Schema.
+- [x] Reused the frozen external `unit-of-work` ArtifactVersionRef and exact
+  registered sequence-5 `requirements` version while binding them to the
+  distinct sequence-7 consumer Stage. The seed retains no producer Run, the
+  requirements producer remains sequence 5, and settled sequence 6 is only the
+  direct lifecycle predecessor.
+- [x] Proved repeated-unit isolation through distinct deterministic Run,
+  Context, and output identities. Sequence-6 and sequence-7
+  `code-generation-plan`/`code-summary` output sets are disjoint even though
+  both consumers intentionally receive the same two input version references.
+- [x] Made the successful fake methodology Runner report a minimal sealed exact
+  native usage observation. This keeps the 30k test Plan from being consumed by
+  fallback prompt-size estimates after six synthetic runs; production usage
+  normalization and budget admission remain unchanged.
+- [x] Updated the Gate, claim, dispatch, and first-dispatch architecture notes
+  through sequence 7. The next bounded input-resolution boundary is the exact
+  sequence-8 `all_units` multi-producer contract.
+
+### Verification and review state
+
+- [x] Sequence-7 focused selection: 2 passed, 215 deselected. Combined
+  sequence-6/7 selection: 6 passed, 211 deselected.
+- [x] Complete methodology module: 217 passed. Complete non-integration backend
+  suite: 792 passed, 18 deselected, with only the existing Starlette/httpx
+  deprecation and Windows Proactor cleanup warnings.
+- [x] Protocol freeze: 34 passed. Protocol Schema export/check,
+  system-Temp-isolated `compileall`, all three relevant CLI help checks, and
+  `git diff --check` passed.
+- [x] Independent Codex methodology/protocol replacement review found no code,
+  authority, budget, or regression defect. It requested one LOW checkpoint
+  wording correction so PROGRESS did not call completed validation pending;
+  after that fix it returned `CODEX_APPROVE`.
+- [x] Independent Claude Code reviewed the complete final diff in production,
+  tests, and docs/PROGRESS partitions after earlier large-input CLI attempts
+  hung without verdict and were not counted. The partitions returned
+  `CLAUDE_CORE_APPROVE`, `CLAUDE_TESTS_APPROVE`, and
+  `CLAUDE_DOCS_APPROVE`; the final merge returned `CLAUDE_APPROVE`.
+
+### Current checkpoint and next safe action
+
+Implementation, complete validation, the user-authorized independent Codex
+replacement gate, and the independent Claude gate are complete on clean pushed
+baseline `5e2b463`. This increment is ready for an exact-file commit/push. The
+next bounded slice is sequence 8 `all_units` multi-producer input resolution.
+
 ## 2026-07-31 - AWS AI-DLC sequence-6 Task seed and prior output (reviewed)
 
 ### Bounded implementation

@@ -91,12 +91,12 @@ def derive_methodology_stage_run_dispatch_policy(
     formal_stage = snapshot.formal_stage
     formal_gate = snapshot.formal_gate
     if (
-        claim.stage_sequence not in {2, 3, 4, 5, 6}
+        claim.stage_sequence not in {2, 3, 4, 5, 6, 7}
         or len(contract.stages) < claim.stage_sequence
     ):
         raise ValueError(
             "This bounded dispatch may evaluate only methodology Stage "
-            "sequences 2 through 6"
+            "sequences 2 through 7"
         )
     stage = contract.stages[claim.stage_sequence - 1]
     context = protocol_run.context_pack
@@ -355,12 +355,12 @@ def build_methodology_stage_run_dispatch_claim(
     formal_stage = snapshot.formal_stage
     formal_gate = snapshot.formal_gate
     if (
-        claim.stage_sequence not in {2, 3, 4, 5, 6}
+        claim.stage_sequence not in {2, 3, 4, 5, 6, 7}
         or len(contract.stages) < claim.stage_sequence
     ):
         raise ValueError(
             "This bounded dispatch may execute only methodology Stage "
-            "sequences 2 through 6"
+            "sequences 2 through 7"
         )
     stage = contract.stages[claim.stage_sequence - 1]
     expected_policy = derive_methodology_stage_run_dispatch_policy(

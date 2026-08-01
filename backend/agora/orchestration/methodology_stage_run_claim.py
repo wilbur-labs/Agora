@@ -272,13 +272,13 @@ def build_methodology_stage_run_claim_context(
         )
 
     if (
-        request.stage_sequence not in {2, 3, 4, 5, 6}
+        request.stage_sequence not in {2, 3, 4, 5, 6, 7}
         or len(contract.stages) < request.stage_sequence
         or predecessor_sequence != request.stage_sequence - 1
     ):
         raise ValueError(
             "This bounded increment may claim only methodology Stage "
-            "sequences 2 through 6 from the immediately preceding dispatch"
+            "sequences 2 through 7 from the immediately preceding dispatch"
         )
     predecessor_contract = contract.stages[request.stage_sequence - 2]
     stage_contract = contract.stages[request.stage_sequence - 1]
@@ -389,7 +389,7 @@ def build_methodology_stage_run_claim_context(
             if item.resolution != "optional_absent"
         ]
         allowed_resolutions = {"optional_absent", "selected_stage_output"}
-        if request.stage_sequence == 6:
+        if request.stage_sequence in {6, 7}:
             allowed_resolutions.add("hash_bound_task_seed")
         if any(
             item.resolution not in allowed_resolutions
