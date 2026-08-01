@@ -35,6 +35,11 @@ from .methodology_stage_run_claim import (
     MethodologyStageRunClaimReceipt,
     MethodologyStageRunClaimRequest,
 )
+from .methodology_stage_run_dispatch import (
+    MethodologyStageRunDispatchClaim,
+    MethodologyStageRunDispatchPolicyDecision,
+    MethodologyStageRunDispatchReceipt,
+)
 from .models import (
     Approval,
     Artifact,
@@ -89,6 +94,11 @@ SCHEMA_MODELS: dict[str, SchemaModel] = {
     "methodology-stage-gate-request": MethodologyStageGateRequest,
     "methodology-stage-run-claim-receipt": MethodologyStageRunClaimReceipt,
     "methodology-stage-run-claim-request": MethodologyStageRunClaimRequest,
+    "methodology-stage-run-dispatch-claim": MethodologyStageRunDispatchClaim,
+    "methodology-stage-run-dispatch-policy-decision": (
+        MethodologyStageRunDispatchPolicyDecision
+    ),
+    "methodology-stage-run-dispatch-receipt": MethodologyStageRunDispatchReceipt,
     "methodology-source-graph": MethodologySourceGraph,
     "native-runtime-capability-observation": NativeRuntimeCapabilityObservation,
     "native-state-snapshot": NativeStateSnapshot,

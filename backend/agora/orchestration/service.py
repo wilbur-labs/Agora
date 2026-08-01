@@ -5,7 +5,9 @@ import asyncio
 import hashlib
 import json
 import re
+import uuid
 from collections.abc import Awaitable, Callable
+from datetime import datetime, timezone
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -64,6 +66,10 @@ from agora.protocol.methodology_stage_run_claim import (
     MethodologyStageRunClaimReceipt,
     MethodologyStageRunClaimRequest,
 )
+from agora.protocol.methodology_stage_run_dispatch import (
+    MethodologyStageRunDispatchClaim,
+    MethodologyStageRunDispatchReceipt,
+)
 from agora.protocol.state_machines import StageStatus, TaskStatus
 from agora.tasks.models import CreateTaskRequest, TaskBudget, TaskManifest, TaskRisk, utc_now
 from agora.tasks.store import TaskStore
@@ -98,6 +104,11 @@ from .methodology_stage_gate import validate_methodology_stage_gate
 from .methodology_stage_run_claim import (
     build_methodology_stage_run_claim_context,
 )
+from .methodology_stage_run_dispatch import (
+    build_methodology_stage_run_dispatch_claim,
+    derive_methodology_stage_run_dispatch_policy,
+    derive_methodology_stage_runtime_preflight,
+)
 from .models import (
     BudgetAmendment,
     ConsultationRun,
@@ -105,6 +116,7 @@ from .models import (
     Measurement,
     MethodologyDispatchState,
     MethodologyRunDispatchState,
+    MethodologyStageRunDispatchState,
     OrchestrationRun,
     OrchestrationStage,
     PlanState,
@@ -125,7 +137,7 @@ from .protocol_context import (
     resolve_git_revision,
 )
 from .projection import TaskProjectionStore
-from .provider_usage import settlement_observation
+from .provider_usage import RuntimeResultFormat, settlement_observation
 from .runtime import (
     OUTPUT_LIMIT,
     ReadOnlyCliRunner,
@@ -1861,6 +1873,360 @@ class TaskOrchestrationService:
             repository_unchanged=repository_unchanged,
         )
 
+    async def dispatch_methodology_next_stage_run(
+        self,
+        task_id: str,
+        *,
+        allow_unbounded_native_usage: bool,
+    ) -> MethodologyStageRunDispatchReceipt:
+        """Attach one process to the already claimed sequence-2 formal Run."""
+
+        if not allow_unbounded_native_usage:
+            raise OrchestrationValidationError(
+                "Methodology Stage provider dispatch requires explicit "
+                "unbounded-native-usage acknowledgement"
+            )
+        existing = self.store.get_methodology_stage_run_dispatch(task_id)
+        if existing is not None:
+            return self._recover_methodology_stage_run_dispatch(existing)
+
+        spawn_owner_id = f"stage-dispatch-owner:{uuid.uuid4().hex}"
+
+        snapshot = self.store.methodology_stage_run_dispatch_snapshot(
+            task_id,
+            control_plane=self.control_plane,
+        )
+        stage = snapshot.execution_contract.stages[
+            snapshot.stage_run_claim_receipt.stage_sequence - 1
+        ]
+        runtime = self.runtimes.get(stage.runtime)
+        if runtime is None:
+            raise OrchestrationConflictError(
+                "Methodology Stage dispatch pinned runtime is unavailable"
+            )
+        try:
+            project = self.projects.get(snapshot.task.project_id)
+        except KeyError as exc:
+            raise OrchestrationConflictError(
+                "Methodology Stage dispatch project is not registered"
+            ) from exc
+        repository_before = self._resolve_methodology_dispatch_repository(
+            project.root,
+            snapshot.task.project_id,
+            snapshot.execution_contract.repository,
+        )
+        prompt = build_protocol_prompt(
+            context_pack=snapshot.protocol_run.context_pack,
+            runtime=stage.runtime,
+            requirements=snapshot.formal_gate.requirements,
+        )
+        prompt_sha256 = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+        dispatch_policy = derive_methodology_stage_run_dispatch_policy(
+            snapshot=snapshot,
+            repository=repository_before,
+            runtimes=self.runtimes,
+            evaluated_at=utc_now(),
+        )
+        if not dispatch_policy.dispatchable:
+            raise OrchestrationConflictError(dispatch_policy.blockers[0])
+        capability_observation = await self.capability_collector(self.runtimes)
+        runtime_preflight = derive_methodology_stage_runtime_preflight(
+            snapshot=snapshot,
+            dispatch_policy=dispatch_policy,
+            observation=capability_observation,
+            runtimes=self.runtimes,
+        )
+        if not runtime_preflight.allowed:
+            raise OrchestrationConflictError(runtime_preflight.blockers[0])
+        repository_after = self._resolve_methodology_dispatch_repository(
+            project.root,
+            snapshot.task.project_id,
+            snapshot.execution_contract.repository,
+        )
+        if repository_before != repository_after:
+            raise OrchestrationConflictError(
+                "Methodology Stage repository changed during preflight"
+            )
+
+        def recheck(
+            current_snapshot,
+            claimed_at: str,
+        ) -> MethodologyStageRunDispatchClaim:
+            return build_methodology_stage_run_dispatch_claim(
+                snapshot=current_snapshot,
+                repository=repository_after,
+                runtimes=self.runtimes,
+                dispatch_policy=dispatch_policy,
+                runtime_preflight=runtime_preflight,
+                prompt_sha256=prompt_sha256,
+                spawn_owner_id=spawn_owner_id,
+                claimed_at=claimed_at,
+            )
+
+        dispatch = self.store.claim_methodology_stage_run_dispatch(
+            task_id,
+            control_plane=self.control_plane,
+            recheck=recheck,
+        )
+        claim = dispatch.claim
+        process_started = False
+
+        async def attach_pid(pid: int) -> None:
+            nonlocal process_started
+            self.store.attach_methodology_stage_run_pid(
+                claim.dispatch_id,
+                pid,
+                spawn_owner_id=spawn_owner_id,
+            )
+            process_started = True
+
+        def before_spawn(
+            checked_runtime: RuntimeCommand,
+            resolved_command: list[str],
+        ) -> None:
+            self._resolve_methodology_dispatch_repository(
+                project.root,
+                snapshot.task.project_id,
+                snapshot.execution_contract.repository,
+            )
+            self.preflight_rechecker(
+                decision=runtime_preflight,
+                observation=capability_observation,
+                runtimes=self.runtimes,
+                runtime=checked_runtime,
+                resolved_command=resolved_command,
+            )
+
+        cancelled = False
+        try:
+            before_spawn(
+                runtime,
+                resolve_runtime_command(runtime.build(prompt)),
+            )
+            result = await self.runner.run(
+                runtime,
+                prompt,
+                cwd=project.root,
+                task_id=task_id,
+                run_id=claim.run_id,
+                stage_key=claim.stage_key,
+                timeout_seconds=(
+                    snapshot.protocol_run.context_pack.budget.max_seconds
+                ),
+                on_process=attach_pid,
+                before_spawn=before_spawn,
+            )
+        except RuntimeInterrupted as exc:
+            result = RuntimeResult(
+                exit_code=None,
+                stdout="",
+                stderr=str(exc),
+                process_started=True,
+            )
+        except asyncio.CancelledError:
+            cancelled = True
+            result = RuntimeResult(
+                exit_code=None,
+                stdout="",
+                stderr="Methodology Stage orchestration task was cancelled",
+                process_started=process_started,
+            )
+        except Exception as exc:
+            result = RuntimeResult(
+                exit_code=None,
+                stdout="",
+                stderr=(
+                    "methodology Stage runtime boundary failed: "
+                    f"{type(exc).__name__}: {exc}"
+                ),
+                process_started=process_started,
+            )
+
+        repository_unchanged = True
+        if result.process_started or process_started:
+            try:
+                self._resolve_methodology_dispatch_repository(
+                    project.root,
+                    snapshot.task.project_id,
+                    snapshot.execution_contract.repository,
+                )
+            except OrchestrationConflictError:
+                repository_unchanged = False
+                result = RuntimeResult(
+                    exit_code=(
+                        result.exit_code
+                        if result.exit_code not in {None, 0}
+                        else 1
+                    ),
+                    stdout=result.stdout,
+                    stderr=(
+                        "methodology Stage runtime changed the repository revision"
+                    ),
+                    timed_out=result.timed_out,
+                    process_started=True,
+                    usage_observation=result.usage_observation,
+                )
+        receipt = self._settle_methodology_stage_run_dispatch(
+            dispatch,
+            prompt=prompt,
+            result=result,
+            repository_unchanged=repository_unchanged,
+            cancelled=cancelled,
+            spawn_owner_id=spawn_owner_id,
+        )
+        if cancelled:
+            raise asyncio.CancelledError
+        return receipt
+
+    def _settle_methodology_stage_run_dispatch(
+        self,
+        dispatch: MethodologyStageRunDispatchState,
+        *,
+        prompt: str,
+        result: RuntimeResult,
+        repository_unchanged: bool,
+        cancelled: bool = False,
+        spawn_owner_id: str | None = None,
+    ) -> MethodologyStageRunDispatchReceipt:
+        claim = dispatch.claim
+        protocol_run = self.control_plane.get_protocol_run(claim.run_id)
+        gate = self.control_plane.get_gate(claim.task_id, claim.gate_key)
+        if protocol_run is None or gate is None:
+            raise OrchestrationConflictError(
+                "Methodology Stage formal Run or Gate is unavailable"
+            )
+        adapted = adapt_runtime_result(
+            protocol_run.context_pack,
+            result,
+            gate_requirements=gate.requirements,
+            cancelled=cancelled and result.process_started,
+            repository_revision_mismatch=not repository_unchanged,
+        )
+        observation = settlement_observation(
+            run_id=claim.run_id,
+            adapter=claim.runtime,
+            prompt=prompt,
+            output=result.stdout,
+            process_started=result.process_started,
+            exit_code=result.exit_code,
+            result_format=RuntimeResultFormat(claim.result_format),
+            native_observation=result.usage_observation,
+        )
+        observed = self.store.observe_methodology_stage_run_terminal(
+            claim.dispatch_id,
+            process_started=result.process_started,
+            exit_code=result.exit_code,
+            timed_out=result.timed_out,
+            output=result.stdout,
+            error_message=(result.stderr.strip() or None),
+            repository_unchanged=repository_unchanged,
+            adapter_result=adapted,
+            usage_observation=observation,
+            spawn_owner_id=spawn_owner_id,
+        )
+        return self._finish_methodology_stage_run_dispatch(observed)
+
+    def _finish_methodology_stage_run_dispatch(
+        self,
+        dispatch: MethodologyStageRunDispatchState,
+    ) -> MethodologyStageRunDispatchReceipt:
+        if dispatch.state == MethodologyDispatchState.SETTLED:
+            assert dispatch.receipt is not None
+            return dispatch.receipt
+        if (
+            dispatch.state != MethodologyDispatchState.TERMINAL_OBSERVED
+            or dispatch.adapter_result is None
+        ):
+            raise OrchestrationConflictError(
+                "Methodology Stage dispatch is not ready for settlement"
+            )
+        settlement = self.control_plane.settle_protocol_run(
+            dispatch.adapter_result,
+            actor="orchestrator",
+            operation_key=(
+                "methodology-stage-protocol-settle:"
+                f"{dispatch.claim.run_id}"
+            ),
+        )
+        return self.store.finish_methodology_stage_run_dispatch(
+            dispatch.dispatch_id,
+            settlement=settlement,
+            control_plane=self.control_plane,
+        )
+
+    def _recover_methodology_stage_run_dispatch(
+        self,
+        dispatch: MethodologyStageRunDispatchState,
+    ) -> MethodologyStageRunDispatchReceipt:
+        if dispatch.state == MethodologyDispatchState.SETTLED:
+            assert dispatch.receipt is not None
+            return dispatch.receipt
+        if dispatch.state == MethodologyDispatchState.TERMINAL_OBSERVED:
+            return self._finish_methodology_stage_run_dispatch(dispatch)
+        snapshot = self.store.methodology_stage_run_dispatch_snapshot(
+            dispatch.claim.task_id,
+            control_plane=self.control_plane,
+        )
+        prompt = build_protocol_prompt(
+            context_pack=snapshot.protocol_run.context_pack,
+            runtime=dispatch.claim.runtime,
+            requirements=snapshot.formal_gate.requirements,
+        )
+        if hashlib.sha256(prompt.encode("utf-8")).hexdigest() != (
+            dispatch.claim.prompt_sha256
+        ):
+            raise OrchestrationConflictError(
+                "Recovered methodology Stage prompt binding changed"
+            )
+        if dispatch.state == MethodologyDispatchState.CLAIMED:
+            if datetime.now(timezone.utc) < dispatch.claim.recovery_not_before:
+                raise OrchestrationConflictError(
+                    "Methodology Stage dispatch owner lease is active; refusing "
+                    "premature recovery before PID attachment"
+                )
+            result = RuntimeResult(
+                exit_code=None,
+                stdout="",
+                stderr=(
+                    "Recovered a methodology Stage Run whose process never attached"
+                ),
+                process_started=False,
+            )
+        else:
+            assert dispatch.pid is not None
+            process_state = self.process_inspector(dispatch.pid)
+            if process_state != ProcessState.DEAD:
+                raise OrchestrationConflictError(
+                    f"Methodology Stage dispatch {dispatch.dispatch_id} process "
+                    f"{dispatch.pid} is {process_state.value}; refusing "
+                    "duplicate dispatch"
+                )
+            result = RuntimeResult(
+                exit_code=None,
+                stdout="",
+                stderr=(
+                    "Recovered a methodology Stage Run whose process was inactive"
+                ),
+                process_started=True,
+            )
+        try:
+            project = self.projects.get(dispatch.claim.project_id)
+            self._resolve_methodology_dispatch_repository(
+                project.root,
+                dispatch.claim.project_id,
+                dispatch.claim.repository,
+            )
+            repository_unchanged = True
+        except (KeyError, OrchestrationConflictError):
+            repository_unchanged = False
+        return self._settle_methodology_stage_run_dispatch(
+            dispatch,
+            prompt=prompt,
+            result=result,
+            repository_unchanged=repository_unchanged,
+            spawn_owner_id=None,
+        )
+
     async def run_until_blocked(
         self,
         task_id: str,
@@ -1945,6 +2311,17 @@ class TaskOrchestrationService:
             and methodology_dispatch.state != MethodologyDispatchState.SETTLED
         ):
             self._recover_methodology_run_dispatch(methodology_dispatch)
+        methodology_stage_dispatch = (
+            self.store.get_methodology_stage_run_dispatch(task_id)
+        )
+        if (
+            methodology_stage_dispatch is not None
+            and methodology_stage_dispatch.state
+            != MethodologyDispatchState.SETTLED
+        ):
+            self._recover_methodology_stage_run_dispatch(
+                methodology_stage_dispatch
+            )
         self._ensure_authoritative_stage_route(task_id, actor="reconciler")
         self.control_plane.reconcile_task_lifecycle(
             task_id,

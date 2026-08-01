@@ -54,6 +54,11 @@ from .methodology_stage_run_claim import (
     MethodologyStageRunClaimRequest,
     methodology_stage_run_id,
 )
+from .methodology_stage_run_dispatch import (
+    MethodologyStageRunDispatchClaim,
+    MethodologyStageRunDispatchPolicyDecision,
+    MethodologyStageRunDispatchReceipt,
+)
 from .models import (
     Approval,
     ApprovalStatus,
@@ -129,6 +134,9 @@ __all__ = [
     "MethodologyStageInputArtifactBinding",
     "MethodologyStageRunClaimReceipt",
     "MethodologyStageRunClaimRequest",
+    "MethodologyStageRunDispatchClaim",
+    "MethodologyStageRunDispatchPolicyDecision",
+    "MethodologyStageRunDispatchReceipt",
     "methodology_stage_run_id",
     "MethodologySeedArtifactRegistration",
     "MethodologyExternalSourceArtifact",

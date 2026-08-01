@@ -39,6 +39,10 @@ from agora.protocol.methodology_run_dispatch import (
     MethodologyRunDispatchClaim,
     MethodologyRunDispatchReceipt,
 )
+from agora.protocol.methodology_stage_run_dispatch import (
+    MethodologyStageRunDispatchClaim,
+    MethodologyStageRunDispatchReceipt,
+)
 from agora.protocol.state_machines import TaskStatus
 from agora.tasks.models import TaskManifest, TaskRisk
 
@@ -611,6 +615,142 @@ class MethodologyRunDispatchState(StrictModel):
         ):
             raise ValueError(
                 "settled methodology dispatch receipt differs from terminal facts"
+            )
+        return self
+
+
+class MethodologyStageRunDispatchState(StrictModel):
+    """Durable recovery state for one later methodology process attachment."""
+
+    dispatch_id: str
+    state: MethodologyDispatchState
+    claim: MethodologyStageRunDispatchClaim
+    receipt: MethodologyStageRunDispatchReceipt | None = None
+    pid: int | None = Field(default=None, ge=1)
+    process_started: bool = False
+    exit_code: int | None = None
+    timed_out: bool = False
+    output: str = ""
+    error_message: str | None = None
+    repository_unchanged: bool | None = None
+    adapter_result: AgentAdapterResult | None = None
+    usage_observation: ProviderUsageObservation | None = None
+    claimed_at: str
+    process_attached_at: str | None = None
+    terminal_observed_at: str | None = None
+    settled_at: str | None = None
+
+    @model_validator(mode="after")
+    def validate_recovery_state(self):
+        if self.dispatch_id != self.claim.dispatch_id:
+            raise ValueError(
+                "methodology Stage dispatch state differs from its claim"
+            )
+        terminal_fields = (
+            self.repository_unchanged,
+            self.adapter_result,
+            self.usage_observation,
+            self.terminal_observed_at,
+        )
+        if self.state == MethodologyDispatchState.CLAIMED:
+            if (
+                self.pid is not None
+                or self.process_started
+                or self.process_attached_at is not None
+                or self.exit_code is not None
+                or self.timed_out
+                or self.output
+                or self.error_message is not None
+                or any(item is not None for item in terminal_fields)
+                or self.receipt is not None
+                or self.settled_at is not None
+            ):
+                raise ValueError(
+                    "claimed methodology Stage dispatch carries terminal facts"
+                )
+            return self
+        if self.state == MethodologyDispatchState.RUNNING:
+            if (
+                self.pid is None
+                or not self.process_started
+                or self.process_attached_at is None
+                or self.exit_code is not None
+                or self.timed_out
+                or self.output
+                or self.error_message is not None
+                or any(item is not None for item in terminal_fields)
+                or self.receipt is not None
+                or self.settled_at is not None
+            ):
+                raise ValueError(
+                    "running methodology Stage dispatch requires one process"
+                )
+            return self
+        if any(item is None for item in terminal_fields):
+            raise ValueError(
+                "terminal methodology Stage dispatch requires complete facts"
+            )
+        if self.process_started:
+            if self.pid is None or self.process_attached_at is None:
+                raise ValueError(
+                    "started methodology Stage dispatch requires its process"
+                )
+        elif (
+            self.pid is not None
+            or self.process_attached_at is not None
+            or self.exit_code is not None
+            or self.timed_out
+        ):
+            raise ValueError(
+                "unstarted methodology Stage dispatch cannot carry process facts"
+            )
+        if self.adapter_result is not None and (
+            self.adapter_result.protocol_state.run_id != self.claim.run_id
+        ):
+            raise ValueError(
+                "methodology Stage adapter result differs from its Run"
+            )
+        if self.usage_observation is not None and (
+            self.usage_observation.run_id != self.claim.run_id
+        ):
+            raise ValueError(
+                "methodology Stage usage differs from its Run"
+            )
+        if self.state == MethodologyDispatchState.TERMINAL_OBSERVED:
+            if self.receipt is not None or self.settled_at is not None:
+                raise ValueError(
+                    "terminal-observed methodology Stage dispatch is unsettled"
+                )
+            return self
+        if self.receipt is None or self.settled_at is None:
+            raise ValueError(
+                "settled methodology Stage dispatch requires its receipt"
+            )
+        if self.receipt.dispatch_claim != self.claim:
+            raise ValueError(
+                "methodology Stage receipt differs from its persisted claim"
+            )
+        if (
+            self.receipt.settled_at.isoformat() != self.settled_at
+            or self.receipt.pid != self.pid
+            or self.receipt.process_started != self.process_started
+            or self.receipt.exit_code != self.exit_code
+            or self.receipt.timed_out != self.timed_out
+            or self.receipt.output_sha256
+            != hashlib.sha256(self.output.encode("utf-8")).hexdigest()
+            or self.receipt.error_sha256
+            != hashlib.sha256(
+                (self.error_message or "").encode("utf-8")
+            ).hexdigest()
+            or self.receipt.repository_unchanged
+            != self.repository_unchanged
+            or self.receipt.usage_observation != self.usage_observation
+            or self.adapter_result is None
+            or self.receipt.protocol_state
+            != self.adapter_result.protocol_state
+        ):
+            raise ValueError(
+                "settled methodology Stage receipt differs from terminal facts"
             )
         return self
 

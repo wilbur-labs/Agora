@@ -646,17 +646,33 @@ class TaskProjectionStore:
         if not run_ids:
             return {}
         placeholders = ",".join("?" for _ in run_ids)
-        rows = db.execute(
+        first_rows = db.execute(
             f"""
             SELECT * FROM orchestration_methodology_run_dispatches
             WHERE run_id IN ({placeholders})
             """,
             tuple(run_ids),
         ).fetchall()
-        return {
+        stage_rows = db.execute(
+            f"""
+            SELECT * FROM orchestration_methodology_stage_run_dispatches
+            WHERE run_id IN ({placeholders})
+            """,
+            tuple(run_ids),
+        ).fetchall()
+        dispatches = {
             row["run_id"]: self.orchestration._methodology_dispatch(row)
-            for row in rows
+            for row in first_rows
         }
+        dispatches.update(
+            {
+                row["run_id"]: (
+                    self.orchestration._methodology_stage_dispatch(row)
+                )
+                for row in stage_rows
+            }
+        )
+        return dispatches
 
     def _run_projection(
         self,
@@ -1027,6 +1043,10 @@ class TaskProjectionStore:
         ], total
 
     def _usage(self, db, plan_id, limit, offset):
+        self.orchestration._validate_methodology_stage_usage_ledgers(
+            db,
+            plan_id,
+        )
         rows = db.execute(
             """SELECT * FROM (
                    SELECT entry_id, task_id, plan_id, stage_key, run_id,
@@ -1040,17 +1060,27 @@ class TaskProjectionStore:
                           adapter, created_at
                    FROM orchestration_methodology_usage_ledger
                    WHERE plan_id = ?
+                   UNION ALL
+                   SELECT entry_id, task_id, plan_id, stage_key, run_id,
+                          'settlement' AS entry_type, tokens,
+                          token_measurement, cost_usd, cost_measurement,
+                          adapter, created_at
+                   FROM orchestration_methodology_stage_usage_ledger
+                   WHERE plan_id = ?
                )
                ORDER BY created_at, entry_id LIMIT ? OFFSET ?""",
-            (plan_id, plan_id, limit, offset),
+            (plan_id, plan_id, plan_id, limit, offset),
         ).fetchall()
         total = db.execute(
             """SELECT
                    (SELECT COUNT(*) FROM orchestration_usage_ledger
                     WHERE plan_id = ?) +
                    (SELECT COUNT(*) FROM orchestration_methodology_usage_ledger
+                    WHERE plan_id = ?) +
+                   (SELECT COUNT(*)
+                    FROM orchestration_methodology_stage_usage_ledger
                     WHERE plan_id = ?) AS count""",
-            (plan_id, plan_id),
+            (plan_id, plan_id, plan_id),
         ).fetchone()["count"]
         return [self.orchestration._usage(row) for row in rows], total
 
@@ -1136,8 +1166,11 @@ class TaskProjectionStore:
         )
         return actions
 
-    @staticmethod
-    def _budget_projection(db, plan):
+    def _budget_projection(self, db, plan):
+        self.orchestration._validate_methodology_stage_usage_ledgers(
+            db,
+            plan.plan_id,
+        )
         active_runs = db.execute(
             """SELECT COUNT(*) AS count,
                       COALESCE(SUM(token_reserved), 0) AS token_reserved,
@@ -1174,7 +1207,9 @@ class TaskProjectionStore:
                    SELECT stage_claim.plan_id, stage_claim.token_reserved,
                           stage_claim.cost_reserved_usd
                    FROM orchestration_methodology_stage_run_claims stage_claim
-                   WHERE stage_claim.plan_id = ?
+                   LEFT JOIN orchestration_methodology_stage_usage_ledger usage
+                     ON usage.run_id = stage_claim.run_id
+                   WHERE stage_claim.plan_id = ? AND usage.run_id IS NULL
                ) c""",
             (plan.plan_id, plan.plan_id),
         ).fetchone()
@@ -1234,6 +1269,25 @@ class TaskProjectionStore:
                WHERE plan_id = ?""",
             (plan.plan_id,),
         ).fetchone()
+        settled_methodology_stage = db.execute(
+            """SELECT COUNT(*) AS count,
+                      COALESCE(SUM(CASE WHEN tokens IS NOT NULL
+                                        THEN tokens ELSE 0 END), 0)
+                          AS known_tokens,
+                      SUM(CASE WHEN token_measurement = 'unavailable'
+                               THEN 1 ELSE 0 END) AS unavailable_tokens,
+                      SUM(CASE WHEN token_measurement = 'estimated'
+                               THEN 1 ELSE 0 END) AS estimated_tokens,
+                      SUM(CASE WHEN cost_usd IS NOT NULL
+                               THEN 1 ELSE 0 END) AS cost_count,
+                      COALESCE(SUM(cost_usd), 0) AS known_cost,
+                      SUM(CASE WHEN cost_usd IS NOT NULL
+                               AND cost_measurement != 'exact'
+                               THEN 1 ELSE 0 END) AS inexact_costs
+               FROM orchestration_methodology_stage_usage_ledger
+               WHERE plan_id = ?""",
+            (plan.plan_id,),
+        ).fetchone()
         active_token_reserved = (
             active_runs["token_reserved"]
             + active_consultations["token_reserved"]
@@ -1253,21 +1307,25 @@ class TaskProjectionStore:
             settled_runs["count"]
             + settled_consultations["count"]
             + settled_methodology["count"]
+            + settled_methodology_stage["count"]
         )
         known_tokens = (
             settled_runs["known_tokens"]
             + settled_consultations["known_tokens"]
             + settled_methodology["known_tokens"]
+            + settled_methodology_stage["known_tokens"]
         )
         unavailable_tokens = (
             (settled_runs["unavailable_tokens"] or 0)
             + (settled_consultations["unavailable_tokens"] or 0)
             + (settled_methodology["unavailable_tokens"] or 0)
+            + (settled_methodology_stage["unavailable_tokens"] or 0)
         )
         estimated_tokens = (
             (settled_runs["estimated_tokens"] or 0)
             + (settled_consultations["estimated_tokens"] or 0)
             + (settled_methodology["estimated_tokens"] or 0)
+            + (settled_methodology_stage["estimated_tokens"] or 0)
         )
         if unavailable_tokens:
             token_measurement = "unavailable"
@@ -1292,15 +1350,18 @@ class TaskProjectionStore:
             (settled_runs["cost_count"] or 0)
             + (settled_consultations["cost_count"] or 0)
             + (settled_methodology["cost_count"] or 0)
+            + (settled_methodology_stage["cost_count"] or 0)
         )
         known_cost = (
             settled_runs["known_cost"] + settled_consultations["known_cost"]
             + settled_methodology["known_cost"]
+            + settled_methodology_stage["known_cost"]
         )
         inexact_costs = (
             (settled_runs["inexact_costs"] or 0)
             + (settled_consultations["inexact_costs"] or 0)
             + (settled_methodology["inexact_costs"] or 0)
+            + (settled_methodology_stage["inexact_costs"] or 0)
         )
         if settled_count == 0:
             cost_settled = 0.0

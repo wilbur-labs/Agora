@@ -7,7 +7,7 @@ import sqlite3
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Barrier
 
@@ -47,8 +47,12 @@ from agora.orchestration.methodology_stage_gate import (
 from agora.orchestration.methodology_stage_run_claim import (
     load_methodology_stage_run_claim_request,
 )
+from agora.orchestration.methodology_stage_run_dispatch import (
+    derive_methodology_stage_run_dispatch_policy,
+)
 from agora.orchestration.models import MethodologyDispatchState, PlanState
 from agora.orchestration.processes import ProcessState
+from agora.orchestration.provider_usage import RuntimeResultFormat
 from agora.orchestration.protocol_context import RepositoryRevision
 from agora.orchestration.runtime import (
     RuntimeCommand,
@@ -96,6 +100,11 @@ from agora.protocol.methodology_stage_run_claim import (
     MethodologyStageRunClaimReceipt,
     MethodologyStageRunClaimRequest,
     methodology_stage_run_id,
+)
+from agora.protocol.methodology_stage_run_dispatch import (
+    MethodologyStageRunDispatchClaim,
+    MethodologyStageRunDispatchPolicyDecision,
+    MethodologyStageRunDispatchReceipt,
 )
 from agora.protocol.models import ContextPack, HandoffPack
 from agora.protocol.schema_registry import SCHEMA_MODELS
@@ -5330,3 +5339,950 @@ def test_methodology_stage_run_claim_schemas_are_registered():
         SCHEMA_MODELS["methodology-stage-run-claim-receipt"]
         is MethodologyStageRunClaimReceipt
     )
+
+
+async def _claimed_sequence_two_methodology_run(tmp_path):
+    tasks, service, contract, first_claim, first_dispatch, stage_gate = (
+        await _configured_next_methodology_stage(tmp_path)
+    )
+    request = _stage_run_claim_request(
+        tasks,
+        service,
+        contract,
+        first_dispatch,
+        stage_gate,
+    )
+    stage_claim = service.claim_methodology_next_stage_run(
+        contract.task_id,
+        request,
+        principal=_migration_principal(),
+    )
+    return (
+        tasks,
+        service,
+        contract,
+        first_claim,
+        first_dispatch,
+        stage_gate,
+        stage_claim,
+    )
+
+
+async def _dispatch_sequence_two_methodology_run(service, task_id):
+    return await service.dispatch_methodology_next_stage_run(
+        task_id,
+        allow_unbounded_native_usage=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_methodology_stage_dispatch_requires_acknowledgement(tmp_path):
+    tasks, service, contract, *_ = (
+        await _claimed_sequence_two_methodology_run(tmp_path)
+    )
+    before = _database_dump(tasks)
+
+    with pytest.raises(
+        OrchestrationValidationError,
+        match="acknowledgement",
+    ):
+        await service.dispatch_methodology_next_stage_run(
+            contract.task_id,
+            allow_unbounded_native_usage=False,
+        )
+
+    assert _database_dump(tasks) == before
+
+
+@pytest.mark.asyncio
+async def test_methodology_stage_dispatch_settles_existing_run_atomically(
+    tmp_path,
+):
+    (
+        tasks,
+        service,
+        contract,
+        _,
+        first_dispatch,
+        stage_gate,
+        stage_claim,
+    ) = await _claimed_sequence_two_methodology_run(tmp_path)
+    runner = MethodologyDispatchRunner()
+    service.runner = runner
+
+    receipt = await _dispatch_sequence_two_methodology_run(
+        service,
+        contract.task_id,
+    )
+
+    assert isinstance(receipt, MethodologyStageRunDispatchReceipt)
+    assert isinstance(receipt.dispatch_claim, MethodologyStageRunDispatchClaim)
+    claim = receipt.dispatch_claim
+    assert claim.stage_sequence == 2
+    assert claim.stage_key == contract.stages[1].stage_key
+    assert claim.run_id == stage_claim.run_id
+    assert claim.context_pack_id == stage_claim.context_pack_id
+    assert claim.stage_gate_receipt_id == stage_gate.receipt_id
+    assert claim.stage_run_claim_receipt_id == stage_claim.receipt_id
+    assert claim.predecessor_dispatch_receipt_id == first_dispatch.receipt_id
+    assert claim.dispatch_policy.dispatchable is True
+    assert claim.runtime_preflight.allowed is True
+    assert (
+        claim.runtime_preflight.routing_policy_decision_id
+        == claim.dispatch_policy.decision_id
+    )
+    assert receipt.process_started is True
+    assert receipt.pid == runner.pid
+    assert receipt.stage_status.value == "completed"
+    assert receipt.gate_status.value == "passed"
+    assert receipt.next_stage_key == contract.stages[2].stage_key
+    assert receipt.protocol_settled is True
+    assert receipt.provider_substitution is False
+    assert runner.calls == 1
+
+    dispatch = service.store.get_methodology_stage_run_dispatch(
+        contract.task_id
+    )
+    assert dispatch is not None
+    assert dispatch.state == MethodologyDispatchState.SETTLED
+    assert dispatch.receipt == receipt
+    protocol_run = service.control_plane.get_protocol_run(stage_claim.run_id)
+    assert protocol_run is not None
+    assert protocol_run.settled_at is not None
+    assert protocol_run.protocol_state == receipt.protocol_state
+    assert protocol_run.handoff_pack is not None
+    assert protocol_run.handoff_pack.pack_id == receipt.handoff_pack_id
+    unified = service.unified_status(contract.task_id)
+    projected = next(
+        item for item in unified.runs if item.run_id == stage_claim.run_id
+    )
+    assert projected.runtime_preflight == claim.runtime_preflight
+    assert projected.usage_observation == receipt.usage_observation
+    assert projected.wait_state.value == "settled"
+    assert unified.budget.token_reserved == 0
+    assert unified.collection_totals["usage"] == 2
+    assert {item.run_id for item in unified.usage} == {
+        first_dispatch.dispatch_claim.run_id,
+        stage_claim.run_id,
+    }
+    with sqlite3.connect(tasks.db_path) as db:
+        assert db.execute(
+            "SELECT COUNT(*) FROM protocol_runs WHERE task_id = ?",
+            (contract.task_id,),
+        ).fetchone()[0] == 2
+        assert db.execute(
+            "SELECT COUNT(*) FROM orchestration_runs WHERE task_id = ?",
+            (contract.task_id,),
+        ).fetchone()[0] == 0
+        assert db.execute(
+            """
+            SELECT COUNT(*)
+            FROM orchestration_methodology_stage_run_dispatches
+            WHERE task_id = ? AND state = 'settled'
+            """,
+            (contract.task_id,),
+        ).fetchone()[0] == 1
+        assert db.execute(
+            """
+            SELECT COUNT(*)
+            FROM orchestration_methodology_stage_usage_ledger
+            WHERE task_id = ?
+            """,
+            (contract.task_id,),
+        ).fetchone()[0] == 1
+        assert db.execute(
+            """
+            SELECT process_started
+            FROM orchestration_methodology_stage_run_claims
+            WHERE task_id = ? AND stage_sequence = 2
+            """,
+            (contract.task_id,),
+        ).fetchone()[0] == 0
+
+    replay = await _dispatch_sequence_two_methodology_run(
+        service,
+        contract.task_id,
+    )
+    assert replay == receipt
+    assert runner.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_methodology_stage_dispatch_pre_spawn_failure_is_exact_zero(
+    tmp_path,
+):
+    _, service, contract, *_, stage_claim = (
+        await _claimed_sequence_two_methodology_run(tmp_path)
+    )
+    service.runner = MethodologyDispatchRunner(fail_before_process=True)
+
+    receipt = await _dispatch_sequence_two_methodology_run(
+        service,
+        contract.task_id,
+    )
+
+    assert receipt.dispatch_claim.run_id == stage_claim.run_id
+    assert receipt.process_started is False
+    assert receipt.pid is None
+    assert receipt.exit_code is None
+    assert receipt.usage_observation.total_tokens == 0
+    assert receipt.usage_observation.token_measurement == "exact"
+    assert receipt.usage_observation.cost_usd == 0
+    assert receipt.usage_observation.cost_measurement == "exact"
+    assert receipt.protocol_state.process_status.value == "launch_failed"
+    assert receipt.stage_status.value == "failed"
+    assert receipt.handoff_pack_id is None
+
+
+@pytest.mark.asyncio
+async def test_methodology_stage_dispatch_blocked_preflight_is_zero_write(
+    tmp_path,
+):
+    tasks, service, contract, *_ = (
+        await _claimed_sequence_two_methodology_run(tmp_path)
+    )
+    service.runtimes[contract.stages[1].runtime] = RuntimeCommand(
+        adapter=contract.stages[1].runtime,
+        command_template=("agora-missing-stage-runtime", "{prompt}"),
+    )
+    before = _database_dump(tasks)
+
+    with pytest.raises(
+        OrchestrationConflictError,
+        match="unavailable|changed",
+    ):
+        await _dispatch_sequence_two_methodology_run(
+            service,
+            contract.task_id,
+        )
+
+    assert _database_dump(tasks) == before
+    assert (
+        service.store.get_methodology_stage_run_dispatch(contract.task_id)
+        is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_methodology_stage_dispatch_policy_blocks_unbounded_reservation(
+    tmp_path,
+):
+    _, service, contract, *_ = (
+        await _claimed_sequence_two_methodology_run(tmp_path)
+    )
+    snapshot = service.store.methodology_stage_run_dispatch_snapshot(
+        contract.task_id,
+        control_plane=service.control_plane,
+    )
+    budget = snapshot.stage_run_claim_receipt.budget.model_copy(
+        update={"max_model_tokens": None}
+    )
+    claim = snapshot.stage_run_claim_receipt.model_copy(
+        update={"budget": budget}
+    )
+
+    decision = derive_methodology_stage_run_dispatch_policy(
+        snapshot=replace(snapshot, stage_run_claim_receipt=claim),
+        repository=REVISION,
+        runtimes=service.runtimes,
+        evaluated_at=utc_now(),
+    )
+
+    assert decision.dispatchable is False
+    assert decision.token_reservation == 0
+    assert any(
+        item.check == "usage_reservation" and not item.satisfied
+        for item in decision.checks
+    )
+
+
+@pytest.mark.asyncio
+async def test_methodology_stage_dispatch_concurrency_never_spawns_twice(
+    tmp_path,
+):
+    _, service, contract, *_ = (
+        await _claimed_sequence_two_methodology_run(tmp_path)
+    )
+    runner = MethodologyDispatchRunner()
+    service.runner = runner
+
+    results = await asyncio.gather(
+        _dispatch_sequence_two_methodology_run(service, contract.task_id),
+        _dispatch_sequence_two_methodology_run(service, contract.task_id),
+        return_exceptions=True,
+    )
+
+    assert runner.calls == 1
+    assert sum(
+        isinstance(item, MethodologyStageRunDispatchReceipt)
+        for item in results
+    ) == 1
+    assert sum(
+        isinstance(item, OrchestrationConflictError) for item in results
+    ) == 1
+
+
+@pytest.mark.asyncio
+async def test_methodology_stage_dispatch_resume_refuses_live_pid_then_settles(
+    tmp_path,
+):
+    _, service, contract, *_ = (
+        await _claimed_sequence_two_methodology_run(tmp_path)
+    )
+
+    class CrashingRunner:
+        async def run(self, _runtime, _prompt, **kwargs):
+            await kwargs["on_process"](818_181)
+            raise GeneratorExit("simulated Stage host crash")
+
+    service.runner = CrashingRunner()
+    with pytest.raises(GeneratorExit, match="Stage host crash"):
+        await _dispatch_sequence_two_methodology_run(
+            service,
+            contract.task_id,
+        )
+    dispatch = service.store.get_methodology_stage_run_dispatch(
+        contract.task_id
+    )
+    assert dispatch is not None
+    assert dispatch.state == MethodologyDispatchState.RUNNING
+
+    service.process_inspector = lambda _pid: ProcessState.ALIVE
+    with pytest.raises(
+        OrchestrationConflictError,
+        match="refusing duplicate dispatch",
+    ):
+        service.resume(contract.task_id)
+
+    service.process_inspector = lambda _pid: ProcessState.DEAD
+    service.resume(contract.task_id)
+    recovered = service.store.get_methodology_stage_run_dispatch(
+        contract.task_id
+    )
+    assert recovered is not None
+    assert recovered.state == MethodologyDispatchState.SETTLED
+    assert recovered.receipt is not None
+    assert recovered.receipt.process_started is True
+    assert recovered.receipt.protocol_state.process_status.value == "interrupted"
+
+
+@pytest.mark.asyncio
+async def test_methodology_stage_dispatch_finalization_event_rolls_back(
+    tmp_path,
+    monkeypatch,
+):
+    tasks, service, contract, *_, stage_claim = (
+        await _claimed_sequence_two_methodology_run(tmp_path)
+    )
+    service.runner = MethodologyDispatchRunner()
+    original_event = service.control_plane._event
+
+    def fail_final_event(*args, **kwargs):
+        if kwargs.get("event_type") == "methodology.stage_run_dispatch_settled":
+            raise RuntimeError("injected Stage finalization event failure")
+        return original_event(*args, **kwargs)
+
+    monkeypatch.setattr(service.control_plane, "_event", fail_final_event)
+    with pytest.raises(RuntimeError, match="Stage finalization event failure"):
+        await _dispatch_sequence_two_methodology_run(
+            service,
+            contract.task_id,
+        )
+    dispatch = service.store.get_methodology_stage_run_dispatch(
+        contract.task_id
+    )
+    assert dispatch is not None
+    assert dispatch.state == MethodologyDispatchState.TERMINAL_OBSERVED
+    with sqlite3.connect(tasks.db_path) as db:
+        assert db.execute(
+            "SELECT COUNT(*) FROM orchestration_methodology_stage_usage_ledger"
+        ).fetchone()[0] == 0
+    assert (
+        service.unified_status(contract.task_id).budget.token_reserved
+        == stage_claim.budget.max_model_tokens
+    )
+
+    monkeypatch.setattr(service.control_plane, "_event", original_event)
+    receipt = await _dispatch_sequence_two_methodology_run(
+        service,
+        contract.task_id,
+    )
+    assert receipt.protocol_settled is True
+    assert service.unified_status(contract.task_id).budget.token_reserved == 0
+
+
+@pytest.mark.asyncio
+async def test_methodology_stage_dispatch_persisted_tamper_fails_closed(
+    tmp_path,
+):
+    tasks, service, contract, *_ = (
+        await _claimed_sequence_two_methodology_run(tmp_path)
+    )
+    service.runner = MethodologyDispatchRunner(fail_before_process=True)
+    await _dispatch_sequence_two_methodology_run(service, contract.task_id)
+    with sqlite3.connect(tasks.db_path) as db:
+        payload = json.loads(
+            db.execute(
+                """
+                SELECT dispatch_policy_payload
+                FROM orchestration_methodology_stage_run_dispatches
+                WHERE task_id = ?
+                """,
+                (contract.task_id,),
+            ).fetchone()[0]
+        )
+        payload["checks"][0]["detail"] = "tampered Stage dispatch policy"
+        db.execute(
+            """
+            UPDATE orchestration_methodology_stage_run_dispatches
+            SET dispatch_policy_payload = ? WHERE task_id = ?
+            """,
+            (json.dumps(payload), contract.task_id),
+        )
+        db.commit()
+
+    with pytest.raises(
+        (ValidationError, OrchestrationValidationError),
+        match="content_sha256|binding drifted",
+    ):
+        service.store.get_methodology_stage_run_dispatch(contract.task_id)
+
+
+def test_methodology_stage_dispatch_cli_requires_ack_before_store(
+    monkeypatch,
+    capsys,
+):
+    built = False
+
+    def build_forbidden():
+        nonlocal built
+        built = True
+        raise AssertionError("service must not build before acknowledgement")
+
+    monkeypatch.setattr(orchestration_cli, "build_service", build_forbidden)
+    code = orchestration_cli.main(
+        ["migration-next-stage-run-dispatch", "task-successor"]
+    )
+
+    assert code == 2
+    assert built is False
+    assert "--allow-unbounded-native-usage" in capsys.readouterr().out
+
+
+def test_methodology_stage_dispatch_cli_emits_terminal_receipt(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    _, service, contract, *_ = asyncio.run(
+        _claimed_sequence_two_methodology_run(tmp_path)
+    )
+    service.runner = MethodologyDispatchRunner(fail_before_process=True)
+    monkeypatch.setattr(orchestration_cli, "build_service", lambda: service)
+
+    code = orchestration_cli.main(
+        [
+            "migration-next-stage-run-dispatch",
+            contract.task_id,
+            "--allow-unbounded-native-usage",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert code == 0
+    assert payload["dispatch_claim"]["stage_sequence"] == 2
+    assert payload["process_started"] is False
+    assert payload["protocol_settled"] is True
+    assert payload["provider_substitution"] is False
+
+
+def test_methodology_stage_run_dispatch_schemas_are_registered():
+    assert (
+        SCHEMA_MODELS["methodology-stage-run-dispatch-policy-decision"]
+        is MethodologyStageRunDispatchPolicyDecision
+    )
+    assert (
+        SCHEMA_MODELS["methodology-stage-run-dispatch-claim"]
+        is MethodologyStageRunDispatchClaim
+    )
+    assert (
+        SCHEMA_MODELS["methodology-stage-run-dispatch-receipt"]
+        is MethodologyStageRunDispatchReceipt
+    )
+
+
+@pytest.mark.asyncio
+async def test_methodology_stage_dispatch_gate_ledger_tamper_is_zero_write(
+    tmp_path,
+):
+    tasks, service, contract, *_ = (
+        await _claimed_sequence_two_methodology_run(tmp_path)
+    )
+    with sqlite3.connect(tasks.db_path) as db:
+        db.execute(
+            """
+            UPDATE orchestration_methodology_stage_gates
+            SET receipt_sha256 = ? WHERE task_id = ? AND stage_sequence = 2
+            """,
+            ("0" * 64, contract.task_id),
+        )
+        db.commit()
+    before = _database_dump(tasks)
+
+    with pytest.raises(
+        OrchestrationValidationError,
+        match="provenance drifted",
+    ):
+        await _dispatch_sequence_two_methodology_run(
+            service,
+            contract.task_id,
+        )
+
+    assert _database_dump(tasks) == before
+    assert (
+        service.store.get_methodology_stage_run_dispatch(contract.task_id)
+        is None
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("attach_process", "expected_process_status", "expected_stage_status"),
+    [
+        (False, "launch_failed", "failed"),
+        (True, "cancelled", "cancelled"),
+    ],
+)
+async def test_methodology_stage_dispatch_cancellation_settles_first(
+    tmp_path,
+    attach_process,
+    expected_process_status,
+    expected_stage_status,
+):
+    _, service, contract, *_ = (
+        await _claimed_sequence_two_methodology_run(tmp_path)
+    )
+
+    class CancellingRunner:
+        async def run(self, _runtime, _prompt, **kwargs):
+            if attach_process:
+                await kwargs["on_process"](919_191)
+            raise asyncio.CancelledError
+
+    service.runner = CancellingRunner()
+    with pytest.raises(asyncio.CancelledError):
+        await _dispatch_sequence_two_methodology_run(
+            service,
+            contract.task_id,
+        )
+
+    dispatch = service.store.get_methodology_stage_run_dispatch(
+        contract.task_id
+    )
+    assert dispatch is not None
+    assert dispatch.state == MethodologyDispatchState.SETTLED
+    assert dispatch.receipt is not None
+    assert (
+        dispatch.receipt.protocol_state.process_status.value
+        == expected_process_status
+    )
+    assert dispatch.receipt.stage_status.value == expected_stage_status
+
+
+@pytest.mark.asyncio
+async def test_methodology_stage_dispatch_terminal_fact_tamper_fails_closed(
+    tmp_path,
+):
+    tasks, service, contract, *_ = (
+        await _claimed_sequence_two_methodology_run(tmp_path)
+    )
+    service.runner = MethodologyDispatchRunner()
+    await _dispatch_sequence_two_methodology_run(service, contract.task_id)
+    with sqlite3.connect(tasks.db_path) as db:
+        db.execute(
+            """
+            UPDATE orchestration_methodology_stage_run_dispatches
+            SET output = ? WHERE task_id = ?
+            """,
+            ("tampered Stage terminal output", contract.task_id),
+        )
+        db.commit()
+
+    with pytest.raises(
+        (ValidationError, OrchestrationValidationError),
+        match="receipt differs|binding drifted",
+    ):
+        service.store.get_methodology_stage_run_dispatch(contract.task_id)
+
+
+@pytest.mark.asyncio
+async def test_methodology_stage_dispatch_claim_to_pid_lease_blocks_recovery(
+    tmp_path,
+):
+    _, service, contract, *_ = (
+        await _claimed_sequence_two_methodology_run(tmp_path)
+    )
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    delegate = MethodologyDispatchRunner()
+
+    class DelayedBeforePidRunner:
+        async def run(self, runtime, prompt, **kwargs):
+            entered.set()
+            await release.wait()
+            return await delegate.run(runtime, prompt, **kwargs)
+
+    service.runner = DelayedBeforePidRunner()
+    owner = asyncio.create_task(
+        _dispatch_sequence_two_methodology_run(service, contract.task_id)
+    )
+    await entered.wait()
+    dispatch = service.store.get_methodology_stage_run_dispatch(
+        contract.task_id
+    )
+    assert dispatch is not None
+    assert dispatch.state == MethodologyDispatchState.CLAIMED
+
+    with pytest.raises(
+        OrchestrationConflictError,
+        match="owner lease is active",
+    ):
+        await _dispatch_sequence_two_methodology_run(
+            service,
+            contract.task_id,
+        )
+
+    release.set()
+    receipt = await owner
+    assert receipt.process_started is True
+    assert delegate.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_methodology_stage_dispatch_expired_pre_pid_lease_recovers(
+    tmp_path,
+    monkeypatch,
+):
+    _, service, contract, *_ = (
+        await _claimed_sequence_two_methodology_run(tmp_path)
+    )
+
+    class CrashingBeforePidRunner:
+        async def run(self, _runtime, _prompt, **_kwargs):
+            raise GeneratorExit("simulated crash before Stage PID attachment")
+
+    service.runner = CrashingBeforePidRunner()
+    with pytest.raises(GeneratorExit, match="before Stage PID"):
+        await _dispatch_sequence_two_methodology_run(
+            service,
+            contract.task_id,
+        )
+    dispatch = service.store.get_methodology_stage_run_dispatch(
+        contract.task_id
+    )
+    assert dispatch is not None
+    assert dispatch.state == MethodologyDispatchState.CLAIMED
+
+    with pytest.raises(
+        OrchestrationConflictError,
+        match="owner lease is active",
+    ):
+        service.resume(contract.task_id)
+
+    future = dispatch.claim.recovery_not_before + timedelta(seconds=1)
+
+    class FutureDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return future if tz is not None else future.replace(tzinfo=None)
+
+    monkeypatch.setattr("agora.orchestration.service.datetime", FutureDateTime)
+    monkeypatch.setattr("agora.orchestration.store.datetime", FutureDateTime)
+    service.resume(contract.task_id)
+    recovered = service.store.get_methodology_stage_run_dispatch(
+        contract.task_id
+    )
+    assert recovered is not None
+    assert recovered.state == MethodologyDispatchState.SETTLED
+    assert recovered.receipt is not None
+    assert recovered.receipt.process_started is False
+    assert recovered.receipt.usage_observation.total_tokens == 0
+    assert recovered.receipt.protocol_state.process_status.value == "launch_failed"
+
+
+@pytest.mark.asyncio
+async def test_methodology_stage_dispatch_full_runtime_registry_drift_is_zero_write(
+    tmp_path,
+):
+    tasks, service, contract, *_ = (
+        await _claimed_sequence_two_methodology_run(tmp_path)
+    )
+    runtime_name = contract.stages[1].runtime
+    current = service.runtimes[runtime_name]
+    service.runtimes[runtime_name] = replace(
+        current,
+        result_format=RuntimeResultFormat.CODEX_JSONL_V1,
+        declared_models=("changed-model",),
+    )
+    before = _database_dump(tasks)
+
+    with pytest.raises(OrchestrationConflictError, match="registry|runtime"):
+        await _dispatch_sequence_two_methodology_run(
+            service,
+            contract.task_id,
+        )
+
+    assert _database_dump(tasks) == before
+    assert (
+        service.store.get_methodology_stage_run_dispatch(contract.task_id)
+        is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_methodology_stage_dispatch_settlement_uses_sealed_result_format(
+    tmp_path,
+    monkeypatch,
+):
+    _, service, contract, *_ = (
+        await _claimed_sequence_two_methodology_run(tmp_path)
+    )
+    runtime_name = contract.stages[1].runtime
+    delegate = MethodologyDispatchRunner()
+    observed_formats = []
+    from agora.orchestration import service as service_module
+
+    original_observation = service_module.settlement_observation
+
+    def capture_observation(**kwargs):
+        observed_formats.append(kwargs["result_format"])
+        return original_observation(**kwargs)
+
+    class MutatingAfterResultRunner:
+        async def run(self, runtime, prompt, **kwargs):
+            result = await delegate.run(runtime, prompt, **kwargs)
+            service.runtimes[runtime_name] = replace(
+                runtime,
+                result_format=RuntimeResultFormat.CODEX_JSONL_V1,
+            )
+            return result
+
+    monkeypatch.setattr(service_module, "settlement_observation", capture_observation)
+    service.runner = MutatingAfterResultRunner()
+    receipt = await _dispatch_sequence_two_methodology_run(
+        service,
+        contract.task_id,
+    )
+
+    assert receipt.dispatch_claim.result_format == "plain_text"
+    assert observed_formats == [RuntimeResultFormat.PLAIN_TEXT]
+    assert receipt.protocol_settled is True
+
+
+@pytest.mark.asyncio
+async def test_methodology_stage_reservation_row_tamper_fails_projection(
+    tmp_path,
+):
+    tasks, service, contract, *_ = (
+        await _claimed_sequence_two_methodology_run(tmp_path)
+    )
+    with sqlite3.connect(tasks.db_path) as db:
+        db.execute(
+            """
+            UPDATE orchestration_methodology_stage_run_claims
+            SET token_reserved = token_reserved + 1 WHERE task_id = ?
+            """,
+            (contract.task_id,),
+        )
+        db.commit()
+
+    with pytest.raises(
+        OrchestrationValidationError,
+        match="reservation row differs",
+    ):
+        service.unified_status(contract.task_id)
+
+
+@pytest.mark.asyncio
+async def test_methodology_stage_usage_row_tamper_fails_projection(tmp_path):
+    tasks, service, contract, *_ = (
+        await _claimed_sequence_two_methodology_run(tmp_path)
+    )
+    service.runner = MethodologyDispatchRunner()
+    await _dispatch_sequence_two_methodology_run(service, contract.task_id)
+    with sqlite3.connect(tasks.db_path) as db:
+        db.execute(
+            """
+            UPDATE orchestration_methodology_stage_usage_ledger
+            SET tokens = COALESCE(tokens, 0) + 1 WHERE task_id = ?
+            """,
+            (contract.task_id,),
+        )
+        db.commit()
+
+    with pytest.raises(
+        OrchestrationValidationError,
+        match="usage row differs",
+    ):
+        service.unified_status(contract.task_id)
+
+
+@pytest.mark.asyncio
+async def test_methodology_stage_missing_usage_row_fails_projection(tmp_path):
+    tasks, service, contract, *_ = (
+        await _claimed_sequence_two_methodology_run(tmp_path)
+    )
+    service.runner = MethodologyDispatchRunner()
+    await _dispatch_sequence_two_methodology_run(service, contract.task_id)
+    with sqlite3.connect(tasks.db_path) as db:
+        db.execute(
+            """
+            DELETE FROM orchestration_methodology_stage_usage_ledger
+            WHERE task_id = ?
+            """,
+            (contract.task_id,),
+        )
+        db.commit()
+
+    with pytest.raises(
+        OrchestrationValidationError,
+        match="lacks usage",
+    ):
+        service.unified_status(contract.task_id)
+
+
+@pytest.mark.asyncio
+async def test_methodology_stage_missing_claim_authority_fails_projection(
+    tmp_path,
+):
+    tasks, service, contract, *_ = (
+        await _claimed_sequence_two_methodology_run(tmp_path)
+    )
+    service.runner = MethodologyDispatchRunner()
+    await _dispatch_sequence_two_methodology_run(service, contract.task_id)
+    with sqlite3.connect(tasks.db_path) as db:
+        db.execute(
+            """
+            DELETE FROM orchestration_methodology_stage_run_claims
+            WHERE task_id = ?
+            """,
+            (contract.task_id,),
+        )
+        db.commit()
+
+    with pytest.raises(
+        OrchestrationValidationError,
+        match="reservation authority is missing",
+    ):
+        service.unified_status(contract.task_id)
+
+
+def _create_other_methodology_plan(service):
+    task_contract = load_task_contract(CONTRACT_PATH)
+    other = service.create(
+        project_id="alpha",
+        title="Independent plan for cross-plan ledger validation",
+        description="Must never receive another Task reservation.",
+        total_token_budget=30_000,
+        total_cost_budget_usd=None,
+        contract=task_contract,
+    )
+    return other.task_id, service.store.status(other.task_id).plan.plan_id
+
+
+@pytest.mark.asyncio
+async def test_methodology_stage_cross_plan_claim_tamper_fails_admission(
+    tmp_path,
+):
+    tasks, service, contract, *_ = (
+        await _claimed_sequence_two_methodology_run(tmp_path)
+    )
+    original_plan_id = service.store.status(contract.task_id).plan.plan_id
+    _, other_plan_id = _create_other_methodology_plan(service)
+    with sqlite3.connect(tasks.db_path) as db:
+        db.execute(
+            """
+            UPDATE orchestration_methodology_stage_run_claims
+            SET plan_id = ? WHERE task_id = ?
+            """,
+            (other_plan_id, contract.task_id),
+        )
+        db.commit()
+    with sqlite3.connect(tasks.db_path) as db:
+        db.row_factory = sqlite3.Row
+        with pytest.raises(
+            OrchestrationValidationError,
+            match="reservation row differs",
+        ):
+            service.store._provider_budget_snapshot(db, original_plan_id)
+        with pytest.raises(
+            OrchestrationValidationError,
+            match="reservation row differs",
+        ):
+            service.store._provider_budget_snapshot(db, other_plan_id)
+
+
+@pytest.mark.asyncio
+async def test_methodology_stage_cross_plan_claim_tamper_fails_projection(
+    tmp_path,
+):
+    tasks, service, contract, *_ = (
+        await _claimed_sequence_two_methodology_run(tmp_path)
+    )
+    service.runner = MethodologyDispatchRunner()
+    await _dispatch_sequence_two_methodology_run(service, contract.task_id)
+    other_task_id, other_plan_id = _create_other_methodology_plan(service)
+    with sqlite3.connect(tasks.db_path) as db:
+        db.execute(
+            """
+            UPDATE orchestration_methodology_stage_run_claims
+            SET plan_id = ? WHERE task_id = ?
+            """,
+            (other_plan_id, contract.task_id),
+        )
+        db.commit()
+
+    with pytest.raises(
+        OrchestrationValidationError,
+        match="reservation row differs",
+    ):
+        service.unified_status(contract.task_id)
+    with pytest.raises(
+        OrchestrationValidationError,
+        match="reservation row differs",
+    ):
+        service.unified_status(other_task_id)
+
+
+@pytest.mark.asyncio
+async def test_methodology_stage_cross_plan_usage_tamper_fails_destination(
+    tmp_path,
+):
+    tasks, service, contract, *_ = (
+        await _claimed_sequence_two_methodology_run(tmp_path)
+    )
+    service.runner = MethodologyDispatchRunner()
+    await _dispatch_sequence_two_methodology_run(service, contract.task_id)
+    other_task_id, other_plan_id = _create_other_methodology_plan(service)
+    with sqlite3.connect(tasks.db_path) as db:
+        db.execute(
+            """
+            UPDATE orchestration_methodology_stage_usage_ledger
+            SET plan_id = ? WHERE task_id = ?
+            """,
+            (other_plan_id, contract.task_id),
+        )
+        db.commit()
+
+    with sqlite3.connect(tasks.db_path) as db:
+        db.row_factory = sqlite3.Row
+        with pytest.raises(
+            OrchestrationValidationError,
+            match="usage row differs",
+        ):
+            service.store._provider_budget_snapshot(db, other_plan_id)
+    with pytest.raises(
+        OrchestrationValidationError,
+        match="usage row differs",
+    ):
+        service.unified_status(other_task_id)

@@ -208,6 +208,23 @@ def parser() -> argparse.ArgumentParser:
         help="Environment variable containing a configured Control Plane token",
     )
 
+    migration_next_stage_run_dispatch = commands.add_parser(
+        "migration-next-stage-run-dispatch",
+        help=(
+            "Dispatch and settle the already claimed sequence-2 AWS AI-DLC "
+            "formal Run without creating a compatibility Run"
+        ),
+    )
+    migration_next_stage_run_dispatch.add_argument("task_id")
+    migration_next_stage_run_dispatch.add_argument(
+        "--allow-unbounded-native-usage",
+        action="store_true",
+        help=(
+            "Acknowledge that provider usage is not hard-capped by the "
+            "methodology Stage Run Token reservation"
+        ),
+    )
+
     start = commands.add_parser("start", help="Create a Task and attach the provisional method")
     start.add_argument("title", nargs="?")
     start.add_argument("--description", default="")
@@ -367,7 +384,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         provider_dispatch_requested = (
             (args.command == "start" and args.run)
             or args.command
-            in {"consult", "next", "run", "migration-run-dispatch"}
+            in {
+                "consult",
+                "next",
+                "run",
+                "migration-run-dispatch",
+                "migration-next-stage-run-dispatch",
+            }
         )
         if (
             provider_dispatch_requested
@@ -547,6 +570,23 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.task_id,
                 request,
                 principal=principal,
+            )
+            print(
+                json.dumps(
+                    receipt.model_dump(mode="json"),
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return 0
+        if args.command == "migration-next-stage-run-dispatch":
+            receipt = asyncio.run(
+                service.dispatch_methodology_next_stage_run(
+                    args.task_id,
+                    allow_unbounded_native_usage=(
+                        args.allow_unbounded_native_usage
+                    ),
+                )
             )
             print(
                 json.dumps(

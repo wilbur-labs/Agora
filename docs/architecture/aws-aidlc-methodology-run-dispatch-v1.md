@@ -124,9 +124,11 @@ for its formal Gate. The authenticated next-Stage operation configures only
 that exact contract-bound Gate and still creates no Run or process. The
 subsequent formal claim is defined in
 `aws-aidlc-methodology-stage-run-claim-v1.md`; it creates the exact sequence-2
-Run and Context Pack without dispatching a process.
+Run and Context Pack without dispatching a process. Its one-shot process and
+settlement boundary is defined in
+`aws-aidlc-methodology-stage-run-dispatch-v1.md`.
 
-Automatic cross-Stage rework, dispatch and settlement of the sequence-2 Run,
-claim/dispatch generalization across later methodology Stages, dynamic
-provider substitution, authenticated HTTP, Task Workbench UI, and native AWS
-AI-DLC file installation remain separate reviewed increments.
+Automatic cross-Stage rework, generic Gate/claim/dispatch continuation beyond
+sequence 2, dynamic provider substitution, authenticated HTTP, Task Workbench
+UI, and native AWS AI-DLC file installation remain separate reviewed
+increments.

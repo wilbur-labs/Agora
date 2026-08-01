@@ -1,5 +1,97 @@
 # Agora Control Plane Development Progress
 
+## 2026-07-31 - AWS AI-DLC sequence-2 Run dispatch/settlement (reviewed)
+
+### Bounded implementation
+
+- [x] Added additive `MethodologyStageRunDispatchPolicyDecision@1.0`,
+  `MethodologyStageRunDispatchClaim@1.0`, and
+  `MethodologyStageRunDispatchReceipt@1.0` contracts, executable registry
+  entries, and three checked-in JSON Schemas. The frozen first-Run dispatch
+  contracts remain unchanged.
+- [x] Added
+  `agora task migration-next-stage-run-dispatch SUCCESSOR_TASK_ID
+  --allow-unbounded-native-usage`. The acknowledgement is checked before
+  service construction because the Stage reservation is admission control,
+  not a native provider hard cap.
+- [x] Read-only policy and native preflight bind the exact sequence-2 Run claim,
+  configured Gate, settled sequence-1 predecessor receipt, execution contract,
+  repository/ref/commit, authoritative `RUNNING` Stage/`PENDING` Gate route,
+  full runtime pins, sealed Context Pack, and positive usage reservation before
+  any dispatch write.
+- [x] One immediate transaction rechecks the complete live chain and records a
+  single-use later-Stage process attachment. PID, terminal runner facts,
+  Control Plane protocol settlement, immutable receipt, separate later-Stage
+  usage ledger, and both audit streams retain crash-recoverable boundaries.
+- [x] The dispatch reuses the existing formal Run and Context Pack; it creates
+  no compatibility Run. The Control Plane remains the only Artifact/Evidence,
+  Gate, Stage, Run, and next-route authority. Exit code, transport, Schema,
+  semantic result, repository stability, and usage remain separate facts.
+- [x] Unified Task projection merges first and sequence-2 dispatch state by
+  formal Run id. Active sequence-2 Token/cost reservation becomes settled only
+  when the later-Stage usage row exists; unavailable usage consumes the sealed
+  reservation rather than becoming fabricated zero usage.
+- [x] Recovery never respawns: un-PIDed claims settle as launch failure, live or
+  unknown PIDs block, dead PIDs settle as interrupted, terminal observations
+  replay formal settlement, and settled dispatches return the immutable
+  receipt. Concurrent callers cannot spawn twice; policy, Gate ledger,
+  terminal, and receipt tampering fail closed.
+- [x] Addressed the first independent Codex review: a sealed spawn-owner id and
+  five-minute recovery lease protect the claim-to-PID boundary; policy and
+  settlement bind the full runtime-registry hash and sealed result format; and
+  projection/admission cross-check later-Stage reservation and usage rows
+  against sealed receipts and observations. Added regressions for the delayed
+  claim-to-PID race, expired-lease recovery, non-command runtime drift, sealed
+  result-format settlement, and claim/usage tamper or deletion.
+- [x] Addressed the Codex re-review finding that a forged claim `plan_id` could
+  escape plan-scoped validation. Validation now enumerates claims through the
+  formal Run's authoritative Task-to-Plan relationship and cross-checks both
+  stored and sealed Plan/Task identities. Active admission and settled unified
+  projection cross-Plan tamper regressions fail closed.
+- [x] Addressed the next Codex re-review finding on the destination side of the
+  same trust boundary. Validation now selects the union of authoritative Plan,
+  stored claim Plan, and stored usage Plan matches, so neither a foreign claim
+  nor a foreign usage row can be consumed by a destination Plan. Regressions
+  cover both source and destination admission/projection reads.
+- [x] Documented the boundary in
+  `docs/architecture/aws-aidlc-methodology-stage-run-dispatch-v1.md` and linked
+  it from the first-dispatch and sequence-2 claim documents.
+
+### Verification and review state
+
+- [x] Focused sequence-2 dispatch and review-fix selection: 27 passed, 156
+  deselected.
+- [x] Post-review-fix complete methodology module: 183 passed. Complete
+  non-integration backend suite: 757 passed, 18 deselected, with only the
+  existing Starlette/httpx deprecation and Windows Proactor cleanup warnings.
+- [x] Post-review-fix protocol freeze: 34 passed. Protocol Schema export/check,
+  system-Temp-isolated `compileall`, CLI help, and `git diff --check` passed.
+- [x] Independent Codex methodology/protocol review completed. The initial
+  review returned `CODEX_REQUEST_CHANGES` for claim-to-PID ownership/recovery,
+  complete runtime-registry/result-format sealing, and reservation/usage ledger
+  integrity. A second review found plan-scoping depended on mutable claim data.
+  A third review found the destination-Plan side of that validation also needed
+  to select foreign stored claim/usage rows. All five findings are now
+  implemented and fully retested; the final frozen-diff review returned
+  `CODEX_APPROVE`. This is the user-authorized temporary Codex replacement
+  gate, not Kiro approval.
+- [x] Independent Claude Code reviewed the complete implementation and each
+  later cross-Plan hardening delta. It confirmed the owner/lease, full runtime
+  registry and sealed result-format, source/destination ledger validation,
+  counting, transaction, Schema, and regression boundaries and returned
+  `CLAUDE_APPROVE` on the final frozen diff.
+
+### Current checkpoint and next safe action
+
+Implementation, complete post-fix validation, the user-authorized independent
+Codex replacement gate, and the independent Claude gate are complete on
+baseline `67aa8aa`. This increment is ready for an exact-file commit and push.
+The next bounded backend slice must make later-Stage predecessor persistence
+generic enough to configure and claim sequence 3 from the settled sequence-2
+Handoff without weakening the frozen sequence-1 or sequence-2 receipts.
+Automatic cross-Stage rework, HTTP, UI, dynamic provider substitution, and
+native AI-DLC file installation remain deferred.
+
 ## 2026-07-31 - AWS AI-DLC sequence-2 formal Run/Context claim (reviewed)
 
 ### Bounded implementation

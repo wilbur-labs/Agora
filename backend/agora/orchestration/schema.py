@@ -451,6 +451,82 @@ def initialize_orchestration_schema(db: sqlite3.Connection) -> None:
             ON orchestration_methodology_stage_run_claims(
                 plan_id, stage_sequence, created_at, run_id
             );
+
+        CREATE TABLE IF NOT EXISTS orchestration_methodology_stage_run_dispatches (
+            dispatch_id TEXT PRIMARY KEY,
+            claim_sha256 TEXT NOT NULL,
+            claim_payload TEXT NOT NULL,
+            task_id TEXT NOT NULL REFERENCES tasks(task_id),
+            plan_id TEXT NOT NULL REFERENCES orchestration_plans(plan_id),
+            stage_run_claim_request_id TEXT NOT NULL UNIQUE
+                REFERENCES orchestration_methodology_stage_run_claims(request_id),
+            stage_run_claim_receipt_id TEXT NOT NULL UNIQUE,
+            predecessor_dispatch_id TEXT NOT NULL
+                REFERENCES orchestration_methodology_run_dispatches(dispatch_id),
+            run_id TEXT NOT NULL UNIQUE REFERENCES protocol_runs(run_id),
+            stage_sequence INTEGER NOT NULL CHECK (
+                stage_sequence >= 2 AND stage_sequence <= 200
+            ),
+            stage_key TEXT NOT NULL,
+            runtime TEXT NOT NULL,
+            prompt_sha256 TEXT NOT NULL,
+            spawn_owner_id TEXT NOT NULL,
+            recovery_not_before TEXT NOT NULL,
+            dispatch_policy_id TEXT NOT NULL UNIQUE,
+            dispatch_policy_sha256 TEXT NOT NULL,
+            dispatch_policy_payload TEXT NOT NULL,
+            preflight_id TEXT NOT NULL UNIQUE,
+            preflight_sha256 TEXT NOT NULL,
+            preflight_payload TEXT NOT NULL,
+            state TEXT NOT NULL CHECK (
+                state IN ('claimed', 'running', 'terminal_observed', 'settled')
+            ),
+            pid INTEGER,
+            process_started INTEGER NOT NULL DEFAULT 0
+                CHECK (process_started IN (0, 1)),
+            exit_code INTEGER,
+            timed_out INTEGER NOT NULL DEFAULT 0
+                CHECK (timed_out IN (0, 1)),
+            output TEXT NOT NULL DEFAULT '',
+            error_message TEXT,
+            repository_unchanged INTEGER
+                CHECK (repository_unchanged IN (0, 1)),
+            adapter_result_payload TEXT,
+            usage_observation_payload TEXT,
+            receipt_sha256 TEXT,
+            receipt_payload TEXT,
+            claimed_at TEXT NOT NULL,
+            process_attached_at TEXT,
+            terminal_observed_at TEXT,
+            settled_at TEXT,
+            UNIQUE(task_id, stage_key),
+            UNIQUE(task_id, stage_sequence)
+        );
+        CREATE INDEX IF NOT EXISTS idx_methodology_stage_dispatches_plan
+            ON orchestration_methodology_stage_run_dispatches(
+                plan_id, stage_sequence, claimed_at, run_id
+            );
+
+        CREATE TABLE IF NOT EXISTS orchestration_methodology_stage_usage_ledger (
+            entry_id TEXT PRIMARY KEY,
+            dispatch_id TEXT NOT NULL UNIQUE
+                REFERENCES orchestration_methodology_stage_run_dispatches(dispatch_id),
+            task_id TEXT NOT NULL REFERENCES tasks(task_id),
+            plan_id TEXT NOT NULL REFERENCES orchestration_plans(plan_id),
+            stage_key TEXT NOT NULL,
+            run_id TEXT NOT NULL UNIQUE REFERENCES protocol_runs(run_id),
+            tokens INTEGER,
+            token_measurement TEXT NOT NULL,
+            cost_usd REAL,
+            cost_measurement TEXT NOT NULL,
+            adapter TEXT NOT NULL,
+            usage_observation_sha256 TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_methodology_stage_usage_task
+            ON orchestration_methodology_stage_usage_ledger(
+                task_id, created_at, entry_id
+            );
         """
     )
     columns = {row[1] for row in db.execute("PRAGMA table_info(orchestration_runs)")}

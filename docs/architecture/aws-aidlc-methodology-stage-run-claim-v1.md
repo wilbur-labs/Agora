@@ -110,13 +110,14 @@ provider_substitution = false
 
 ## Succeeding process boundary
 
-The next reviewed slice may attach exactly one pinned sequence-2 runtime
-process to this existing formal Run and settle it through the unchanged
-Handoff parser and Control Plane Gate evaluator. It must generalize the
-first-Run dispatch/recovery ledger without creating a second Run or Context
-Pack, must settle the active reservation truthfully, and must not infer
+The succeeding implementation is defined in
+`aws-aidlc-methodology-stage-run-dispatch-v1.md`. It attaches exactly one pinned
+sequence-2 runtime process to this existing formal Run and settles it through
+the unchanged Handoff parser and Control Plane Gate evaluator. It uses a
+separate later-Stage dispatch/recovery ledger without changing the frozen
+first-Run contracts, creating a second Run or Context Pack, or inferring
 semantic success from process exit code.
 
-Later inventory positions, cross-Stage rework, dynamic provider substitution,
-authenticated HTTP, Task Workbench UI, and native AWS AI-DLC file installation
-remain separate reviewed increments.
+Later inventory positions, generic predecessor storage, cross-Stage rework,
+dynamic provider substitution, authenticated HTTP, Task Workbench UI, and
+native AWS AI-DLC file installation remain separate reviewed increments.
