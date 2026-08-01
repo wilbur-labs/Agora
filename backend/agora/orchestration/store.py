@@ -89,7 +89,10 @@ from .methodology_stage_predecessor import (
     methodology_dispatch_sequence,
     methodology_dispatch_stage_key,
 )
-from .methodology_stage_run_claim import MethodologyStageRunClaimSnapshot
+from .methodology_stage_run_claim import (
+    MethodologyStageRunClaimSnapshot,
+    build_methodology_stage_required_outputs,
+)
 from .methodology_stage_run_dispatch import MethodologyStageRunDispatchSnapshot
 from .models import (
     BudgetAmendment,
@@ -5591,7 +5594,7 @@ class OrchestrationStore:
                 """,
                 (task_id,),
             ).fetchone()
-        elif stage_sequence == 3:
+        elif stage_sequence in {3, 4}:
             direct_row = db.execute(
                 """
                 SELECT *
@@ -5614,7 +5617,7 @@ class OrchestrationStore:
             ).fetchone()
         else:
             raise OrchestrationConflictError(
-                "Methodology predecessor resolution is bounded to sequences 2 or 3"
+                "Methodology predecessor resolution is bounded to sequences 2, 3, or 4"
             )
 
         if (
@@ -5640,6 +5643,12 @@ class OrchestrationStore:
             raise OrchestrationValidationError(
                 "Methodology immediate predecessor provenance binding drifted"
             )
+        if stage_sequence >= 3:
+            self._validate_methodology_stage_dispatch_authority_tx(
+                db,
+                direct_row,
+                state,
+            )
         return (
             receipt,
             root_row["dispatch_id"],
@@ -5656,7 +5665,7 @@ class OrchestrationStore:
     ) -> None:
         """Fail closed on the direct predecessor behind one Gate receipt."""
 
-        if receipt.stage_sequence not in {2, 3}:
+        if receipt.stage_sequence not in {2, 3, 4}:
             raise OrchestrationValidationError(
                 "Persisted methodology successor predecessor sequence is unsupported"
             )
@@ -5739,10 +5748,25 @@ class OrchestrationStore:
             != receipt.predecessor_dispatch_receipt_id
             or direct.receipt.content_sha256
             != receipt.predecessor_dispatch_receipt_sha256
+            or direct.receipt.dispatch_claim.task_id != receipt.task_id
+            or direct.receipt.dispatch_claim.plan_id != receipt.plan_id
+            or direct.receipt.dispatch_claim.run_id
+            != receipt.predecessor_run_id
+            or methodology_dispatch_sequence(direct.receipt)
+            != receipt.stage_sequence - 1
+            or methodology_dispatch_stage_key(direct.receipt)
+            != receipt.predecessor_stage_key
+            or methodology_dispatch_gate_key(direct.receipt)
+            != receipt.predecessor_gate_key
         ):
             raise OrchestrationValidationError(
                 "Persisted methodology successor predecessor drifted"
             )
+        cls._validate_methodology_stage_dispatch_authority_tx(
+            db,
+            direct_row,
+            direct,
+        )
 
     @classmethod
     def _validate_methodology_stage_run_claim_authority_tx(
@@ -7056,6 +7080,13 @@ class OrchestrationStore:
                     f"Methodology Stage Run claim blocked: {exc}"
                 ) from exc
             stage_contract = contract.stages[request.stage_sequence - 1]
+            expected_required_outputs = (
+                build_methodology_stage_required_outputs(
+                    task_id=task.task_id,
+                    stage_contract=stage_contract,
+                    run_id=request.run_id,
+                )
+            )
             if (
                 context_pack.project_id != task.project_id
                 or context_pack.task_id != task_id
@@ -7064,7 +7095,8 @@ class OrchestrationStore:
                 or context_pack.pack_id != request.context_pack_id
                 or context_pack.budget != stage_contract.context.budget
                 or context_pack.input_artifacts
-                or context_pack.required_outputs
+                or tuple(context_pack.required_outputs)
+                != expected_required_outputs
             ):
                 raise OrchestrationValidationError(
                     "Methodology Context Pack differs from the Stage Run claim"
@@ -7748,7 +7780,7 @@ class OrchestrationStore:
                 ):
                     raise
                 raise OrchestrationConflictError(str(exc)) from exc
-            if claim.task_id != task_id or claim.stage_sequence not in {2, 3}:
+            if claim.task_id != task_id or claim.stage_sequence not in {2, 3, 4}:
                 raise OrchestrationValidationError(
                     "Methodology Stage dispatch crosses its bounded scope"
                 )

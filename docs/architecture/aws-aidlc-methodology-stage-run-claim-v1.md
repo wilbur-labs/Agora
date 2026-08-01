@@ -1,12 +1,12 @@
 # AWS AI-DLC methodology later-Stage Run claim v1
 
-Status: reviewed implementation; sequences 2 and 3; no runtime process
+Status: reviewed implementation; sequences 2 through 4; no runtime process
 
 ## Purpose and entry point
 
 After the immediately preceding methodology Run settles successfully and the
 next formal Gate is configured, the authenticated Control Plane may claim the
-exact execution-contract sequence-2 or sequence-3 Run:
+exact execution-contract sequence-2, sequence-3, or sequence-4 Run:
 
 ```powershell
 agora task migration-next-stage-run-claim SUCCESSOR_TASK_ID `
@@ -62,23 +62,27 @@ Concurrent identical callers converge on one row.
 ## Exact bounded Context
 
 The frozen AWS AI-DLC execution contract names sequence 2
-`workspace-detection` and sequence 3 `state-init`. Their representable input
-Artifact and required-output contract sets are both empty. Consequently each
-claim must seal exact empty `input_artifacts` and `required_outputs` sets. It
-must not fabricate a predecessor Artifact merely because the predecessor
-Handoff or source methodology text describes workspace classification or a
-state file.
+`workspace-detection`, sequence 3 `state-init`, and the selected sequence-4
+production Stage (`reverse-engineering` in the exercised brownfield contract).
+All three positions have an exact empty representable input-Artifact set, so a
+claim must not fabricate predecessor Artifacts from descriptive source text or
+a Handoff. Sequence 2 and 3 have empty required-output sets. Sequence 4 instead
+materializes one deterministic `RequiredOutput` for every frozen output
+contract, binding Task, Stage, Run, source-output id, kind, and requirement.
 
 The protocol retains a versioned `MethodologyStageInputArtifactBinding` shape
 for later contract positions that genuinely consume selected prior outputs,
-but the bounded sequence-2/3 builder rejects any such binding. Five bounded
+but the bounded sequence-2/3/4 builder rejects any such binding. Five bounded
 policy entries preserve:
 
 - the execution-contract and repository binding;
 - the settled predecessor dispatch/Handoff and configured Gate receipt;
 - the exact Stage role, runtime, and sensor template;
 - the frozen methodology source-input text; and
-- the complete Handoff and Gate templates.
+- a hash-bound Handoff/Gate projection. The full immutable contracts remain
+  authoritative through the execution-contract hash, while required outputs
+  and formal Gate requirements are supplied directly. This avoids duplicating
+  large evidence templates in the Windows-bounded dispatch prompt.
 
 No transcript, inferred Evidence, native state, Task memory, Project knowledge,
 user preference, Artifact, or provider output is injected. A policy entry over
@@ -92,7 +96,7 @@ usage, Artifact, Evidence, Gate evaluation, or dispatch authority is created.
 The compatibility Plan and Stage rows remain unchanged.
 
 The immutable claim ledger records the active Token/cost reservation. Unified
-Task projection includes each protocol-only sequence-2/3 Run with its pinned
+Task projection includes each protocol-only sequence-2/3/4 Run with its pinned
 runtime and reservation while the formal Run remains unsettled. The receipt
 fixes:
 
@@ -112,7 +116,7 @@ provider_substitution = false
 
 ## Succeeding process boundary
 
-Sequence-2 and sequence-3 dispatch are defined in
+Sequence-2, sequence-3, and sequence-4 dispatch are defined in
 `aws-aidlc-methodology-stage-run-dispatch-v1.md`. It attaches exactly one pinned
 runtime process to each existing formal Run and settles it through
 the unchanged Handoff parser and Control Plane Gate evaluator. It uses a
@@ -120,7 +124,7 @@ separate later-Stage dispatch/recovery ledger without changing the frozen
 first-Run contracts, creating a second Run or Context Pack, or inferring
 semantic success from process exit code.
 
-Positions beyond sequence 3,
+Positions beyond sequence 4,
 cross-Stage rework, dynamic provider substitution, authenticated HTTP, Task
 Workbench UI, and native AWS AI-DLC file installation remain separate reviewed
 increments.

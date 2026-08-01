@@ -15,7 +15,10 @@ from agora.control_plane.models import (
     TaskRecord,
 )
 from agora.protocol.hashing import canonical_sha256, seal_model_payload
-from agora.protocol.methodology_execution import MethodologyExecutionContract
+from agora.protocol.methodology_execution import (
+    MethodologyExecutionContract,
+    MethodologyStageExecutionContract,
+)
 from agora.protocol.methodology_migration import (
     AuthenticatedMethodologyMigrationGate,
     MethodologyMigrationActivationReceipt,
@@ -106,6 +109,34 @@ class MethodologyStageRunClaimSnapshot:
     formal_stage: StageRecord
     formal_gate: GateRecord
     input_artifact_bindings: tuple[MethodologyStageInputArtifactBinding, ...]
+
+
+def build_methodology_stage_required_outputs(
+    *,
+    task_id: str,
+    stage_contract: MethodologyStageExecutionContract,
+    run_id: str,
+) -> tuple[RequiredOutput, ...]:
+    """Materialize the exact output identities sealed into a later Run."""
+
+    return tuple(
+        RequiredOutput(
+            output_id=(
+                "artifact:"
+                + canonical_sha256(
+                    {
+                        "task_id": task_id,
+                        "stage_key": stage_contract.stage_key,
+                        "run_id": run_id,
+                        "source_output_id": output.source_output_id,
+                    }
+                )[:32]
+            ),
+            kind=output.kind,
+            required=output.required,
+        )
+        for output in stage_contract.context.output_contracts
+    )
 
 
 def build_methodology_stage_run_claim_context(
@@ -241,13 +272,13 @@ def build_methodology_stage_run_claim_context(
         )
 
     if (
-        request.stage_sequence not in {2, 3}
+        request.stage_sequence not in {2, 3, 4}
         or len(contract.stages) < request.stage_sequence
         or predecessor_sequence != request.stage_sequence - 1
     ):
         raise ValueError(
             "This bounded increment may claim only methodology Stage "
-            "sequences 2 or 3 from the immediately preceding dispatch"
+            "sequences 2, 3, or 4 from the immediately preceding dispatch"
         )
     predecessor_contract = contract.stages[request.stage_sequence - 2]
     stage_contract = contract.stages[request.stage_sequence - 1]
@@ -392,24 +423,11 @@ def build_methodology_stage_run_claim_context(
             "Methodology Stage Run requires a bounded Token reservation"
         )
 
-    required_outputs = [
-        RequiredOutput(
-            output_id=(
-                "artifact:"
-                + canonical_sha256(
-                    {
-                        "task_id": task.task_id,
-                        "stage_key": stage_contract.stage_key,
-                        "run_id": request.run_id,
-                        "source_output_id": output.source_output_id,
-                    }
-                )[:32]
-            ),
-            kind=output.kind,
-            required=output.required,
-        )
-        for output in stage_contract.context.output_contracts
-    ]
+    required_outputs = build_methodology_stage_required_outputs(
+        task_id=task.task_id,
+        stage_contract=stage_contract,
+        run_id=request.run_id,
+    )
     policies = [
         _context_entry(
             prefix="methodology-contract",
@@ -496,11 +514,42 @@ def build_methodology_stage_run_claim_context(
         ),
         _context_entry(
             prefix="methodology-handoff-gate",
-            title="Pinned methodology Handoff and Gate template",
+            title="Pinned methodology Handoff and Gate projection",
             content=_compact_json(
                 {
-                    "handoff": stage_contract.handoff.model_dump(mode="json"),
-                    "gate": stage_contract.gate.model_dump(mode="json"),
+                    "handoff_contract_sha256": canonical_sha256(
+                        stage_contract.handoff.model_dump(mode="json")
+                    ),
+                    "gate_contract_sha256": canonical_sha256(
+                        stage_contract.gate.model_dump(mode="json")
+                    ),
+                    "producer_runtime": stage_contract.handoff.producer_runtime,
+                    "allowed_output_kinds": (
+                        stage_contract.handoff.allowed_output_kinds
+                    ),
+                    "required_output_kinds": (
+                        stage_contract.handoff.required_output_kinds
+                    ),
+                    "exact_context_echo_required": (
+                        stage_contract.handoff.exact_context_echo_required
+                    ),
+                    "unbound_output_allowed": (
+                        stage_contract.handoff.unbound_output_allowed
+                    ),
+                    "native_state_authority": (
+                        stage_contract.handoff.native_state_authority
+                    ),
+                    "suggested_next_action_authority": (
+                        stage_contract.handoff.suggested_next_action_authority
+                    ),
+                    "format_only_repair_attempts": (
+                        stage_contract.handoff.format_only_repair_attempts
+                    ),
+                    "gate_key": stage_contract.gate.gate_key,
+                    "gate_requirement_ids": [
+                        item.requirement.requirement_id
+                        for item in stage_contract.gate.evidence_contracts
+                    ],
                 }
             ),
             source_ref=(
