@@ -1,12 +1,12 @@
 # AWS AI-DLC methodology later-Stage Run dispatch v1
 
-Status: reviewed implementation; sequence 2 only
+Status: reviewed implementation; sequences 2 and 3
 
 ## Purpose and entry point
 
-After the authenticated sequence-2 claim has created one formal Run and sealed
-Context Pack, the orchestrator may attach exactly one pinned native process and
-settle that same Run:
+After an authenticated sequence-2 or sequence-3 claim has created one formal
+Run and sealed Context Pack, the orchestrator may attach exactly one pinned
+native process and settle that same Run:
 
 ```powershell
 agora task migration-next-stage-run-dispatch SUCCESSOR_TASK_ID `
@@ -28,17 +28,17 @@ silently reinterpreted for later Stages.
 
 Before any durable dispatch claim, the service reads and checks:
 
-- the immutable execution contract, sequence-2 Gate receipt, sequence-2 Run
-  claim receipt, and settled sequence-1 dispatch receipt;
+- the immutable execution contract, current Gate and Run-claim receipts, and
+  settled immediately preceding dispatch receipt;
 - the exact unsettled formal Run and sealed Context Pack;
-- the current authoritative sequence-2 `RUNNING` Stage, `PENDING` Gate, and
+- the current authoritative sequence-2/3 `RUNNING` Stage, `PENDING` Gate, and
   non-runnable route;
 - the clean repository/ref/commit before and after native capability
   collection;
 - the complete frozen runtime-registry hash (including result format, version
   probe, and declared models), every command pin, and the selected runtime
   installation; and
-- the positive sequence-2 Token reservation.
+- the positive current-Stage Token reservation.
 
 The policy decision records six canonical checks. A fresh
 `PinnedRuntimePreflightDecision@1.0` binds the native observation to that exact
@@ -49,8 +49,16 @@ One `BEGIN IMMEDIATE` transaction then rechecks the complete live snapshot and
 persists a single-use dispatch claim. The claim reuses the existing Run and
 Context identities, records only spawn authority, and creates no compatibility
 Run. It seals a unique spawn-owner id, the selected result format, and a
-five-minute recovery lease. The sequence-2 claim ledger remains immutable with
+five-minute recovery lease. The formal Run-claim ledger remains immutable with
 `process_started=false`.
+
+The current Run is selected by the highest formal later-Stage claim and is
+cross-checked against the Task's compatibility cursor and authoritative route.
+Both dispatch rows retain the sequence-1 dispatch id as their compatibility
+lineage root. For sequence 3, the process claim additionally reuses and
+validates the foreign-keyed direct sequence-2 predecessor binding from the
+Gate/Run-claim chain; the sequence-2 receipt is never reinterpreted as a first
+dispatch receipt.
 
 ## Process, protocol, and usage settlement
 
@@ -75,9 +83,9 @@ the next Stage. Usage normalization uses the claim's sealed result format, not
 a mutable in-memory runtime registry.
 
 Unified Task projection merges first-Run and later-Stage dispatches by formal
-Run identity. The sequence-2 reservation becomes settled usage only when the
-later usage ledger exists; unavailable native measurements consume the original
-reservation rather than being recorded as zero. Projection and admission reads
+Run identity. Each sequence-2/3 reservation becomes settled usage only when
+its later usage ledger exists; unavailable native measurements consume the
+original reservation rather than being recorded as zero. Projection and admission reads
 cross-check the denormalized reservation and usage rows against their sealed
 claim receipt, dispatch receipt, protocol Run, and usage observation; missing or
 tampered authority fails closed. Claim enumeration is anchored through the
@@ -109,12 +117,11 @@ does not match its sealed payload fails closed.
 
 ## Bounded authority and next boundary
 
-This implementation dispatches sequence 2 (`workspace-detection`) only. It
-does not dispatch sequence 3, create automatic rework, change native AWS AI-DLC
-files, expose HTTP, or add Task Workbench UI.
+This implementation dispatches sequence 2 (`workspace-detection`) and sequence
+3 (`state-init`) only. It creates no automatic rework, changes no native AWS
+AI-DLC files, exposes no HTTP, and adds no Task Workbench UI.
 
-The bounded successor-predecessor slice now configures and claims sequence 3
-from the settled sequence-2 Handoff without weakening the frozen sequence-1 or
-sequence-2 receipts. The next reviewed slice may extend this one-shot process,
-recovery, settlement, and usage boundary to that already claimed sequence-3
-Run. Cross-Stage rework remains a separate explicit authority path.
+The next reviewed slice may extend the Gate/claim/dispatch chain to sequence 4
+without weakening the frozen sequence-1/2/3 receipts, then continue across the
+remaining representable grouped inventory. Cross-Stage rework remains a
+separate explicit authority path.

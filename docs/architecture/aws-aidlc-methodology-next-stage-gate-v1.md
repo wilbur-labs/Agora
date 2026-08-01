@@ -101,7 +101,7 @@ Run. The succeeding claim boundary is defined in
 receipt, seals the exact Context Pack, and creates only the formal Run without
 starting a process.
 
-Dispatching sequence 3, generalizing the same transition beyond sequence 3,
-automatic rework, dynamic provider substitution, authenticated HTTP, Task
-Workbench UI, and native AWS AI-DLC file installation remain separate reviewed
+Generalizing the same transition beyond sequence 3, automatic rework, dynamic
+provider substitution, authenticated HTTP, Task Workbench UI, and native AWS
+AI-DLC file installation remain separate reviewed
 increments.

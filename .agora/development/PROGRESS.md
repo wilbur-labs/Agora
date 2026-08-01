@@ -1,5 +1,68 @@
 # Agora Control Plane Development Progress
 
+## 2026-07-31 - AWS AI-DLC sequence-3 Run dispatch/settlement (reviewed)
+
+### Bounded implementation
+
+- [x] Generalized the existing later-Stage dispatch policy, native preflight,
+  process-claim, PID attachment, recovery, formal settlement, receipt, and
+  usage-ledger path from sequence 2 to the exact sequence-3 `state-init` Run.
+  No protocol contract or checked JSON Schema changed.
+- [x] The dispatcher selects the highest formal later-Stage claim and
+  cross-checks it against the Task's current Run cursor plus the authoritative
+  Stage/Gate route. A stale cursor cannot replay an older settled dispatch as
+  though it were the current Run.
+- [x] Sequence-3 policy/claim uses the settled immediate sequence-2 dispatch
+  receipt/Handoff. The persisted dispatch row retains the sequence-1 id as its
+  compatibility lineage root, while the Gate/Run-claim direct-predecessor
+  ledger remains the sequence-2 authority and is revalidated before claim,
+  PID attachment, terminal observation, finalization, recovery read, budget
+  admission, and unified projection.
+- [x] Settlement reuses the existing sequence-3 formal Run and Context Pack,
+  keeps exit/transport/Schema/semantic/repository/usage facts separate, lets
+  only the Control Plane create Artifact/Evidence and evaluate Gate/Stage, and
+  activates sequence 4 only after semantic success.
+- [x] Added sequence-3 regressions for successful settlement/replay, direct
+  predecessor and current-Run tamper, dispatch-lineage tamper across getter,
+  budget, and projection, concurrent single spawn, and crash recovery without
+  respawn. Missing, empty, or non-string current-Run cursors now fail closed
+  across getter, resume, and dispatch before PID inspection or any write.
+  Existing sequence-2 dispatch behavior remains covered unchanged.
+- [x] Updated the Gate, Run-claim, first-dispatch, and later-Stage dispatch
+  architecture boundaries for sequences 2 and 3; positions beyond sequence 3
+  and cross-Stage rework remain deferred.
+
+### Verification and review state
+
+- [x] Sequence-3 selection after final hardening: 21 passed, 183 deselected.
+  Independent Codex combined later-Stage dispatch regression: 28 passed, 176
+  deselected.
+- [x] Complete methodology module: 204 passed. Complete non-integration backend
+  suite: 778 passed, 18 deselected, with only the existing Starlette/httpx
+  deprecation and Windows Proactor cleanup warnings.
+- [x] Protocol freeze: 34 passed. Protocol Schema export/check,
+  system-Temp-isolated `compileall`, CLI help, and `git diff --check` passed.
+- [x] Independent Codex methodology/protocol replacement review first returned
+  `CODEX_REQUEST_CHANGES` for a missing/empty current-Run cursor fail-open read
+  and three stale architecture notes. The shared getter now distinguishes true
+  absence from corrupted authority, the new running-dispatch regression covers
+  missing/empty/non-string cursors, all docs were corrected, and re-review
+  returned `CODEX_APPROVE`.
+- [x] Independent Claude Code statically traced the final complete diff and its
+  load-bearing predecessor/claim validators. It found no actionable HIGH,
+  MEDIUM, or LOW issue and returned `CLAUDE_APPROVE`. Its environment could not
+  invoke pytest, so the direct complete validation results above remain the
+  executable gate evidence.
+
+### Current checkpoint and next safe action
+
+Implementation, complete post-fix validation, the user-authorized independent
+Codex replacement gate, and the independent Claude gate are complete on
+baseline `32d7516`. This increment is ready for an exact-file commit/push. The
+next bounded slice may extend the same Gate/claim/dispatch authority to sequence
+4; automatic rework, HTTP, UI, dynamic provider substitution, and native AI-DLC
+installation remain deferred.
+
 ## 2026-07-31 - AWS AI-DLC sequence-3 Gate/formal Run claim (reviewed)
 
 ### Bounded implementation

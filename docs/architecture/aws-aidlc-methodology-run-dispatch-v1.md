@@ -125,9 +125,9 @@ that exact contract-bound Gate and still creates no Run or process. The
 subsequent formal claim is defined in
 `aws-aidlc-methodology-stage-run-claim-v1.md`; it creates the exact sequence-2
 or sequence-3 Run and Context Pack without dispatching a process. The
-sequence-2 one-shot process and settlement boundary is defined in
+sequence-2/3 one-shot process and settlement boundary is defined in
 `aws-aidlc-methodology-stage-run-dispatch-v1.md`.
 
-Sequence-3 dispatch, continuation beyond sequence 3, automatic cross-Stage
-rework, dynamic provider substitution, authenticated HTTP, Task Workbench UI,
-and native AWS AI-DLC file installation remain separate reviewed increments.
+Continuation beyond sequence 3, automatic cross-Stage rework, dynamic provider
+substitution, authenticated HTTP, Task Workbench UI, and native AWS AI-DLC file
+installation remain separate reviewed increments.

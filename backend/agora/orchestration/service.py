@@ -1462,7 +1462,7 @@ class TaskOrchestrationService:
         *,
         principal: ControlPrincipal,
     ) -> MethodologyStageRunClaimReceipt:
-        """Authenticate and atomically claim the sequence-2 formal Run."""
+        """Authenticate and atomically claim a bounded successor formal Run."""
 
         task = self.tasks.get(task_id)
         if task is None:
@@ -1879,7 +1879,7 @@ class TaskOrchestrationService:
         *,
         allow_unbounded_native_usage: bool,
     ) -> MethodologyStageRunDispatchReceipt:
-        """Attach one process to the already claimed sequence-2 formal Run."""
+        """Attach one process to the current bounded successor formal Run."""
 
         if not allow_unbounded_native_usage:
             raise OrchestrationValidationError(

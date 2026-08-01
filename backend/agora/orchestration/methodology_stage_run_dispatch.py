@@ -15,7 +15,6 @@ from agora.control_plane.models import (
 from agora.protocol.hashing import seal_model_payload
 from agora.protocol.methodology_execution import MethodologyExecutionContract
 from agora.protocol.methodology_migration import MethodologyMigrationPreviewRequest
-from agora.protocol.methodology_run_dispatch import MethodologyRunDispatchReceipt
 from agora.protocol.methodology_stage_gate import MethodologyStageGateReceipt
 from agora.protocol.methodology_stage_run_claim import (
     MethodologyStageRunClaimReceipt,
@@ -34,6 +33,9 @@ from agora.protocol.state_machines import GateStatus, StageStatus, TaskStatus
 from agora.tasks.models import TaskManifest
 
 from .models import OrchestrationPlan, PlanState
+from .methodology_stage_predecessor import (
+    MethodologyPredecessorDispatchReceipt,
+)
 from .protocol_context import RepositoryRevision
 from .routing_policy import (
     ROUTING_POLICY_ID,
@@ -59,7 +61,7 @@ class MethodologyStageRunDispatchSnapshot:
     execution_contract: MethodologyExecutionContract
     stage_gate_receipt: MethodologyStageGateReceipt
     stage_run_claim_receipt: MethodologyStageRunClaimReceipt
-    predecessor_dispatch_receipt: MethodologyRunDispatchReceipt
+    predecessor_dispatch_receipt: MethodologyPredecessorDispatchReceipt
     protocol_run: ProtocolRunRecord
     route: StageRouteDecision
     formal_stage: StageRecord
@@ -88,6 +90,14 @@ def derive_methodology_stage_run_dispatch_policy(
     route = snapshot.route
     formal_stage = snapshot.formal_stage
     formal_gate = snapshot.formal_gate
+    if (
+        claim.stage_sequence not in {2, 3}
+        or len(contract.stages) < claim.stage_sequence
+    ):
+        raise ValueError(
+            "This bounded dispatch may evaluate only methodology Stage "
+            "sequences 2 or 3"
+        )
     stage = contract.stages[claim.stage_sequence - 1]
     context = protocol_run.context_pack
 
@@ -344,9 +354,13 @@ def build_methodology_stage_run_dispatch_claim(
     route = snapshot.route
     formal_stage = snapshot.formal_stage
     formal_gate = snapshot.formal_gate
-    if claim.stage_sequence != 2 or len(contract.stages) < 2:
+    if (
+        claim.stage_sequence not in {2, 3}
+        or len(contract.stages) < claim.stage_sequence
+    ):
         raise ValueError(
-            "This bounded dispatch may execute only methodology Stage sequence 2"
+            "This bounded dispatch may execute only methodology Stage "
+            "sequences 2 or 3"
         )
     stage = contract.stages[claim.stage_sequence - 1]
     expected_policy = derive_methodology_stage_run_dispatch_policy(

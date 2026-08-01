@@ -6988,3 +6988,349 @@ async def test_methodology_sequence_three_requires_current_predecessor_metadata(
         )
 
     assert _database_dump(tasks) == before
+
+
+async def _claimed_sequence_three_methodology_run(tmp_path):
+    configured = await _configured_sequence_three_methodology_stage(tmp_path)
+    tasks, service, contract, *_, predecessor_dispatch, _, gate_receipt = (
+        configured
+    )
+    claim_request = _sequence_three_stage_run_claim_request(
+        tasks,
+        service,
+        contract,
+        predecessor_dispatch,
+        gate_receipt,
+    )
+    claim_receipt = service.claim_methodology_next_stage_run(
+        contract.task_id,
+        claim_request,
+        principal=_migration_principal(),
+    )
+    return (*configured, claim_request, claim_receipt)
+
+
+@pytest.mark.asyncio
+async def test_methodology_sequence_three_dispatch_settles_current_run(
+    tmp_path,
+):
+    (
+        tasks,
+        service,
+        contract,
+        _,
+        first_dispatch,
+        _,
+        _,
+        predecessor_dispatch,
+        _,
+        gate_receipt,
+        _,
+        claim_receipt,
+    ) = await _claimed_sequence_three_methodology_run(tmp_path)
+    runner = MethodologyDispatchRunner()
+    service.runner = runner
+
+    receipt = await service.dispatch_methodology_next_stage_run(
+        contract.task_id,
+        allow_unbounded_native_usage=True,
+    )
+
+    assert receipt.dispatch_claim.stage_sequence == 3
+    assert receipt.dispatch_claim.stage_key == contract.stages[2].stage_key
+    assert receipt.dispatch_claim.run_id == claim_receipt.run_id
+    assert receipt.dispatch_claim.stage_gate_receipt_id == gate_receipt.receipt_id
+    assert receipt.dispatch_claim.predecessor_dispatch_receipt_id == (
+        predecessor_dispatch.receipt_id
+    )
+    assert receipt.process_started is True
+    assert receipt.stage_status.value == "completed"
+    assert receipt.gate_status.value == "passed"
+    assert receipt.next_stage_key == contract.stages[3].stage_key
+    assert runner.calls == 1
+    current = service.store.get_methodology_stage_run_dispatch(contract.task_id)
+    assert current is not None
+    assert current.claim.stage_sequence == 3
+    assert current.receipt == receipt
+    unified = service.unified_status(contract.task_id)
+    assert unified.budget.token_reserved == 0
+    assert {item.run_id for item in unified.runs} == {
+        first_dispatch.dispatch_claim.run_id,
+        predecessor_dispatch.dispatch_claim.run_id,
+        claim_receipt.run_id,
+    }
+    assert {item.run_id for item in unified.usage} == {
+        first_dispatch.dispatch_claim.run_id,
+        predecessor_dispatch.dispatch_claim.run_id,
+        claim_receipt.run_id,
+    }
+    with sqlite3.connect(tasks.db_path) as db:
+        rows = db.execute(
+            """
+            SELECT stage_sequence, predecessor_dispatch_id
+            FROM orchestration_methodology_stage_run_dispatches
+            WHERE task_id = ? ORDER BY stage_sequence
+            """,
+            (contract.task_id,),
+        ).fetchall()
+    assert rows == [
+        (2, first_dispatch.dispatch_claim.dispatch_id),
+        (3, first_dispatch.dispatch_claim.dispatch_id),
+    ]
+
+    replay = await service.dispatch_methodology_next_stage_run(
+        contract.task_id,
+        allow_unbounded_native_usage=True,
+    )
+    assert replay == receipt
+    assert runner.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_methodology_sequence_three_dispatch_binding_tamper_is_zero_write(
+    tmp_path,
+):
+    tasks, service, contract, *_ = await _claimed_sequence_three_methodology_run(
+        tmp_path
+    )
+    runner = MethodologyDispatchRunner()
+    service.runner = runner
+    with sqlite3.connect(tasks.db_path) as db:
+        db.execute(
+            """
+            UPDATE orchestration_methodology_successor_predecessors
+            SET predecessor_dispatch_receipt_sha256 = ?
+            WHERE task_id = ? AND stage_sequence = 3
+            """,
+            ("0" * 64, contract.task_id),
+        )
+        db.commit()
+    before = _database_dump(tasks)
+
+    with pytest.raises(
+        OrchestrationValidationError,
+        match="successor predecessor drifted",
+    ):
+        await service.dispatch_methodology_next_stage_run(
+            contract.task_id,
+            allow_unbounded_native_usage=True,
+        )
+
+    assert runner.calls == 0
+    assert _database_dump(tasks) == before
+
+
+@pytest.mark.asyncio
+async def test_methodology_sequence_three_dispatch_lineage_tamper_blocks_reads(
+    tmp_path,
+):
+    tasks, service, contract, *_ = await _claimed_sequence_three_methodology_run(
+        tmp_path
+    )
+    service.runner = MethodologyDispatchRunner()
+    receipt = await service.dispatch_methodology_next_stage_run(
+        contract.task_id,
+        allow_unbounded_native_usage=True,
+    )
+    with sqlite3.connect(tasks.db_path) as db:
+        db.execute(
+            """
+            UPDATE orchestration_methodology_stage_run_dispatches
+            SET predecessor_dispatch_id = ?
+            WHERE task_id = ? AND stage_sequence = 3
+            """,
+            ("forged-dispatch-lineage", contract.task_id),
+        )
+        db.commit()
+
+    with pytest.raises(
+        OrchestrationValidationError,
+        match="Run-claim binding drifted",
+    ):
+        service.store.get_methodology_stage_run_dispatch(contract.task_id)
+    with sqlite3.connect(tasks.db_path) as db:
+        db.row_factory = sqlite3.Row
+        with pytest.raises(
+            OrchestrationValidationError,
+            match="Run-claim binding drifted",
+        ):
+            service.store._provider_budget_snapshot(db, receipt.dispatch_claim.plan_id)
+    with pytest.raises(
+        OrchestrationValidationError,
+        match="Run-claim binding drifted",
+    ):
+        service.unified_status(contract.task_id)
+
+
+@pytest.mark.asyncio
+async def test_methodology_sequence_three_dispatch_current_run_tamper_fails_closed(
+    tmp_path,
+):
+    (
+        tasks,
+        service,
+        contract,
+        *_,
+        predecessor_dispatch,
+        _,
+        _,
+        _,
+        _,
+    ) = await _claimed_sequence_three_methodology_run(tmp_path)
+    task = tasks.get(contract.task_id)
+    assert task is not None
+    metadata = dict(task.metadata)
+    metadata["methodology_current_run_id"] = (
+        predecessor_dispatch.dispatch_claim.run_id
+    )
+    with sqlite3.connect(tasks.db_path) as db:
+        db.execute(
+            "UPDATE tasks SET metadata = ? WHERE task_id = ?",
+            (json.dumps(metadata), contract.task_id),
+        )
+        db.commit()
+    before = _database_dump(tasks)
+
+    with pytest.raises(
+        OrchestrationValidationError,
+        match="current Run binding drifted",
+    ):
+        await service.dispatch_methodology_next_stage_run(
+            contract.task_id,
+            allow_unbounded_native_usage=True,
+        )
+
+    assert _database_dump(tasks) == before
+
+
+@pytest.mark.parametrize("cursor_value", [None, "", 3])
+@pytest.mark.asyncio
+async def test_methodology_sequence_three_running_dispatch_requires_current_run_cursor(
+    tmp_path,
+    cursor_value,
+):
+    tasks, service, contract, *_ = await _claimed_sequence_three_methodology_run(
+        tmp_path
+    )
+
+    class CrashingRunner:
+        async def run(self, _runtime, _prompt, **kwargs):
+            await kwargs["on_process"](838_383)
+            raise GeneratorExit("simulated sequence-3 cursor crash")
+
+    service.runner = CrashingRunner()
+    with pytest.raises(GeneratorExit, match="sequence-3 cursor crash"):
+        await service.dispatch_methodology_next_stage_run(
+            contract.task_id,
+            allow_unbounded_native_usage=True,
+        )
+    task = tasks.get(contract.task_id)
+    assert task is not None
+    metadata = dict(task.metadata)
+    if cursor_value is None:
+        metadata.pop("methodology_current_run_id")
+    else:
+        metadata["methodology_current_run_id"] = cursor_value
+    with sqlite3.connect(tasks.db_path) as db:
+        db.execute(
+            "UPDATE tasks SET metadata = ? WHERE task_id = ?",
+            (json.dumps(metadata), contract.task_id),
+        )
+        db.commit()
+    after_tamper = _database_dump(tasks)
+    process_inspections: list[int] = []
+
+    def inspect_process(pid: int) -> ProcessState:
+        process_inspections.append(pid)
+        return ProcessState.ALIVE
+
+    service.process_inspector = inspect_process
+    with pytest.raises(
+        OrchestrationValidationError,
+        match="current Run binding drifted",
+    ):
+        service.store.get_methodology_stage_run_dispatch(contract.task_id)
+    with pytest.raises(
+        OrchestrationValidationError,
+        match="current Run binding drifted",
+    ):
+        service.resume(contract.task_id)
+    with pytest.raises(
+        OrchestrationValidationError,
+        match="current Run binding drifted",
+    ):
+        await service.dispatch_methodology_next_stage_run(
+            contract.task_id,
+            allow_unbounded_native_usage=True,
+        )
+
+    assert process_inspections == []
+    assert _database_dump(tasks) == after_tamper
+
+
+@pytest.mark.asyncio
+async def test_methodology_sequence_three_dispatch_concurrency_spawns_once(
+    tmp_path,
+):
+    _, service, contract, *_ = await _claimed_sequence_three_methodology_run(
+        tmp_path
+    )
+    runner = MethodologyDispatchRunner()
+    service.runner = runner
+
+    results = await asyncio.gather(
+        service.dispatch_methodology_next_stage_run(
+            contract.task_id,
+            allow_unbounded_native_usage=True,
+        ),
+        service.dispatch_methodology_next_stage_run(
+            contract.task_id,
+            allow_unbounded_native_usage=True,
+        ),
+        return_exceptions=True,
+    )
+
+    assert runner.calls == 1
+    assert sum(
+        isinstance(item, MethodologyStageRunDispatchReceipt)
+        for item in results
+    ) == 1
+    assert sum(
+        isinstance(item, OrchestrationConflictError) for item in results
+    ) == 1
+
+
+@pytest.mark.asyncio
+async def test_methodology_sequence_three_dispatch_recovery_never_respawns(
+    tmp_path,
+):
+    _, service, contract, *_ = await _claimed_sequence_three_methodology_run(
+        tmp_path
+    )
+
+    class CrashingRunner:
+        async def run(self, _runtime, _prompt, **kwargs):
+            await kwargs["on_process"](828_282)
+            raise GeneratorExit("simulated sequence-3 host crash")
+
+    service.runner = CrashingRunner()
+    with pytest.raises(GeneratorExit, match="sequence-3 host crash"):
+        await service.dispatch_methodology_next_stage_run(
+            contract.task_id,
+            allow_unbounded_native_usage=True,
+        )
+    dispatch = service.store.get_methodology_stage_run_dispatch(contract.task_id)
+    assert dispatch is not None
+    assert dispatch.claim.stage_sequence == 3
+    assert dispatch.state == MethodologyDispatchState.RUNNING
+
+    service.process_inspector = lambda _pid: ProcessState.ALIVE
+    with pytest.raises(OrchestrationConflictError, match="duplicate dispatch"):
+        service.resume(contract.task_id)
+    service.process_inspector = lambda _pid: ProcessState.DEAD
+    service.resume(contract.task_id)
+    recovered = service.store.get_methodology_stage_run_dispatch(contract.task_id)
+    assert recovered is not None
+    assert recovered.state == MethodologyDispatchState.SETTLED
+    assert recovered.receipt is not None
+    assert recovered.receipt.protocol_state.process_status.value == "interrupted"

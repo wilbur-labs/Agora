@@ -112,16 +112,15 @@ provider_substitution = false
 
 ## Succeeding process boundary
 
-Sequence-2 dispatch is defined in
+Sequence-2 and sequence-3 dispatch are defined in
 `aws-aidlc-methodology-stage-run-dispatch-v1.md`. It attaches exactly one pinned
-sequence-2 runtime process to this existing formal Run and settles it through
+runtime process to each existing formal Run and settles it through
 the unchanged Handoff parser and Control Plane Gate evaluator. It uses a
 separate later-Stage dispatch/recovery ledger without changing the frozen
 first-Run contracts, creating a second Run or Context Pack, or inferring
 semantic success from process exit code.
 
-The next implementation increment may extend that same dispatch/recovery
-boundary to the already claimed sequence-3 Run. Positions beyond sequence 3,
+Positions beyond sequence 3,
 cross-Stage rework, dynamic provider substitution, authenticated HTTP, Task
 Workbench UI, and native AWS AI-DLC file installation remain separate reviewed
 increments.
