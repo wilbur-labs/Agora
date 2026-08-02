@@ -675,6 +675,32 @@ def initialize_orchestration_schema(db: sqlite3.Connection) -> None:
             ON orchestration_methodology_completion_review_usage_ledger(
                 task_id, created_at, entry_id
             );
+
+        CREATE TABLE IF NOT EXISTS
+            orchestration_methodology_completion_approvals (
+            approval_id TEXT PRIMARY KEY,
+            request_id TEXT NOT NULL UNIQUE,
+            request_sha256 TEXT NOT NULL,
+            request_payload TEXT NOT NULL,
+            authenticated_approval_sha256 TEXT NOT NULL,
+            authenticated_approval_payload TEXT NOT NULL,
+            approval_sha256 TEXT NOT NULL,
+            receipt_id TEXT NOT NULL UNIQUE,
+            receipt_sha256 TEXT NOT NULL,
+            receipt_payload TEXT NOT NULL,
+            task_id TEXT NOT NULL UNIQUE REFERENCES tasks(task_id),
+            plan_id TEXT NOT NULL REFERENCES orchestration_plans(plan_id),
+            execution_contract_id TEXT NOT NULL UNIQUE
+                REFERENCES orchestration_methodology_execution_contracts(contract_id),
+            stage_key TEXT NOT NULL,
+            gate_key TEXT NOT NULL,
+            authenticated_principal_id TEXT NOT NULL,
+            completed_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_methodology_completion_approvals_task
+            ON orchestration_methodology_completion_approvals(
+                task_id, completed_at, approval_id
+            );
         """
     )
     columns = {row[1] for row in db.execute("PRAGMA table_info(orchestration_runs)")}

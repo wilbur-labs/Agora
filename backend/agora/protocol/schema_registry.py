@@ -16,6 +16,11 @@ from .methodology_completion_review_dispatch import (
     MethodologyCompletionReviewDispatchPolicyDecision,
     MethodologyCompletionReviewDispatchReceipt,
 )
+from .methodology_completion_approval import (
+    AuthenticatedMethodologyCompletionApproval,
+    MethodologyCompletionApprovalReceipt,
+    MethodologyCompletionApprovalRequest,
+)
 from .methodology_execution import MethodologyExecutionContract
 from .methodology_migration import (
     AuthenticatedMethodologyMigrationGate,
@@ -99,6 +104,15 @@ SCHEMA_MODELS: dict[str, SchemaModel] = {
     ),
     "methodology-completion-review-dispatch-receipt": (
         MethodologyCompletionReviewDispatchReceipt
+    ),
+    "authenticated-methodology-completion-approval": (
+        AuthenticatedMethodologyCompletionApproval
+    ),
+    "methodology-completion-approval-receipt": (
+        MethodologyCompletionApprovalReceipt
+    ),
+    "methodology-completion-approval-request": (
+        MethodologyCompletionApprovalRequest
     ),
     "methodology-migration-activation-receipt": (
         MethodologyMigrationActivationReceipt

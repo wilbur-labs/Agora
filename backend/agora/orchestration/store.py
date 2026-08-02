@@ -16,6 +16,8 @@ from agora.control_plane.models import (
     RunSettlementReceipt,
     StageRouteDecision,
     TaskRecord,
+    TaskLifecycleReason,
+    TaskTransitionCause,
 )
 from agora.control_plane.store import (
     ControlPlaneConflictError,
@@ -35,6 +37,11 @@ from agora.protocol.methodology_completion_review_dispatch import (
     MethodologyCompletionReviewDispatchClaim,
     MethodologyCompletionReviewDispatchPolicyDecision,
     MethodologyCompletionReviewDispatchReceipt,
+)
+from agora.protocol.methodology_completion_approval import (
+    AuthenticatedMethodologyCompletionApproval,
+    MethodologyCompletionApprovalReceipt,
+    MethodologyCompletionApprovalRequest,
 )
 from agora.protocol.methodology_execution import (
     MethodologyExecutionContract,
@@ -76,6 +83,9 @@ from agora.protocol.methodology_stage_run_dispatch import (
     MethodologyStageRunDispatchReceipt,
 )
 from agora.protocol.models import (
+    Approval,
+    ApprovalArtifactBinding,
+    ApprovalStatus,
     Artifact,
     ConsultationCandidate,
     ConsultationCandidateDisposition,
@@ -90,7 +100,7 @@ from agora.protocol.models import (
     SemanticStageResult,
     StageInventory,
 )
-from agora.protocol.state_machines import GateStatus, StageStatus
+from agora.protocol.state_machines import GateStatus, StageStatus, TaskStatus
 from agora.tasks.models import TaskBudget, TaskState, utc_now
 from agora.tasks.store import TaskNotFoundError, TaskStore
 
@@ -107,6 +117,10 @@ from .methodology_completion_review_claim import (
 )
 from .methodology_completion_review_dispatch import (
     MethodologyCompletionReviewDispatchSnapshot,
+)
+from .methodology_completion_approval import (
+    MethodologyCompletionApprovalSnapshot,
+    MethodologyCompletionReviewFinalAuthority,
 )
 from .methodology_execution_contract import MethodologyExecutionSnapshot
 from .methodology_route_activation import MethodologyRouteActivationSnapshot
@@ -10631,6 +10645,621 @@ class OrchestrationStore:
                 actor="orchestrator",
                 payload=event_payload,
                 now=now,
+            )
+        return receipt
+
+    def methodology_completion_approval_snapshot(
+        self,
+        task_id: str,
+    ) -> MethodologyCompletionApprovalSnapshot:
+        """Read the complete final human-approval authority without mutation."""
+
+        control_plane = ControlPlaneStore(self.tasks)
+        with closing(self._connect()) as db:
+            db.execute("BEGIN")
+            try:
+                return self._methodology_completion_approval_snapshot_tx(
+                    db,
+                    task_id,
+                    control_plane=control_plane,
+                )
+            finally:
+                db.rollback()
+
+    def _methodology_completion_approval_snapshot_tx(
+        self,
+        db: sqlite3.Connection,
+        task_id: str,
+        *,
+        control_plane: ControlPlaneStore,
+    ) -> MethodologyCompletionApprovalSnapshot:
+        base = self._methodology_completion_review_claim_snapshot_tx(
+            db,
+            task_id,
+            control_plane=control_plane,
+        )
+        human_gate = base.migration_request.human_gate
+        if human_gate is None:
+            raise OrchestrationValidationError(
+                "Methodology completion migration approval Artifact is unavailable"
+            )
+        migration_artifacts = [
+            human_gate.migration_artifact,
+            *base.migration_request.seed_artifacts,
+        ]
+        approval_artifacts = [
+            ApprovalArtifactBinding(
+                repository_id=item.repository_id,
+                ref=item.ref,
+                commit_sha=item.commit_sha,
+                path=item.path,
+                sha256=item.sha256,
+            )
+            for item in sorted(migration_artifacts, key=lambda item: item.path)
+        ]
+        claim_rows = db.execute(
+            """
+            SELECT * FROM orchestration_methodology_completion_review_claims
+            WHERE task_id = ? ORDER BY responsibility
+            """,
+            (task_id,),
+        ).fetchall()
+        dispatch_rows = db.execute(
+            """
+            SELECT * FROM orchestration_methodology_completion_review_dispatches
+            WHERE task_id = ? ORDER BY responsibility
+            """,
+            (task_id,),
+        ).fetchall()
+        if len(claim_rows) != 2 or len(dispatch_rows) != 2:
+            raise OrchestrationConflictError(
+                "Methodology completion requires both reviewer settlements"
+            )
+        claims = {
+            row["responsibility"]: self._methodology_completion_review_claim(row)
+            for row in claim_rows
+        }
+        reviews: list[MethodologyCompletionReviewFinalAuthority] = []
+        for row in dispatch_rows:
+            state = self._methodology_completion_review_dispatch(row)
+            self._validate_settled_completion_review_dispatch_tx(db, state)
+            claim = claims.get(row["responsibility"])
+            if (
+                claim is None
+                or state.state != MethodologyDispatchState.SETTLED
+                or state.receipt is None
+                or state.claim.completion_review_claim_receipt_id
+                != claim.receipt_id
+                or state.claim.completion_review_claim_receipt_sha256
+                != claim.content_sha256
+            ):
+                raise OrchestrationValidationError(
+                    "Methodology completion reviewer authority differs"
+                )
+            reviews.append(
+                MethodologyCompletionReviewFinalAuthority(
+                    claim=claim,
+                    dispatch=state.receipt,
+                )
+            )
+        if [item.claim.responsibility for item in reviews] != [
+            "independent_correctness",
+            "methodology_stewardship",
+        ]:
+            raise OrchestrationValidationError(
+                "Methodology completion reviewers are incomplete or unordered"
+            )
+        return MethodologyCompletionApprovalSnapshot(
+            completion=base,
+            approval_artifacts=tuple(approval_artifacts),
+            reviews=(reviews[0], reviews[1]),
+        )
+
+    @staticmethod
+    def _methodology_completion_approval(
+        row: sqlite3.Row,
+    ) -> MethodologyCompletionApprovalReceipt:
+        request = MethodologyCompletionApprovalRequest.model_validate_json(
+            row["request_payload"]
+        )
+        authenticated = AuthenticatedMethodologyCompletionApproval.model_validate_json(
+            row["authenticated_approval_payload"]
+        )
+        receipt = MethodologyCompletionApprovalReceipt.model_validate_json(
+            row["receipt_payload"]
+        )
+        if (
+            request.request_id != row["request_id"]
+            or request.content_sha256 != row["request_sha256"]
+            or request.approval_id != row["approval_id"]
+            or authenticated.request != request
+            or authenticated.content_sha256
+            != row["authenticated_approval_sha256"]
+        ):
+            raise OrchestrationValidationError(
+                "Methodology completion approval ledger drifted"
+            )
+        if (
+            authenticated.approval_sha256 != row["approval_sha256"]
+            or receipt.receipt_id != row["receipt_id"]
+            or receipt.content_sha256 != row["receipt_sha256"]
+            or receipt.authenticated_approval != authenticated
+            or receipt.task_id != row["task_id"]
+            or receipt.plan_id != row["plan_id"]
+            or receipt.execution_contract_id != row["execution_contract_id"]
+            or receipt.stage_key != row["stage_key"]
+            or receipt.gate_key != row["gate_key"]
+            or authenticated.authenticated_principal_id
+            != row["authenticated_principal_id"]
+            or receipt.completed_at.isoformat() != row["completed_at"]
+        ):
+            raise OrchestrationValidationError(
+                "Methodology completion approval receipt drifted"
+            )
+        return receipt
+
+    def _validate_methodology_completion_approval_live_tx(
+        self,
+        db: sqlite3.Connection,
+        receipt: MethodologyCompletionApprovalReceipt,
+        *,
+        control_plane: ControlPlaneStore,
+    ) -> None:
+        authenticated = receipt.authenticated_approval
+        request = authenticated.request
+        approval_row = db.execute(
+            "SELECT * FROM protocol_approvals WHERE approval_id = ?",
+            (request.approval_id,),
+        ).fetchone()
+        control_task_row = db.execute(
+            "SELECT * FROM control_tasks WHERE task_id = ?",
+            (request.task_id,),
+        ).fetchone()
+        stage_row = db.execute(
+            """
+            SELECT * FROM control_stages
+            WHERE task_id = ? AND stage_key = ?
+            """,
+            (request.task_id, request.stage_key),
+        ).fetchone()
+        gate_row = db.execute(
+            """
+            SELECT * FROM control_gates
+            WHERE task_id = ? AND gate_key = ?
+            """,
+            (request.task_id, request.gate_key),
+        ).fetchone()
+        if any(
+            row is None
+            for row in (approval_row, control_task_row, stage_row, gate_row)
+        ):
+            raise OrchestrationValidationError(
+                "Methodology completion approval authority is unavailable"
+            )
+        assert approval_row is not None
+        assert control_task_row is not None
+        assert stage_row is not None
+        assert gate_row is not None
+        approval = Approval.model_validate_json(approval_row["payload"])
+        approval_bindings = [
+            ApprovalArtifactBinding(
+                repository_id=row["repository_id"],
+                ref=row["ref"],
+                commit_sha=row["commit_sha"],
+                path=row["path"],
+                sha256=row["sha256"],
+            )
+            for row in db.execute(
+                """
+                SELECT * FROM protocol_approval_artifacts
+                WHERE approval_id = ? ORDER BY path
+                """,
+                (request.approval_id,),
+            ).fetchall()
+        ]
+        if (
+            approval != authenticated.approval
+            or canonical_sha256(approval) != approval_row["payload_sha256"]
+            or approval_row["payload_sha256"] != authenticated.approval_sha256
+            or approval_row["project_id"] != approval.project_id
+            or approval_row["task_id"] != approval.task_id
+            or approval_row["stage_key"] != approval.stage_key
+            or approval_row["gate_key"] != approval.gate_key
+            or approval_row["repository_id"] != approval.repository_id
+            or approval_row["ref"] != approval.ref
+            or approval_row["commit_sha"] != approval.commit_sha
+            or approval_row["approved_at"] != approval.approved_at.isoformat()
+            or approval_row["updated_at"] != approval.approved_at.isoformat()
+            or approval_row["status"] != "active"
+            or approval.status.value != approval_row["status"]
+            or approval.stale_reason is not None
+            or approval_bindings != request.approval_artifacts
+            or control_task_row["status"] != TaskStatus.COMPLETED.value
+            or control_task_row["version"] != receipt.control_task_version
+            or stage_row["status"] != StageStatus.COMPLETED.value
+            or stage_row["version"] != request.expected_stage_version
+            or gate_row["status"] != GateStatus.PASSED.value
+            or gate_row["version"] != request.expected_gate_version
+        ):
+            raise OrchestrationValidationError(
+                "Methodology completion approval live authority drifted"
+            )
+        decision = control_plane._task_lifecycle_decision_tx(
+            db,
+            request.task_id,
+            required=True,
+        )
+        if (
+            decision.target_status != TaskStatus.COMPLETED
+            or decision.reason != TaskLifecycleReason.EXPLICIT_COMPLETION
+        ):
+            raise OrchestrationValidationError(
+                "Methodology completion Task lifecycle authority drifted"
+            )
+        snapshot = self._methodology_completion_approval_snapshot_tx(
+            db,
+            request.task_id,
+            control_plane=control_plane,
+        )
+        base = snapshot.completion
+        expected_artifacts = sorted(
+            (item.version_ref() for item in base.output_artifacts),
+            key=lambda item: (item.artifact_id, item.version),
+        )
+        expected_evidence_ids = [
+            item.evidence_id
+            for item in sorted(base.active_evidence, key=lambda item: item.evidence_id)
+        ]
+        if (
+            request.artifact_versions != expected_artifacts
+            or request.approval_artifacts != list(snapshot.approval_artifacts)
+            or [item.evidence_id for item in request.active_evidence]
+            != expected_evidence_ids
+            or [item.dispatch_receipt_sha256 for item in request.completion_reviews]
+            != [item.dispatch.content_sha256 for item in snapshot.reviews]
+        ):
+            raise OrchestrationValidationError(
+                "Methodology completion approval provenance drifted"
+            )
+
+    def get_methodology_completion_approval(
+        self,
+        task_id: str,
+    ) -> MethodologyCompletionApprovalReceipt | None:
+        with closing(self._connect()) as db:
+            row = db.execute(
+                """
+                SELECT * FROM orchestration_methodology_completion_approvals
+                WHERE task_id = ?
+                """,
+                (task_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            receipt = self._methodology_completion_approval(row)
+            self._validate_methodology_completion_approval_live_tx(
+                db,
+                receipt,
+                control_plane=ControlPlaneStore(self.tasks),
+            )
+            return receipt
+
+    def complete_methodology_task(
+        self,
+        task_id: str,
+        request: MethodologyCompletionApprovalRequest,
+        *,
+        principal: ControlPrincipal,
+        control_plane: ControlPlaneStore,
+        recheck: Callable[
+            [MethodologyCompletionApprovalSnapshot, str],
+            AuthenticatedMethodologyCompletionApproval,
+        ],
+    ) -> MethodologyCompletionApprovalReceipt:
+        """Atomically register the bound Approval and complete the formal Task."""
+
+        if request.task_id != task_id:
+            raise OrchestrationValidationError(
+                "Methodology completion Task argument differs from request"
+            )
+        completed_at = utc_now()
+        with self._transaction() as db:
+            rows = db.execute(
+                """
+                SELECT * FROM orchestration_methodology_completion_approvals
+                WHERE task_id = ? OR request_id = ? OR approval_id = ?
+                """,
+                (task_id, request.request_id, request.approval_id),
+            ).fetchall()
+            if rows:
+                if len(rows) != 1:
+                    raise OrchestrationConflictError(
+                        "Methodology completion approval identity is occupied"
+                    )
+                receipt = self._methodology_completion_approval(rows[0])
+                authenticated = receipt.authenticated_approval
+                self._validate_methodology_completion_approval_live_tx(
+                    db,
+                    receipt,
+                    control_plane=control_plane,
+                )
+                replay_snapshot = self._methodology_completion_approval_snapshot_tx(
+                    db,
+                    task_id,
+                    control_plane=control_plane,
+                )
+                try:
+                    replay_authority = recheck(replay_snapshot, completed_at)
+                except ValueError as exc:
+                    raise OrchestrationConflictError(
+                        f"Methodology completion approval replay blocked: {exc}"
+                    ) from exc
+                control_task = db.execute(
+                    "SELECT * FROM control_tasks WHERE task_id = ?",
+                    (task_id,),
+                ).fetchone()
+                approval_row = db.execute(
+                    "SELECT * FROM protocol_approvals WHERE approval_id = ?",
+                    (request.approval_id,),
+                ).fetchone()
+                if (
+                    authenticated.request != request
+                    or replay_authority.request != request
+                    or replay_authority.approval != authenticated.approval
+                    or replay_authority.request_sha256 != request.content_sha256
+                    or replay_authority.content_sha256
+                    != canonical_sha256(
+                        replay_authority,
+                        exclude_top_level=frozenset({"content_sha256"}),
+                    )
+                    or replay_authority.approval_sha256
+                    != canonical_sha256(replay_authority.approval)
+                    or replay_authority.authenticated_principal_id
+                    != principal.principal_id
+                    or replay_authority.authenticated_permission
+                    != "control_plane.approve"
+                    or replay_authority.authenticated_project_id
+                    != request.project_id
+                    or replay_authority.approval.status != ApprovalStatus.ACTIVE
+                    or replay_authority.approval.stale_reason is not None
+                    or authenticated.authenticated_principal_id
+                    != principal.principal_id
+                    or request.approved_by != principal.principal_id
+                    or "control_plane.approve" not in principal.permissions
+                    or request.project_id not in principal.projects
+                    or control_task is None
+                    or control_task["status"] != TaskStatus.COMPLETED.value
+                    or control_task["version"] != receipt.control_task_version
+                    or approval_row is None
+                    or approval_row["status"] != "active"
+                    or approval_row["payload_sha256"]
+                    != authenticated.approval_sha256
+                ):
+                    raise OrchestrationConflictError(
+                        "Methodology completion approval replay authority differs"
+                    )
+                return receipt
+
+            snapshot = self._methodology_completion_approval_snapshot_tx(
+                db,
+                task_id,
+                control_plane=control_plane,
+            )
+            try:
+                authenticated = recheck(snapshot, completed_at)
+            except ValueError as exc:
+                raise OrchestrationConflictError(
+                    f"Methodology completion approval blocked: {exc}"
+                ) from exc
+            if (
+                authenticated.request != request
+                or authenticated.request_sha256 != request.content_sha256
+                or request.content_sha256
+                != canonical_sha256(
+                    request,
+                    exclude_top_level=frozenset({"content_sha256"}),
+                )
+                or authenticated.content_sha256
+                != canonical_sha256(
+                    authenticated,
+                    exclude_top_level=frozenset({"content_sha256"}),
+                )
+                or authenticated.approval_sha256
+                != canonical_sha256(authenticated.approval)
+                or authenticated.authenticated_principal_id
+                != principal.principal_id
+                or authenticated.authenticated_permission
+                != "control_plane.approve"
+                or authenticated.authenticated_project_id
+                != request.project_id
+                or "control_plane.approve" not in principal.permissions
+                or request.project_id not in principal.projects
+                or request.approved_by != principal.principal_id
+                or authenticated.approval.approval_id != request.approval_id
+                or authenticated.approval.project_id != request.project_id
+                or authenticated.approval.task_id != request.task_id
+                or authenticated.approval.stage_key != request.stage_key
+                or authenticated.approval.gate_key != request.gate_key
+                or authenticated.approval.repository_id
+                != request.repository.repository_id
+                or authenticated.approval.ref != request.repository.ref
+                or authenticated.approval.commit_sha
+                != request.repository.commit_sha
+                or authenticated.approval.artifact_versions
+                != request.approval_artifacts
+                or authenticated.approval.approved_by != request.approved_by
+                or authenticated.approval.approved_at != request.approved_at
+                or authenticated.approval.status != ApprovalStatus.ACTIVE
+                or authenticated.approval.stale_reason is not None
+            ):
+                raise OrchestrationConflictError(
+                    "Methodology completion authenticated authority differs"
+                )
+            control_task_row = db.execute(
+                "SELECT * FROM control_tasks WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
+            assert control_task_row is not None
+            if (
+                control_task_row["version"]
+                != request.expected_control_task_version
+                or control_task_row["status"]
+                != TaskStatus.NEEDS_REVIEW.value
+            ):
+                raise OrchestrationConflictError(
+                    "Methodology completion Task changed before approval"
+                )
+            decision = control_plane._task_lifecycle_decision_tx(
+                db,
+                task_id,
+                required=True,
+            )
+            if (
+                decision.target_status != TaskStatus.NEEDS_REVIEW
+                or decision.reason != TaskLifecycleReason.ALL_STAGES_PASSED
+            ):
+                raise OrchestrationConflictError(
+                    "Methodology completion requires every formal Stage Gate passed"
+                )
+            registration = control_plane._register_approval_tx(
+                db,
+                authenticated.approval,
+                actor=principal.principal_id,
+                registered_external_bindings=request.approval_artifacts,
+                methodology_completion_authority=authenticated,
+            )
+            if not registration.created:
+                raise OrchestrationConflictError(
+                    "Methodology completion Approval was already registered"
+                )
+            updated_task = control_plane._apply_task_transition_tx(
+                db,
+                row=control_task_row,
+                target=TaskStatus.COMPLETED,
+                cause=TaskTransitionCause.USER_ACTION,
+                actor=principal.principal_id,
+                reason=request.approval_reason,
+                event_key=(
+                    "methodology.completion.approve:"
+                    f"{request.approval_id}:task.state_changed"
+                ),
+                now=completed_at,
+                decision=decision,
+            )
+            base = snapshot.completion
+            receipt = MethodologyCompletionApprovalReceipt.model_validate(
+                seal_model_payload(
+                    MethodologyCompletionApprovalReceipt,
+                    {
+                        "schema_version": "1.0",
+                        "receipt_id": (
+                            "methodology-completion-approval-receipt:"
+                            f"{request.approval_id}"
+                        ),
+                        "completed_at": completed_at,
+                        "authenticated_approval": authenticated,
+                        "authenticated_approval_sha256": authenticated.content_sha256,
+                        "project_id": request.project_id,
+                        "task_id": request.task_id,
+                        "task_version": request.expected_task_version,
+                        "plan_id": request.plan_id,
+                        "plan_version": request.expected_plan_version,
+                        "inventory_id": request.inventory_id,
+                        "inventory_sha256": request.inventory_sha256,
+                        "execution_contract_id": request.execution_contract_id,
+                        "execution_contract_sha256": (
+                            request.execution_contract_sha256
+                        ),
+                        "stage_key": request.stage_key,
+                        "stage_status": base.final_stage.status,
+                        "gate_key": request.gate_key,
+                        "gate_status": base.final_gate.status,
+                        "previous_task_status": TaskStatus.NEEDS_REVIEW,
+                        "previous_control_task_version": (
+                            request.expected_control_task_version
+                        ),
+                        "task_status": updated_task.status,
+                        "control_task_version": updated_task.version,
+                        "approval_id": request.approval_id,
+                        "approval_sha256": authenticated.approval_sha256,
+                        "artifact_count": len(request.artifact_versions),
+                        "approval_artifact_count": len(
+                            request.approval_artifacts
+                        ),
+                        "active_evidence_ids": [
+                            item.evidence_id for item in request.active_evidence
+                        ],
+                        "approval_registered": True,
+                        "task_completed": True,
+                        "compatibility_projection_mutated": False,
+                        "runtime_spawned": False,
+                        "artifact_created": False,
+                        "evidence_created": False,
+                        "gate_evaluated": False,
+                        "stage_mutated": False,
+                    },
+                )
+            )
+            db.execute(
+                """
+                INSERT INTO orchestration_methodology_completion_approvals (
+                    approval_id, request_id, request_sha256, request_payload,
+                    authenticated_approval_sha256,
+                    authenticated_approval_payload, approval_sha256,
+                    receipt_id, receipt_sha256, receipt_payload,
+                    task_id, plan_id, execution_contract_id,
+                    stage_key, gate_key, authenticated_principal_id, completed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    request.approval_id,
+                    request.request_id,
+                    request.content_sha256,
+                    self._json(request.model_dump(mode="json")),
+                    authenticated.content_sha256,
+                    self._json(authenticated.model_dump(mode="json")),
+                    authenticated.approval_sha256,
+                    receipt.receipt_id,
+                    receipt.content_sha256,
+                    self._json(receipt.model_dump(mode="json")),
+                    request.task_id,
+                    request.plan_id,
+                    request.execution_contract_id,
+                    request.stage_key,
+                    request.gate_key,
+                    principal.principal_id,
+                    completed_at,
+                ),
+            )
+            event_payload = {
+                "approval_id": request.approval_id,
+                "approval_sha256": authenticated.approval_sha256,
+                "receipt_id": receipt.receipt_id,
+                "receipt_sha256": receipt.content_sha256,
+                "artifact_count": receipt.artifact_count,
+                "active_evidence_ids": receipt.active_evidence_ids,
+                "task_status": receipt.task_status.value,
+            }
+            self.tasks._insert_event(
+                db,
+                task_id=task_id,
+                event_type="methodology_completion_approved",
+                actor=principal.principal_id,
+                payload=event_payload,
+                created_at=completed_at,
+            )
+            control_plane._event(
+                db,
+                event_key=(
+                    "methodology.completion.approved:"
+                    f"{request.approval_id}"
+                ),
+                task_id=task_id,
+                project_id=request.project_id,
+                event_type="methodology.completion_approved",
+                actor=principal.principal_id,
+                payload=event_payload,
+                now=completed_at,
             )
         return receipt
 

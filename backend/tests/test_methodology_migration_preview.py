@@ -15,6 +15,7 @@ import pytest
 from pydantic import ValidationError
 
 from agora.control_plane.auth import ControlPrincipal
+from agora.control_plane.models import ArtifactInventory, TaskTransitionCause
 from agora.control_plane.store import (
     ControlPlaneConflictError,
     ControlPlaneValidationError,
@@ -81,6 +82,7 @@ from agora.orchestration.store import (
 )
 from agora.projects import ProjectRegistry
 from agora.protocol.hashing import canonical_sha256, seal_model_payload
+from agora.protocol.invalidation import ArtifactChange
 from agora.protocol.methodology_completion_review_claim import (
     MethodologyCompletionReviewClaimReceipt,
     MethodologyCompletionReviewClaimRequest,
@@ -91,6 +93,14 @@ from agora.protocol.methodology_completion_review_dispatch import (
     MethodologyCompletionReviewDispatchPolicyDecision,
     MethodologyCompletionReviewDispatchReceipt,
     methodology_completion_review_evidence_id,
+)
+from agora.protocol.methodology_completion_approval import (
+    AuthenticatedMethodologyCompletionApproval,
+    MethodologyCompletionApprovalReceipt,
+    MethodologyCompletionApprovalRequest,
+    MethodologyCompletionEvidenceApprovalBinding,
+    MethodologyCompletionReviewApprovalBinding,
+    methodology_completion_approval_id,
 )
 from agora.protocol.methodology_execution import MethodologyExecutionContract
 from agora.protocol.methodology_migration import (
@@ -128,6 +138,9 @@ from agora.protocol.methodology_stage_run_dispatch import (
     MethodologyStageRunDispatchReceipt,
 )
 from agora.protocol.models import (
+    Approval,
+    ApprovalArtifactBinding,
+    ApprovalStatus,
     ContextPack,
     Evidence,
     GateRequirement,
@@ -135,6 +148,7 @@ from agora.protocol.models import (
     ProviderUsageObservation,
 )
 from agora.protocol.schema_registry import SCHEMA_MODELS
+from agora.protocol.state_machines import TaskStatus
 from agora.tasks.models import utc_now
 from agora.tasks.store import TaskStore
 
@@ -7987,6 +8001,187 @@ def _completion_review_claim_request(
     )
 
 
+async def _reviewed_sequence_eight_methodology_run(tmp_path):
+    settled = await _settled_sequence_eight_methodology_run(tmp_path)
+    _, service, contract, *_ = settled
+    production_dispatch = settled[-1]
+    receipts = []
+    for responsibility in (
+        "independent_correctness",
+        "methodology_stewardship",
+    ):
+        request = _completion_review_claim_request(
+            service,
+            contract,
+            production_dispatch,
+            responsibility,
+        )
+        service.claim_methodology_completion_review(
+            contract.task_id,
+            request,
+            principal=_migration_principal(),
+        )
+        service.runner = CompletionReviewDispatchRunner()
+        receipts.append(
+            await service.dispatch_methodology_completion_review(
+                contract.task_id,
+                responsibility,
+                allow_unbounded_native_usage=True,
+            )
+        )
+    assert receipts[-1].task_status.value == "needs_review"
+    return (*settled, tuple(receipts))
+
+
+def _methodology_completion_approval_request(
+    service,
+    contract,
+    *,
+    approved_by="user",
+):
+    snapshot = service.store.methodology_completion_approval_snapshot(
+        contract.task_id
+    )
+    base = snapshot.completion
+    evidence_by_id = {
+        item.evidence_id: item for item in base.active_evidence
+    }
+    reviews = []
+    for authority in snapshot.reviews:
+        claim = authority.claim
+        dispatch = authority.dispatch
+        evidence = evidence_by_id[dispatch.evidence_ids[0]]
+        reviews.append(
+            MethodologyCompletionReviewApprovalBinding(
+                responsibility=claim.responsibility,
+                claim_receipt_id=claim.receipt_id,
+                claim_receipt_sha256=claim.content_sha256,
+                dispatch_id=dispatch.dispatch_claim.dispatch_id,
+                dispatch_receipt_id=dispatch.receipt_id,
+                dispatch_receipt_sha256=dispatch.content_sha256,
+                review_run_id=claim.review_run_id,
+                handoff_pack_id=dispatch.handoff_pack_id,
+                handoff_pack_sha256=dispatch.handoff_pack_sha256,
+                evidence_id=evidence.evidence_id,
+                evidence_sha256=canonical_sha256(evidence),
+            )
+        )
+    approval_id = methodology_completion_approval_id(
+        task_id=contract.task_id,
+        execution_contract_sha256=contract.content_sha256,
+        final_dispatch_receipt_sha256=base.final_dispatch_receipt.content_sha256,
+        review_receipt_sha256s=[item.dispatch_receipt_sha256 for item in reviews],
+    )
+    artifacts = sorted(
+        (item.version_ref() for item in base.output_artifacts),
+        key=lambda item: (item.artifact_id, item.version),
+    )
+    approval_artifacts = list(snapshot.approval_artifacts)
+    evidence = [
+        MethodologyCompletionEvidenceApprovalBinding(
+            evidence_id=item.evidence_id,
+            evidence_sha256=canonical_sha256(item),
+            requirement_id=item.requirement_id,
+            producer_run_id=item.producer.run_id,
+            status="passed",
+        )
+        for item in sorted(base.active_evidence, key=lambda item: item.evidence_id)
+    ]
+    production = base.final_dispatch_receipt
+    approved_at = max(
+        production.settled_at,
+        *(authority.dispatch.settled_at for authority in snapshot.reviews),
+    )
+    payload = {
+        "schema_version": "1.0",
+        "request_id": f"{approval_id}:request",
+        "requested_at": approved_at,
+        "approval_id": approval_id,
+        "approved_by": approved_by,
+        "approved_at": approved_at,
+        "approval_reason": "Human reviewed the final delivery and both reviews.",
+        "human_approved": True,
+        "project_id": base.task.project_id,
+        "task_id": base.task.task_id,
+        "expected_task_version": base.task.version,
+        "expected_control_task_version": base.control_task.version,
+        "expected_control_task_status": base.control_task.status.value,
+        "plan_id": base.plan.plan_id,
+        "expected_plan_version": base.plan.version,
+        "inventory_id": base.inventory.inventory_id,
+        "inventory_sha256": base.inventory.content_sha256,
+        "execution_contract_id": contract.contract_id,
+        "execution_contract_sha256": contract.content_sha256,
+        "repository": contract.repository.model_dump(mode="json"),
+        "source_graph_sha256": contract.source_graph_sha256,
+        "activation_definition_sha256": contract.activation_definition_sha256,
+        "stage_sequence": len(contract.stages),
+        "stage_key": base.final_stage.stage_key,
+        "expected_stage_version": base.final_stage.version,
+        "expected_stage_status": base.final_stage.status.value,
+        "gate_key": base.final_gate.gate_key,
+        "expected_gate_version": base.final_gate.version,
+        "expected_gate_status": base.final_gate.status.value,
+        "final_dispatch_id": production.dispatch_claim.dispatch_id,
+        "final_dispatch_receipt_id": production.receipt_id,
+        "final_dispatch_receipt_sha256": production.content_sha256,
+        "production_run_id": production.dispatch_claim.run_id,
+        "production_handoff_pack_id": production.handoff_pack_id,
+        "production_handoff_pack_sha256": production.handoff_pack_sha256,
+        "completion_reviews": [item.model_dump(mode="json") for item in reviews],
+        "artifact_versions": [item.model_dump(mode="json") for item in artifacts],
+        "approval_artifacts": [
+            item.model_dump(mode="json") for item in approval_artifacts
+        ],
+        "active_evidence": [item.model_dump(mode="json") for item in evidence],
+        "complete_task": True,
+        "start_runtime_process": False,
+        "register_artifact": False,
+        "register_evidence": False,
+        "evaluate_gate": False,
+        "modify_stage": False,
+    }
+    return MethodologyCompletionApprovalRequest.model_validate(
+        seal_model_payload(MethodologyCompletionApprovalRequest, payload)
+    )
+
+
+def _authenticated_completion_approval_for_request(
+    request: MethodologyCompletionApprovalRequest,
+) -> AuthenticatedMethodologyCompletionApproval:
+    approval = Approval(
+        approval_id=request.approval_id,
+        project_id=request.project_id,
+        task_id=request.task_id,
+        stage_key=request.stage_key,
+        gate_key=request.gate_key,
+        repository_id=request.repository.repository_id,
+        ref=request.repository.ref,
+        commit_sha=request.repository.commit_sha,
+        artifact_versions=request.approval_artifacts,
+        status=ApprovalStatus.ACTIVE,
+        approved_by=request.approved_by,
+        approved_at=request.approved_at,
+    )
+    return AuthenticatedMethodologyCompletionApproval.model_validate(
+        seal_model_payload(
+            AuthenticatedMethodologyCompletionApproval,
+            {
+                "schema_version": "1.0",
+                "authenticated_at": request.requested_at,
+                "request": request,
+                "request_sha256": request.content_sha256,
+                "approval": approval,
+                "approval_sha256": canonical_sha256(approval),
+                "authenticated_principal_id": request.approved_by,
+                "authenticated_permission": "control_plane.approve",
+                "authenticated_project_id": request.project_id,
+                "credential_verified": True,
+            },
+        )
+    )
+
+
 @pytest.mark.asyncio
 async def test_methodology_sequence_four_produces_required_artifacts_and_settles(
     tmp_path,
@@ -9962,6 +10157,443 @@ async def test_methodology_completion_review_concurrent_dispatch_spawns_once(
         ).fetchone()[0] == 1
 
 
+@pytest.mark.asyncio
+async def test_methodology_completion_approval_is_atomic_bound_and_replay_safe(
+    tmp_path,
+):
+    reviewed = await _reviewed_sequence_eight_methodology_run(tmp_path)
+    tasks, service, contract = reviewed[:3]
+    request = _methodology_completion_approval_request(service, contract)
+    with sqlite3.connect(tasks.db_path) as db:
+        before_counts = tuple(
+            db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            for table in (
+                "protocol_runs",
+                "protocol_artifacts",
+                "protocol_evidence",
+            )
+        )
+    control_task = service.control_plane.get_task_state(contract.task_id)
+    with pytest.raises(
+        ControlPlaneConflictError,
+        match="artifact-bound atomic approval",
+    ):
+        service.control_plane.transition_task_state(
+            contract.task_id,
+            TaskStatus.COMPLETED,
+            expected_version=control_task.version,
+            cause=TaskTransitionCause.USER_ACTION,
+            actor="legacy-control-plane-user",
+            reason="Bypass the methodology completion protocol",
+            operation_key="attack:legacy-methodology-completion",
+        )
+    direct_approval = _authenticated_completion_approval_for_request(
+        request
+    ).approval
+    before_direct_approval = _database_dump(tasks)
+    with pytest.raises(
+        ControlPlaneConflictError,
+        match="authenticated atomic completion authority",
+    ):
+        service.control_plane.register_approval(
+            direct_approval,
+            actor=request.approved_by,
+        )
+    assert _database_dump(tasks) == before_direct_approval
+
+    barrier = Barrier(2)
+
+    def approve_once():
+        barrier.wait()
+        return service.approve_methodology_completion(
+            contract.task_id,
+            request,
+            principal=_migration_principal(),
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        receipts = list(pool.map(lambda _item: approve_once(), range(2)))
+
+    assert receipts[0] == receipts[1]
+    receipt = receipts[0]
+    assert isinstance(receipt, MethodologyCompletionApprovalReceipt)
+    assert isinstance(
+        receipt.authenticated_approval,
+        AuthenticatedMethodologyCompletionApproval,
+    )
+    assert receipt.task_status.value == "completed"
+    assert receipt.previous_task_status.value == "needs_review"
+    assert receipt.control_task_version == receipt.previous_control_task_version + 1
+    assert receipt.artifact_count == 7
+    assert receipt.approval_artifact_count == len(request.approval_artifacts)
+    assert receipt.runtime_spawned is False
+    assert receipt.artifact_created is False
+    assert receipt.evidence_created is False
+    assert service.control_plane.get_task_state(contract.task_id).status.value == (
+        "completed"
+    )
+    assert (
+        service.store.get_methodology_completion_approval(contract.task_id)
+        == receipt
+    )
+    with pytest.raises(
+        OrchestrationConflictError,
+        match="authenticated artifact-bound",
+    ):
+        service.approve(
+            contract.task_id,
+            actor="legacy-user",
+            reason="Bypass the final binding",
+        )
+    assert (
+        service.approve_methodology_completion(
+            contract.task_id,
+            request,
+            principal=_migration_principal(),
+        )
+        == receipt
+    )
+    with sqlite3.connect(tasks.db_path) as db:
+        db.execute(
+            """
+            UPDATE protocol_approvals SET ref = ?
+            WHERE approval_id = ?
+            """,
+            ("refs/heads/forged", request.approval_id),
+        )
+        db.commit()
+    after_denormalized_tamper = _database_dump(tasks)
+    with pytest.raises(
+        OrchestrationValidationError,
+        match="live authority drifted",
+    ):
+        service.store.get_methodology_completion_approval(contract.task_id)
+    with pytest.raises(
+        OrchestrationValidationError,
+        match="live authority drifted",
+    ):
+        service.approve_methodology_completion(
+            contract.task_id,
+            request,
+            principal=_migration_principal(),
+        )
+    assert _database_dump(tasks) == after_denormalized_tamper
+    with sqlite3.connect(tasks.db_path) as db:
+        db.execute(
+            """
+            UPDATE protocol_approvals SET ref = ?
+            WHERE approval_id = ?
+            """,
+            (request.repository.ref, request.approval_id),
+        )
+        db.commit()
+    assert (
+        service.store.get_methodology_completion_approval(contract.task_id)
+        == receipt
+    )
+    approval_artifact = request.approval_artifacts[0]
+    approval_path = (
+        service.projects.get(contract.project_id).root / approval_artifact.path
+    )
+    approval_content = approval_path.read_bytes()
+    approval_path.write_bytes(b"tampered after completion")
+    before_replay = _database_dump(tasks)
+    with pytest.raises(
+        OrchestrationConflictError,
+        match="replay blocked:.*Artifact content differs",
+    ):
+        service.approve_methodology_completion(
+            contract.task_id,
+            request,
+            principal=_migration_principal(),
+        )
+    assert _database_dump(tasks) == before_replay
+    approval_path.write_bytes(approval_content)
+    with sqlite3.connect(tasks.db_path) as db:
+        after_counts = tuple(
+            db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            for table in (
+                "protocol_runs",
+                "protocol_artifacts",
+                "protocol_evidence",
+            )
+        )
+        assert after_counts == before_counts
+        assert db.execute(
+            """
+            SELECT COUNT(*)
+            FROM orchestration_methodology_completion_approvals
+            WHERE task_id = ?
+            """,
+            (contract.task_id,),
+        ).fetchone()[0] == 1
+        assert db.execute(
+            """
+            SELECT COUNT(*) FROM protocol_approvals
+            WHERE approval_id = ? AND status = 'active'
+            """,
+            (request.approval_id,),
+        ).fetchone()[0] == 1
+        assert db.execute(
+            """
+            SELECT COUNT(*) FROM protocol_approval_artifacts
+            WHERE approval_id = ?
+            """,
+            (request.approval_id,),
+        ).fetchone()[0] == len(request.approval_artifacts)
+    assert (
+        SCHEMA_MODELS["authenticated-methodology-completion-approval"]
+        is AuthenticatedMethodologyCompletionApproval
+    )
+    assert (
+        SCHEMA_MODELS["methodology-completion-approval-request"]
+        is MethodologyCompletionApprovalRequest
+    )
+    assert (
+        SCHEMA_MODELS["methodology-completion-approval-receipt"]
+        is MethodologyCompletionApprovalReceipt
+    )
+    current_inventory = ArtifactInventory(
+        repository_id=request.repository.repository_id,
+        ref=request.repository.ref,
+        commit_sha=request.repository.commit_sha,
+        artifacts=[
+            ArtifactChange(
+                repository_id=item.repository_id,
+                ref=item.ref,
+                commit_sha=item.commit_sha,
+                path=item.path,
+                sha256=item.sha256,
+            )
+            for item in request.approval_artifacts[1:]
+        ],
+    )
+    invalidation = service.control_plane.invalidate_inventory(
+        current_inventory,
+        stage_dependents={},
+        actor="reconciler",
+        operation_key="invalidate-methodology-completion-approval",
+    )
+    assert invalidation.stale_approval_ids == [request.approval_id]
+    assert invalidation.stale_gate_keys == [
+        f"{contract.task_id}:{request.gate_key}"
+    ]
+    assert invalidation.reopened_stage_keys == [
+        f"{contract.task_id}:{request.stage_key}"
+    ]
+    assert service.control_plane.get_approval(request.approval_id).status.value == (
+        "stale"
+    )
+    assert service.control_plane.get_gate(
+        contract.task_id,
+        request.gate_key,
+    ).status.value == "stale"
+    assert service.control_plane.get_stage(
+        contract.task_id,
+        request.stage_key,
+    ).status.value == "ready"
+    assert service.control_plane.get_task_state(contract.task_id).status.value == (
+        "blocked"
+    )
+    with pytest.raises(
+        OrchestrationValidationError,
+        match="live authority drifted",
+    ):
+        service.store.get_methodology_completion_approval(contract.task_id)
+    with pytest.raises(
+        OrchestrationValidationError,
+        match="live authority drifted",
+    ):
+        service.approve_methodology_completion(
+            contract.task_id,
+            request,
+            principal=_migration_principal(),
+        )
+
+
+@pytest.mark.asyncio
+async def test_methodology_completion_approval_tamper_and_event_failure_are_zero_write(
+    tmp_path,
+    monkeypatch,
+):
+    reviewed = await _reviewed_sequence_eight_methodology_run(tmp_path)
+    tasks, service, contract = reviewed[:3]
+    request = _methodology_completion_approval_request(service, contract)
+    wrong_principal_request = request.model_dump(
+        mode="json",
+        exclude={"content_sha256"},
+    )
+    wrong_principal_request["approved_by"] = "different-approver"
+    wrong_principal_request = MethodologyCompletionApprovalRequest.model_validate(
+        seal_model_payload(
+            MethodologyCompletionApprovalRequest,
+            wrong_principal_request,
+        )
+    )
+    malicious_authenticated = _authenticated_completion_approval_for_request(
+        wrong_principal_request
+    )
+    before = _database_dump(tasks)
+    with pytest.raises(
+        OrchestrationConflictError,
+        match="authenticated authority differs",
+    ):
+        service.store.complete_methodology_task(
+            contract.task_id,
+            request,
+            principal=_migration_principal(),
+            control_plane=service.control_plane,
+            recheck=lambda _snapshot, _completed_at: malicious_authenticated,
+        )
+    assert _database_dump(tasks) == before
+
+    cross_wired_payload = request.model_dump(
+        mode="json",
+        exclude={"content_sha256"},
+    )
+    cross_wired_payload["completion_reviews"][1]["evidence_sha256"] = (
+        cross_wired_payload["completion_reviews"][0]["evidence_sha256"]
+    )
+    with pytest.raises(ValidationError, match="Evidence binding differs"):
+        seal_model_payload(
+            MethodologyCompletionApprovalRequest,
+            cross_wired_payload,
+        )
+    duplicate_review_payload = request.model_dump(
+        mode="json",
+        exclude={"content_sha256"},
+    )
+    duplicate_review_payload["completion_reviews"][1]["dispatch_id"] = (
+        duplicate_review_payload["completion_reviews"][0]["dispatch_id"]
+    )
+    with pytest.raises(ValidationError, match="identities must be distinct"):
+        seal_model_payload(
+            MethodologyCompletionApprovalRequest,
+            duplicate_review_payload,
+        )
+    authenticated = _authenticated_completion_approval_for_request(request)
+    stale_approval = authenticated.approval.model_copy(
+        update={
+            "status": ApprovalStatus.STALE,
+            "stale_reason": "review invalidated",
+        }
+    )
+    stale_authenticated_payload = authenticated.model_dump(
+        mode="json",
+        exclude={"content_sha256"},
+    )
+    stale_authenticated_payload["approval"] = stale_approval.model_dump(
+        mode="json"
+    )
+    stale_authenticated_payload["approval_sha256"] = canonical_sha256(
+        stale_approval
+    )
+    with pytest.raises(ValidationError, match="Approval differs from request"):
+        seal_model_payload(
+            AuthenticatedMethodologyCompletionApproval,
+            stale_authenticated_payload,
+        )
+
+    pre_review_payload = request.model_dump(
+        mode="json",
+        exclude={"content_sha256"},
+    )
+    pre_review_payload["approved_at"] = (
+        request.approved_at - timedelta(days=1)
+    ).isoformat()
+    pre_review_request = MethodologyCompletionApprovalRequest.model_validate(
+        seal_model_payload(
+            MethodologyCompletionApprovalRequest,
+            pre_review_payload,
+        )
+    )
+    before = _database_dump(tasks)
+    with pytest.raises(
+        OrchestrationConflictError,
+        match="chronology differs",
+    ):
+        service.approve_methodology_completion(
+            contract.task_id,
+            pre_review_request,
+            principal=_migration_principal(),
+        )
+    assert _database_dump(tasks) == before
+
+    future_request_payload = request.model_dump(
+        mode="json",
+        exclude={"content_sha256"},
+    )
+    future_request_payload["requested_at"] = (
+        request.requested_at + timedelta(days=1)
+    ).isoformat()
+    future_request = MethodologyCompletionApprovalRequest.model_validate(
+        seal_model_payload(
+            MethodologyCompletionApprovalRequest,
+            future_request_payload,
+        )
+    )
+    before = _database_dump(tasks)
+    with pytest.raises(
+        OrchestrationConflictError,
+        match="chronology differs",
+    ):
+        service.approve_methodology_completion(
+            contract.task_id,
+            future_request,
+            principal=_migration_principal(),
+        )
+    assert _database_dump(tasks) == before
+
+    before = _database_dump(tasks)
+    with pytest.raises(
+        OrchestrationConflictError,
+        match="approver differs",
+    ):
+        service.approve_methodology_completion(
+            contract.task_id,
+            wrong_principal_request,
+            principal=_migration_principal(),
+        )
+    assert _database_dump(tasks) == before
+
+    artifact = request.approval_artifacts[0]
+    artifact_path = service.projects.get(contract.project_id).root / artifact.path
+    original_content = artifact_path.read_bytes()
+    artifact_path.write_bytes(b"tampered before human completion")
+    before = _database_dump(tasks)
+    with pytest.raises(
+        OrchestrationConflictError,
+        match="Artifact content differs",
+    ):
+        service.approve_methodology_completion(
+            contract.task_id,
+            request,
+            principal=_migration_principal(),
+        )
+    assert _database_dump(tasks) == before
+    artifact_path.write_bytes(original_content)
+
+    original_insert_event = tasks._insert_event
+
+    def fail_completion_event(db, **kwargs):
+        if kwargs.get("event_type") == "methodology_completion_approved":
+            raise RuntimeError("injected completion audit failure")
+        return original_insert_event(db, **kwargs)
+
+    monkeypatch.setattr(tasks, "_insert_event", fail_completion_event)
+    before = _database_dump(tasks)
+    with pytest.raises(RuntimeError, match="injected completion audit failure"):
+        service.approve_methodology_completion(
+            contract.task_id,
+            request,
+            principal=_migration_principal(),
+        )
+    assert _database_dump(tasks) == before
+    assert service.control_plane.get_task_state(contract.task_id).status.value == (
+        "needs_review"
+    )
+
+
 def test_methodology_completion_review_claim_authenticates_before_store(
     tmp_path,
     monkeypatch,
@@ -9988,6 +10620,36 @@ def test_methodology_completion_review_claim_authenticates_before_store(
     )
 
     assert code == 2
+    assert built is False
+    assert "credential environment variable is absent" in capsys.readouterr().out
+
+
+def test_methodology_completion_approval_authenticates_before_store(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    monkeypatch.delenv("AGORA_MISSING_COMPLETION_APPROVAL_TOKEN", raising=False)
+    built = False
+
+    def build_forbidden():
+        nonlocal built
+        built = True
+        raise AssertionError("service must not be built before authentication")
+
+    monkeypatch.setattr(orchestration_cli, "build_service", build_forbidden)
+    exit_code = orchestration_cli.main(
+        [
+            "migration-completion-approve",
+            "successor-task",
+            "--request",
+            str(tmp_path / "missing-request.json"),
+            "--credential-env",
+            "AGORA_MISSING_COMPLETION_APPROVAL_TOKEN",
+        ]
+    )
+
+    assert exit_code == 2
     assert built is False
     assert "credential environment variable is absent" in capsys.readouterr().out
 

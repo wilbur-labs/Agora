@@ -24,8 +24,12 @@ from agora.protocol.methodology_completion_review_dispatch import (
     MethodologyCompletionReviewDispatchClaim,
     methodology_completion_review_evidence_id,
 )
+from agora.protocol.methodology_completion_approval import (
+    AuthenticatedMethodologyCompletionApproval,
+)
 from agora.protocol.models import (
     Approval,
+    ApprovalArtifactBinding,
     ApprovalStatus,
     Artifact,
     ArtifactVersionRef,
@@ -319,6 +323,25 @@ class ControlPlaneStore:
                     f"{row['version']}"
                 )
             if target == TaskStatus.COMPLETED:
+                methodology_contracts_available = db.execute(
+                    """
+                    SELECT 1 FROM sqlite_master
+                    WHERE type = 'table'
+                      AND name = 'orchestration_methodology_execution_contracts'
+                    """
+                ).fetchone()
+                if methodology_contracts_available is not None and db.execute(
+                    """
+                    SELECT 1
+                    FROM orchestration_methodology_execution_contracts
+                    WHERE task_id = ?
+                    """,
+                    (task_id,),
+                ).fetchone() is not None:
+                    raise ControlPlaneConflictError(
+                        "Methodology Task completion requires its authenticated "
+                        "artifact-bound atomic approval"
+                    )
                 inventory_exists = db.execute(
                     "SELECT 1 FROM control_stage_inventories WHERE task_id = ?",
                     (task_id,),
@@ -1689,54 +1712,106 @@ class ControlPlaneStore:
         *,
         actor: str | None = None,
     ) -> RegistrationReceipt:
+        with self.tasks._transaction() as db:
+            return self._register_approval_tx(db, approval, actor=actor)
+
+    def _register_approval_tx(
+        self,
+        db: sqlite3.Connection,
+        approval: Approval,
+        *,
+        actor: str | None = None,
+        registered_external_bindings: Sequence[ApprovalArtifactBinding] = (),
+        methodology_completion_authority: (
+            AuthenticatedMethodologyCompletionApproval | None
+        ) = None,
+    ) -> RegistrationReceipt:
+        """Register an Approval inside an existing authoritative transaction."""
+
         payload = self._json(approval)
         payload_sha256 = canonical_sha256(approval)
         now = approval.approved_at.isoformat()
-        with self.tasks._transaction() as db:
-            task = self._task_row(db, approval.task_id)
-            self._assert_project(task, approval.project_id)
-            gate = self._gate_row(db, approval.task_id, approval.gate_key)
-            if gate["stage_key"] != approval.stage_key:
-                raise ControlPlaneValidationError(
-                    "Approval Stage does not match its configured Gate"
+        task = self._task_row(db, approval.task_id)
+        self._assert_project(task, approval.project_id)
+        methodology_table = db.execute(
+            """
+            SELECT 1 FROM sqlite_master
+            WHERE type = 'table'
+              AND name = 'orchestration_methodology_execution_contracts'
+            """
+        ).fetchone()
+        methodology_bound = methodology_table is not None and db.execute(
+            """
+            SELECT 1 FROM orchestration_methodology_execution_contracts
+            WHERE task_id = ? LIMIT 1
+            """,
+            (approval.task_id,),
+        ).fetchone() is not None
+        if methodology_bound:
+            authority = methodology_completion_authority
+            if (
+                authority is None
+                or authority.approval != approval
+                or authority.approval_sha256 != payload_sha256
+                or authority.authenticated_principal_id
+                != (actor or approval.approved_by)
+                or authority.authenticated_permission != "control_plane.approve"
+                or authority.authenticated_project_id != approval.project_id
+                or authority.request.approval_id != approval.approval_id
+                or authority.request.task_id != approval.task_id
+                or authority.request.project_id != approval.project_id
+                or authority.request.stage_key != approval.stage_key
+                or authority.request.gate_key != approval.gate_key
+                or authority.request.approval_artifacts
+                != list(registered_external_bindings)
+                or approval.status != ApprovalStatus.ACTIVE
+                or approval.stale_reason is not None
+            ):
+                raise ControlPlaneConflictError(
+                    "Methodology Approval requires authenticated atomic completion authority"
                 )
-            existing = db.execute(
-                "SELECT payload_sha256 FROM protocol_approvals WHERE approval_id = ?",
-                (approval.approval_id,),
+        gate = self._gate_row(db, approval.task_id, approval.gate_key)
+        if gate["stage_key"] != approval.stage_key:
+            raise ControlPlaneValidationError(
+                "Approval Stage does not match its configured Gate"
+            )
+        existing = db.execute(
+            "SELECT payload_sha256 FROM protocol_approvals WHERE approval_id = ?",
+            (approval.approval_id,),
+        ).fetchone()
+        if existing:
+            if existing["payload_sha256"] != payload_sha256:
+                raise ControlPlaneConflictError(
+                    "Approval id already exists with different content"
+                )
+            return RegistrationReceipt(
+                entity_id=approval.approval_id,
+                created=False,
+            )
+        for binding in approval.artifact_versions:
+            registered = db.execute(
+                """
+                SELECT 1 FROM protocol_artifacts
+                WHERE repository_id = ? AND ref = ? AND commit_sha = ?
+                  AND path = ? AND sha256 = ?
+                  AND task_id = ? AND project_id = ?
+                LIMIT 1
+                """,
+                (
+                    binding.repository_id,
+                    binding.ref,
+                    binding.commit_sha,
+                    binding.path,
+                    binding.sha256,
+                    approval.task_id,
+                    approval.project_id,
+                ),
             ).fetchone()
-            if existing:
-                if existing["payload_sha256"] != payload_sha256:
-                    raise ControlPlaneConflictError(
-                        "Approval id already exists with different content"
-                    )
-                return RegistrationReceipt(
-                    entity_id=approval.approval_id,
-                    created=False,
+            if not registered and binding not in registered_external_bindings:
+                raise ControlPlaneValidationError(
+                    f"Approval artifact is not registered: {binding.path}"
                 )
-            for binding in approval.artifact_versions:
-                registered = db.execute(
-                    """
-                    SELECT 1 FROM protocol_artifacts
-                    WHERE repository_id = ? AND ref = ? AND commit_sha = ?
-                      AND path = ? AND sha256 = ?
-                      AND task_id = ? AND project_id = ?
-                    LIMIT 1
-                    """,
-                    (
-                        binding.repository_id,
-                        binding.ref,
-                        binding.commit_sha,
-                        binding.path,
-                        binding.sha256,
-                        approval.task_id,
-                        approval.project_id,
-                    ),
-                ).fetchone()
-                if not registered:
-                    raise ControlPlaneValidationError(
-                        f"Approval artifact is not registered: {binding.path}"
-                    )
-            db.execute(
+        db.execute(
                 """
                 INSERT INTO protocol_approvals (
                     approval_id, project_id, task_id, stage_key, gate_key,
@@ -1760,7 +1835,7 @@ class ControlPlaneStore:
                     now,
                 ),
             )
-            db.executemany(
+        db.executemany(
                 """
                 INSERT INTO protocol_approval_artifacts (
                     approval_id, repository_id, ref, commit_sha, path, sha256
@@ -1778,20 +1853,20 @@ class ControlPlaneStore:
                     for binding in approval.artifact_versions
                 ],
             )
-            self._event(
-                db,
-                event_key=f"approval.register:{approval.approval_id}:{payload_sha256}",
-                task_id=approval.task_id,
-                project_id=approval.project_id,
-                event_type="approval.registered",
-                actor=actor or approval.approved_by,
-                payload={
-                    "approval_id": approval.approval_id,
-                    "gate_key": approval.gate_key,
-                    "artifact_count": len(approval.artifact_versions),
-                },
-                now=now,
-            )
+        self._event(
+            db,
+            event_key=f"approval.register:{approval.approval_id}:{payload_sha256}",
+            task_id=approval.task_id,
+            project_id=approval.project_id,
+            event_type="approval.registered",
+            actor=actor or approval.approved_by,
+            payload={
+                "approval_id": approval.approval_id,
+                "gate_key": approval.gate_key,
+                "artifact_count": len(approval.artifact_versions),
+            },
+            now=now,
+        )
         return RegistrationReceipt(entity_id=approval.approval_id, created=True)
 
     def set_active_evidence(

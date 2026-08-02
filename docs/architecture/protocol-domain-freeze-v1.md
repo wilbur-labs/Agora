@@ -46,6 +46,9 @@ the Pydantic models in `backend/agora/protocol/`:
 - `methodology-completion-review-dispatch-claim.schema.json`
 - `methodology-completion-review-dispatch-policy-decision.schema.json`
 - `methodology-completion-review-dispatch-receipt.schema.json`
+- `authenticated-methodology-completion-approval.schema.json`
+- `methodology-completion-approval-request.schema.json`
+- `methodology-completion-approval-receipt.schema.json`
 - `methodology-execution-contract.schema.json`
 - `methodology-migration-activation-receipt.schema.json`
 - `methodology-migration-preview-request.schema.json`

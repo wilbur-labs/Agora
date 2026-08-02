@@ -43,12 +43,17 @@ from agora.protocol.methodology_completion_review_claim import (
 from agora.protocol.methodology_completion_review_dispatch import (
     MethodologyCompletionReviewDispatchReceipt,
 )
+from agora.protocol.methodology_completion_approval import (
+    MethodologyCompletionApprovalReceipt,
+    MethodologyCompletionApprovalRequest,
+)
 from agora.protocol.methodology_execution import (
     MethodologyExecutionContract,
     MethodologyStageExecutionContract,
 )
 from agora.protocol.methodology_migration import (
     MethodologyMigrationActivationReceipt,
+    MigrationArtifactBinding,
     MethodologyMigrationPreviewDecision,
     MethodologyMigrationPreviewRequest,
 )
@@ -112,6 +117,9 @@ from .methodology_completion_review_dispatch import (
     build_methodology_completion_review_dispatch_claim,
     derive_methodology_completion_review_dispatch_policy,
     derive_methodology_completion_review_runtime_preflight,
+)
+from .methodology_completion_approval import (
+    validate_methodology_completion_approval,
 )
 from .methodology_execution_contract import (
     build_methodology_execution_contract,
@@ -1601,6 +1609,77 @@ class TaskOrchestrationService:
             )
 
         return self.store.claim_methodology_completion_review(
+            task_id,
+            request,
+            principal=principal,
+            control_plane=self.control_plane,
+            recheck=recheck,
+        )
+
+    def approve_methodology_completion(
+        self,
+        task_id: str,
+        request: MethodologyCompletionApprovalRequest,
+        *,
+        principal: ControlPrincipal,
+    ) -> MethodologyCompletionApprovalReceipt:
+        """Authenticate the final human and atomically complete the Task."""
+
+        task = self.tasks.get(task_id)
+        if task is None:
+            raise OrchestrationConflictError("Task not found")
+        try:
+            project = self.projects.get(task.project_id)
+        except KeyError as exc:
+            raise OrchestrationConflictError(
+                "Methodology successor project is not registered"
+            ) from exc
+
+        def recheck(snapshot, authenticated_at: str):
+            try:
+                repository_before = self.revision_resolver(
+                    project.root,
+                    snapshot.completion.task.project_id,
+                )
+            except (KeyError, TypeError, ValueError):
+                repository_before = None
+            artifacts = [
+                MigrationArtifactBinding(
+                    repository_id=item.repository_id,
+                    ref=item.ref,
+                    commit_sha=item.commit_sha,
+                    path=item.path,
+                    sha256=item.sha256,
+                )
+                for item in request.approval_artifacts
+            ]
+            observed_artifact_sha256s = observe_migration_artifacts(
+                project.root,
+                artifacts,
+            )
+            try:
+                repository_after = self.revision_resolver(
+                    project.root,
+                    snapshot.completion.task.project_id,
+                )
+            except (KeyError, TypeError, ValueError):
+                repository_after = None
+            repository = (
+                repository_after
+                if repository_before is not None
+                and repository_after == repository_before
+                else None
+            )
+            return validate_methodology_completion_approval(
+                snapshot=snapshot,
+                request=request,
+                principal=principal,
+                repository=repository,
+                observed_artifact_sha256s=observed_artifact_sha256s,
+                authenticated_at=datetime.fromisoformat(authenticated_at),
+            )
+
+        return self.store.complete_methodology_task(
             task_id,
             request,
             principal=principal,
@@ -3313,6 +3392,11 @@ class TaskOrchestrationService:
         return self.store.retry(task_id, stage_key, actor=actor)
 
     def approve(self, task_id: str, *, actor: str, reason: str):
+        if self.store.get_methodology_execution_contract(task_id) is not None:
+            raise OrchestrationConflictError(
+                "Methodology Tasks require authenticated artifact-bound "
+                "completion approval"
+            )
         plan = self.store.require_plan(task_id)
         if plan.state not in {
             PlanState.AWAITING_APPROVAL,

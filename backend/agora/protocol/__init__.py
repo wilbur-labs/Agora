@@ -28,6 +28,11 @@ from .methodology_completion_review_claim import (
     MethodologyCompletionReviewClaimRequest,
     methodology_completion_review_run_id,
 )
+from .methodology_completion_approval import (
+    AuthenticatedMethodologyCompletionApproval,
+    MethodologyCompletionApprovalReceipt,
+    MethodologyCompletionApprovalRequest,
+)
 from .methodology_migration import (
     AuthenticatedMethodologyMigrationGate,
     MethodologyMigrationActivationReceipt,
@@ -125,6 +130,9 @@ __all__ = [
     "MethodologyExecutionContract",
     "MethodologyCompletionReviewClaimReceipt",
     "MethodologyCompletionReviewClaimRequest",
+    "AuthenticatedMethodologyCompletionApproval",
+    "MethodologyCompletionApprovalReceipt",
+    "MethodologyCompletionApprovalRequest",
     "MethodologyMigrationActivationReceipt",
     "MethodologyMigrationGateAssertion",
     "MethodologyMigrationPreviewDecision",

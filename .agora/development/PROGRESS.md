@@ -1,5 +1,82 @@
 # Agora Control Plane Development Progress
 
+## 2026-07-31 - AWS AI-DLC explicit human Task completion (reviewed)
+
+### Bounded implementation
+
+- [x] Added hash-sealed
+  `MethodologyCompletionApprovalRequest@1.0`,
+  `AuthenticatedMethodologyCompletionApproval@1.0`, and
+  `MethodologyCompletionApprovalReceipt@1.0` contracts plus the authenticated
+  `agora task migration-completion-approve` CLI command.
+- [x] Bound explicit human approval to the exact Task/Plan/inventory and
+  versions, methodology execution contract, repository/ref/commit, source
+  graph, activation definition, final production dispatch/Handoff, both
+  independent reviewer claim/dispatch/Run/Handoff/Evidence chains, every
+  active passed Evidence item, all seven final managed Artifact versions, and
+  the migration proposal/scope-seed path hashes.
+- [x] Enforced chronology from final production and reviewer settlement through
+  human approval, request, and credential authentication. Reviewer identities
+  are pairwise distinct and each review Evidence hash is cross-bound to its
+  exact reviewer Run.
+- [x] Added one atomic store path that rechecks repository/files and all live
+  authority, registers exactly one active formal `Approval@1.0`, transitions
+  only the authoritative Control Plane Task from `needs_review` to `completed`,
+  and writes the sealed receipt plus mirrored audit events. Concurrent and
+  exact replay return one receipt; any mismatch or audit failure is zero-write.
+- [x] Closed generic completion and Approval bypasses for methodology-bound
+  Tasks. Legacy orchestration approval, public Control Plane Task completion,
+  and public formal Approval registration cannot impersonate the authenticated
+  atomic completion path; caller-supplied recheck output is independently
+  validated again inside the store transaction.
+- [x] Revalidate the formal Approval payload, hash, status, artifact bindings,
+  and all denormalized identity/repository/time columns on read and replay.
+  Path/hash inventory invalidation marks the Approval and Gate stale, reopens
+  the final Stage, moves the Task out of `completed`, and makes completion read
+  and replay fail closed.
+- [x] Added checked JSON Schemas and the architecture boundary note. This
+  completes the frozen backend-first implementation-stage path through
+  explicit human Task completion without adding HTTP/UI, 0.5 database
+  migration execution, dynamic provider substitution, or native AI-DLC file
+  mutation.
+
+### Verification and review state
+
+- [x] Complete final methodology coverage passed all 235 collected nodeids in
+  four modulo-balanced process-isolated shards (59 + 59 + 59 + 58). The
+  remaining non-integration backend suite passed 577 tests with 18 deselected,
+  for 812 backend tests passed in total.
+- [x] Completion-approval coverage includes concurrent exact replay, generic
+  Task and Approval bypasses, malicious recheck output, revoked/wrong
+  principals, stale nested Approval, reviewer identity/Evidence cross-wiring,
+  pre-review/future timestamps, path tamper before and after completion,
+  denormalized-row drift, event rollback, and correct-ref inventory
+  invalidation through Task reopen.
+- [x] Protocol freeze passed 34 tests. Protocol Schema export/check,
+  system-Temp-isolated `compileall`, completion-approval CLI help, and
+  `git diff --check` pass. Only the existing Starlette/httpx deprecation and
+  Windows Proactor cleanup warnings remain in the backend run.
+- [x] Independent Codex replacement review found and closed six actionable
+  authority gaps covering public Approval registration, caller-supplied
+  recheck output, stale Approval status, reviewer cross-binding, denormalized
+  Approval columns, chronology, and invalidation coverage. Its final static
+  and regression recheck returned `CODEX_APPROVE` with no remaining actionable
+  HIGH/MEDIUM. No Kiro development review was used per the user's instruction.
+- [x] Independent Claude Code reviewed the complete implementation, protocol,
+  persistence, schemas, CLI, docs, and adversarial coverage and returned
+  `CLAUDE_APPROVE` with no actionable HIGH/MEDIUM. Direct Codex validation,
+  rather than the review sandbox, supplied the complete executable test
+  results recorded above.
+
+### Current checkpoint and next safe action
+
+The reviewed increment is ready for a bounded commit and push atop clean pushed
+baseline `fd905d8`. After that checkpoint, the frozen first implementation
+stage is complete through explicit Task `completed`. No further implementation
+scope should be inferred: a later 0.5 data migration, HTTP/UI replacement,
+automatic rework, provider substitution, or native methodology installation
+must begin from a separately frozen user-approved requirement.
+
 ## 2026-07-31 - AWS AI-DLC completion-review dispatch and settlement (reviewed)
 
 ### Bounded implementation

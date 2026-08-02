@@ -25,6 +25,9 @@ from .contracts import load_task_contract
 from .methodology_completion_review_claim import (
     load_methodology_completion_review_claim_request,
 )
+from .methodology_completion_approval import (
+    load_methodology_completion_approval_request,
+)
 from .methodology_migration import load_methodology_migration_request
 from .methodology_route_activation import (
     load_methodology_route_activation_request,
@@ -260,6 +263,25 @@ def parser() -> argparse.ArgumentParser:
         required=True,
         choices=["independent_correctness", "methodology_stewardship"],
     )
+
+    migration_completion_approve = commands.add_parser(
+        "migration-completion-approve",
+        help=(
+            "Authenticate the artifact-bound human approval and atomically "
+            "complete a fully reviewed AWS AI-DLC Task"
+        ),
+    )
+    migration_completion_approve.add_argument("task_id")
+    migration_completion_approve.add_argument(
+        "--request",
+        type=Path,
+        required=True,
+    )
+    migration_completion_approve.add_argument(
+        "--credential-env",
+        required=True,
+        help="Environment variable containing a configured Control Plane token",
+    )
     migration_completion_review_dispatch.add_argument(
         "--allow-unbounded-native-usage",
         action="store_true",
@@ -453,6 +475,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         methodology_stage_gate = None
         methodology_stage_run_claim = None
         methodology_completion_review_claim = None
+        methodology_completion_approval = None
         if args.command in {
             "migration-activate",
             "migration-contract",
@@ -461,6 +484,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "migration-next-stage-gate",
             "migration-next-stage-run-claim",
             "migration-completion-review-claim",
+            "migration-completion-approve",
         }:
             if re.fullmatch(
                 r"[A-Za-z_][A-Za-z0-9_]{0,127}",
@@ -500,11 +524,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                     load_methodology_stage_run_claim_request(args.request),
                     principal,
                 )
-            else:
+            elif args.command == "migration-completion-review-claim":
                 methodology_completion_review_claim = (
                     load_methodology_completion_review_claim_request(
                         args.request
                     ),
+                    principal,
+                )
+            else:
+                methodology_completion_approval = (
+                    load_methodology_completion_approval_request(args.request),
                     principal,
                 )
         service = build_service()
@@ -675,6 +704,22 @@ def main(argv: Sequence[str] | None = None) -> int:
                         args.allow_unbounded_native_usage
                     ),
                 )
+            )
+            print(
+                json.dumps(
+                    receipt.model_dump(mode="json"),
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return 0
+        if args.command == "migration-completion-approve":
+            assert methodology_completion_approval is not None
+            request, principal = methodology_completion_approval
+            receipt = service.approve_methodology_completion(
+                args.task_id,
+                request,
+                principal=principal,
             )
             print(
                 json.dumps(
