@@ -86,6 +86,12 @@ from agora.protocol.methodology_completion_review_claim import (
     MethodologyCompletionReviewClaimRequest,
     methodology_completion_review_run_id,
 )
+from agora.protocol.methodology_completion_review_dispatch import (
+    MethodologyCompletionReviewDispatchClaim,
+    MethodologyCompletionReviewDispatchPolicyDecision,
+    MethodologyCompletionReviewDispatchReceipt,
+    methodology_completion_review_evidence_id,
+)
 from agora.protocol.methodology_execution import MethodologyExecutionContract
 from agora.protocol.methodology_migration import (
     AuthenticatedMethodologyMigrationGate,
@@ -409,6 +415,150 @@ class ForgedCompletionReviewMethodologyDispatchRunner(
             result,
             stdout=json.dumps(payload, ensure_ascii=False),
         )
+
+
+class CompletionReviewDispatchRunner:
+    def __init__(self, *, passed: bool = True):
+        self.passed = passed
+        self.calls = 0
+        self.pid = 616_161
+        self.prompts: list[str] = []
+
+    async def run(self, runtime, prompt, **kwargs):
+        self.calls += 1
+        self.prompts.append(prompt)
+        if kwargs.get("before_spawn") is not None:
+            kwargs["before_spawn"](
+                runtime,
+                resolve_runtime_command(runtime.build(prompt)),
+            )
+        await kwargs["on_process"](self.pid)
+        context = _context_from_prompt(prompt)
+        authority = json.loads(context.policies[0].content)
+        requirement = authority["requirement"]
+        eligible = authority["eligible_evidence"]
+        status = "passed" if self.passed else "failed_product"
+        verdict = "passed_details" if self.passed else "failed_details"
+        evidence = {
+            "schema_version": "1.0",
+            "evidence_id": eligible["evidence_id"],
+            "project_id": context.project_id,
+            "task_id": context.task_id,
+            "stage_key": context.stage_key,
+            "producer": {
+                "runtime": runtime.adapter,
+                "run_id": context.run_id,
+                "stage_key": context.stage_key,
+            },
+            "repository_id": requirement["repository_id"],
+            "ref": requirement["ref"],
+            "commit_sha": requirement["commit_sha"],
+            "requirement_id": requirement["requirement_id"],
+            "kind": requirement["evidence_kind"],
+            "status": status,
+            "artifact_versions": [
+                item.model_dump(mode="json")
+                for item in context.input_artifacts
+            ],
+            "summary": (
+                "Independent completion review passed."
+                if self.passed
+                else "Independent completion review found product defects."
+            ),
+            "observed_at": utc_now(),
+            "details": eligible[verdict],
+        }
+        payload = {
+            "schema_version": "1.0",
+            "pack_id": f"handoff:{context.run_id}",
+            "project_id": context.project_id,
+            "task_id": context.task_id,
+            "stage_key": context.stage_key,
+            "run_id": context.run_id,
+            "producer": evidence["producer"],
+            "input_artifacts": [
+                item.model_dump(mode="json")
+                for item in context.input_artifacts
+            ],
+            "required_outputs": [],
+            "forbidden_constraints": list(context.forbidden_constraints),
+            "stage_result": "succeeded" if self.passed else "blocked",
+            "output_artifacts": [],
+            "evidence": [evidence],
+            "unresolved_questions": [],
+            "native_state_snapshot": None,
+            "memory_candidates": [],
+            "blocker_requirement_ids": (
+                [] if self.passed else [requirement["requirement_id"]]
+            ),
+            "suggested_next_action": (
+                None if self.passed else "Await an explicit Task rework decision."
+            ),
+        }
+        provider = {
+            "codex": "openai",
+            "claude": "anthropic",
+            "kiro": "kiro",
+        }[runtime.adapter]
+        usage = ProviderUsageObservation.model_validate(
+            seal_model_payload(
+                ProviderUsageObservation,
+                {
+                    "schema_version": "1.0",
+                    "run_id": context.run_id,
+                    "adapter": runtime.adapter,
+                    "provider": provider,
+                    "source": "custom_text",
+                    "input_tokens": 1,
+                    "output_tokens": 1,
+                    "total_tokens": 2,
+                    "token_measurement": "exact",
+                    "token_method": "provider_input_plus_output",
+                    "cost_usd": None,
+                    "cost_measurement": "unavailable",
+                    "cost_method": "unavailable",
+                },
+            )
+        )
+        return RuntimeResult(
+            0,
+            json.dumps(
+                seal_model_payload(HandoffPack, payload),
+                ensure_ascii=False,
+            ),
+            "",
+            usage_observation=usage,
+        )
+
+
+class ForgedCompletionReviewDispatchRunner(CompletionReviewDispatchRunner):
+    async def run(self, runtime, prompt, **kwargs):
+        result = await super().run(runtime, prompt, **kwargs)
+        payload = json.loads(result.stdout)
+        payload["evidence"][0]["details"]["forged_authority"] = True
+        payload = seal_model_payload(
+            HandoffPack,
+            {
+                key: value
+                for key, value in payload.items()
+                if key != "content_sha256"
+            },
+        )
+        return replace(
+            result,
+            stdout=json.dumps(payload, ensure_ascii=False),
+        )
+
+
+class UnstartedSuccessfulCompletionReviewDispatchRunner(
+    CompletionReviewDispatchRunner
+):
+    async def run(self, runtime, prompt, **kwargs):
+        async def ignore_process(_pid):
+            return None
+
+        kwargs["on_process"] = ignore_process
+        return await super().run(runtime, prompt, **kwargs)
 
 
 def _database_dump(tasks: TaskStore) -> str:
@@ -9025,6 +9175,791 @@ async def test_methodology_completion_review_claims_are_independent_and_non_spaw
         SCHEMA_MODELS["methodology-completion-review-claim-receipt"]
         is MethodologyCompletionReviewClaimReceipt
     )
+
+
+@pytest.mark.asyncio
+async def test_methodology_completion_reviews_dispatch_independently_and_finalize_gate(
+    tmp_path,
+):
+    settled = await _settled_sequence_eight_methodology_run(tmp_path)
+    tasks, service, contract = settled[:3]
+    production_dispatch = settled[-1]
+
+    correctness_request = _completion_review_claim_request(
+        service,
+        contract,
+        production_dispatch,
+        "independent_correctness",
+    )
+    correctness_claim = service.claim_methodology_completion_review(
+        contract.task_id,
+        correctness_request,
+        principal=_migration_principal(),
+    )
+    service.runner = CompletionReviewDispatchRunner()
+    correctness = await service.dispatch_methodology_completion_review(
+        contract.task_id,
+        "independent_correctness",
+        allow_unbounded_native_usage=True,
+    )
+    assert correctness.dispatch_claim.review_run_id == (
+        correctness_claim.review_run_id
+    )
+    assert correctness.evidence_ids == [
+        methodology_completion_review_evidence_id(
+            correctness_claim.review_run_id
+        )
+    ], correctness.model_dump(mode="json")
+    assert correctness.gate_status.value == "blocked"
+    assert correctness.stage_status.value == "blocked"
+    assert correctness.task_status.value == "blocked"
+    assert correctness.next_stage_key is None
+    assert correctness.dispatch_claim.runtime == "claude"
+    assert correctness.dispatch_claim.responsibility == (
+        "independent_correctness"
+    )
+    assert service.claim_methodology_completion_review(
+        contract.task_id,
+        correctness_request,
+        principal=_migration_principal(),
+    ) == correctness_claim
+
+    stewardship_request = _completion_review_claim_request(
+        service,
+        contract,
+        production_dispatch,
+        "methodology_stewardship",
+    )
+    stewardship_claim = service.claim_methodology_completion_review(
+        contract.task_id,
+        stewardship_request,
+        principal=_migration_principal(),
+    )
+    assert stewardship_claim.completion_review_protected_tokens == (
+        stewardship_claim.token_reservation
+    )
+    service.runner = CompletionReviewDispatchRunner()
+    stewardship = await service.dispatch_methodology_completion_review(
+        contract.task_id,
+        "methodology_stewardship",
+        allow_unbounded_native_usage=True,
+    )
+    assert stewardship.dispatch_claim.runtime == "kiro"
+    assert stewardship.evidence_ids == [
+        methodology_completion_review_evidence_id(
+            stewardship_claim.review_run_id
+        )
+    ]
+    assert stewardship.gate_status.value == "passed"
+    assert stewardship.stage_status.value == "completed"
+    assert stewardship.task_status.value == "needs_review"
+    assert stewardship.next_stage_key is None
+    assert set(stewardship.active_evidence_ids) == {
+        *production_dispatch.active_evidence_ids,
+        *correctness.evidence_ids,
+        *stewardship.evidence_ids,
+    }
+    control_task = service.control_plane.get_task_state(contract.task_id)
+    assert control_task is not None
+    assert control_task.status.value == "needs_review"
+    assert service.store.get_methodology_completion_review_dispatch(
+        contract.task_id,
+        "independent_correctness",
+    ).receipt == correctness
+    assert service.store.get_methodology_completion_review_dispatch(
+        contract.task_id,
+        "methodology_stewardship",
+    ).receipt == stewardship
+    with sqlite3.connect(tasks.db_path) as db:
+        usage = db.execute(
+            """
+            SELECT responsibility, tokens
+            FROM orchestration_methodology_completion_review_usage_ledger
+            WHERE task_id = ? ORDER BY responsibility
+            """,
+            (contract.task_id,),
+        ).fetchall()
+    assert usage == [
+        ("independent_correctness", 2),
+        ("methodology_stewardship", 2),
+    ]
+    assert (
+        SCHEMA_MODELS["methodology-completion-review-dispatch-claim"]
+        is MethodologyCompletionReviewDispatchClaim
+    )
+    assert (
+        SCHEMA_MODELS[
+            "methodology-completion-review-dispatch-policy-decision"
+        ]
+        is MethodologyCompletionReviewDispatchPolicyDecision
+    )
+    assert (
+        SCHEMA_MODELS["methodology-completion-review-dispatch-receipt"]
+        is MethodologyCompletionReviewDispatchReceipt
+    )
+    policy_payload = correctness.dispatch_claim.dispatch_policy.model_dump(
+        mode="json",
+        exclude={"content_sha256"},
+    )
+    policy_payload["review_run_id"] = "forged-review-run"
+    with pytest.raises(ValidationError, match="policy Run identity differs"):
+        seal_model_payload(
+            MethodologyCompletionReviewDispatchPolicyDecision,
+            policy_payload,
+        )
+    claim_payload = correctness.dispatch_claim.model_dump(
+        mode="json",
+        exclude={"content_sha256"},
+    )
+    claim_payload["review_run_id"] = "forged-review-run"
+    with pytest.raises(ValidationError, match="dispatch Run identity differs"):
+        seal_model_payload(
+            MethodologyCompletionReviewDispatchClaim,
+            claim_payload,
+        )
+
+
+@pytest.mark.asyncio
+async def test_methodology_completion_review_product_failure_stays_blocked(
+    tmp_path,
+):
+    settled = await _settled_sequence_eight_methodology_run(tmp_path)
+    tasks, service, contract = settled[:3]
+    production_dispatch = settled[-1]
+    request = _completion_review_claim_request(
+        service,
+        contract,
+        production_dispatch,
+        "independent_correctness",
+    )
+    claim = service.claim_methodology_completion_review(
+        contract.task_id,
+        request,
+        principal=_migration_principal(),
+    )
+    runner = CompletionReviewDispatchRunner(passed=False)
+    service.runner = runner
+
+    receipt = await service.dispatch_methodology_completion_review(
+        contract.task_id,
+        "independent_correctness",
+        allow_unbounded_native_usage=True,
+    )
+
+    assert receipt.evidence_ids == [
+        methodology_completion_review_evidence_id(claim.review_run_id)
+    ]
+    evidence = service.control_plane.get_evidence(receipt.evidence_ids[0])
+    assert evidence is not None
+    assert evidence.status.value == "failed_product"
+    assert receipt.protocol_state.semantic_stage_result.value == "blocked"
+    assert receipt.gate_status.value == "blocked"
+    assert receipt.stage_status.value == "blocked"
+    assert receipt.task_status.value == "blocked"
+    assert receipt.next_stage_key is None
+    with sqlite3.connect(tasks.db_path) as db:
+        assert db.execute(
+            """
+            SELECT COUNT(*)
+            FROM orchestration_methodology_completion_review_dispatches
+            WHERE task_id = ?
+            """,
+            (contract.task_id,),
+        ).fetchone()[0] == 1
+        assert db.execute(
+            """
+            SELECT tokens
+            FROM orchestration_methodology_completion_review_usage_ledger
+            WHERE dispatch_id = ?
+            """,
+            (receipt.dispatch_claim.dispatch_id,),
+        ).fetchone()[0] == 2
+
+    stewardship_request = _completion_review_claim_request(
+        service,
+        contract,
+        production_dispatch,
+        "methodology_stewardship",
+    )
+    dispatch_state = service.store.get_methodology_completion_review_dispatch(
+        contract.task_id,
+        "independent_correctness",
+    )
+    assert dispatch_state is not None
+    assert dispatch_state.adapter_result is not None
+    failed_handoff = dispatch_state.adapter_result.handoff_pack
+    assert failed_handoff is not None
+    authority = json.loads(
+        _context_from_prompt(runner.prompts[0]).policies[0].content
+    )
+    passed_evidence_payload = failed_handoff.evidence[0].model_dump(mode="json")
+    passed_evidence_payload.update(
+        status="passed",
+        summary="Independent completion review passed.",
+        details=authority["eligible_evidence"]["passed_details"],
+    )
+    passed_evidence = Evidence.model_validate(passed_evidence_payload)
+    passed_handoff_payload = failed_handoff.model_dump(
+        mode="json",
+        exclude={"content_sha256"},
+    )
+    passed_handoff_payload.update(
+        stage_result="succeeded",
+        evidence=[passed_evidence.model_dump(mode="json")],
+        blocker_requirement_ids=[],
+        suggested_next_action=None,
+    )
+    passed_handoff = HandoffPack.model_validate(
+        seal_model_payload(HandoffPack, passed_handoff_payload)
+    )
+    passed_receipt_payload = receipt.model_dump(
+        mode="json",
+        exclude={"content_sha256"},
+    )
+    passed_receipt_payload["handoff_pack_sha256"] = (
+        passed_handoff.content_sha256
+    )
+    resealed_receipt = MethodologyCompletionReviewDispatchReceipt.model_validate(
+        seal_model_payload(
+            MethodologyCompletionReviewDispatchReceipt,
+            passed_receipt_payload,
+        )
+    )
+    with sqlite3.connect(tasks.db_path) as db:
+        adapter_result_payload = db.execute(
+            """
+            SELECT adapter_result_payload
+            FROM orchestration_methodology_completion_review_dispatches
+            WHERE dispatch_id = ?
+            """,
+            (receipt.dispatch_claim.dispatch_id,),
+        ).fetchone()[0]
+        db.execute(
+            """
+            UPDATE protocol_evidence
+            SET status = ?, payload = ?, payload_sha256 = ?
+            WHERE evidence_id = ?
+            """,
+            (
+                "passed",
+                json.dumps(passed_evidence.model_dump(mode="json")),
+                canonical_sha256(passed_evidence),
+                passed_evidence.evidence_id,
+            ),
+        )
+        db.execute(
+            """
+            UPDATE protocol_runs
+            SET handoff_payload = ?, handoff_sha256 = ?
+            WHERE run_id = ?
+            """,
+            (
+                json.dumps(passed_handoff.model_dump(mode="json")),
+                passed_handoff.content_sha256,
+                receipt.dispatch_claim.review_run_id,
+            ),
+        )
+        db.execute(
+            """
+            UPDATE orchestration_methodology_completion_review_dispatches
+            SET receipt_payload = ?, receipt_sha256 = ?
+            WHERE dispatch_id = ?
+            """,
+            (
+                json.dumps(resealed_receipt.model_dump(mode="json")),
+                resealed_receipt.content_sha256,
+                receipt.dispatch_claim.dispatch_id,
+            ),
+        )
+        db.commit()
+        assert db.execute(
+            """
+            SELECT adapter_result_payload
+            FROM orchestration_methodology_completion_review_dispatches
+            WHERE dispatch_id = ?
+            """,
+            (receipt.dispatch_claim.dispatch_id,),
+        ).fetchone()[0] == adapter_result_payload
+    before = _database_dump(tasks)
+    with pytest.raises(
+        (ValidationError, OrchestrationValidationError),
+        match=(
+            "settled completion-review Handoff differs from terminal result"
+            "|Active completion-review Evidence provenance drifted"
+        ),
+    ):
+        service.claim_methodology_completion_review(
+            contract.task_id,
+            stewardship_request,
+            principal=_migration_principal(),
+        )
+    assert _database_dump(tasks) == before
+    with sqlite3.connect(tasks.db_path) as db:
+        assert db.execute(
+            """
+            SELECT status FROM control_gates
+            WHERE task_id = ? AND gate_key = ?
+            """,
+            (contract.task_id, stewardship_request.gate_key),
+        ).fetchone()[0] == "blocked"
+
+
+@pytest.mark.asyncio
+async def test_methodology_completion_review_forged_evidence_fails_closed(
+    tmp_path,
+):
+    settled = await _settled_sequence_eight_methodology_run(tmp_path)
+    tasks, service, contract = settled[:3]
+    production_dispatch = settled[-1]
+    request = _completion_review_claim_request(
+        service,
+        contract,
+        production_dispatch,
+        "independent_correctness",
+    )
+    service.claim_methodology_completion_review(
+        contract.task_id,
+        request,
+        principal=_migration_principal(),
+    )
+    with sqlite3.connect(tasks.db_path) as db:
+        evidence_count_before = db.execute(
+            "SELECT COUNT(*) FROM protocol_evidence"
+        ).fetchone()[0]
+    service.runner = ForgedCompletionReviewDispatchRunner()
+
+    receipt = await service.dispatch_methodology_completion_review(
+        contract.task_id,
+        "independent_correctness",
+        allow_unbounded_native_usage=True,
+    )
+
+    assert receipt.protocol_state.schema_status.value == "protocol_failed"
+    assert receipt.protocol_state.semantic_stage_result.value == "blocked"
+    assert receipt.handoff_pack_id is None
+    assert receipt.evidence_ids == []
+    assert receipt.gate_status.value == "blocked"
+    assert receipt.stage_status.value == "blocked"
+    assert receipt.task_status.value == "blocked"
+    dispatch = service.store.get_methodology_completion_review_dispatch(
+        contract.task_id,
+        "independent_correctness",
+    )
+    assert dispatch is not None
+    assert dispatch.adapter_result is not None
+    assert dispatch.adapter_result.attention_required is True
+    with sqlite3.connect(tasks.db_path) as db:
+        assert db.execute(
+            "SELECT COUNT(*) FROM protocol_evidence"
+        ).fetchone()[0] == evidence_count_before
+        assert db.execute(
+            """
+            SELECT tokens
+            FROM orchestration_methodology_completion_review_usage_ledger
+            WHERE dispatch_id = ?
+            """,
+            (receipt.dispatch_claim.dispatch_id,),
+        ).fetchone()[0] == 2
+
+
+@pytest.mark.asyncio
+async def test_methodology_completion_review_unstarted_process_cannot_succeed(
+    tmp_path,
+):
+    settled = await _settled_sequence_eight_methodology_run(tmp_path)
+    tasks, service, contract = settled[:3]
+    production_dispatch = settled[-1]
+    request = _completion_review_claim_request(
+        service,
+        contract,
+        production_dispatch,
+        "independent_correctness",
+    )
+    service.claim_methodology_completion_review(
+        contract.task_id,
+        request,
+        principal=_migration_principal(),
+    )
+    runner = UnstartedSuccessfulCompletionReviewDispatchRunner()
+    service.runner = runner
+
+    with pytest.raises(
+        (ValidationError, OrchestrationValidationError),
+        match="process|launch|unstarted",
+    ):
+        await service.dispatch_methodology_completion_review(
+            contract.task_id,
+            "independent_correctness",
+            allow_unbounded_native_usage=True,
+        )
+
+    assert runner.calls == 1
+    with sqlite3.connect(tasks.db_path) as db:
+        row = db.execute(
+            """
+            SELECT state, process_started, receipt_payload
+            FROM orchestration_methodology_completion_review_dispatches
+            WHERE task_id = ? AND responsibility = ?
+            """,
+            (contract.task_id, "independent_correctness"),
+        ).fetchone()
+    assert row == ("claimed", 0, None)
+
+
+@pytest.mark.asyncio
+async def test_methodology_completion_review_dispatch_rechecks_live_authority(
+    tmp_path,
+):
+    settled = await _settled_sequence_eight_methodology_run(tmp_path)
+    tasks, service, contract = settled[:3]
+    production_dispatch = settled[-1]
+    request = _completion_review_claim_request(
+        service,
+        contract,
+        production_dispatch,
+        "independent_correctness",
+    )
+    service.claim_methodology_completion_review(
+        contract.task_id,
+        request,
+        principal=_migration_principal(),
+    )
+    completion_requirement_id = next(
+        item.requirement.requirement_id
+        for item in contract.stages[-1].gate.evidence_contracts
+        if item.source == "completion_review"
+        and item.producer_responsibility == "methodology_stewardship"
+    )
+    with sqlite3.connect(tasks.db_path) as db:
+        db.row_factory = sqlite3.Row
+        removed = db.execute(
+            """
+            SELECT * FROM control_gate_requirements
+            WHERE task_id = ? AND gate_key = ? AND requirement_id = ?
+            """,
+            (
+                contract.task_id,
+                request.gate_key,
+                completion_requirement_id,
+            ),
+        ).fetchone()
+        assert removed is not None
+        db.execute(
+            """
+            DELETE FROM control_gate_requirements
+            WHERE task_id = ? AND gate_key = ? AND requirement_id = ?
+            """,
+            (
+                contract.task_id,
+                request.gate_key,
+                completion_requirement_id,
+            ),
+        )
+        db.commit()
+    before = _database_dump(tasks)
+    with pytest.raises(
+        OrchestrationConflictError,
+        match="dispatch authority blocked",
+    ):
+        await service.dispatch_methodology_completion_review(
+            contract.task_id,
+            "independent_correctness",
+            allow_unbounded_native_usage=True,
+        )
+    assert _database_dump(tasks) == before
+
+    with sqlite3.connect(tasks.db_path) as db:
+        db.execute(
+            """
+            INSERT INTO control_gate_requirements (
+                task_id, gate_key, requirement_id, payload,
+                payload_sha256, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            tuple(removed),
+        )
+        original_budget = db.execute(
+            """
+            SELECT total_token_budget FROM orchestration_plans
+            WHERE plan_id = ?
+            """,
+            (request.plan_id,),
+        ).fetchone()[0]
+        db.execute(
+            """
+            UPDATE orchestration_plans SET total_token_budget = ?
+            WHERE plan_id = ?
+            """,
+            (original_budget + 1, request.plan_id),
+        )
+        db.commit()
+    before = _database_dump(tasks)
+    with pytest.raises(
+        OrchestrationConflictError,
+        match="dispatch authority blocked",
+    ):
+        await service.dispatch_methodology_completion_review(
+            contract.task_id,
+            "independent_correctness",
+            allow_unbounded_native_usage=True,
+        )
+    assert _database_dump(tasks) == before
+
+
+@pytest.mark.asyncio
+async def test_methodology_completion_reviews_may_be_preclaimed_then_dispatched(
+    tmp_path,
+):
+    settled = await _settled_sequence_eight_methodology_run(tmp_path)
+    _, service, contract = settled[:3]
+    production_dispatch = settled[-1]
+    claims = {}
+    for responsibility in (
+        "independent_correctness",
+        "methodology_stewardship",
+    ):
+        request = _completion_review_claim_request(
+            service,
+            contract,
+            production_dispatch,
+            responsibility,
+        )
+        claims[responsibility] = service.claim_methodology_completion_review(
+            contract.task_id,
+            request,
+            principal=_migration_principal(),
+        )
+
+    service.runner = CompletionReviewDispatchRunner()
+    first = await service.dispatch_methodology_completion_review(
+        contract.task_id,
+        "independent_correctness",
+        allow_unbounded_native_usage=True,
+    )
+    assert first.gate_status.value == "blocked"
+    service.runner = CompletionReviewDispatchRunner()
+    second = await service.dispatch_methodology_completion_review(
+        contract.task_id,
+        "methodology_stewardship",
+        allow_unbounded_native_usage=True,
+    )
+    assert second.dispatch_claim.review_run_id == (
+        claims["methodology_stewardship"].review_run_id
+    )
+    assert second.gate_status.value == "passed"
+    assert second.stage_status.value == "completed"
+    assert second.task_status.value == "needs_review"
+
+
+@pytest.mark.asyncio
+async def test_methodology_completion_review_reserved_settlement_cannot_bypass_dispatch(
+    tmp_path,
+    monkeypatch,
+):
+    settled = await _settled_sequence_eight_methodology_run(tmp_path)
+    tasks, service, contract = settled[:3]
+    production_dispatch = settled[-1]
+    request = _completion_review_claim_request(
+        service,
+        contract,
+        production_dispatch,
+        "independent_correctness",
+    )
+    claim = service.claim_methodology_completion_review(
+        contract.task_id,
+        request,
+        principal=_migration_principal(),
+    )
+    assert not hasattr(
+        service.control_plane,
+        "start_methodology_completion_review_run",
+    )
+    original_observe = (
+        service.store.observe_methodology_completion_review_terminal
+    )
+    checked = False
+
+    def guarded_observe(dispatch_id, **kwargs):
+        nonlocal checked
+        before = _database_dump(tasks)
+        with pytest.raises(ControlPlaneConflictError, match="exact claim"):
+            service.control_plane.settle_protocol_run(
+                kwargs["adapter_result"],
+                actor="attacker",
+                operation_key="attack:completion-review:generic",
+            )
+        assert _database_dump(tasks) == before
+        with pytest.raises(
+            (ControlPlaneConflictError, ControlPlaneValidationError),
+            match="terminal|awaiting",
+        ):
+            service.control_plane.settle_protocol_run(
+                kwargs["adapter_result"],
+                actor="attacker",
+                operation_key="attack:completion-review:premature",
+                allowed_handoff_requirement_ids=[
+                    claim.requirement.requirement_id
+                ],
+                completion_review_claim=claim,
+            )
+        assert _database_dump(tasks) == before
+        checked = True
+        return original_observe(dispatch_id, **kwargs)
+
+    monkeypatch.setattr(
+        service.store,
+        "observe_methodology_completion_review_terminal",
+        guarded_observe,
+    )
+    service.runner = CompletionReviewDispatchRunner()
+    receipt = await service.dispatch_methodology_completion_review(
+        contract.task_id,
+        "independent_correctness",
+        allow_unbounded_native_usage=True,
+    )
+    assert checked is True
+    assert receipt.evidence_ids == [
+        methodology_completion_review_evidence_id(claim.review_run_id)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_methodology_completion_review_settled_replay_requires_usage_and_run(
+    tmp_path,
+):
+    settled = await _settled_sequence_eight_methodology_run(tmp_path)
+    tasks, service, contract = settled[:3]
+    production_dispatch = settled[-1]
+    request = _completion_review_claim_request(
+        service,
+        contract,
+        production_dispatch,
+        "independent_correctness",
+    )
+    service.claim_methodology_completion_review(
+        contract.task_id,
+        request,
+        principal=_migration_principal(),
+    )
+    service.runner = CompletionReviewDispatchRunner()
+    receipt = await service.dispatch_methodology_completion_review(
+        contract.task_id,
+        "independent_correctness",
+        allow_unbounded_native_usage=True,
+    )
+    with sqlite3.connect(tasks.db_path) as db:
+        tokens = db.execute(
+            """
+            SELECT tokens
+            FROM orchestration_methodology_completion_review_usage_ledger
+            WHERE dispatch_id = ?
+            """,
+            (receipt.dispatch_claim.dispatch_id,),
+        ).fetchone()[0]
+        db.execute(
+            """
+            UPDATE orchestration_methodology_completion_review_usage_ledger
+            SET tokens = ? WHERE dispatch_id = ?
+            """,
+            (tokens + 1, receipt.dispatch_claim.dispatch_id),
+        )
+        db.commit()
+    with pytest.raises(
+        OrchestrationValidationError,
+        match="usage row differs",
+    ):
+        service.store.get_methodology_completion_review_dispatch(
+            contract.task_id,
+            "independent_correctness",
+        )
+    with sqlite3.connect(tasks.db_path) as db:
+        db.execute(
+            """
+            UPDATE orchestration_methodology_completion_review_usage_ledger
+            SET tokens = ? WHERE dispatch_id = ?
+            """,
+            (tokens, receipt.dispatch_claim.dispatch_id),
+        )
+        db.execute(
+            "DELETE FROM protocol_runs WHERE run_id = ?",
+            (receipt.dispatch_claim.review_run_id,),
+        )
+        db.commit()
+    with pytest.raises(
+        OrchestrationValidationError,
+        match="lacks its formal Run",
+    ):
+        service.store.get_methodology_completion_review_dispatch(
+            contract.task_id,
+            "independent_correctness",
+        )
+
+
+@pytest.mark.asyncio
+async def test_methodology_completion_review_concurrent_dispatch_spawns_once(
+    tmp_path,
+):
+    settled = await _settled_sequence_eight_methodology_run(tmp_path)
+    tasks, service, contract = settled[:3]
+    production_dispatch = settled[-1]
+    request = _completion_review_claim_request(
+        service,
+        contract,
+        production_dispatch,
+        "independent_correctness",
+    )
+    service.claim_methodology_completion_review(
+        contract.task_id,
+        request,
+        principal=_migration_principal(),
+    )
+    original_collector = service.capability_collector
+    both_ready = asyncio.Event()
+    arrivals = 0
+
+    async def synchronized_collector(runtimes):
+        nonlocal arrivals
+        observation = await original_collector(runtimes)
+        arrivals += 1
+        if arrivals == 2:
+            both_ready.set()
+        await both_ready.wait()
+        return observation
+
+    runner = CompletionReviewDispatchRunner()
+    service.capability_collector = synchronized_collector
+    service.runner = runner
+    results = await asyncio.gather(
+        service.dispatch_methodology_completion_review(
+            contract.task_id,
+            "independent_correctness",
+            allow_unbounded_native_usage=True,
+        ),
+        service.dispatch_methodology_completion_review(
+            contract.task_id,
+            "independent_correctness",
+            allow_unbounded_native_usage=True,
+        ),
+        return_exceptions=True,
+    )
+
+    receipts = [
+        item
+        for item in results
+        if isinstance(item, MethodologyCompletionReviewDispatchReceipt)
+    ]
+    assert len(receipts) == 2
+    assert receipts[0] == receipts[1]
+    assert runner.calls == 1
+    with sqlite3.connect(tasks.db_path) as db:
+        assert db.execute(
+            """
+            SELECT COUNT(*)
+            FROM orchestration_methodology_completion_review_usage_ledger
+            WHERE task_id = ? AND responsibility = ?
+            """,
+            (contract.task_id, "independent_correctness"),
+        ).fetchone()[0] == 1
 
 
 def test_methodology_completion_review_claim_authenticates_before_store(

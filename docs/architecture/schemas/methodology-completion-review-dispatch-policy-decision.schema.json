@@ -1,0 +1,349 @@
+{
+  "$defs": {
+    "MethodologyCompletionReviewDispatchPolicyCheck": {
+      "additionalProperties": false,
+      "properties": {
+        "check": {
+          "enum": [
+            "claimed_review_run",
+            "completion_context",
+            "current_final_stage",
+            "repository_binding",
+            "reviewer_independence",
+            "runtime_binding",
+            "usage_reservation"
+          ],
+          "title": "Check",
+          "type": "string"
+        },
+        "detail": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Detail",
+          "type": "string"
+        },
+        "satisfied": {
+          "title": "Satisfied",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "check",
+        "satisfied",
+        "detail"
+      ],
+      "title": "MethodologyCompletionReviewDispatchPolicyCheck",
+      "type": "object"
+    },
+    "MigrationRepositoryBinding": {
+      "additionalProperties": false,
+      "properties": {
+        "commit_sha": {
+          "title": "Commit Sha",
+          "type": "string"
+        },
+        "ref": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "title": "Ref",
+          "type": "string"
+        },
+        "repository_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Repository Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repository_id",
+        "ref",
+        "commit_sha"
+      ],
+      "title": "MigrationRepositoryBinding",
+      "type": "object"
+    }
+  },
+  "$id": "https://agora.local/schemas/v1/methodology-completion-review-dispatch-policy-decision.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Explain why one exact claimed reviewer Run may or may not spawn.",
+  "properties": {
+    "blockers": {
+      "items": {
+        "maxLength": 1000,
+        "minLength": 1,
+        "type": "string"
+      },
+      "maxItems": 7,
+      "title": "Blockers",
+      "type": "array"
+    },
+    "checks": {
+      "items": {
+        "$ref": "#/$defs/MethodologyCompletionReviewDispatchPolicyCheck"
+      },
+      "maxItems": 7,
+      "minItems": 7,
+      "title": "Checks",
+      "type": "array"
+    },
+    "completion_review_claim_receipt_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Completion Review Claim Receipt Id",
+      "type": "string"
+    },
+    "completion_review_claim_receipt_sha256": {
+      "title": "Completion Review Claim Receipt Sha256",
+      "type": "string"
+    },
+    "content_sha256": {
+      "title": "Content Sha256",
+      "type": "string"
+    },
+    "context_pack_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Context Pack Id",
+      "type": "string"
+    },
+    "context_pack_sha256": {
+      "title": "Context Pack Sha256",
+      "type": "string"
+    },
+    "cost_reservation_usd": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Cost Reservation Usd"
+    },
+    "decision_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Decision Id",
+      "type": "string"
+    },
+    "dispatchable": {
+      "title": "Dispatchable",
+      "type": "boolean"
+    },
+    "evaluated_at": {
+      "format": "date-time",
+      "title": "Evaluated At",
+      "type": "string"
+    },
+    "execution_contract_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Execution Contract Id",
+      "type": "string"
+    },
+    "execution_contract_sha256": {
+      "title": "Execution Contract Sha256",
+      "type": "string"
+    },
+    "final_dispatch_receipt_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Final Dispatch Receipt Id",
+      "type": "string"
+    },
+    "final_dispatch_receipt_sha256": {
+      "title": "Final Dispatch Receipt Sha256",
+      "type": "string"
+    },
+    "gate_key": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Gate Key",
+      "type": "string"
+    },
+    "inventory_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Inventory Id",
+      "type": "string"
+    },
+    "inventory_sha256": {
+      "title": "Inventory Sha256",
+      "type": "string"
+    },
+    "pinned_runtime": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Pinned Runtime",
+      "type": "string"
+    },
+    "plan_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Plan Id",
+      "type": "string"
+    },
+    "policy_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Policy Id",
+      "type": "string"
+    },
+    "policy_sha256": {
+      "title": "Policy Sha256",
+      "type": "string"
+    },
+    "policy_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Policy Version",
+      "type": "string"
+    },
+    "project_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Project Id",
+      "type": "string"
+    },
+    "provider_serviceability_verified": {
+      "const": false,
+      "default": false,
+      "title": "Provider Serviceability Verified",
+      "type": "boolean"
+    },
+    "repository": {
+      "$ref": "#/$defs/MigrationRepositoryBinding"
+    },
+    "responsibility": {
+      "enum": [
+        "independent_correctness",
+        "methodology_stewardship"
+      ],
+      "title": "Responsibility",
+      "type": "string"
+    },
+    "result_format": {
+      "enum": [
+        "plain_text",
+        "codex_jsonl_v1",
+        "claude_json_v1",
+        "kiro_chat_v1"
+      ],
+      "title": "Result Format",
+      "type": "string"
+    },
+    "review_run_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Review Run Id",
+      "type": "string"
+    },
+    "route_selection_authority": {
+      "const": false,
+      "default": false,
+      "title": "Route Selection Authority",
+      "type": "boolean"
+    },
+    "runtime_capabilities": {
+      "items": {
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+        "type": "string"
+      },
+      "maxItems": 50,
+      "title": "Runtime Capabilities",
+      "type": "array"
+    },
+    "runtime_substitution_allowed": {
+      "const": false,
+      "default": false,
+      "title": "Runtime Substitution Allowed",
+      "type": "boolean"
+    },
+    "schema_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "stage_key": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Stage Key",
+      "type": "string"
+    },
+    "stage_sequence": {
+      "maximum": 200,
+      "minimum": 1,
+      "title": "Stage Sequence",
+      "type": "integer"
+    },
+    "task_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Task Id",
+      "type": "string"
+    },
+    "token_reservation": {
+      "maximum": 10000000,
+      "minimum": 1,
+      "title": "Token Reservation",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "content_sha256",
+    "decision_id",
+    "evaluated_at",
+    "policy_id",
+    "policy_sha256",
+    "project_id",
+    "task_id",
+    "plan_id",
+    "inventory_id",
+    "inventory_sha256",
+    "execution_contract_id",
+    "execution_contract_sha256",
+    "completion_review_claim_receipt_id",
+    "completion_review_claim_receipt_sha256",
+    "final_dispatch_receipt_id",
+    "final_dispatch_receipt_sha256",
+    "repository",
+    "stage_sequence",
+    "stage_key",
+    "gate_key",
+    "responsibility",
+    "pinned_runtime",
+    "result_format",
+    "review_run_id",
+    "context_pack_id",
+    "context_pack_sha256",
+    "runtime_capabilities",
+    "token_reservation",
+    "checks",
+    "dispatchable"
+  ],
+  "title": "MethodologyCompletionReviewDispatchPolicyDecision",
+  "type": "object"
+}

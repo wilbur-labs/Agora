@@ -17,7 +17,11 @@ from agora.control_plane.models import (
     StageRouteDecision,
     TaskRecord,
 )
-from agora.control_plane.store import ControlPlaneConflictError, ControlPlaneStore
+from agora.control_plane.store import (
+    ControlPlaneConflictError,
+    ControlPlaneStore,
+    ControlPlaneValidationError,
+)
 from agora.execution.security import redact_text, sanitize_data
 from agora.protocol.agent_adapter import AgentAdapterResult
 from agora.protocol.hashing import canonical_sha256, seal_model_payload
@@ -26,6 +30,11 @@ from agora.protocol.methodology_completion_review_claim import (
     MethodologyCompletionReviewClaimRequest,
     MethodologyCompletionReviewResponsibility,
     methodology_completion_review_run_id,
+)
+from agora.protocol.methodology_completion_review_dispatch import (
+    MethodologyCompletionReviewDispatchClaim,
+    MethodologyCompletionReviewDispatchPolicyDecision,
+    MethodologyCompletionReviewDispatchReceipt,
 )
 from agora.protocol.methodology_execution import (
     MethodologyExecutionContract,
@@ -96,6 +105,9 @@ from .methodology_completion_review_claim import (
     MethodologyCompletionReviewBudgetSnapshot,
     MethodologyCompletionReviewClaimSnapshot,
 )
+from .methodology_completion_review_dispatch import (
+    MethodologyCompletionReviewDispatchSnapshot,
+)
 from .methodology_execution_contract import MethodologyExecutionSnapshot
 from .methodology_route_activation import MethodologyRouteActivationSnapshot
 from .methodology_run_claim import MethodologyRunClaimSnapshot
@@ -121,6 +133,7 @@ from .models import (
     LedgerEntryType,
     Measurement,
     MethodologyDispatchState,
+    MethodologyCompletionReviewDispatchState,
     MethodologyMigrationStateSnapshot,
     MethodologyRunDispatchState,
     MethodologyStageRunDispatchState,
@@ -9079,12 +9092,112 @@ class OrchestrationStore:
             raise OrchestrationValidationError(
                 "Final methodology Handoff is unavailable"
             )
-        if tuple(active_evidence) != tuple(
+        production_evidence = tuple(
             sorted(handoff.evidence, key=lambda item: item.evidence_id)
+        )
+        active_by_id = {item.evidence_id: item for item in active_evidence}
+        production_ids = {item.evidence_id for item in production_evidence}
+        if (
+            len(active_by_id) != len(active_evidence)
+            or not production_ids.issubset(active_by_id)
         ):
+            raise OrchestrationValidationError(
+                "Final methodology production Evidence is no longer active"
+            )
+        if tuple(
+            active_by_id[item.evidence_id] for item in production_evidence
+        ) != production_evidence:
             raise OrchestrationValidationError(
                 "Final methodology active Evidence differs from its Handoff"
             )
+        for evidence in active_evidence:
+            if evidence.evidence_id in production_ids:
+                continue
+            completion_dispatch_row = db.execute(
+                """
+                SELECT *
+                FROM orchestration_methodology_completion_review_dispatches
+                WHERE review_run_id = ? AND state = ?
+                """,
+                (
+                    evidence.producer.run_id,
+                    MethodologyDispatchState.SETTLED.value,
+                ),
+            ).fetchone()
+            review_protocol_row = db.execute(
+                "SELECT * FROM protocol_runs WHERE run_id = ?",
+                (evidence.producer.run_id,),
+            ).fetchone()
+            completion_claim_row = db.execute(
+                """
+                SELECT *
+                FROM orchestration_methodology_completion_review_claims
+                WHERE review_run_id = ?
+                """,
+                (evidence.producer.run_id,),
+            ).fetchone()
+            if (
+                completion_dispatch_row is None
+                or review_protocol_row is None
+                or completion_claim_row is None
+            ):
+                raise OrchestrationValidationError(
+                    "Active completion-review Evidence lacks its claim, Run, or "
+                    "settled dispatch"
+                )
+            completion_dispatch = self._methodology_completion_review_dispatch(
+                completion_dispatch_row
+            )
+            completion_claim = self._methodology_completion_review_claim(
+                completion_claim_row
+            )
+            review_protocol = control_plane._protocol_run(review_protocol_row)
+            if (
+                completion_dispatch.receipt is None
+                or completion_dispatch.adapter_result is None
+                or completion_dispatch.claim.completion_review_claim_receipt_id
+                != completion_claim.receipt_id
+                or completion_dispatch.claim.completion_review_claim_receipt_sha256
+                != completion_claim.content_sha256
+                or completion_dispatch.claim.review_run_id
+                != completion_claim.review_run_id
+                or review_protocol.settled_at is None
+                or review_protocol.handoff_pack is None
+                or review_protocol.handoff_pack.evidence != [evidence]
+                or completion_dispatch.adapter_result.handoff_pack
+                != review_protocol.handoff_pack
+                or completion_dispatch.adapter_result.protocol_state
+                != review_protocol.protocol_state
+                or completion_dispatch.receipt.protocol_state
+                != review_protocol.protocol_state
+                or completion_dispatch.receipt.evidence_ids
+                != [evidence.evidence_id]
+                or evidence.evidence_id
+                not in completion_dispatch.receipt.active_evidence_ids
+                or completion_dispatch.receipt.handoff_pack_id
+                != review_protocol.handoff_pack.pack_id
+                or completion_dispatch.receipt.handoff_pack_sha256
+                != review_protocol.handoff_pack.content_sha256
+                or review_protocol.adapter_error_code
+                != completion_dispatch.adapter_result.error_code
+                or review_protocol.attention_required
+                != completion_dispatch.adapter_result.attention_required
+                or review_protocol.attention_required
+                != (review_protocol.attention_item_id is not None)
+            ):
+                raise OrchestrationValidationError(
+                    "Active completion-review Evidence provenance drifted"
+                )
+            try:
+                control_plane._assert_methodology_completion_review_handoff(
+                    completion_claim,
+                    review_protocol.handoff_pack,
+                    settled_at=review_protocol.settled_at,
+                )
+            except ControlPlaneValidationError as exc:
+                raise OrchestrationValidationError(
+                    "Active completion-review Evidence differs from its claim"
+                ) from exc
         output_artifacts: list[Artifact] = []
         for artifact in handoff.output_artifacts:
             artifact_row = db.execute(
@@ -9284,13 +9397,39 @@ class OrchestrationStore:
                         "Methodology completion-review replay requires the "
                         "original currently authorized principal"
                     )
-                if any(
-                    db.execute(
-                        f"SELECT 1 FROM {table} WHERE run_id = ? LIMIT 1",
-                        (receipt.review_run_id,),
-                    ).fetchone()
-                    is not None
-                    for table in ("protocol_runs", "orchestration_runs")
+                orchestration_run = db.execute(
+                    "SELECT 1 FROM orchestration_runs WHERE run_id = ? LIMIT 1",
+                    (receipt.review_run_id,),
+                ).fetchone()
+                protocol_run = db.execute(
+                    "SELECT 1 FROM protocol_runs WHERE run_id = ? LIMIT 1",
+                    (receipt.review_run_id,),
+                ).fetchone()
+                dispatch_row = db.execute(
+                    """
+                    SELECT *
+                    FROM orchestration_methodology_completion_review_dispatches
+                    WHERE task_id = ? AND responsibility = ?
+                    """,
+                    (task_id, request.responsibility),
+                ).fetchone()
+                occupied_by_bound_dispatch = False
+                if protocol_run is not None and dispatch_row is not None:
+                    dispatch = self._methodology_completion_review_dispatch(
+                        dispatch_row
+                    )
+                    occupied_by_bound_dispatch = (
+                        dispatch.claim.task_id == receipt.task_id
+                        and dispatch.claim.responsibility
+                        == receipt.responsibility
+                        and dispatch.claim.review_run_id == receipt.review_run_id
+                        and dispatch.claim.completion_review_claim_receipt_id
+                        == receipt.receipt_id
+                        and dispatch.claim.completion_review_claim_receipt_sha256
+                        == receipt.content_sha256
+                    )
+                if orchestration_run is not None or (
+                    protocol_run is not None and not occupied_by_bound_dispatch
                 ):
                     raise OrchestrationConflictError(
                         "Reserved methodology completion-review Run identity "
@@ -9516,6 +9655,982 @@ class OrchestrationStore:
                 actor=principal.principal_id,
                 payload=event_payload,
                 now=claimed_at,
+            )
+        return receipt
+
+    def methodology_completion_review_dispatch_snapshot(
+        self,
+        task_id: str,
+        responsibility: MethodologyCompletionReviewResponsibility,
+        *,
+        control_plane: ControlPlaneStore,
+    ) -> MethodologyCompletionReviewDispatchSnapshot:
+        """Read current authority for one claimed, undispatched reviewer."""
+
+        with closing(self._connect()) as db:
+            db.execute("BEGIN")
+            try:
+                return self._methodology_completion_review_dispatch_snapshot_tx(
+                    db,
+                    task_id,
+                    responsibility,
+                    control_plane=control_plane,
+                )
+            finally:
+                db.rollback()
+
+    def _methodology_completion_review_dispatch_snapshot_tx(
+        self,
+        db: sqlite3.Connection,
+        task_id: str,
+        responsibility: MethodologyCompletionReviewResponsibility,
+        *,
+        control_plane: ControlPlaneStore,
+    ) -> MethodologyCompletionReviewDispatchSnapshot:
+        base = self._methodology_completion_review_claim_snapshot_tx(
+            db,
+            task_id,
+            control_plane=control_plane,
+        )
+        claim_row = db.execute(
+            """
+            SELECT *
+            FROM orchestration_methodology_completion_review_claims
+            WHERE task_id = ? AND responsibility = ?
+            """,
+            (task_id, responsibility),
+        ).fetchone()
+        if claim_row is None:
+            raise OrchestrationConflictError(
+                "Methodology completion-review responsibility is not claimed"
+            )
+        claim = self._methodology_completion_review_claim(claim_row)
+        claim_request = (
+            MethodologyCompletionReviewClaimRequest.model_validate_json(
+                claim_row["request_payload"]
+            )
+        )
+        review_protocol_row = db.execute(
+            "SELECT * FROM protocol_runs WHERE run_id = ?",
+            (claim.review_run_id,),
+        ).fetchone()
+        return MethodologyCompletionReviewDispatchSnapshot(
+            task=base.task,
+            control_task=base.control_task,
+            plan=base.plan,
+            inventory=base.inventory,
+            migration_request=base.migration_request,
+            execution_contract=base.execution_contract,
+            final_dispatch_receipt=base.final_dispatch_receipt,
+            completion_review_claim_receipt=claim,
+            completion_review_claim_request=claim_request,
+            production_protocol_run=base.production_protocol_run,
+            review_protocol_run=(
+                control_plane._protocol_run(review_protocol_row)
+                if review_protocol_row is not None
+                else None
+            ),
+            final_stage=base.final_stage,
+            final_gate=base.final_gate,
+            active_evidence=base.active_evidence,
+            output_artifacts=base.output_artifacts,
+            provider_budget=base.provider_budget,
+        )
+
+    def get_methodology_completion_review_dispatch(
+        self,
+        task_id: str,
+        responsibility: MethodologyCompletionReviewResponsibility,
+    ) -> MethodologyCompletionReviewDispatchState | None:
+        with closing(self._connect()) as db:
+            db.execute("BEGIN")
+            row = db.execute(
+                """
+                SELECT *
+                FROM orchestration_methodology_completion_review_dispatches
+                WHERE task_id = ? AND responsibility = ?
+                """,
+                (task_id, responsibility),
+            ).fetchone()
+            if row is None:
+                return None
+            state = self._methodology_completion_review_dispatch(row)
+            if state.state == MethodologyDispatchState.SETTLED:
+                self._validate_methodology_completion_review_usage_ledgers(
+                    db,
+                    state.claim.plan_id,
+                )
+                self._validate_settled_completion_review_dispatch_tx(
+                    db,
+                    state,
+                )
+            return state
+
+    def _validate_settled_completion_review_dispatch_tx(
+        self,
+        db: sqlite3.Connection,
+        state: MethodologyCompletionReviewDispatchState,
+    ) -> None:
+        """Bind a settled replay to its claim, Run, Handoff, and Evidence."""
+
+        if (
+            state.state != MethodologyDispatchState.SETTLED
+            or state.receipt is None
+            or state.adapter_result is None
+            or state.usage_observation is None
+        ):
+            raise OrchestrationValidationError(
+                "Completion-review settled replay is incomplete"
+            )
+        claim_row = db.execute(
+            """
+            SELECT *
+            FROM orchestration_methodology_completion_review_claims
+            WHERE receipt_id = ? AND review_run_id = ?
+            """,
+            (
+                state.claim.completion_review_claim_receipt_id,
+                state.claim.review_run_id,
+            ),
+        ).fetchone()
+        protocol_row = db.execute(
+            "SELECT * FROM protocol_runs WHERE run_id = ?",
+            (state.claim.review_run_id,),
+        ).fetchone()
+        if claim_row is None or protocol_row is None:
+            raise OrchestrationValidationError(
+                "Completion-review settled replay lacks its claim or formal Run"
+            )
+        claim = self._methodology_completion_review_claim(claim_row)
+        control_plane = ControlPlaneStore(self.tasks)
+        protocol_run = control_plane._protocol_run(protocol_row)
+        handoff = protocol_run.handoff_pack
+        if (
+            state.claim.completion_review_claim_receipt_sha256
+            != claim.content_sha256
+            or state.claim.task_id != claim.task_id
+            or state.claim.responsibility != claim.responsibility
+            or state.claim.runtime != claim.runtime
+            or state.claim.review_run_id != claim.review_run_id
+            or protocol_run.settled_at is None
+            or protocol_run.context_pack.pack_id != state.claim.context_pack_id
+            or protocol_run.context_pack.content_sha256
+            != state.claim.context_pack_sha256
+            or protocol_run.protocol_state
+            != state.adapter_result.protocol_state
+            or protocol_run.protocol_state != state.receipt.protocol_state
+            or protocol_run.handoff_pack != state.adapter_result.handoff_pack
+            or protocol_run.adapter_error_code != state.adapter_result.error_code
+            or protocol_run.attention_required
+            != state.adapter_result.attention_required
+            or protocol_run.attention_required
+            != (protocol_run.attention_item_id is not None)
+        ):
+            raise OrchestrationValidationError(
+                "Completion-review settled replay authority drifted"
+            )
+        if handoff is None:
+            if (
+                state.receipt.handoff_pack_id is not None
+                or state.receipt.handoff_pack_sha256 is not None
+                or state.receipt.evidence_ids
+            ):
+                raise OrchestrationValidationError(
+                    "Completion-review empty Handoff replay drifted"
+                )
+            return
+        try:
+            control_plane._assert_methodology_completion_review_handoff(
+                claim,
+                handoff,
+                settled_at=protocol_run.settled_at,
+            )
+        except ControlPlaneValidationError as exc:
+            raise OrchestrationValidationError(
+                "Completion-review settled Handoff differs from its claim"
+            ) from exc
+        evidence_ids = sorted(item.evidence_id for item in handoff.evidence)
+        if (
+            state.receipt.handoff_pack_id != handoff.pack_id
+            or state.receipt.handoff_pack_sha256 != handoff.content_sha256
+            or state.receipt.evidence_ids != evidence_ids
+        ):
+            raise OrchestrationValidationError(
+                "Completion-review settled receipt differs from its Handoff"
+            )
+        for evidence in handoff.evidence:
+            evidence_row = db.execute(
+                "SELECT * FROM protocol_evidence WHERE evidence_id = ?",
+                (evidence.evidence_id,),
+            ).fetchone()
+            if evidence_row is None:
+                raise OrchestrationValidationError(
+                    "Completion-review settled Evidence is unavailable"
+                )
+            registered = Evidence.model_validate_json(evidence_row["payload"])
+            if (
+                registered != evidence
+                or canonical_sha256(registered) != evidence_row["payload_sha256"]
+                or registered.evidence_id != evidence_row["evidence_id"]
+                or registered.project_id != evidence_row["project_id"]
+                or registered.task_id != evidence_row["task_id"]
+                or registered.stage_key != evidence_row["stage_key"]
+                or registered.producer.run_id != evidence_row["run_id"]
+                or registered.repository_id != evidence_row["repository_id"]
+                or registered.ref != evidence_row["ref"]
+                or registered.commit_sha != evidence_row["commit_sha"]
+                or registered.requirement_id != evidence_row["requirement_id"]
+                or registered.kind != evidence_row["kind"]
+                or registered.status.value != evidence_row["status"]
+                or registered.observed_at.isoformat()
+                != evidence_row["observed_at"]
+            ):
+                raise OrchestrationValidationError(
+                    "Completion-review settled Evidence binding drifted"
+                )
+        gate = control_plane._gate_record(
+            db,
+            control_plane._gate_row(
+                db,
+                state.claim.task_id,
+                state.claim.gate_key,
+            ),
+        )
+        if not set(evidence_ids).issubset(gate.active_evidence_ids):
+            raise OrchestrationValidationError(
+                "Completion-review settled Evidence is no longer active"
+            )
+
+    @staticmethod
+    def _methodology_completion_review_dispatch(
+        row: sqlite3.Row,
+    ) -> MethodologyCompletionReviewDispatchState:
+        claim = MethodologyCompletionReviewDispatchClaim.model_validate_json(
+            row["claim_payload"]
+        )
+        policy = (
+            MethodologyCompletionReviewDispatchPolicyDecision.model_validate_json(
+                row["dispatch_policy_payload"]
+            )
+        )
+        preflight = PinnedRuntimePreflightDecision.model_validate_json(
+            row["preflight_payload"]
+        )
+        adapter = (
+            AgentAdapterResult.model_validate_json(row["adapter_result_payload"])
+            if row["adapter_result_payload"] is not None
+            else None
+        )
+        usage = (
+            ProviderUsageObservation.model_validate_json(
+                row["usage_observation_payload"]
+            )
+            if row["usage_observation_payload"] is not None
+            else None
+        )
+        receipt = (
+            MethodologyCompletionReviewDispatchReceipt.model_validate_json(
+                row["receipt_payload"]
+            )
+            if row["receipt_payload"] is not None
+            else None
+        )
+        if (
+            claim.dispatch_id != row["dispatch_id"]
+            or claim.content_sha256 != row["claim_sha256"]
+            or claim.completion_review_claim_receipt_id
+            != row["completion_review_claim_receipt_id"]
+            or claim.task_id != row["task_id"]
+            or claim.plan_id != row["plan_id"]
+            or claim.responsibility != row["responsibility"]
+            or claim.runtime != row["runtime"]
+            or claim.review_run_id != row["review_run_id"]
+            or claim.stage_key != row["stage_key"]
+            or claim.gate_key != row["gate_key"]
+            or claim.context_pack_id != row["context_pack_id"]
+            or claim.context_pack_sha256 != row["context_pack_sha256"]
+            or claim.prompt_sha256 != row["prompt_sha256"]
+            or claim.dispatch_policy.token_reservation
+            != row["token_reserved"]
+            or claim.dispatch_policy.cost_reservation_usd
+            != row["cost_reserved_usd"]
+            or claim.spawn_owner_id != row["spawn_owner_id"]
+            or claim.recovery_not_before.isoformat()
+            != row["recovery_not_before"]
+            or claim.claimed_at.isoformat() != row["claimed_at"]
+            or claim.dispatch_policy != policy
+            or policy.decision_id != row["dispatch_policy_id"]
+            or policy.content_sha256 != row["dispatch_policy_sha256"]
+            or claim.runtime_preflight != preflight
+            or preflight.decision_id != row["preflight_id"]
+            or preflight.content_sha256 != row["preflight_sha256"]
+            or (receipt is None) != (row["receipt_sha256"] is None)
+            or (
+                receipt is not None
+                and receipt.content_sha256 != row["receipt_sha256"]
+            )
+        ):
+            raise OrchestrationValidationError(
+                "Methodology completion-review dispatch ledger drifted"
+            )
+        return MethodologyCompletionReviewDispatchState(
+            dispatch_id=row["dispatch_id"],
+            state=row["state"],
+            claim=claim,
+            receipt=receipt,
+            pid=row["pid"],
+            process_started=bool(row["process_started"]),
+            exit_code=row["exit_code"],
+            timed_out=bool(row["timed_out"]),
+            output=row["output"],
+            error_message=row["error_message"],
+            repository_unchanged=(
+                bool(row["repository_unchanged"])
+                if row["repository_unchanged"] is not None
+                else None
+            ),
+            adapter_result=adapter,
+            usage_observation=usage,
+            claimed_at=row["claimed_at"],
+            process_attached_at=row["process_attached_at"],
+            terminal_observed_at=row["terminal_observed_at"],
+            settled_at=row["settled_at"],
+        )
+
+    def claim_methodology_completion_review_dispatch(
+        self,
+        task_id: str,
+        responsibility: MethodologyCompletionReviewResponsibility,
+        *,
+        context_pack: ContextPack,
+        control_plane: ControlPlaneStore,
+        recheck: Callable[
+            [MethodologyCompletionReviewDispatchSnapshot, str],
+            MethodologyCompletionReviewDispatchClaim,
+        ],
+    ) -> MethodologyCompletionReviewDispatchState:
+        """Atomically create the formal reviewer Run and its spawn attachment."""
+
+        claimed_at = utc_now()
+        with self._transaction() as db:
+            existing = db.execute(
+                """
+                SELECT *
+                FROM orchestration_methodology_completion_review_dispatches
+                WHERE task_id = ? AND responsibility = ?
+                """,
+                (task_id, responsibility),
+            ).fetchone()
+            if existing is not None:
+                return self._methodology_completion_review_dispatch(existing)
+            snapshot = (
+                self._methodology_completion_review_dispatch_snapshot_tx(
+                    db,
+                    task_id,
+                    responsibility,
+                    control_plane=control_plane,
+                )
+            )
+            try:
+                claim = recheck(snapshot, claimed_at)
+            except ValueError as exc:
+                raise OrchestrationConflictError(
+                    f"Methodology completion-review dispatch blocked: {exc}"
+                ) from exc
+            review_claim = snapshot.completion_review_claim_receipt
+            if (
+                claim.task_id != task_id
+                or claim.responsibility != responsibility
+                or claim.completion_review_claim_receipt_id
+                != review_claim.receipt_id
+                or claim.completion_review_claim_receipt_sha256
+                != review_claim.content_sha256
+                or claim.review_run_id != review_claim.review_run_id
+                or claim.context_pack_id != context_pack.pack_id
+                or claim.context_pack_sha256 != context_pack.content_sha256
+            ):
+                raise OrchestrationValidationError(
+                    "Methodology completion-review dispatch recheck crossed authority"
+                )
+            protocol_run = (
+                control_plane._start_methodology_completion_review_run_tx(
+                    db,
+                    context_pack=context_pack,
+                    claim_receipt=review_claim,
+                    actor=review_claim.authenticated_principal_id,
+                    event_key_prefix=(
+                        "methodology.completion_review.dispatch:"
+                        f"{claim.dispatch_id}"
+                    ),
+                    now=claimed_at,
+                )
+            )
+            if (
+                protocol_run.run_id != claim.review_run_id
+                or protocol_run.context_pack.pack_id != claim.context_pack_id
+                or protocol_run.context_pack.content_sha256
+                != claim.context_pack_sha256
+            ):
+                raise OrchestrationValidationError(
+                    "Created completion-review formal Run differs from claim"
+                )
+            claim_row = db.execute(
+                """
+                SELECT request_id FROM
+                    orchestration_methodology_completion_review_claims
+                WHERE receipt_id = ?
+                """,
+                (review_claim.receipt_id,),
+            ).fetchone()
+            assert claim_row is not None
+            db.execute(
+                """
+                INSERT INTO orchestration_methodology_completion_review_dispatches (
+                    dispatch_id, claim_sha256, claim_payload,
+                    task_id, plan_id,
+                    completion_review_claim_request_id,
+                    completion_review_claim_receipt_id,
+                    responsibility, runtime, review_run_id,
+                    stage_key, gate_key, context_pack_id,
+                    context_pack_sha256, prompt_sha256,
+                    token_reserved, cost_reserved_usd,
+                    spawn_owner_id, recovery_not_before,
+                    dispatch_policy_id, dispatch_policy_sha256,
+                    dispatch_policy_payload, preflight_id,
+                    preflight_sha256, preflight_payload,
+                    state, claimed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    claim.dispatch_id,
+                    claim.content_sha256,
+                    self._json(claim.model_dump(mode="json")),
+                    task_id,
+                    claim.plan_id,
+                    claim_row["request_id"],
+                    review_claim.receipt_id,
+                    responsibility,
+                    claim.runtime,
+                    claim.review_run_id,
+                    claim.stage_key,
+                    claim.gate_key,
+                    claim.context_pack_id,
+                    claim.context_pack_sha256,
+                    claim.prompt_sha256,
+                    claim.dispatch_policy.token_reservation,
+                    claim.dispatch_policy.cost_reservation_usd,
+                    claim.spawn_owner_id,
+                    claim.recovery_not_before.isoformat(),
+                    claim.dispatch_policy.decision_id,
+                    claim.dispatch_policy.content_sha256,
+                    self._json(claim.dispatch_policy.model_dump(mode="json")),
+                    claim.runtime_preflight.decision_id,
+                    claim.runtime_preflight.content_sha256,
+                    self._json(claim.runtime_preflight.model_dump(mode="json")),
+                    MethodologyDispatchState.CLAIMED.value,
+                    claimed_at,
+                ),
+            )
+            event_payload = {
+                "dispatch_id": claim.dispatch_id,
+                "review_run_id": claim.review_run_id,
+                "responsibility": responsibility,
+                "runtime": claim.runtime,
+                "claim_receipt_id": review_claim.receipt_id,
+                "claim_receipt_sha256": review_claim.content_sha256,
+                "context_pack_id": claim.context_pack_id,
+                "context_pack_sha256": claim.context_pack_sha256,
+                "process_started": False,
+                "process_spawn_authority": True,
+            }
+            self.tasks._insert_event(
+                db,
+                task_id=task_id,
+                event_type="methodology_completion_review_dispatch_claimed",
+                actor="orchestrator",
+                payload=event_payload,
+                created_at=claimed_at,
+            )
+            control_plane._event(
+                db,
+                event_key=(
+                    "methodology.completion_review.dispatch.claimed:"
+                    f"{claim.dispatch_id}"
+                ),
+                task_id=task_id,
+                project_id=claim.project_id,
+                event_type=(
+                    "methodology.completion_review_dispatch_claimed"
+                ),
+                actor="orchestrator",
+                payload=event_payload,
+                now=claimed_at,
+            )
+            row = db.execute(
+                """
+                SELECT *
+                FROM orchestration_methodology_completion_review_dispatches
+                WHERE dispatch_id = ?
+                """,
+                (claim.dispatch_id,),
+            ).fetchone()
+        assert row is not None
+        return self._methodology_completion_review_dispatch(row)
+
+    def attach_methodology_completion_review_pid(
+        self,
+        dispatch_id: str,
+        pid: int,
+        *,
+        spawn_owner_id: str,
+    ) -> MethodologyCompletionReviewDispatchState:
+        if pid < 1:
+            raise OrchestrationValidationError(
+                "Methodology completion-review PID must be positive"
+            )
+        now = utc_now()
+        with self._transaction() as db:
+            row = db.execute(
+                """
+                SELECT * FROM
+                    orchestration_methodology_completion_review_dispatches
+                WHERE dispatch_id = ?
+                """,
+                (dispatch_id,),
+            ).fetchone()
+            if row is None:
+                raise OrchestrationNotFoundError(dispatch_id)
+            existing = self._methodology_completion_review_dispatch(row)
+            if (
+                existing.state == MethodologyDispatchState.RUNNING
+                and existing.pid == pid
+                and existing.claim.spawn_owner_id == spawn_owner_id
+            ):
+                return existing
+            if (
+                existing.state != MethodologyDispatchState.CLAIMED
+                or existing.pid is not None
+                or existing.process_started
+                or existing.claim.spawn_owner_id != spawn_owner_id
+            ):
+                raise OrchestrationConflictError(
+                    "Methodology completion-review dispatch is not attachable"
+                )
+            cursor = db.execute(
+                """
+                UPDATE orchestration_methodology_completion_review_dispatches
+                SET state = ?, pid = ?, process_started = 1,
+                    process_attached_at = ?
+                WHERE dispatch_id = ? AND state = ? AND pid IS NULL
+                  AND process_started = 0 AND spawn_owner_id = ?
+                """,
+                (
+                    MethodologyDispatchState.RUNNING.value,
+                    pid,
+                    now,
+                    dispatch_id,
+                    MethodologyDispatchState.CLAIMED.value,
+                    spawn_owner_id,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise OrchestrationConflictError(
+                    "Completion-review dispatch changed before PID attachment"
+                )
+            self.tasks._insert_event(
+                db,
+                task_id=existing.claim.task_id,
+                event_type="methodology_completion_review_process_attached",
+                actor="orchestrator",
+                payload={
+                    "dispatch_id": dispatch_id,
+                    "review_run_id": existing.claim.review_run_id,
+                    "pid": pid,
+                },
+                created_at=now,
+            )
+            updated = db.execute(
+                """
+                SELECT * FROM
+                    orchestration_methodology_completion_review_dispatches
+                WHERE dispatch_id = ?
+                """,
+                (dispatch_id,),
+            ).fetchone()
+        assert updated is not None
+        return self._methodology_completion_review_dispatch(updated)
+
+    def observe_methodology_completion_review_terminal(
+        self,
+        dispatch_id: str,
+        *,
+        process_started: bool,
+        exit_code: int | None,
+        timed_out: bool,
+        output: str,
+        error_message: str | None,
+        repository_unchanged: bool,
+        adapter_result: AgentAdapterResult,
+        usage_observation: ProviderUsageObservation,
+        spawn_owner_id: str | None,
+    ) -> MethodologyCompletionReviewDispatchState:
+        """Persist reviewer terminal facts before Control Plane settlement."""
+
+        now = utc_now()
+        safe_output = redact_text(output)[-64 * 1024:]
+        safe_error = (
+            redact_text(error_message)[-4_000:] if error_message else None
+        )
+        with self._transaction() as db:
+            row = db.execute(
+                """
+                SELECT * FROM
+                    orchestration_methodology_completion_review_dispatches
+                WHERE dispatch_id = ?
+                """,
+                (dispatch_id,),
+            ).fetchone()
+            if row is None:
+                raise OrchestrationNotFoundError(dispatch_id)
+            existing = self._methodology_completion_review_dispatch(row)
+            if existing.state in {
+                MethodologyDispatchState.TERMINAL_OBSERVED,
+                MethodologyDispatchState.SETTLED,
+            }:
+                if (
+                    existing.process_started != process_started
+                    or existing.exit_code != exit_code
+                    or existing.timed_out != timed_out
+                    or existing.output != safe_output
+                    or existing.error_message != safe_error
+                    or existing.repository_unchanged != repository_unchanged
+                    or existing.adapter_result != adapter_result
+                    or existing.usage_observation != usage_observation
+                ):
+                    raise OrchestrationConflictError(
+                        "Methodology completion-review terminal replay differs"
+                    )
+                return existing
+            if existing.state not in {
+                MethodologyDispatchState.CLAIMED,
+                MethodologyDispatchState.RUNNING,
+            }:
+                raise OrchestrationConflictError(
+                    "Completion-review dispatch cannot accept terminal facts"
+                )
+            if spawn_owner_id is not None:
+                if existing.claim.spawn_owner_id != spawn_owner_id:
+                    raise OrchestrationConflictError(
+                        "Completion-review terminal observer does not own spawn"
+                    )
+            elif (
+                existing.state == MethodologyDispatchState.CLAIMED
+                and datetime.now(timezone.utc)
+                < existing.claim.recovery_not_before
+            ):
+                raise OrchestrationConflictError(
+                    "Completion-review recovery lease is still active"
+                )
+            if process_started != existing.process_started:
+                raise OrchestrationValidationError(
+                    "Completion-review process fact differs from PID attachment"
+                )
+            if (
+                adapter_result.protocol_state.run_id
+                != existing.claim.review_run_id
+                or usage_observation.run_id
+                != existing.claim.review_run_id
+                or usage_observation.adapter != existing.claim.runtime
+            ):
+                raise OrchestrationValidationError(
+                    "Completion-review terminal observation crosses its Run"
+                )
+            protocol = adapter_result.protocol_state
+            launch_failed = protocol.process_status == ProcessStatus.LAUNCH_FAILED
+            if (
+                process_started == launch_failed
+                or protocol.process_status
+                in {ProcessStatus.PENDING, ProcessStatus.RUNNING}
+                or exit_code != protocol.process_exit_code
+                or timed_out
+                != (protocol.process_status == ProcessStatus.TIMED_OUT)
+            ):
+                raise OrchestrationValidationError(
+                    "Completion-review process facts differ from protocol state"
+                )
+            if not process_started and (
+                usage_observation.total_tokens != 0
+                or usage_observation.cost_usd != 0
+                or adapter_result.handoff_pack is not None
+                or protocol.semantic_stage_result
+                != SemanticStageResult.BLOCKED
+            ):
+                raise OrchestrationValidationError(
+                    "Unstarted completion reviewer requires exact-zero blocked "
+                    "terminal facts"
+                )
+            if protocol.semantic_stage_result == SemanticStageResult.SUCCEEDED and (
+                not process_started
+                or not repository_unchanged
+                or adapter_result.handoff_pack is None
+            ):
+                raise OrchestrationValidationError(
+                    "Successful completion review requires an attached process, "
+                    "stable repository, and Handoff"
+                )
+            cursor = db.execute(
+                """
+                UPDATE orchestration_methodology_completion_review_dispatches
+                SET state = ?, process_started = ?, exit_code = ?,
+                    timed_out = ?, output = ?, error_message = ?,
+                    repository_unchanged = ?, adapter_result_payload = ?,
+                    usage_observation_payload = ?, terminal_observed_at = ?
+                WHERE dispatch_id = ? AND state IN (?, ?)
+                """,
+                (
+                    MethodologyDispatchState.TERMINAL_OBSERVED.value,
+                    int(process_started),
+                    exit_code,
+                    int(timed_out),
+                    safe_output,
+                    safe_error,
+                    int(repository_unchanged),
+                    self._json(adapter_result.model_dump(mode="json")),
+                    self._json(usage_observation.model_dump(mode="json")),
+                    now,
+                    dispatch_id,
+                    MethodologyDispatchState.CLAIMED.value,
+                    MethodologyDispatchState.RUNNING.value,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise OrchestrationConflictError(
+                    "Completion-review dispatch changed before observation"
+                )
+            updated = db.execute(
+                """
+                SELECT * FROM
+                    orchestration_methodology_completion_review_dispatches
+                WHERE dispatch_id = ?
+                """,
+                (dispatch_id,),
+            ).fetchone()
+        assert updated is not None
+        return self._methodology_completion_review_dispatch(updated)
+
+    def finish_methodology_completion_review_dispatch(
+        self,
+        dispatch_id: str,
+        *,
+        settlement: RunSettlementReceipt,
+        control_plane: ControlPlaneStore,
+    ) -> MethodologyCompletionReviewDispatchReceipt:
+        """Seal one reviewer dispatch receipt and exact provider usage debit."""
+
+        now = utc_now()
+        with self._transaction() as db:
+            row = db.execute(
+                """
+                SELECT * FROM
+                    orchestration_methodology_completion_review_dispatches
+                WHERE dispatch_id = ?
+                """,
+                (dispatch_id,),
+            ).fetchone()
+            if row is None:
+                raise OrchestrationNotFoundError(dispatch_id)
+            state = self._methodology_completion_review_dispatch(row)
+            if state.state == MethodologyDispatchState.SETTLED:
+                assert state.receipt is not None
+                return state.receipt
+            if (
+                state.state != MethodologyDispatchState.TERMINAL_OBSERVED
+                or state.adapter_result is None
+                or state.usage_observation is None
+                or state.repository_unchanged is None
+            ):
+                raise OrchestrationConflictError(
+                    "Completion-review dispatch has no terminal observation"
+                )
+            protocol_row = db.execute(
+                "SELECT * FROM protocol_runs WHERE run_id = ?",
+                (state.claim.review_run_id,),
+            ).fetchone()
+            control_task_row = db.execute(
+                "SELECT * FROM control_tasks WHERE task_id = ?",
+                (state.claim.task_id,),
+            ).fetchone()
+            if protocol_row is None or control_task_row is None:
+                raise OrchestrationConflictError(
+                    "Settled completion-review Control Plane state is unavailable"
+                )
+            protocol_run = control_plane._protocol_run(protocol_row)
+            control_task = control_plane._task_record(control_task_row)
+            normalized = settlement.model_copy(update={"replayed": False})
+            if (
+                normalized.run != protocol_run
+                or normalized.run.protocol_state
+                != state.adapter_result.protocol_state
+                or normalized.run.run_id != state.claim.review_run_id
+                or normalized.stage.task_id != state.claim.task_id
+                or normalized.stage.stage_key != state.claim.stage_key
+                or normalized.gate.task_id != state.claim.task_id
+                or normalized.gate.gate_key != state.claim.gate_key
+                or normalized.artifact_ids
+                or len(normalized.evidence_ids) > 1
+                or normalized.next_stage_route is not None
+            ):
+                raise OrchestrationValidationError(
+                    "Completion-review settlement differs from terminal facts"
+                )
+            passed_lifecycle = (
+                normalized.gate.status == GateStatus.PASSED
+                and normalized.stage.status == StageStatus.COMPLETED
+                and control_task.status.value == "needs_review"
+            )
+            blocked_lifecycle = (
+                normalized.gate.status == GateStatus.BLOCKED
+                and normalized.stage.status == StageStatus.BLOCKED
+                and control_task.status.value == "blocked"
+            )
+            if not (passed_lifecycle or blocked_lifecycle):
+                raise OrchestrationValidationError(
+                    "Completion-review settlement lifecycle combination drifted"
+                )
+            receipt = MethodologyCompletionReviewDispatchReceipt.model_validate(
+                seal_model_payload(
+                    MethodologyCompletionReviewDispatchReceipt,
+                    {
+                        "schema_version": "1.0",
+                        "receipt_id": (
+                            "methodology-completion-review-dispatch-receipt:"
+                            f"{dispatch_id}"
+                        ),
+                        "settled_at": now,
+                        "dispatch_claim": state.claim,
+                        "pid": state.pid,
+                        "process_started": state.process_started,
+                        "exit_code": state.exit_code,
+                        "timed_out": state.timed_out,
+                        "output_sha256": hashlib.sha256(
+                            state.output.encode("utf-8")
+                        ).hexdigest(),
+                        "error_sha256": hashlib.sha256(
+                            (state.error_message or "").encode("utf-8")
+                        ).hexdigest(),
+                        "repository_unchanged": state.repository_unchanged,
+                        "usage_observation": state.usage_observation,
+                        "protocol_state": state.adapter_result.protocol_state,
+                        "handoff_pack_id": (
+                            protocol_run.handoff_pack.pack_id
+                            if protocol_run.handoff_pack is not None
+                            else None
+                        ),
+                        "handoff_pack_sha256": (
+                            protocol_run.handoff_pack.content_sha256
+                            if protocol_run.handoff_pack is not None
+                            else None
+                        ),
+                        "stage_status": normalized.stage.status,
+                        "gate_status": normalized.gate.status,
+                        "task_status": control_task.status,
+                        "evidence_ids": sorted(normalized.evidence_ids),
+                        "active_evidence_ids": sorted(
+                            normalized.active_evidence_ids
+                        ),
+                        "next_stage_key": None,
+                        "formal_review_run_created": True,
+                        "review_context_pack_created": True,
+                        "compatibility_run_created": False,
+                        "protocol_settled": True,
+                        "process_spawn_authority_consumed": True,
+                        "provider_substitution": False,
+                    },
+                )
+            )
+            usage = state.usage_observation
+            db.execute(
+                """
+                INSERT INTO
+                    orchestration_methodology_completion_review_usage_ledger (
+                    entry_id, dispatch_id, task_id, plan_id, responsibility,
+                    review_run_id, tokens, token_measurement, cost_usd,
+                    cost_measurement, adapter, usage_observation_sha256,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    self._id("methodology-completion-review-usage"),
+                    dispatch_id,
+                    state.claim.task_id,
+                    state.claim.plan_id,
+                    state.claim.responsibility,
+                    state.claim.review_run_id,
+                    usage.total_tokens,
+                    usage.token_measurement,
+                    usage.cost_usd,
+                    usage.cost_measurement,
+                    state.claim.runtime,
+                    usage.content_sha256,
+                    now,
+                ),
+            )
+            cursor = db.execute(
+                """
+                UPDATE orchestration_methodology_completion_review_dispatches
+                SET state = ?, receipt_sha256 = ?, receipt_payload = ?,
+                    settled_at = ?
+                WHERE dispatch_id = ? AND state = ?
+                """,
+                (
+                    MethodologyDispatchState.SETTLED.value,
+                    receipt.content_sha256,
+                    self._json(receipt.model_dump(mode="json")),
+                    now,
+                    dispatch_id,
+                    MethodologyDispatchState.TERMINAL_OBSERVED.value,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise OrchestrationConflictError(
+                    "Completion-review dispatch changed before finalization"
+                )
+            event_payload = {
+                "dispatch_id": dispatch_id,
+                "receipt_id": receipt.receipt_id,
+                "receipt_sha256": receipt.content_sha256,
+                "review_run_id": state.claim.review_run_id,
+                "responsibility": state.claim.responsibility,
+                "protocol_state": receipt.protocol_state.model_dump(mode="json"),
+                "gate_status": receipt.gate_status.value,
+                "stage_status": receipt.stage_status.value,
+                "task_status": receipt.task_status.value,
+                "evidence_ids": receipt.evidence_ids,
+                "usage_observation_sha256": usage.content_sha256,
+            }
+            self.tasks._insert_event(
+                db,
+                task_id=state.claim.task_id,
+                event_type="methodology_completion_review_dispatch_settled",
+                actor="orchestrator",
+                payload=event_payload,
+                created_at=now,
+            )
+            control_plane._event(
+                db,
+                event_key=(
+                    "methodology.completion_review.dispatch.settled:"
+                    f"{dispatch_id}"
+                ),
+                task_id=state.claim.task_id,
+                project_id=state.claim.project_id,
+                event_type=(
+                    "methodology.completion_review_dispatch_settled"
+                ),
+                actor="orchestrator",
+                payload=event_payload,
+                now=now,
             )
         return receipt
 
@@ -10653,6 +11768,133 @@ class OrchestrationStore:
                 )
 
     @classmethod
+    def _validate_methodology_completion_review_usage_ledgers(
+        cls,
+        db: sqlite3.Connection,
+        plan_id: str,
+    ) -> None:
+        rows = db.execute(
+            """
+            SELECT dispatch.*,
+                   usage.dispatch_id AS usage_dispatch_id,
+                   usage.task_id AS usage_task_id,
+                   usage.plan_id AS usage_plan_id,
+                   usage.responsibility AS usage_responsibility,
+                   usage.review_run_id AS usage_review_run_id,
+                   usage.tokens AS usage_tokens,
+                   usage.token_measurement AS usage_token_measurement,
+                   usage.cost_usd AS usage_cost_usd,
+                   usage.cost_measurement AS usage_cost_measurement,
+                   usage.adapter AS usage_adapter,
+                   usage.usage_observation_sha256 AS usage_sha256,
+                   usage.created_at AS usage_created_at,
+                   run.context_pack_id AS protocol_context_pack_id,
+                   run.context_sha256 AS protocol_context_sha256,
+                   run.settled_at AS protocol_settled_at
+            FROM orchestration_methodology_completion_review_dispatches
+                AS dispatch
+            LEFT JOIN protocol_runs AS run
+              ON run.run_id = dispatch.review_run_id
+            LEFT JOIN
+                orchestration_methodology_completion_review_usage_ledger
+                AS usage
+              ON usage.dispatch_id = dispatch.dispatch_id
+            WHERE dispatch.plan_id = ? OR usage.plan_id = ?
+            ORDER BY dispatch.responsibility, dispatch.review_run_id
+            """,
+            (plan_id, plan_id),
+        ).fetchall()
+        orphan = db.execute(
+            """
+            SELECT usage.review_run_id
+            FROM orchestration_methodology_completion_review_usage_ledger AS usage
+            LEFT JOIN
+                orchestration_methodology_completion_review_dispatches AS dispatch
+              ON dispatch.dispatch_id = usage.dispatch_id
+            WHERE usage.plan_id = ? AND dispatch.dispatch_id IS NULL
+            LIMIT 1
+            """,
+            (plan_id,),
+        ).fetchone()
+        if orphan is not None:
+            raise OrchestrationValidationError(
+                "Completion-review usage lacks its dispatch authority"
+            )
+        for row in rows:
+            state = cls._methodology_completion_review_dispatch(row)
+            if row["protocol_context_pack_id"] is None:
+                raise OrchestrationValidationError(
+                    "Completion-review dispatch lacks its formal Run"
+                )
+            claim_row = db.execute(
+                """
+                SELECT *
+                FROM orchestration_methodology_completion_review_claims
+                WHERE receipt_id = ?
+                """,
+                (state.claim.completion_review_claim_receipt_id,),
+            ).fetchone()
+            if claim_row is None:
+                raise OrchestrationValidationError(
+                    "Completion-review dispatch lacks its authenticated claim"
+                )
+            review_claim = cls._methodology_completion_review_claim(claim_row)
+            if (
+                state.claim.completion_review_claim_receipt_sha256
+                != review_claim.content_sha256
+                or state.claim.task_id != review_claim.task_id
+                or state.claim.plan_id != review_claim.plan_id
+                or state.claim.responsibility != review_claim.responsibility
+                or state.claim.runtime != review_claim.runtime
+                or state.claim.review_run_id != review_claim.review_run_id
+                or state.claim.context_pack_id
+                != row["protocol_context_pack_id"]
+                or state.claim.context_pack_sha256
+                != row["protocol_context_sha256"]
+            ):
+                raise OrchestrationValidationError(
+                    "Completion-review dispatch differs from its claim or Context"
+                )
+            usage_present = row["usage_dispatch_id"] is not None
+            if not usage_present:
+                if state.state == MethodologyDispatchState.SETTLED:
+                    raise OrchestrationValidationError(
+                        "Settled completion-review dispatch lacks usage"
+                    )
+                if row["protocol_settled_at"] is not None:
+                    raise OrchestrationValidationError(
+                        "Settled completion-review Run lacks its usage receipt"
+                    )
+                continue
+            if (
+                state.state != MethodologyDispatchState.SETTLED
+                or state.receipt is None
+                or state.usage_observation is None
+            ):
+                raise OrchestrationValidationError(
+                    "Completion-review usage lacks a settled dispatch"
+                )
+            usage = state.receipt.usage_observation
+            if (
+                row["usage_dispatch_id"] != state.dispatch_id
+                or row["usage_task_id"] != state.claim.task_id
+                or row["usage_plan_id"] != state.claim.plan_id
+                or row["usage_responsibility"] != state.claim.responsibility
+                or row["usage_review_run_id"] != state.claim.review_run_id
+                or row["usage_tokens"] != usage.total_tokens
+                or row["usage_token_measurement"] != usage.token_measurement
+                or row["usage_cost_usd"] != usage.cost_usd
+                or row["usage_cost_measurement"] != usage.cost_measurement
+                or row["usage_adapter"] != state.claim.runtime
+                or row["usage_sha256"] != usage.content_sha256
+                or row["usage_created_at"] != state.settled_at
+                or row["protocol_settled_at"] is None
+            ):
+                raise OrchestrationValidationError(
+                    "Completion-review usage row differs from its observation"
+                )
+
+    @classmethod
     def _provider_budget_snapshot(
         cls,
         db: sqlite3.Connection,
@@ -10660,6 +11902,7 @@ class OrchestrationStore:
     ) -> dict[str, float | int]:
         cls._validate_methodology_usage_ledgers(db, plan_id)
         cls._validate_methodology_stage_usage_ledgers(db, plan_id)
+        cls._validate_methodology_completion_review_usage_ledgers(db, plan_id)
         formal = db.execute(
             """SELECT
                    COALESCE(SUM(CASE
@@ -10760,23 +12003,63 @@ class OrchestrationStore:
                WHERE claims.plan_id = ? AND usage.run_id IS NULL""",
             (plan_id,),
         ).fetchone()
+        completion_review = db.execute(
+            """
+            SELECT
+                COALESCE(SUM(CASE
+                    WHEN usage.token_measurement = 'unavailable'
+                         OR usage.tokens IS NULL
+                        THEN dispatch.token_reserved
+                    ELSE usage.tokens END), 0) AS settled_tokens,
+                COALESCE(SUM(CASE
+                    WHEN usage.cost_measurement = 'unavailable'
+                         OR usage.cost_usd IS NULL
+                        THEN COALESCE(dispatch.cost_reserved_usd, 0)
+                    ELSE usage.cost_usd END), 0) AS settled_cost
+            FROM orchestration_methodology_completion_review_usage_ledger
+                AS usage
+            JOIN orchestration_methodology_completion_review_dispatches
+                AS dispatch
+              ON dispatch.dispatch_id = usage.dispatch_id
+            WHERE usage.plan_id = ?
+            """,
+            (plan_id,),
+        ).fetchone()
+        completion_review_active = db.execute(
+            """
+            SELECT COALESCE(SUM(dispatch.token_reserved), 0) AS tokens,
+                   COALESCE(SUM(dispatch.cost_reserved_usd), 0) AS cost
+            FROM orchestration_methodology_completion_review_dispatches
+                AS dispatch
+            LEFT JOIN
+                orchestration_methodology_completion_review_usage_ledger
+                AS usage
+              ON usage.dispatch_id = dispatch.dispatch_id
+            WHERE dispatch.plan_id = ? AND usage.dispatch_id IS NULL
+            """,
+            (plan_id,),
+        ).fetchone()
         return {
             "settled_tokens": int(formal["settled_tokens"])
             + int(consultations["settled_tokens"])
             + int(methodology["settled_tokens"])
-            + int(methodology_stage["settled_tokens"]),
+            + int(methodology_stage["settled_tokens"])
+            + int(completion_review["settled_tokens"]),
             "settled_cost": float(formal["settled_cost"])
             + float(consultations["settled_cost"])
             + float(methodology["settled_cost"])
-            + float(methodology_stage["settled_cost"]),
+            + float(methodology_stage["settled_cost"])
+            + float(completion_review["settled_cost"]),
             "active_tokens": int(formal_active["tokens"])
             + int(consultation_active["tokens"])
             + int(methodology_active["tokens"])
-            + int(methodology_stage_active["tokens"]),
+            + int(methodology_stage_active["tokens"])
+            + int(completion_review_active["tokens"]),
             "active_cost": float(formal_active["cost"])
             + float(consultation_active["cost"])
             + float(methodology_active["cost"])
-            + float(methodology_stage_active["cost"]),
+            + float(methodology_stage_active["cost"])
+            + float(completion_review_active["cost"]),
         }
 
     @staticmethod

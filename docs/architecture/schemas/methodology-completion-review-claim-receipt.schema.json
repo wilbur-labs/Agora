@@ -279,7 +279,7 @@
     },
     "completion_review_protected_tokens": {
       "maximum": 20000000,
-      "minimum": 2,
+      "minimum": 1,
       "title": "Completion Review Protected Tokens",
       "type": "integer"
     },

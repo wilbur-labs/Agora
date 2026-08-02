@@ -1,6 +1,6 @@
 # AWS AI-DLC methodology completion-review claim v1
 
-Status: implemented and independently reviewed
+Status: implemented and independently reviewed; dispatch successor implemented
 
 ## Purpose and entry point
 
@@ -53,11 +53,12 @@ final-dispatch receipt hash, and responsibility. It is therefore stable for
 exact replay, distinct between the two responsibilities, and distinct from the
 production Run. The claim ledger globally reserves that identity: ordinary
 Control Plane protocol Runs and compatibility orchestration Runs cannot occupy
-it, including from another Task. A future reviewer dispatcher must consume the
-exact claim rather than use either ordinary creation path. A responsibility can
-be claimed only once; exact replay by the same authenticated principal returns
-the original receipt while the reservation remains unoccupied, and a different
-request conflicts.
+it, including from another Task. The completion-review dispatcher consumes the
+exact claim rather than using either ordinary creation path. A responsibility
+can be claimed only once; exact replay by the same authenticated principal
+returns the original receipt before dispatch and also after the reserved Run is
+occupied by its exact bound dispatch. A different request or outside Run
+occupancy conflicts.
 
 ## Preserved independence boundary
 
@@ -75,16 +76,18 @@ The receipt explicitly records that no Task, Control Plane Task, Plan, Stage,
 or Gate version changed; no protocol Artifact/Evidence was created; no process
 started; and no provider substitution or spawn authority was granted.
 
-## Persistence and next boundary
+## Persistence and successor boundary
 
 `orchestration_methodology_completion_review_claims` stores one sealed request
 and receipt per Task/responsibility and emits matching Task and Control Plane
 audit events in the same transaction. The final production state is otherwise
 unchanged.
 
-The next bounded increment may dispatch only an already claimed reviewer Run,
-settle its protocol and usage facts, register only its exact completion-review
-Evidence, and then finalize the Gate/Stage/Task only after both independent
-requirements pass. Automatic rework, HTTP/UI surfaces, dynamic runtime
-substitution, and native AWS AI-DLC file mutation remain outside this claim
-boundary.
+The implemented successor is documented in
+`aws-aidlc-methodology-completion-review-dispatch-v1.md`. It dispatches only an
+already claimed reviewer Run, settles its protocol and usage facts, and
+registers only its exact completion-review Evidence. Both independent passed
+requirements finalize the Gate and Stage while leaving the Task
+`NEEDS_REVIEW` for a separate human approval. Automatic rework, HTTP/UI
+surfaces, dynamic runtime substitution, and native AWS AI-DLC file mutation
+remain outside these boundaries.

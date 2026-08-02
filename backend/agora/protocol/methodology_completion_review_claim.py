@@ -171,7 +171,7 @@ class MethodologyCompletionReviewClaimReceipt(HashSealedModel):
     provider_settled_cost_usd_before: float = Field(ge=0, allow_inf_nan=False)
     provider_active_tokens_before: int = Field(ge=0)
     provider_active_cost_usd_before: float = Field(ge=0, allow_inf_nan=False)
-    completion_review_protected_tokens: int = Field(ge=2, le=20_000_000)
+    completion_review_protected_tokens: int = Field(ge=1, le=20_000_000)
     completion_review_protected_cost_usd: float | None = Field(
         default=None,
         ge=0,

@@ -247,6 +247,28 @@ def parser() -> argparse.ArgumentParser:
         help="Environment variable containing a configured Control Plane token",
     )
 
+    migration_completion_review_dispatch = commands.add_parser(
+        "migration-completion-review-dispatch",
+        help=(
+            "Dispatch and settle one already claimed final AWS AI-DLC reviewer "
+            "Run and register only its exact completion Evidence"
+        ),
+    )
+    migration_completion_review_dispatch.add_argument("task_id")
+    migration_completion_review_dispatch.add_argument(
+        "--responsibility",
+        required=True,
+        choices=["independent_correctness", "methodology_stewardship"],
+    )
+    migration_completion_review_dispatch.add_argument(
+        "--allow-unbounded-native-usage",
+        action="store_true",
+        help=(
+            "Acknowledge that provider usage is not hard-capped by the "
+            "completion-review Token reservation"
+        ),
+    )
+
     start = commands.add_parser("start", help="Create a Task and attach the provisional method")
     start.add_argument("title", nargs="?")
     start.add_argument("--description", default="")
@@ -412,6 +434,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "run",
                 "migration-run-dispatch",
                 "migration-next-stage-run-dispatch",
+                "migration-completion-review-dispatch",
             }
         )
         if (
@@ -634,6 +657,24 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.task_id,
                 request,
                 principal=principal,
+            )
+            print(
+                json.dumps(
+                    receipt.model_dump(mode="json"),
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return 0
+        if args.command == "migration-completion-review-dispatch":
+            receipt = asyncio.run(
+                service.dispatch_methodology_completion_review(
+                    args.task_id,
+                    args.responsibility,
+                    allow_unbounded_native_usage=(
+                        args.allow_unbounded_native_usage
+                    ),
+                )
             )
             print(
                 json.dumps(

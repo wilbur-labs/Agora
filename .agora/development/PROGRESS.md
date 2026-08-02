@@ -1,5 +1,75 @@
 # Agora Control Plane Development Progress
 
+## 2026-07-31 - AWS AI-DLC completion-review dispatch and settlement (reviewed)
+
+### Bounded implementation
+
+- [x] Added hash-sealed
+  `MethodologyCompletionReviewDispatchPolicyDecision@1.0`,
+  `MethodologyCompletionReviewDispatchClaim@1.0`, and
+  `MethodologyCompletionReviewDispatchReceipt@1.0` contracts plus a CLI command
+  that consumes one already authenticated responsibility-scoped reviewer claim.
+- [x] Added a review-only Context with the exact seven production Artifact
+  versions, no outputs or memory, the single eligible Gate requirement, and
+  deterministic passed/failed Evidence details. The runtime, result format,
+  command, capability observation, repository, prompt, budget reservation,
+  spawn owner, and recovery lease are sealed before process creation.
+- [x] Added an exact Control Plane Run-start path for the reserved reviewer id.
+  Its transaction authenticates the claim, creates the formal Run, and moves
+  only the final Stage from `blocked` to `running`; ordinary Run creation still
+  rejects that identity.
+- [x] Added fail-closed settlement that accepts no output Artifacts and exactly
+  one claim-bound completion-review Evidence. Schema-valid but forged Evidence
+  becomes a protocol failure with attention and zero Evidence registration;
+  process/transport/schema/semantic results remain separate.
+- [x] Added durable dispatch lifecycle, PID attachment, cancellation/dead-PID
+  recovery, terminal observation, exact provider-usage debit, and idempotent
+  receipt finalization. The original authenticated claim can replay after Run
+  creation only when occupancy belongs to its exact bound dispatch.
+- [x] Preserved independent finalization: one passed review leaves Gate/Stage/
+  Task blocked; both passed reviews produce Gate `passed`, Stage `completed`,
+  and Task `needs_review`. Product failure remains blocked and creates no
+  automatic rework or approval authority.
+- [x] Added checked JSON Schemas and an architecture boundary note. HTTP/UI,
+  automatic rework, dynamic provider substitution, native AWS AI-DLC mutation,
+  and human Task completion approval remain outside this increment.
+
+### Verification and review state
+
+- [x] Complete methodology coverage passed all 232 collected nodeids in four
+  process-isolated shards (58 + 58 + 58 + 58). The remaining non-integration
+  backend suite passed 577 tests with 18 deselected, for 809 backend tests
+  passed in total.
+- [x] Completion-review coverage includes the two-review success path, exact
+  `failed_product`, schema-valid forged Evidence, live-authority drift,
+  preclaimed sibling dispatch, reserved generic-settlement bypass, settled
+  replay, missing formal Run/usage, concurrent single-spawn, unstarted success
+  forgery, deterministic Run-id negatives, and the former-HIGH three-row
+  failed-to-passed reseal attack with unchanged adapter result.
+- [x] Protocol freeze passed 34 tests. Protocol Schema export/check,
+  system-Temp-isolated `compileall`, completion-review CLI help, and
+  `git diff --check` pass.
+- [x] Independent Codex replacement review found and closed reserved-settlement,
+  settled-replay/provenance, live-authority, deterministic-id, missing-Run,
+  unstarted-process, schema-lifecycle, and concurrent-spawn gaps. Its final
+  regression/static recheck returned `CODEX_APPROVE` with no remaining
+  actionable HIGH/MEDIUM. No Kiro development review was used per the user's
+  instruction.
+- [x] Independent Claude Code reviewed the complete final worktree and returned
+  `CLAUDE_APPROVE` with no actionable HIGH/MEDIUM. It confirmed authority,
+  deterministic identity, transactionality, single-spawn, exact Handoff/
+  Evidence/usage, replay/tamper, sibling preclaim, independence, lifecycle,
+  Schema, CLI, and regression boundaries; two informational LOW observations
+  required no change.
+
+### Current checkpoint and next safe action
+
+Implementation, complete validation, and both independent review gates are
+ready to checkpoint on pushed baseline `9d87cb8`. Next stage only the explicit
+implementation/docs/Schema/test files, commit/push, then recover the frozen
+requirements for the bounded explicit human Task approval/completion slice;
+the reviewer dispatch itself intentionally stops at Task `needs_review`.
+
 ## 2026-07-31 - AWS AI-DLC completion-review Run claim (implementation)
 
 ### Bounded implementation
@@ -70,10 +140,9 @@
 ### Current checkpoint and next safe action
 
 Implementation, complete final validation, and both independent review gates
-are complete on pushed baseline `bdadeb8`; this checkpoint is ready for its
-exact-file commit and push. The next bounded slice is dispatch and settlement
-of an already claimed reviewer Run without allowing production to impersonate
-a reviewer.
+were committed and pushed as `9d87cb8`. The next bounded slice was dispatch and
+settlement of an already claimed reviewer Run without allowing production to
+impersonate a reviewer.
 
 ## 2026-07-31 - AWS AI-DLC sequence-8 all-units aggregation (reviewed)
 

@@ -39,6 +39,10 @@ from agora.protocol.methodology_run_dispatch import (
     MethodologyRunDispatchClaim,
     MethodologyRunDispatchReceipt,
 )
+from agora.protocol.methodology_completion_review_dispatch import (
+    MethodologyCompletionReviewDispatchClaim,
+    MethodologyCompletionReviewDispatchReceipt,
+)
 from agora.protocol.methodology_stage_run_dispatch import (
     MethodologyStageRunDispatchClaim,
     MethodologyStageRunDispatchReceipt,
@@ -751,6 +755,196 @@ class MethodologyStageRunDispatchState(StrictModel):
         ):
             raise ValueError(
                 "settled methodology Stage receipt differs from terminal facts"
+            )
+        return self
+
+
+class MethodologyCompletionReviewDispatchState(StrictModel):
+    """Durable recovery state for one claimed completion reviewer process."""
+
+    dispatch_id: str
+    state: MethodologyDispatchState
+    claim: MethodologyCompletionReviewDispatchClaim
+    receipt: MethodologyCompletionReviewDispatchReceipt | None = None
+    pid: int | None = Field(default=None, ge=1)
+    process_started: bool = False
+    exit_code: int | None = None
+    timed_out: bool = False
+    output: str = ""
+    error_message: str | None = None
+    repository_unchanged: bool | None = None
+    adapter_result: AgentAdapterResult | None = None
+    usage_observation: ProviderUsageObservation | None = None
+    claimed_at: str
+    process_attached_at: str | None = None
+    terminal_observed_at: str | None = None
+    settled_at: str | None = None
+
+    @model_validator(mode="after")
+    def validate_recovery_state(self):
+        if self.dispatch_id != self.claim.dispatch_id:
+            raise ValueError(
+                "methodology completion-review state differs from its claim"
+            )
+        terminal_fields = (
+            self.repository_unchanged,
+            self.adapter_result,
+            self.usage_observation,
+            self.terminal_observed_at,
+        )
+        if self.state == MethodologyDispatchState.CLAIMED:
+            if (
+                self.pid is not None
+                or self.process_started
+                or self.process_attached_at is not None
+                or self.exit_code is not None
+                or self.timed_out
+                or self.output
+                or self.error_message is not None
+                or any(item is not None for item in terminal_fields)
+                or self.receipt is not None
+                or self.settled_at is not None
+            ):
+                raise ValueError(
+                    "claimed completion-review dispatch carries terminal facts"
+                )
+            return self
+        if self.state == MethodologyDispatchState.RUNNING:
+            if (
+                self.pid is None
+                or not self.process_started
+                or self.process_attached_at is None
+                or self.exit_code is not None
+                or self.timed_out
+                or self.output
+                or self.error_message is not None
+                or any(item is not None for item in terminal_fields)
+                or self.receipt is not None
+                or self.settled_at is not None
+            ):
+                raise ValueError(
+                    "running completion-review dispatch requires one process"
+                )
+            return self
+        if any(item is None for item in terminal_fields):
+            raise ValueError(
+                "terminal completion-review dispatch requires complete facts"
+            )
+        if self.process_started:
+            if self.pid is None or self.process_attached_at is None:
+                raise ValueError(
+                    "started completion-review dispatch requires its process"
+                )
+        elif (
+            self.pid is not None
+            or self.process_attached_at is not None
+            or self.exit_code is not None
+            or self.timed_out
+        ):
+            raise ValueError(
+                "unstarted completion-review dispatch cannot carry process facts"
+            )
+        if self.adapter_result is not None and (
+            self.adapter_result.protocol_state.run_id
+            != self.claim.review_run_id
+        ):
+            raise ValueError(
+                "completion-review adapter result differs from its Run"
+            )
+        if self.usage_observation is not None and (
+            self.usage_observation.run_id != self.claim.review_run_id
+        ):
+            raise ValueError(
+                "completion-review usage differs from its Run"
+            )
+        if self.adapter_result is not None and self.usage_observation is not None:
+            protocol = self.adapter_result.protocol_state
+            launch_failed = protocol.process_status == ProcessStatus.LAUNCH_FAILED
+            if (
+                self.process_started == launch_failed
+                or protocol.process_status
+                in {ProcessStatus.PENDING, ProcessStatus.RUNNING}
+                or self.exit_code != protocol.process_exit_code
+                or self.timed_out
+                != (protocol.process_status == ProcessStatus.TIMED_OUT)
+            ):
+                raise ValueError(
+                    "completion-review process facts differ from protocol state"
+                )
+            if not self.process_started and (
+                self.usage_observation.total_tokens != 0
+                or self.usage_observation.cost_usd != 0
+                or self.adapter_result.handoff_pack is not None
+                or protocol.semantic_stage_result
+                != SemanticStageResult.BLOCKED
+            ):
+                raise ValueError(
+                    "unstarted completion-review process requires exact-zero "
+                    "blocked terminal facts"
+                )
+            if protocol.semantic_stage_result == SemanticStageResult.SUCCEEDED and (
+                not self.process_started
+                or not self.repository_unchanged
+                or self.adapter_result.handoff_pack is None
+            ):
+                raise ValueError(
+                    "successful completion review requires an attached process, "
+                    "stable repository, and Handoff"
+                )
+        if self.state == MethodologyDispatchState.TERMINAL_OBSERVED:
+            if self.receipt is not None or self.settled_at is not None:
+                raise ValueError(
+                    "terminal-observed completion-review dispatch is unsettled"
+                )
+            return self
+        if self.receipt is None or self.settled_at is None:
+            raise ValueError(
+                "settled completion-review dispatch requires its receipt"
+            )
+        if self.receipt.dispatch_claim != self.claim:
+            raise ValueError(
+                "completion-review receipt differs from its persisted claim"
+            )
+        if (
+            self.receipt.settled_at.isoformat() != self.settled_at
+            or self.receipt.pid != self.pid
+            or self.receipt.process_started != self.process_started
+            or self.receipt.exit_code != self.exit_code
+            or self.receipt.timed_out != self.timed_out
+            or self.receipt.output_sha256
+            != hashlib.sha256(self.output.encode("utf-8")).hexdigest()
+            or self.receipt.error_sha256
+            != hashlib.sha256(
+                (self.error_message or "").encode("utf-8")
+            ).hexdigest()
+            or self.receipt.repository_unchanged
+            != self.repository_unchanged
+            or self.receipt.usage_observation != self.usage_observation
+            or self.adapter_result is None
+            or self.receipt.protocol_state
+            != self.adapter_result.protocol_state
+        ):
+            raise ValueError(
+                "settled completion-review receipt differs from terminal facts"
+            )
+        handoff = self.adapter_result.handoff_pack
+        if handoff is None:
+            if (
+                self.receipt.handoff_pack_id is not None
+                or self.receipt.handoff_pack_sha256 is not None
+                or self.receipt.evidence_ids
+            ):
+                raise ValueError(
+                    "settled completion-review empty Handoff binding drifted"
+                )
+        elif (
+            self.receipt.handoff_pack_id != handoff.pack_id
+            or self.receipt.handoff_pack_sha256 != handoff.content_sha256
+            or self.receipt.evidence_ids
+            != sorted(item.evidence_id for item in handoff.evidence)
+        ):
+            raise ValueError(
+                "settled completion-review Handoff differs from terminal result"
             )
         return self
 

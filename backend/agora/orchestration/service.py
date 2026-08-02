@@ -29,7 +29,7 @@ from agora.control_plane.store import (
     ControlPlaneValidationError,
 )
 from agora.projects import ProjectRegistry
-from agora.protocol.agent_adapter import AgentAdapterResult
+from agora.protocol.agent_adapter import AdapterErrorCode, AgentAdapterResult
 from agora.protocol.hashing import (
     canonical_json_bytes,
     canonical_sha256,
@@ -38,6 +38,10 @@ from agora.protocol.hashing import (
 from agora.protocol.methodology_completion_review_claim import (
     MethodologyCompletionReviewClaimReceipt,
     MethodologyCompletionReviewClaimRequest,
+    MethodologyCompletionReviewResponsibility,
+)
+from agora.protocol.methodology_completion_review_dispatch import (
+    MethodologyCompletionReviewDispatchReceipt,
 )
 from agora.protocol.methodology_execution import (
     MethodologyExecutionContract,
@@ -77,6 +81,9 @@ from agora.protocol.models import (
     ConsultationCandidateDisposition,
     GateRequirement,
     NativeRuntimeCapabilityObservation,
+    RunProtocolState,
+    SchemaStatus,
+    SemanticStageResult,
     StageInventory,
 )
 from agora.protocol.state_machines import StageStatus, TaskStatus
@@ -99,6 +106,12 @@ from .methodology_migration_activation import (
 )
 from .methodology_completion_review_claim import (
     validate_methodology_completion_review_claim,
+)
+from .methodology_completion_review_dispatch import (
+    build_methodology_completion_review_context,
+    build_methodology_completion_review_dispatch_claim,
+    derive_methodology_completion_review_dispatch_policy,
+    derive_methodology_completion_review_runtime_preflight,
 )
 from .methodology_execution_contract import (
     build_methodology_execution_contract,
@@ -127,6 +140,7 @@ from .models import (
     ConsultationState,
     Measurement,
     MethodologyDispatchState,
+    MethodologyCompletionReviewDispatchState,
     MethodologyRunDispatchState,
     MethodologyStageRunDispatchState,
     OrchestrationRun,
@@ -2400,6 +2414,566 @@ class TaskOrchestrationService:
         except (KeyError, OrchestrationConflictError):
             repository_unchanged = False
         return self._settle_methodology_stage_run_dispatch(
+            dispatch,
+            prompt=prompt,
+            result=result,
+            repository_unchanged=repository_unchanged,
+            spawn_owner_id=None,
+        )
+
+    async def dispatch_methodology_completion_review(
+        self,
+        task_id: str,
+        responsibility: MethodologyCompletionReviewResponsibility,
+        *,
+        allow_unbounded_native_usage: bool,
+    ) -> MethodologyCompletionReviewDispatchReceipt:
+        """Dispatch and settle one already authenticated final reviewer claim."""
+
+        if not allow_unbounded_native_usage:
+            raise OrchestrationValidationError(
+                "Completion-review provider dispatch requires explicit "
+                "unbounded-native-usage acknowledgement"
+            )
+        existing = self.store.get_methodology_completion_review_dispatch(
+            task_id,
+            responsibility,
+        )
+        if existing is not None:
+            return self._recover_methodology_completion_review_dispatch(
+                existing
+            )
+        snapshot = (
+            self.store.methodology_completion_review_dispatch_snapshot(
+                task_id,
+                responsibility,
+                control_plane=self.control_plane,
+            )
+        )
+        review_claim = snapshot.completion_review_claim_receipt
+        runtime = self.runtimes.get(review_claim.runtime)
+        if runtime is None:
+            raise OrchestrationConflictError(
+                "Pinned completion-review runtime is unavailable"
+            )
+        try:
+            project = self.projects.get(review_claim.project_id)
+        except KeyError as exc:
+            raise OrchestrationConflictError(
+                "Completion-review project is not registered"
+            ) from exc
+        repository_before = self._resolve_methodology_dispatch_repository(
+            project.root,
+            review_claim.project_id,
+            review_claim.repository,
+        )
+        authority_principal = ControlPrincipal(
+            principal_id=review_claim.authenticated_principal_id,
+            permissions=frozenset({"control_plane.approve"}),
+            projects=frozenset({review_claim.project_id}),
+        )
+        observed_artifact_sha256s_before = observe_migration_artifacts(
+            project.root,
+            snapshot.migration_request.seed_artifacts,
+        )
+
+        def validate_live_claim_authority(
+            current_snapshot,
+            *,
+            repository,
+            observed_artifact_sha256s,
+        ):
+            request = current_snapshot.completion_review_claim_request
+            try:
+                return validate_methodology_completion_review_claim(
+                    snapshot=current_snapshot,
+                    request=request,
+                    principal=authority_principal,
+                    repository=repository,
+                    observed_artifact_sha256s=observed_artifact_sha256s,
+                    runtimes=self.runtimes,
+                )
+            except ValueError as original_error:
+                current_claim = (
+                    current_snapshot.completion_review_claim_receipt
+                )
+                original_active = set(
+                    current_claim.active_evidence_ids_after
+                )
+                current_active = {
+                    item.evidence_id
+                    for item in current_snapshot.active_evidence
+                }
+                added = current_active - original_active
+                added_evidence = [
+                    item
+                    for item in current_snapshot.active_evidence
+                    if item.evidence_id in added
+                ]
+                completion_contracts = {
+                    item.requirement.requirement_id: item
+                    for item in current_snapshot.execution_contract.stages[-1]
+                    .gate.evidence_contracts
+                    if item.source == "completion_review"
+                }
+                sibling_contract = (
+                    completion_contracts.get(
+                        added_evidence[0].requirement_id
+                    )
+                    if len(added_evidence) == 1
+                    else None
+                )
+                sibling_explains_versions = bool(
+                    current_snapshot.task.version
+                    == current_claim.task_version_after
+                    and current_snapshot.control_task.version
+                    == current_claim.control_task_version_after
+                    and current_snapshot.plan.version
+                    == current_claim.plan_version_after
+                    and current_snapshot.final_stage.version
+                    == current_claim.stage_version_after + 2
+                    and current_snapshot.final_gate.version
+                    == current_claim.gate_version_after + 3
+                    and original_active.issubset(current_active)
+                    and len(added) == 1
+                    and sibling_contract is not None
+                    and sibling_contract.producer_responsibility
+                    != current_claim.responsibility
+                    and added_evidence[0].status.value == "passed"
+                )
+                if not sibling_explains_versions:
+                    raise original_error
+                current_request = request.model_copy(
+                    update={
+                        "expected_task_version": current_snapshot.task.version,
+                        "expected_control_task_version": (
+                            current_snapshot.control_task.version
+                        ),
+                        "expected_plan_version": current_snapshot.plan.version,
+                        "expected_stage_version": (
+                            current_snapshot.final_stage.version
+                        ),
+                        "expected_gate_version": (
+                            current_snapshot.final_gate.version
+                        ),
+                    }
+                )
+                return validate_methodology_completion_review_claim(
+                    snapshot=current_snapshot,
+                    request=current_request,
+                    principal=authority_principal,
+                    repository=repository,
+                    observed_artifact_sha256s=observed_artifact_sha256s,
+                    runtimes=self.runtimes,
+                )
+        try:
+            validate_live_claim_authority(
+                snapshot,
+                repository=repository_before,
+                observed_artifact_sha256s=observed_artifact_sha256s_before,
+            )
+        except ValueError as exc:
+            raise OrchestrationConflictError(
+                f"Completion-review dispatch authority blocked: {exc}"
+            ) from exc
+        generated_at = utc_now()
+        context_pack = build_methodology_completion_review_context(
+            snapshot=snapshot,
+            generated_at=generated_at,
+        )
+        prompt = build_protocol_prompt(
+            context_pack=context_pack,
+            runtime=review_claim.runtime,
+            requirements=[review_claim.requirement],
+        )
+        prompt_sha256 = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+        dispatch_policy = (
+            derive_methodology_completion_review_dispatch_policy(
+                snapshot=snapshot,
+                context_pack=context_pack,
+                repository=repository_before,
+                runtimes=self.runtimes,
+                evaluated_at=generated_at,
+            )
+        )
+        if not dispatch_policy.dispatchable:
+            raise OrchestrationConflictError(dispatch_policy.blockers[0])
+        capability_observation = await self.capability_collector(self.runtimes)
+        runtime_preflight = (
+            derive_methodology_completion_review_runtime_preflight(
+                snapshot=snapshot,
+                dispatch_policy=dispatch_policy,
+                observation=capability_observation,
+                runtimes=self.runtimes,
+            )
+        )
+        if not runtime_preflight.allowed:
+            raise OrchestrationConflictError(runtime_preflight.blockers[0])
+        repository_after = self._resolve_methodology_dispatch_repository(
+            project.root,
+            review_claim.project_id,
+            review_claim.repository,
+        )
+        if repository_before != repository_after:
+            raise OrchestrationConflictError(
+                "Completion-review repository changed during preflight"
+            )
+        observed_artifact_sha256s_after = observe_migration_artifacts(
+            project.root,
+            snapshot.migration_request.seed_artifacts,
+        )
+        if observed_artifact_sha256s_before != observed_artifact_sha256s_after:
+            raise OrchestrationConflictError(
+                "Completion-review seed Artifact changed during preflight"
+            )
+        spawn_owner_id = f"completion-review-owner:{uuid.uuid4().hex}"
+
+        def recheck(
+            current_snapshot,
+            claimed_at: str,
+        ):
+            validate_live_claim_authority(
+                current_snapshot,
+                repository=repository_after,
+                observed_artifact_sha256s=observed_artifact_sha256s_after,
+            )
+            return build_methodology_completion_review_dispatch_claim(
+                snapshot=current_snapshot,
+                context_pack=context_pack,
+                repository=repository_after,
+                runtimes=self.runtimes,
+                dispatch_policy=dispatch_policy,
+                runtime_preflight=runtime_preflight,
+                prompt_sha256=prompt_sha256,
+                spawn_owner_id=spawn_owner_id,
+                claimed_at=claimed_at,
+            )
+
+        dispatch = self.store.claim_methodology_completion_review_dispatch(
+            task_id,
+            responsibility,
+            context_pack=context_pack,
+            control_plane=self.control_plane,
+            recheck=recheck,
+        )
+        claim = dispatch.claim
+        if claim.spawn_owner_id != spawn_owner_id:
+            return self._recover_methodology_completion_review_dispatch(
+                dispatch
+            )
+        process_started = False
+
+        async def attach_pid(pid: int) -> None:
+            nonlocal process_started
+            self.store.attach_methodology_completion_review_pid(
+                claim.dispatch_id,
+                pid,
+                spawn_owner_id=spawn_owner_id,
+            )
+            process_started = True
+
+        def before_spawn(
+            checked_runtime: RuntimeCommand,
+            resolved_command: list[str],
+        ) -> None:
+            self._resolve_methodology_dispatch_repository(
+                project.root,
+                review_claim.project_id,
+                review_claim.repository,
+            )
+            self.preflight_rechecker(
+                decision=runtime_preflight,
+                observation=capability_observation,
+                runtimes=self.runtimes,
+                runtime=checked_runtime,
+                resolved_command=resolved_command,
+            )
+
+        cancelled = False
+        try:
+            before_spawn(
+                runtime,
+                resolve_runtime_command(runtime.build(prompt)),
+            )
+            result = await self.runner.run(
+                runtime,
+                prompt,
+                cwd=project.root,
+                task_id=task_id,
+                run_id=claim.review_run_id,
+                stage_key=claim.stage_key,
+                timeout_seconds=context_pack.budget.max_seconds,
+                on_process=attach_pid,
+                before_spawn=before_spawn,
+            )
+        except RuntimeInterrupted as exc:
+            result = RuntimeResult(
+                exit_code=None,
+                stdout="",
+                stderr=str(exc),
+                process_started=True,
+            )
+        except asyncio.CancelledError:
+            cancelled = True
+            result = RuntimeResult(
+                exit_code=None,
+                stdout="",
+                stderr="Completion-review orchestration task was cancelled",
+                process_started=process_started,
+            )
+        except Exception as exc:
+            result = RuntimeResult(
+                exit_code=None,
+                stdout="",
+                stderr=(
+                    "completion-review runtime boundary failed: "
+                    f"{type(exc).__name__}: {exc}"
+                ),
+                process_started=process_started,
+            )
+        repository_unchanged = True
+        if result.process_started or process_started:
+            try:
+                self._resolve_methodology_dispatch_repository(
+                    project.root,
+                    review_claim.project_id,
+                    review_claim.repository,
+                )
+            except OrchestrationConflictError:
+                repository_unchanged = False
+                result = RuntimeResult(
+                    exit_code=(
+                        result.exit_code
+                        if result.exit_code not in {None, 0}
+                        else 1
+                    ),
+                    stdout=result.stdout,
+                    stderr="completion-review runtime changed the repository revision",
+                    timed_out=result.timed_out,
+                    process_started=True,
+                    usage_observation=result.usage_observation,
+                )
+        receipt = self._settle_methodology_completion_review_dispatch(
+            dispatch,
+            prompt=prompt,
+            result=result,
+            repository_unchanged=repository_unchanged,
+            cancelled=cancelled,
+            spawn_owner_id=spawn_owner_id,
+        )
+        if cancelled:
+            raise asyncio.CancelledError
+        return receipt
+
+    @staticmethod
+    def _completion_review_adapter_result(
+        adapted: AgentAdapterResult,
+        claim: MethodologyCompletionReviewClaimReceipt,
+    ) -> AgentAdapterResult:
+        """Fail closed when a reviewer returns anything beyond exact Evidence."""
+
+        if adapted.handoff_pack is not None:
+            try:
+                ControlPlaneStore._assert_methodology_completion_review_handoff(
+                    claim,
+                    adapted.handoff_pack,
+                    settled_at=utc_now(),
+                )
+            except (ControlPlaneValidationError, ValueError):
+                return AgentAdapterResult(
+                    protocol_state=RunProtocolState(
+                        run_id=adapted.protocol_state.run_id,
+                        process_status=adapted.protocol_state.process_status,
+                        transport_status=adapted.protocol_state.transport_status,
+                        schema_status=SchemaStatus.PROTOCOL_FAILED,
+                        semantic_stage_result=SemanticStageResult.BLOCKED,
+                        process_exit_code=(
+                            adapted.protocol_state.process_exit_code
+                        ),
+                        repair_attempts=adapted.protocol_state.repair_attempts,
+                    ),
+                    error_code=AdapterErrorCode.HANDOFF_CONTEXT_MISMATCH,
+                    attention_required=True,
+                )
+            return adapted
+        if (
+            adapted.protocol_state.semantic_stage_result
+            == SemanticStageResult.BLOCKED
+        ):
+            return adapted
+        return AgentAdapterResult(
+            protocol_state=adapted.protocol_state.model_copy(
+                update={
+                    "semantic_stage_result": SemanticStageResult.BLOCKED,
+                }
+            ),
+            error_code=adapted.error_code,
+            attention_required=adapted.attention_required,
+        )
+
+    def _settle_methodology_completion_review_dispatch(
+        self,
+        dispatch: MethodologyCompletionReviewDispatchState,
+        *,
+        prompt: str,
+        result: RuntimeResult,
+        repository_unchanged: bool,
+        cancelled: bool = False,
+        spawn_owner_id: str | None = None,
+    ) -> MethodologyCompletionReviewDispatchReceipt:
+        claim = dispatch.claim
+        protocol_run = self.control_plane.get_protocol_run(claim.review_run_id)
+        review_claim = self.store.get_methodology_completion_review_claim(
+            claim.task_id,
+            claim.responsibility,
+        )
+        if protocol_run is None or review_claim is None:
+            raise OrchestrationConflictError(
+                "Completion-review formal Run or authenticated claim is unavailable"
+            )
+        adapted = adapt_runtime_result(
+            protocol_run.context_pack,
+            result,
+            gate_requirements=[review_claim.requirement],
+            cancelled=cancelled and result.process_started,
+            repository_revision_mismatch=not repository_unchanged,
+        )
+        adapted = self._completion_review_adapter_result(adapted, review_claim)
+        observation = settlement_observation(
+            run_id=claim.review_run_id,
+            adapter=claim.runtime,
+            prompt=prompt,
+            output=result.stdout,
+            process_started=result.process_started,
+            exit_code=result.exit_code,
+            result_format=RuntimeResultFormat(claim.result_format),
+            native_observation=result.usage_observation,
+        )
+        observed = self.store.observe_methodology_completion_review_terminal(
+            claim.dispatch_id,
+            process_started=result.process_started,
+            exit_code=result.exit_code,
+            timed_out=result.timed_out,
+            output=result.stdout,
+            error_message=(result.stderr.strip() or None),
+            repository_unchanged=repository_unchanged,
+            adapter_result=adapted,
+            usage_observation=observation,
+            spawn_owner_id=spawn_owner_id,
+        )
+        return self._finish_methodology_completion_review_dispatch(observed)
+
+    def _finish_methodology_completion_review_dispatch(
+        self,
+        dispatch: MethodologyCompletionReviewDispatchState,
+    ) -> MethodologyCompletionReviewDispatchReceipt:
+        if dispatch.state == MethodologyDispatchState.SETTLED:
+            assert dispatch.receipt is not None
+            return dispatch.receipt
+        if (
+            dispatch.state != MethodologyDispatchState.TERMINAL_OBSERVED
+            or dispatch.adapter_result is None
+        ):
+            raise OrchestrationConflictError(
+                "Completion-review dispatch is not ready for settlement"
+            )
+        review_claim = self.store.get_methodology_completion_review_claim(
+            dispatch.claim.task_id,
+            dispatch.claim.responsibility,
+        )
+        if review_claim is None:
+            raise OrchestrationConflictError(
+                "Completion-review authenticated claim is unavailable"
+            )
+        settlement = self.control_plane.settle_protocol_run(
+            dispatch.adapter_result,
+            actor="orchestrator",
+            operation_key=(
+                "methodology-completion-review-protocol-settle:"
+                f"{dispatch.claim.review_run_id}"
+            ),
+            allowed_handoff_requirement_ids=[
+                review_claim.requirement.requirement_id
+            ],
+            completion_review_claim=review_claim,
+        )
+        return self.store.finish_methodology_completion_review_dispatch(
+            dispatch.dispatch_id,
+            settlement=settlement,
+            control_plane=self.control_plane,
+        )
+
+    def _recover_methodology_completion_review_dispatch(
+        self,
+        dispatch: MethodologyCompletionReviewDispatchState,
+    ) -> MethodologyCompletionReviewDispatchReceipt:
+        if dispatch.state == MethodologyDispatchState.SETTLED:
+            assert dispatch.receipt is not None
+            return dispatch.receipt
+        if dispatch.state == MethodologyDispatchState.TERMINAL_OBSERVED:
+            return self._finish_methodology_completion_review_dispatch(dispatch)
+        protocol_run = self.control_plane.get_protocol_run(
+            dispatch.claim.review_run_id
+        )
+        review_claim = self.store.get_methodology_completion_review_claim(
+            dispatch.claim.task_id,
+            dispatch.claim.responsibility,
+        )
+        if protocol_run is None or review_claim is None:
+            raise OrchestrationConflictError(
+                "Recovered completion-review authority is unavailable"
+            )
+        prompt = build_protocol_prompt(
+            context_pack=protocol_run.context_pack,
+            runtime=dispatch.claim.runtime,
+            requirements=[review_claim.requirement],
+        )
+        if hashlib.sha256(prompt.encode("utf-8")).hexdigest() != (
+            dispatch.claim.prompt_sha256
+        ):
+            raise OrchestrationConflictError(
+                "Recovered completion-review prompt binding changed"
+            )
+        if dispatch.state == MethodologyDispatchState.CLAIMED:
+            if datetime.now(timezone.utc) < dispatch.claim.recovery_not_before:
+                raise OrchestrationConflictError(
+                    "Completion-review dispatch owner lease is active"
+                )
+            result = RuntimeResult(
+                exit_code=None,
+                stdout="",
+                stderr=(
+                    "Recovered a completion-review Run whose process never attached"
+                ),
+                process_started=False,
+            )
+        else:
+            assert dispatch.pid is not None
+            process_state = self.process_inspector(dispatch.pid)
+            if process_state != ProcessState.DEAD:
+                raise OrchestrationConflictError(
+                    f"Completion-review process {dispatch.pid} is "
+                    f"{process_state.value}; refusing duplicate dispatch"
+                )
+            result = RuntimeResult(
+                exit_code=None,
+                stdout="",
+                stderr=(
+                    "Recovered a completion-review Run whose process was inactive"
+                ),
+                process_started=True,
+            )
+        try:
+            project = self.projects.get(dispatch.claim.project_id)
+            self._resolve_methodology_dispatch_repository(
+                project.root,
+                dispatch.claim.project_id,
+                dispatch.claim.repository,
+            )
+            repository_unchanged = True
+        except (KeyError, OrchestrationConflictError):
+            repository_unchanged = False
+        return self._settle_methodology_completion_review_dispatch(
             dispatch,
             prompt=prompt,
             result=result,

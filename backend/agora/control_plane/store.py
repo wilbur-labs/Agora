@@ -8,6 +8,7 @@ import uuid
 from collections import defaultdict
 from collections.abc import Sequence
 from contextlib import closing
+from datetime import datetime
 from typing import Any
 
 from agora.attention.schema import initialize_attention_schema
@@ -16,6 +17,13 @@ from agora.protocol.agent_adapter import AgentAdapterResult
 from agora.protocol.gates import evaluate_gate
 from agora.protocol.hashing import canonical_json_bytes, canonical_sha256
 from agora.protocol.invalidation import invalidate_approvals
+from agora.protocol.methodology_completion_review_claim import (
+    MethodologyCompletionReviewClaimReceipt,
+)
+from agora.protocol.methodology_completion_review_dispatch import (
+    MethodologyCompletionReviewDispatchClaim,
+    methodology_completion_review_evidence_id,
+)
 from agora.protocol.models import (
     Approval,
     ApprovalStatus,
@@ -23,11 +31,15 @@ from agora.protocol.models import (
     ArtifactVersionRef,
     ContextPack,
     Evidence,
+    EvidenceStatus,
     GateEvaluation,
     GateRequirement,
     HandoffPack,
+    ProcessStatus,
+    ProviderUsageObservation,
     RunProtocolState,
     SemanticStageResult,
+    StageResult,
     StageInventory,
 )
 from agora.protocol.state_machines import (
@@ -798,6 +810,163 @@ class ControlPlaneStore:
             )
             return run
 
+    def _start_methodology_completion_review_run_tx(
+        self,
+        db: sqlite3.Connection,
+        *,
+        context_pack: ContextPack,
+        claim_receipt: MethodologyCompletionReviewClaimReceipt,
+        actor: str,
+        event_key_prefix: str,
+        now: str,
+    ) -> ProtocolRunRecord:
+        """Create an exact claimed reviewer Run in a caller-owned transaction."""
+
+        self._assert_methodology_completion_review_claim_tx(db, claim_receipt)
+        if (
+            context_pack.run_id != claim_receipt.review_run_id
+            or context_pack.pack_id != f"context:{claim_receipt.review_run_id}"
+            or context_pack.project_id != claim_receipt.project_id
+            or context_pack.task_id != claim_receipt.task_id
+            or context_pack.stage_key != claim_receipt.stage_key
+            or context_pack.input_artifacts != claim_receipt.artifact_versions
+            or context_pack.required_outputs
+            or context_pack.budget.max_model_tokens
+            != claim_receipt.token_reservation
+            or context_pack.budget.max_cost_usd
+            != claim_receipt.cost_reservation_usd
+        ):
+            raise ControlPlaneValidationError(
+                "Completion-review Context differs from its authenticated claim"
+            )
+        task = self._task_row(db, claim_receipt.task_id)
+        self._assert_project(task, claim_receipt.project_id)
+        control_task = db.execute(
+            "SELECT * FROM control_tasks WHERE task_id = ?",
+            (claim_receipt.task_id,),
+        ).fetchone()
+        stage = db.execute(
+            """
+            SELECT * FROM control_stages
+            WHERE task_id = ? AND stage_key = ?
+            """,
+            (claim_receipt.task_id, claim_receipt.stage_key),
+        ).fetchone()
+        gate = self._gate_row(db, claim_receipt.task_id, claim_receipt.gate_key)
+        if (
+            control_task is None
+            or control_task["status"] != TaskStatus.BLOCKED.value
+            or stage is None
+            or stage["gate_key"] != claim_receipt.gate_key
+            or stage["status"] != StageStatus.BLOCKED.value
+            or gate["stage_key"] != claim_receipt.stage_key
+            or gate["status"] != GateStatus.BLOCKED.value
+        ):
+            raise ControlPlaneConflictError(
+                "Completion-review Run requires the blocked final Stage and Gate"
+            )
+        self._assert_context_inputs(db, context_pack)
+        if db.execute(
+            """
+            SELECT 1 FROM protocol_runs
+            WHERE run_id = ? OR context_pack_id = ?
+            """,
+            (context_pack.run_id, context_pack.pack_id),
+        ).fetchone() is not None:
+            raise ControlPlaneConflictError(
+                "Completion-review Run or Context identity is already occupied"
+            )
+        db.execute(
+            """
+            INSERT INTO protocol_runs (
+                run_id, project_id, task_id, stage_key, gate_key,
+                context_pack_id, context_payload, context_sha256,
+                attention_required, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+            """,
+            (
+                context_pack.run_id,
+                context_pack.project_id,
+                context_pack.task_id,
+                context_pack.stage_key,
+                claim_receipt.gate_key,
+                context_pack.pack_id,
+                self._json(context_pack),
+                context_pack.content_sha256,
+                now,
+            ),
+        )
+        current_stage = StageStatus(stage["status"])
+        next_stage = transition_stage(current_stage, StageStatus.RUNNING)
+        cursor = db.execute(
+            """
+            UPDATE control_stages
+            SET status = ?, version = version + 1, updated_at = ?
+            WHERE task_id = ? AND stage_key = ? AND version = ?
+            """,
+            (
+                next_stage.value,
+                now,
+                claim_receipt.task_id,
+                claim_receipt.stage_key,
+                stage["version"],
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise ControlPlaneConflictError(
+                "Final Stage changed before completion-review Run start"
+            )
+        payload = {
+            "run_id": claim_receipt.review_run_id,
+            "stage_key": claim_receipt.stage_key,
+            "gate_key": claim_receipt.gate_key,
+            "responsibility": claim_receipt.responsibility,
+            "runtime": claim_receipt.runtime,
+            "claim_receipt_id": claim_receipt.receipt_id,
+            "claim_receipt_sha256": claim_receipt.content_sha256,
+            "context_pack_id": context_pack.pack_id,
+            "context_sha256": context_pack.content_sha256,
+        }
+        self._event(
+            db,
+            event_key=f"{event_key_prefix}:run.context_sealed",
+            task_id=claim_receipt.task_id,
+            project_id=claim_receipt.project_id,
+            event_type="run.context_sealed",
+            actor=actor,
+            payload=payload,
+            now=now,
+        )
+        self._event(
+            db,
+            event_key=f"{event_key_prefix}:completion_review.started",
+            task_id=claim_receipt.task_id,
+            project_id=claim_receipt.project_id,
+            event_type="methodology.completion_review.started",
+            actor=actor,
+            payload={
+                **payload,
+                "from": current_stage.value,
+                "to": next_stage.value,
+            },
+            now=now,
+        )
+        self._reconcile_task_lifecycle_tx(
+            db,
+            task_id=claim_receipt.task_id,
+            cause=TaskTransitionCause.ORCHESTRATION,
+            actor=actor,
+            event_key_prefix=event_key_prefix,
+            now=now,
+            required=False,
+        )
+        return self._protocol_run(
+            db.execute(
+                "SELECT * FROM protocol_runs WHERE run_id = ?",
+                (claim_receipt.review_run_id,),
+            ).fetchone()
+        )
+
     def _start_protocol_run_tx(
         self,
         db: sqlite3.Connection,
@@ -994,6 +1163,9 @@ class ControlPlaneStore:
         actor: str,
         operation_key: str,
         allowed_handoff_requirement_ids: Sequence[str] | None = None,
+        completion_review_claim: (
+            MethodologyCompletionReviewClaimReceipt | None
+        ) = None,
     ) -> RunSettlementReceipt:
         """Atomically persist a result, evaluate its Gate, and settle its Stage."""
 
@@ -1019,19 +1191,121 @@ class ControlPlaneStore:
             fingerprint_payload["allowed_handoff_requirement_ids"] = (
                 canonical_allowed_requirement_ids
             )
+        if completion_review_claim is not None:
+            fingerprint_payload["completion_review_claim_sha256"] = (
+                completion_review_claim.content_sha256
+            )
         fingerprint = canonical_sha256(fingerprint_payload)
         now = utc_now()
         with self.tasks._transaction() as db:
+            completion_tables = {
+                item["name"]
+                for item in db.execute(
+                """
+                SELECT name
+                FROM sqlite_master
+                WHERE type = 'table' AND name IN (
+                    'orchestration_methodology_completion_review_claims',
+                    'orchestration_methodology_completion_review_dispatches'
+                )
+                """
+                ).fetchall()
+            }
+            claims_available = (
+                "orchestration_methodology_completion_review_claims"
+                in completion_tables
+            )
+            dispatches_available = (
+                "orchestration_methodology_completion_review_dispatches"
+                in completion_tables
+            )
+            reserved_claim_row = (
+                db.execute(
+                    """
+                    SELECT *
+                    FROM orchestration_methodology_completion_review_claims
+                    WHERE review_run_id = ?
+                    """,
+                    (result.protocol_state.run_id,),
+                ).fetchone()
+                if claims_available
+                else None
+            )
+            reserved_dispatch_row = (
+                db.execute(
+                    """
+                    SELECT 1
+                    FROM orchestration_methodology_completion_review_dispatches
+                    WHERE review_run_id = ?
+                    """,
+                    (result.protocol_state.run_id,),
+                ).fetchone()
+                if dispatches_available
+                else None
+            )
+            if (reserved_claim_row is None) != (reserved_dispatch_row is None):
+                raise ControlPlaneConflictError(
+                    "Completion-review claim/dispatch schema authority drifted"
+                )
+            row = None
+            dispatch_state = None
+            if reserved_claim_row is not None:
+                if not dispatches_available:
+                    raise ControlPlaneConflictError(
+                        "Reserved completion-review Run lacks its dispatch schema"
+                    )
+                if completion_review_claim is None:
+                    raise ControlPlaneConflictError(
+                        "Reserved completion-review Run requires its exact "
+                        "claim and terminal dispatch"
+                    )
+                self._assert_methodology_completion_review_claim_tx(
+                    db,
+                    completion_review_claim,
+                )
+                if (
+                    result.protocol_state.run_id
+                    != completion_review_claim.review_run_id
+                ):
+                    raise ControlPlaneValidationError(
+                        "Completion-review settlement crosses its claimed Run"
+                    )
+                row = db.execute(
+                    "SELECT * FROM protocol_runs WHERE run_id = ?",
+                    (result.protocol_state.run_id,),
+                ).fetchone()
+                if row is None:
+                    raise ControlPlaneNotFoundError(
+                        f"Protocol Run not found: {result.protocol_state.run_id}"
+                    )
+                dispatch_state = (
+                    self._assert_methodology_completion_review_dispatch_terminal_tx(
+                        db,
+                        claim=completion_review_claim,
+                        result=result,
+                        run_row=row,
+                        allow_settled=True,
+                    )
+                )
+            elif completion_review_claim is not None:
+                raise ControlPlaneConflictError(
+                    "Completion-review claim does not identify a reserved Run"
+                )
+
             replay = self._operation_result(db, operation_key, fingerprint)
             if replay is not None:
                 return RunSettlementReceipt.model_validate(
                     {**replay["receipt"], "replayed": True}
                 )
-
-            row = db.execute(
-                "SELECT * FROM protocol_runs WHERE run_id = ?",
-                (result.protocol_state.run_id,),
-            ).fetchone()
+            if dispatch_state is not None and dispatch_state != "terminal_observed":
+                raise ControlPlaneConflictError(
+                    "Completion-review dispatch is not awaiting settlement"
+                )
+            if row is None:
+                row = db.execute(
+                    "SELECT * FROM protocol_runs WHERE run_id = ?",
+                    (result.protocol_state.run_id,),
+                ).fetchone()
             if row is None:
                 raise ControlPlaneNotFoundError(
                     f"Protocol Run not found: {result.protocol_state.run_id}"
@@ -1043,6 +1317,12 @@ class ControlPlaneStore:
             handoff = result.handoff_pack
             if handoff is not None:
                 self._assert_handoff_matches_context(context_pack, handoff)
+                if completion_review_claim is not None:
+                    self._assert_methodology_completion_review_handoff(
+                        completion_review_claim,
+                        handoff,
+                        settled_at=now,
+                    )
                 if (
                     canonical_allowed_requirement_ids is not None
                     and any(
@@ -1058,6 +1338,14 @@ class ControlPlaneStore:
                     raise ControlPlaneValidationError(
                         "Handoff semantic result does not match Run protocol state"
                     )
+            elif (
+                completion_review_claim is not None
+                and result.protocol_state.semantic_stage_result
+                == SemanticStageResult.SUCCEEDED
+            ):
+                raise ControlPlaneValidationError(
+                    "A successful completion review requires its exact Evidence"
+                )
 
             stage = db.execute(
                 """
@@ -3230,6 +3518,256 @@ class ControlPlaneStore:
                 raise ControlPlaneValidationError(
                     f"Context input Artifact binding does not match: {binding.artifact_id}"
                 )
+
+    @staticmethod
+    def _assert_methodology_completion_review_claim_tx(
+        db: sqlite3.Connection,
+        claim: MethodologyCompletionReviewClaimReceipt,
+    ) -> None:
+        row = db.execute(
+            """
+            SELECT *
+            FROM orchestration_methodology_completion_review_claims
+            WHERE receipt_id = ? AND review_run_id = ?
+            """,
+            (claim.receipt_id, claim.review_run_id),
+        ).fetchone()
+        if row is None:
+            raise ControlPlaneConflictError(
+                "Methodology completion-review claim is unavailable"
+            )
+        persisted = MethodologyCompletionReviewClaimReceipt.model_validate_json(
+            row["receipt_payload"]
+        )
+        if (
+            persisted != claim
+            or persisted.content_sha256 != row["receipt_sha256"]
+            or persisted.receipt_id != row["receipt_id"]
+            or persisted.task_id != row["task_id"]
+            or persisted.plan_id != row["plan_id"]
+            or persisted.execution_contract_id
+            != row["execution_contract_id"]
+            or persisted.final_dispatch_id != row["final_dispatch_id"]
+            or persisted.final_dispatch_receipt_id
+            != row["final_dispatch_receipt_id"]
+            or persisted.responsibility != row["responsibility"]
+            or persisted.runtime != row["runtime"]
+            or persisted.review_run_id != row["review_run_id"]
+            or persisted.stage_key != row["stage_key"]
+            or persisted.gate_key != row["gate_key"]
+            or persisted.authenticated_principal_id
+            != row["authenticated_principal_id"]
+            or persisted.claimed_at.isoformat() != row["claimed_at"]
+        ):
+            raise ControlPlaneValidationError(
+                "Methodology completion-review claim ledger drifted"
+            )
+
+    def _assert_methodology_completion_review_dispatch_terminal_tx(
+        self,
+        db: sqlite3.Connection,
+        *,
+        claim: MethodologyCompletionReviewClaimReceipt,
+        result: AgentAdapterResult,
+        run_row: sqlite3.Row,
+        allow_settled: bool,
+    ) -> str:
+        """Require durable dispatch authority before a reserved Run settles."""
+
+        dispatch_row = db.execute(
+            """
+            SELECT *
+            FROM orchestration_methodology_completion_review_dispatches
+            WHERE review_run_id = ?
+            """,
+            (claim.review_run_id,),
+        ).fetchone()
+        if dispatch_row is None:
+            raise ControlPlaneConflictError(
+                "Completion-review Run has no bound dispatch authority"
+            )
+        dispatch_claim = MethodologyCompletionReviewDispatchClaim.model_validate_json(
+            dispatch_row["claim_payload"]
+        )
+        terminal_result = (
+            AgentAdapterResult.model_validate_json(
+                dispatch_row["adapter_result_payload"]
+            )
+            if dispatch_row["adapter_result_payload"] is not None
+            else None
+        )
+        usage = (
+            ProviderUsageObservation.model_validate_json(
+                dispatch_row["usage_observation_payload"]
+            )
+            if dispatch_row["usage_observation_payload"] is not None
+            else None
+        )
+        allowed_states = {"terminal_observed"}
+        if allow_settled:
+            allowed_states.add("settled")
+        if (
+            dispatch_row["state"] not in allowed_states
+            or dispatch_claim.content_sha256 != dispatch_row["claim_sha256"]
+            or dispatch_claim.dispatch_id != dispatch_row["dispatch_id"]
+            or dispatch_claim.task_id != dispatch_row["task_id"]
+            or dispatch_claim.plan_id != dispatch_row["plan_id"]
+            or dispatch_claim.responsibility != dispatch_row["responsibility"]
+            or dispatch_claim.runtime != dispatch_row["runtime"]
+            or dispatch_claim.review_run_id != dispatch_row["review_run_id"]
+            or dispatch_claim.stage_key != dispatch_row["stage_key"]
+            or dispatch_claim.gate_key != dispatch_row["gate_key"]
+            or dispatch_claim.context_pack_id != dispatch_row["context_pack_id"]
+            or dispatch_claim.context_pack_sha256
+            != dispatch_row["context_pack_sha256"]
+            or dispatch_claim.completion_review_claim_receipt_id
+            != claim.receipt_id
+            or dispatch_claim.completion_review_claim_receipt_sha256
+            != claim.content_sha256
+            or dispatch_claim.review_run_id != run_row["run_id"]
+            or dispatch_claim.task_id != run_row["task_id"]
+            or dispatch_claim.stage_key != run_row["stage_key"]
+            or dispatch_claim.gate_key != run_row["gate_key"]
+            or dispatch_claim.context_pack_id != run_row["context_pack_id"]
+            or dispatch_claim.context_pack_sha256 != run_row["context_sha256"]
+            or terminal_result is None
+            or terminal_result != result
+            or terminal_result.protocol_state.run_id != claim.review_run_id
+            or usage is None
+            or usage.run_id != claim.review_run_id
+            or usage.adapter != claim.runtime
+            or dispatch_row["repository_unchanged"] is None
+            or dispatch_row["terminal_observed_at"] is None
+            or bool(dispatch_row["process_started"])
+            != (dispatch_row["pid"] is not None)
+        ):
+            raise ControlPlaneValidationError(
+                "Completion-review terminal dispatch authority drifted"
+            )
+        protocol = terminal_result.protocol_state
+        process_started = bool(dispatch_row["process_started"])
+        launch_failed = protocol.process_status == ProcessStatus.LAUNCH_FAILED
+        if (
+            process_started == launch_failed
+            or protocol.process_status
+            in {ProcessStatus.PENDING, ProcessStatus.RUNNING}
+            or dispatch_row["exit_code"] != protocol.process_exit_code
+            or bool(dispatch_row["timed_out"])
+            != (protocol.process_status == ProcessStatus.TIMED_OUT)
+        ):
+            raise ControlPlaneValidationError(
+                "Completion-review persisted process facts drifted"
+            )
+        if not process_started and (
+            usage.total_tokens != 0
+            or usage.cost_usd != 0
+            or terminal_result.handoff_pack is not None
+            or protocol.semantic_stage_result != SemanticStageResult.BLOCKED
+        ):
+            raise ControlPlaneValidationError(
+                "Unstarted completion reviewer cannot settle provider success"
+            )
+        if protocol.semantic_stage_result == SemanticStageResult.SUCCEEDED and (
+            not process_started
+            or not bool(dispatch_row["repository_unchanged"])
+            or terminal_result.handoff_pack is None
+        ):
+            raise ControlPlaneValidationError(
+                "Successful completion review lacks process or repository authority"
+            )
+        return dispatch_row["state"]
+
+    @staticmethod
+    def _assert_methodology_completion_review_handoff(
+        claim: MethodologyCompletionReviewClaimReceipt,
+        handoff: HandoffPack,
+        *,
+        settled_at: str,
+    ) -> None:
+        if (
+            handoff.pack_id != f"handoff:{claim.review_run_id}"
+            or handoff.run_id != claim.review_run_id
+            or handoff.project_id != claim.project_id
+            or handoff.task_id != claim.task_id
+            or handoff.stage_key != claim.stage_key
+            or handoff.producer.run_id != claim.review_run_id
+            or handoff.producer.stage_key != claim.stage_key
+            or handoff.producer.runtime.value != claim.runtime
+            or handoff.input_artifacts != claim.artifact_versions
+            or handoff.required_outputs
+            or handoff.output_artifacts
+            or handoff.unresolved_questions
+            or handoff.native_state_snapshot is not None
+            or handoff.memory_candidates
+            or len(handoff.evidence) != 1
+        ):
+            raise ControlPlaneValidationError(
+                "Completion-review Handoff exceeds its review-only authority"
+            )
+        evidence = handoff.evidence[0]
+        requirement = claim.requirement
+        if (
+            evidence.evidence_id
+            != methodology_completion_review_evidence_id(claim.review_run_id)
+            or evidence.project_id != claim.project_id
+            or evidence.task_id != claim.task_id
+            or evidence.stage_key != claim.stage_key
+            or evidence.producer != handoff.producer
+            or evidence.repository_id != requirement.repository_id
+            or evidence.ref != requirement.ref
+            or evidence.commit_sha != requirement.commit_sha
+            or evidence.requirement_id != requirement.requirement_id
+            or evidence.kind != requirement.evidence_kind
+            or evidence.artifact_versions != claim.artifact_versions
+            or evidence.observed_at < claim.claimed_at
+            or evidence.observed_at > datetime.fromisoformat(settled_at)
+        ):
+            raise ControlPlaneValidationError(
+                "Completion-review Evidence binding differs from its claim"
+            )
+        if evidence.status == EvidenceStatus.PASSED:
+            expected_stage_result = StageResult.SUCCEEDED
+            expected_verdict = "pass"
+            expected_blockers: list[str] = []
+            if handoff.suggested_next_action is not None:
+                raise ControlPlaneValidationError(
+                    "A passed completion review cannot recommend rework"
+                )
+        elif evidence.status == EvidenceStatus.FAILED_PRODUCT:
+            expected_stage_result = StageResult.BLOCKED
+            expected_verdict = "fail"
+            expected_blockers = [requirement.requirement_id]
+            if handoff.suggested_next_action is None:
+                raise ControlPlaneValidationError(
+                    "A failed completion review requires a bounded next action"
+                )
+        else:
+            raise ControlPlaneValidationError(
+                "Completion reviewer may return only passed or failed_product"
+            )
+        expected_details = {
+            "methodology_completion_review": {
+                "claim_receipt_id": claim.receipt_id,
+                "claim_receipt_sha256": claim.content_sha256,
+                "responsibility": claim.responsibility,
+                "production_run_id": claim.production_run_id,
+                "production_handoff_pack_id": (
+                    claim.production_handoff_pack_id
+                ),
+                "production_handoff_pack_sha256": (
+                    claim.production_handoff_pack_sha256
+                ),
+                "verdict": expected_verdict,
+            }
+        }
+        if (
+            handoff.stage_result != expected_stage_result
+            or handoff.blocker_requirement_ids != expected_blockers
+            or evidence.details != expected_details
+        ):
+            raise ControlPlaneValidationError(
+                "Completion-review verdict semantics differ from its Evidence"
+            )
 
     @staticmethod
     def _assert_handoff_matches_context(

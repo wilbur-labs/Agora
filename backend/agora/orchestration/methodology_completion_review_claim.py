@@ -13,6 +13,7 @@ from agora.control_plane.models import (
 )
 from agora.protocol.methodology_completion_review_claim import (
     MethodologyCompletionReviewClaimRequest,
+    methodology_completion_review_run_id,
 )
 from agora.protocol.methodology_execution import (
     MethodologyExecutionContract,
@@ -25,7 +26,7 @@ from agora.protocol.methodology_migration import (
 from agora.protocol.methodology_stage_run_dispatch import (
     MethodologyStageRunDispatchReceipt,
 )
-from agora.protocol.models import Artifact, Evidence, StageInventory
+from agora.protocol.models import Artifact, Evidence, EvidenceStatus, StageInventory
 from agora.protocol.state_machines import GateStatus, StageStatus, TaskStatus
 from agora.tasks.models import TaskManifest
 
@@ -341,8 +342,60 @@ def validate_methodology_completion_review_claim(
         raise ValueError(
             "Plan budget differs from the frozen methodology migration budget"
         )
+    completion_contract_by_requirement = {
+        item.requirement.requirement_id: item
+        for item in stage_contract.gate.evidence_contracts
+        if item.source == "completion_review"
+    }
+    active_completion_responsibilities: set[str] = set()
+    production_evidence_ids = {
+        item.evidence_id for item in handoff.evidence
+    }
+    for item in snapshot.active_evidence:
+        if item.evidence_id in production_evidence_ids:
+            continue
+        item_contract = completion_contract_by_requirement.get(
+            item.requirement_id
+        )
+        if item_contract is None:
+            raise ValueError(
+                "Active final Evidence is outside production and completion review"
+            )
+        expected_review_run_id = methodology_completion_review_run_id(
+            task_id=task.task_id,
+            execution_contract_sha256=contract.content_sha256,
+            final_dispatch_receipt_sha256=dispatch.content_sha256,
+            responsibility=item_contract.producer_responsibility,
+        )
+        if (
+            item.status != EvidenceStatus.PASSED
+            or item.producer.run_id != expected_review_run_id
+            or item.producer.runtime.value != item_contract.producer_runtime
+            or item.artifact_versions
+            != [artifact.version_ref() for artifact in handoff.output_artifacts]
+        ):
+            raise ValueError(
+                "Active completion-review Evidence binding differs"
+            )
+        active_completion_responsibilities.add(
+            item_contract.producer_responsibility
+        )
+    remaining_completion_pins = [
+        item
+        for item in completion_pins
+        if item.responsibility not in active_completion_responsibilities
+    ]
+    remaining_completion_reservations = [
+        item
+        for item in completion_reservations
+        if item.runtime in {pin.runtime for pin in remaining_completion_pins}
+    ]
+    if request.responsibility in active_completion_responsibilities:
+        raise ValueError(
+            "Completion-review responsibility already has active passed Evidence"
+        )
     protected_tokens = sum(
-        item.token_reservation for item in completion_reservations
+        item.token_reservation for item in remaining_completion_reservations
     )
     if (
         provider_budget.settled_tokens
@@ -357,7 +410,7 @@ def validate_methodology_completion_review_claim(
     if plan.total_cost_budget_usd is None:
         if any(
             item.cost_reservation_usd is not None
-            for item in completion_reservations
+            for item in remaining_completion_reservations
         ):
             raise ValueError(
                 "Unbounded Plan cost cannot carry bounded completion-review reservations"
@@ -366,14 +419,14 @@ def validate_methodology_completion_review_claim(
     else:
         if any(
             item.cost_reservation_usd is None
-            for item in completion_reservations
+            for item in remaining_completion_reservations
         ):
             raise ValueError(
                 "Cost-bounded Plan requires both completion-review reservations"
             )
         protected_cost = sum(
             float(item.cost_reservation_usd)
-            for item in completion_reservations
+            for item in remaining_completion_reservations
             if item.cost_reservation_usd is not None
         )
         if (
@@ -411,10 +464,12 @@ def validate_methodology_completion_review_claim(
             "Completion-review output Artifact authority differs"
         )
     active_ids = [item.evidence_id for item in snapshot.active_evidence]
+    production_ids = sorted(item.evidence_id for item in handoff.evidence)
     if (
         active_ids != gate.active_evidence_ids
-        or active_ids != dispatch.evidence_ids
-        or active_ids != dispatch.active_evidence_ids
+        or not set(dispatch.evidence_ids).issubset(active_ids)
+        or production_ids != sorted(dispatch.evidence_ids)
+        or production_ids != sorted(dispatch.active_evidence_ids)
         or any(
             item.requirement_id == evidence_contract.requirement.requirement_id
             for item in snapshot.active_evidence
