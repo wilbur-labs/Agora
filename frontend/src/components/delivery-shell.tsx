@@ -3,11 +3,25 @@
 import type { ReactNode } from "react";
 import Link from "next/link";
 import { useTheme } from "next-themes";
-import { BellRing, Bot, ClipboardCheck, Columns3, GitBranch, MessageSquare, Moon, Play, Settings, Sun } from "lucide-react";
+import {
+  BellRing,
+  Bot,
+  ClipboardCheck,
+  Columns3,
+  GitBranch,
+  MessageSquare,
+  Moon,
+  Network,
+  Play,
+  Settings,
+  ShieldCheck,
+  Sun,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const links = [
   { href: "/portfolio", label: "Portfolio", icon: Columns3 },
+  { href: "/control-plane", label: "Control Plane", icon: ShieldCheck },
   { href: "/requirements", label: "Requirements", icon: ClipboardCheck },
   { href: "/runs", label: "Runs", icon: Play },
   { href: "/workflows", label: "Workflows", icon: GitBranch },
@@ -25,7 +39,7 @@ export function DeliveryShell({ active, children }: { active: string; children: 
       <aside className="border-b bg-sidebar lg:sticky lg:top-0 lg:h-screen lg:w-64 lg:border-b-0 lg:border-r">
         <div className="flex items-center justify-between px-5 py-4 lg:block lg:py-6">
           <Link href="/" className="flex items-center gap-3">
-            <span className="grid size-10 place-items-center rounded-xl bg-primary text-xl text-primary-foreground">🏛</span>
+            <span className="grid size-10 place-items-center rounded-xl bg-primary text-primary-foreground"><Network className="size-5" /></span>
             <span>
               <span className="block text-lg font-bold leading-tight">Agora</span>
               <span className="block text-xs text-muted-foreground">Delivery Control Plane</span>

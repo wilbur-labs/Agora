@@ -9,10 +9,17 @@ from fastapi.testclient import TestClient
 from agora.attention.models import CreateAttentionRequest
 from agora.attention.store import AttentionStore
 from agora.control_plane.auth import ControlPrincipal, authenticate_control_plane
-from agora.control_plane.router import get_control_plane_store, router
+from agora.control_plane.router import (
+    get_control_plane_store,
+    initialize_control_plane_store,
+    router,
+)
 from agora.control_plane.store import ControlPlaneStore
+from agora.orchestration.methodology import FOUNDATION_METHODOLOGY
+from agora.orchestration.store import OrchestrationStore
 from agora.protocol.models import Evidence
 from agora.tasks.models import CreateTaskRequest
+from agora.tasks.router import get_task_store
 from agora.tasks.store import TaskStore
 
 
@@ -33,6 +40,20 @@ def _store(tmp_path) -> tuple[ControlPlaneStore, str]:
     tasks = TaskStore(tmp_path / "agora.db")
     task = tasks.create(CreateTaskRequest(project_id="agora", title="API", kind="implementation"))
     return ControlPlaneStore(tasks), task.task_id
+
+
+def _prepare_unified_projection(
+    store: ControlPlaneStore,
+    task_id: str,
+) -> None:
+    store.ensure_task_state(task_id, actor="test")
+    OrchestrationStore(store.tasks).create_plan(
+        task_id,
+        FOUNDATION_METHODOLOGY,
+        total_token_budget=60_000,
+        total_cost_budget_usd=10.0,
+        actor="test",
+    )
 
 
 def _principal(*permissions: str, projects=("agora",)) -> ControlPrincipal:
@@ -181,6 +202,106 @@ def test_cross_project_task_lookup_is_non_enumerating(tmp_path):
     response = TestClient(_app(store, principal)).get(
         f"/api/control-plane/projects/other/tasks/{task_id}/projection"
     )
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Control Plane resource not found"
+
+
+def test_unified_projection_exposes_authoritative_state_not_legacy_state(tmp_path):
+    store, task_id = _store(tmp_path)
+    _prepare_unified_projection(store, task_id)
+    with store.tasks._transaction() as db:
+        db.execute(
+            "UPDATE tasks SET state = 'done' WHERE task_id = ?",
+            (task_id,),
+        )
+
+    response = TestClient(_app(store, _principal("control_plane.read"))).get(
+        f"{_base(task_id)}/unified-projection"
+    )
+
+    assert response.status_code == 200
+    projection = response.json()
+    assert projection["schema_version"] == "12.0"
+    assert projection["task"]["state"] == "done"
+    assert projection["task_state"] == "backlog"
+    assert projection["task_state_source"] == "control_plane"
+    assert projection["task_state_version"] == 1
+    assert projection["task_state_lifecycle"] == "unavailable"
+    assert projection["task_lifecycle_decision"] is None
+    assert projection["plan"]["task_id"] == task_id
+    assert projection["collection_pages"]["runs"] == {
+        "limit": 100,
+        "offset": 0,
+        "total": 0,
+    }
+
+
+def test_unified_projection_is_read_only_and_bounded(tmp_path):
+    store, task_id = _store(tmp_path)
+    _prepare_unified_projection(store, task_id)
+
+    with store.tasks._connect() as db:
+        before = "\n".join(db.iterdump())
+
+    response = TestClient(_app(store, _principal("control_plane.read"))).get(
+        f"{_base(task_id)}/unified-projection?limit=1&offset=0"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["collection_pages"]["audit_events"]["limit"] == 1
+    with store.tasks._connect() as db:
+        after = "\n".join(db.iterdump())
+    assert after == before
+
+
+def test_unified_projection_production_dependency_is_initialized_before_get(
+    tmp_path,
+    monkeypatch,
+):
+    db_path = tmp_path / "production-dependency.db"
+    monkeypatch.setattr(
+        "agora.tasks.router.get_config",
+        lambda: {"control_plane": {"db_path": str(db_path)}},
+    )
+    get_task_store.cache_clear()
+    initialize_control_plane_store.cache_clear()
+    try:
+        store = initialize_control_plane_store()
+        task = store.tasks.create(
+            CreateTaskRequest(
+                project_id="agora",
+                title="Production dependency",
+                kind="implementation",
+            )
+        )
+        _prepare_unified_projection(store, task.task_id)
+        with store.tasks._connect() as db:
+            before = "\n".join(db.iterdump())
+
+        app = FastAPI()
+        app.include_router(router, prefix="/api")
+        app.dependency_overrides[authenticate_control_plane] = lambda: _principal(
+            "control_plane.read"
+        )
+        response = TestClient(app).get(
+            f"{_base(task.task_id)}/unified-projection"
+        )
+
+        assert response.status_code == 200
+        with store.tasks._connect() as db:
+            after = "\n".join(db.iterdump())
+        assert after == before
+    finally:
+        initialize_control_plane_store.cache_clear()
+        get_task_store.cache_clear()
+
+
+def test_unified_projection_requires_an_orchestration_plan(tmp_path):
+    store, task_id = _store(tmp_path)
+    response = TestClient(_app(store, _principal("control_plane.read"))).get(
+        f"{_base(task_id)}/unified-projection"
+    )
+
     assert response.status_code == 404
     assert response.json()["detail"] == "Control Plane resource not found"
 

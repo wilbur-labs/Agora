@@ -43,6 +43,10 @@ class TestFrontend:
         r = client.get("/shared")
         assert r.status_code == 200
 
+    def test_control_plane_page(self):
+        r = client.get("/control-plane")
+        assert r.status_code == 200
+
     def test_nonexistent_static(self):
         # Should fallback to index.html
         r = client.get("/nonexistent-page")

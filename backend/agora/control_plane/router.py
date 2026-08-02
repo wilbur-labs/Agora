@@ -8,8 +8,15 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.concurrency import run_in_threadpool
 
 from agora.protocol.models import Approval, Artifact, Evidence
+from agora.orchestration.models import UnifiedTaskProjection
+from agora.orchestration.projection import TaskProjectionStore
+from agora.orchestration.store import (
+    OrchestrationConflictError,
+    OrchestrationNotFoundError,
+    OrchestrationStore,
+    OrchestrationValidationError,
+)
 from agora.tasks.router import get_task_store
-from agora.tasks.store import TaskStore
 
 from .api_models import (
     ConfigureGateRequest,
@@ -34,14 +41,28 @@ router = APIRouter(
 
 
 @lru_cache(maxsize=1)
-def _cached_store(db_path: str) -> ControlPlaneStore:
-    return ControlPlaneStore(TaskStore(db_path))
+def initialize_control_plane_store() -> ControlPlaneStore:
+    """Initialize persistence once during application startup, never from a GET."""
+
+    return ControlPlaneStore(get_task_store())
 
 
-def get_control_plane_store(
-    tasks: TaskStore = Depends(get_task_store),
-) -> ControlPlaneStore:
-    return _cached_store(str(tasks.db_path))
+def get_control_plane_store() -> ControlPlaneStore:
+    if initialize_control_plane_store.cache_info().currsize == 0:
+        raise RuntimeError("Control Plane store was not initialized at startup")
+    return initialize_control_plane_store()
+
+
+def get_task_projection_store(
+    store: ControlPlaneStore = Depends(get_control_plane_store),
+) -> TaskProjectionStore:
+    """Bind the unified read model to the same Task database and authority store."""
+
+    return TaskProjectionStore(
+        store.tasks,
+        OrchestrationStore(store.tasks),
+        store,
+    )
 
 
 def _scope(
@@ -72,11 +93,11 @@ def _read_bound(entity, project_id: str, task_id: str):
 
 
 def _translate(exc: Exception) -> HTTPException:
-    if isinstance(exc, ControlPlaneNotFoundError):
+    if isinstance(exc, (ControlPlaneNotFoundError, OrchestrationNotFoundError)):
         return HTTPException(status.HTTP_404_NOT_FOUND, "Control Plane resource not found")
-    if isinstance(exc, (ControlPlaneConflictError,)):
+    if isinstance(exc, (ControlPlaneConflictError, OrchestrationConflictError)):
         return HTTPException(status.HTTP_409_CONFLICT, "Control Plane state conflict")
-    if isinstance(exc, ControlPlaneValidationError):
+    if isinstance(exc, (ControlPlaneValidationError, OrchestrationValidationError)):
         return HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
             "Control Plane validation failed",
@@ -217,6 +238,27 @@ async def get_projection(
 ):
     await _call(_scope, project_id, task_id, "control_plane.read", principal, store)
     return await _call(store.projection, task_id, event_limit=limit, event_offset=offset)
+
+
+@router.get("/unified-projection", response_model=UnifiedTaskProjection)
+async def get_unified_projection(
+    project_id: str,
+    task_id: str,
+    limit: int = Query(100, ge=1, le=200),
+    offset: int = Query(0, ge=0, le=1_000_000),
+    principal: ControlPrincipal = Depends(authenticate_control_plane),
+    store: ControlPlaneStore = Depends(get_control_plane_store),
+    projection_store: TaskProjectionStore = Depends(get_task_projection_store),
+):
+    """Return one authenticated, bounded snapshot of authoritative Task state."""
+
+    await _call(_scope, project_id, task_id, "control_plane.read", principal, store)
+    return await _call(
+        projection_store.get,
+        task_id,
+        history_limit=limit,
+        history_offset=offset,
+    )
 
 
 @router.get("/stages/{stage_key}", response_model=StageRecord)

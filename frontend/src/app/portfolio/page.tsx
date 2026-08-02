@@ -166,7 +166,10 @@ function TaskCard({ task, onTransition, onConflict }: { task: TaskManifest; onTr
             Define <ArrowRight className="size-3" />
           </button>
         ) : (
-          <a href={`/requirements?task=${task.task_id}`} className="text-xs font-medium hover:underline">Open</a>
+          <span className="flex items-center gap-3">
+            <a href={`/requirements?task=${task.task_id}`} className="text-xs font-medium hover:underline">Requirements</a>
+            <a href={`/control-plane?project=${encodeURIComponent(task.project_id)}&task=${encodeURIComponent(task.task_id)}`} className="text-xs font-medium hover:underline">Authority</a>
+          </span>
         )}
       </div>
       {error && <p className="mt-2 text-xs text-destructive">{error}</p>}

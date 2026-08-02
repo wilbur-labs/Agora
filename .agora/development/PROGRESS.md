@@ -1,5 +1,71 @@
 # Agora Control Plane Development Progress
 
+## 2026-08-02 - authenticated Agora 1.0 Task console read model (reviewed)
+
+### Bounded implementation
+
+- [x] Froze `docs/architecture/control-plane-ui-read-model-v1.md` for the
+  first 1.0 UI increment: one authenticated, Task-scoped, bounded, read-only
+  `UnifiedTaskProjection@12.0` snapshot with explicit authority, credential,
+  error, and deferred-mutation boundaries.
+- [x] Added
+  `GET /api/control-plane/projects/{project_id}/tasks/{task_id}/unified-projection`
+  behind `control_plane.read`, the existing non-enumerating project/Task scope,
+  sanitized orchestration errors, and bounded history pagination. The real
+  production dependency is initialized during the FastAPI lifespan and fails
+  closed when startup was skipped, so GET never bootstraps persistence.
+- [x] Added the static-exported `/control-plane` Task console and linked it
+  from the delivery shell and non-backlog Portfolio cards. The console renders
+  authoritative Task lifecycle, Stage inventory/route source, Stage/Gate
+  ledger, independent Wait/Process/Exit/Transport/Schema/Semantic Run facts,
+  budgets, Artifacts, Evidence, Approvals, required human actions, and audit
+  events from one snapshot.
+- [x] Kept the compatibility Task state visibly labelled informational-only.
+  A compatibility Plan cursor is labelled separately and never receives the
+  formal Control Plane route styling. Missing authority remains unavailable
+  with its recorded reason.
+- [x] Kept the bearer token out of URLs and local storage. It is retained only
+  in component memory and tab-scoped `sessionStorage`; Forget, invalid
+  reconnects, superseding loads, and unmount all abort and invalidate the
+  prior request so an old response cannot resurrect a credential or snapshot.
+- [x] Kept this increment read-only. Task transitions, Stage activation, Run
+  dispatch, Gate evaluation, approvals, attention responses, pagination UI,
+  and methodology migration still require separately frozen authenticated
+  command contracts.
+
+### Verification and review state
+
+- [x] Final complete non-integration backend suite, including
+  `tests/test_web_ui.py`, passed 861 tests with 18 deselected in 838.91 seconds.
+  The focused Control Plane API suite passed 15 tests, including a production
+  dependency-path before/after SQLite dump proving zero GET writes; the focused
+  static Web UI suite passed 45 tests.
+- [x] The frontend request-lifecycle and Run-dimension suite passed 3 tests.
+  Frontend lint passed with zero errors and the same 12 pre-existing warnings;
+  the Next.js 16 production build and 15-page static export passed with the new
+  `/control-plane` route.
+- [x] Protocol Schema export/check, system-Temp-isolated `compileall`, and
+  `git diff --check` pass. The only backend warning remains the existing
+  Starlette/httpx deprecation plus the known post-run Windows Proactor cleanup
+  warning.
+- [x] Independent Codex review initially found four MEDIUM issues: request-time
+  persistence initialization, bearer resurrection after Forget, a compatibility
+  cursor presented as formal routing, and mixed Run wait/process/exit display.
+  All four were fixed and regression-pinned; final review returned
+  `CODEX_APPROVE` with no remaining HIGH/MEDIUM. No Kiro review was used per the
+  user's instruction.
+- [x] Independent Claude Code reviewed the initial implementation and all four
+  fixes, then returned `CLAUDE_APPROVE` with no actionable HIGH/MEDIUM.
+
+### Current checkpoint and next safe action
+
+This reviewed first 1.0 UI increment is ready for a bounded commit and push atop
+clean pushed baseline `c6744a1`. After that checkpoint, the next safe UI action
+is to freeze an authenticated project-scoped Task discovery/read contract so
+the 1.0 console can navigate authoritative Tasks without relying on the legacy
+unauthenticated Portfolio list or manual identifiers. Mutation controls remain
+deferred until their separate authority and idempotency contracts are frozen.
+
 ## 2026-07-31 - AWS AI-DLC explicit human Task completion (reviewed)
 
 ### Bounded implementation

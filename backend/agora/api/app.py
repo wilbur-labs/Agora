@@ -21,10 +21,14 @@ from agora.workspaces.router import router as workspaces_router
 from agora.attention.router import router as attention_router
 from agora.workflows.router import router as workflows_router
 from agora.workflows.router import get_workflow_supervisor
-from agora.control_plane.router import router as control_plane_router
+from agora.control_plane.router import (
+    initialize_control_plane_store,
+    router as control_plane_router,
+)
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    initialize_control_plane_store()
     get_execution_dispatcher().resume_queued()
     supervisor = get_workflow_supervisor()
     supervisor.start()
