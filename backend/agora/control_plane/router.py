@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.concurrency import run_in_threadpool
 
 from agora.protocol.models import Approval, Artifact, Evidence
-from agora.orchestration.models import UnifiedTaskProjection
+from agora.orchestration.models import UnifiedTaskIndexPage, UnifiedTaskProjection
 from agora.orchestration.projection import TaskProjectionStore
 from agora.orchestration.store import (
     OrchestrationConflictError,
@@ -36,6 +36,10 @@ from .store import (
 
 router = APIRouter(
     prefix="/control-plane/projects/{project_id}/tasks/{task_id}",
+    tags=["control-plane"],
+)
+task_discovery_router = APIRouter(
+    prefix="/control-plane/projects/{project_id}/tasks",
     tags=["control-plane"],
 )
 
@@ -120,6 +124,23 @@ async def _call(method, /, *args, **kwargs):
         raise
     except Exception as exc:
         raise _translate(exc) from None
+
+
+@task_discovery_router.get("", response_model=UnifiedTaskIndexPage)
+async def list_control_plane_tasks(
+    project_id: str,
+    limit: int = Query(100, ge=1, le=200),
+    offset: int = Query(0, ge=0, le=1_000_000),
+    principal: ControlPrincipal = Depends(authenticate_control_plane),
+    projection_store: TaskProjectionStore = Depends(get_task_projection_store),
+):
+    authorize(principal, project_id, "control_plane.read")
+    return await _call(
+        projection_store.list_tasks,
+        project_id,
+        limit=limit,
+        offset=offset,
+    )
 
 
 @router.put("/gates/{gate_key}", response_model=GateRecord)

@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  clearProtectedControlPlaneView,
+  controlPlaneTaskIndexPath,
   ProjectionRequestLifecycle,
   runProtocolDimensions,
 } from "../src/lib/control-plane-view.ts";
@@ -14,6 +16,25 @@ test("forget invalidates the active projection request", () => {
 
   assert.equal(request.signal.aborted, true);
   assert.equal(lifecycle.isCurrent(request.requestId), false);
+});
+
+test("credential changes clear every protected view fact", () => {
+  assert.deepEqual(
+    clearProtectedControlPlaneView({
+      projection: { task: "secret-task" },
+      tasks: [{ task: "secret-task" }],
+      taskTotal: 1,
+      error: "old credential error",
+    }),
+    { projection: null, tasks: [], taskTotal: 0, error: null },
+  );
+});
+
+test("Task discovery path is project-scoped and URL encoded", () => {
+  assert.equal(
+    controlPlaneTaskIndexPath("project/with space"),
+    "/api/control-plane/projects/project%2Fwith%20space/tasks",
+  );
 });
 
 test("starting even an invalid reconnect attempt retires the older lease", () => {

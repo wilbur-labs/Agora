@@ -13,6 +13,7 @@ import {
   Fingerprint,
   Gauge,
   KeyRound,
+  ListFilter,
   RefreshCw,
   Route,
   ShieldCheck,
@@ -24,14 +25,17 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ApiError } from "@/lib/control-plane";
 import {
+  clearProtectedControlPlaneView,
   ProjectionRequestLifecycle,
   runProtocolDimensions,
 } from "@/lib/control-plane-view";
 import {
   getUnifiedTaskProjection,
+  getControlPlaneTaskIndex,
   type UnifiedRunProjection,
   type UnifiedStageProjection,
   type UnifiedTaskProjection,
+  type UnifiedTaskIndexItem,
 } from "@/lib/unified-control-plane";
 import { cn } from "@/lib/utils";
 
@@ -42,7 +46,10 @@ export default function ControlPlanePage() {
   const [taskId, setTaskId] = useState("");
   const [token, setToken] = useState("");
   const [projection, setProjection] = useState<UnifiedTaskProjection | null>(null);
+  const [taskOptions, setTaskOptions] = useState<UnifiedTaskIndexItem[]>([]);
+  const [taskTotal, setTaskTotal] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [discovering, setDiscovering] = useState(false);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const lifecycleRef = useRef<ProjectionRequestLifecycle | null>(null);
@@ -50,6 +57,44 @@ export default function ControlPlanePage() {
     lifecycleRef.current = new ProjectionRequestLifecycle();
   }
   const lifecycle = lifecycleRef.current;
+  const discoveryLifecycleRef = useRef<ProjectionRequestLifecycle | null>(null);
+  if (discoveryLifecycleRef.current === null) {
+    discoveryLifecycleRef.current = new ProjectionRequestLifecycle();
+  }
+  const discoveryLifecycle = discoveryLifecycleRef.current;
+
+  const discoverTasks = useCallback(async (projectValue: string, bearer: string, selectedTask = "") => {
+    const lease = discoveryLifecycle.begin();
+    const project = projectValue.trim();
+    if (!project || !bearer) {
+      setTaskOptions([]);
+      setTaskTotal(0);
+      setDiscovering(false);
+      setError("Project and bearer token are required to discover Tasks.");
+      discoveryLifecycle.finish(lease.requestId);
+      return;
+    }
+    setDiscovering(true);
+    setError(null);
+    try {
+      const index = await getControlPlaneTaskIndex(project, bearer, lease.signal);
+      if (!discoveryLifecycle.isCurrent(lease.requestId)) return;
+      setTaskOptions(index.tasks);
+      setTaskTotal(index.page.total);
+      if (!selectedTask && index.tasks.length > 0) setTaskId(index.tasks[0].task_id);
+      window.sessionStorage.setItem(TOKEN_KEY, bearer);
+    } catch (err) {
+      if ((err as Error).name === "AbortError" || !discoveryLifecycle.isCurrent(lease.requestId)) return;
+      setTaskOptions([]);
+      setTaskTotal(0);
+      setError(messageFor(err));
+    } finally {
+      if (discoveryLifecycle.isCurrent(lease.requestId)) {
+        setDiscovering(false);
+        discoveryLifecycle.finish(lease.requestId);
+      }
+    }
+  }, [discoveryLifecycle]);
 
   const loadProjection = useCallback(async (projectValue: string, taskValue: string, bearer: string) => {
     const lease = lifecycle.begin();
@@ -98,12 +143,22 @@ export default function ControlPlanePage() {
     setToken(bearer);
     setReady(true);
     if (project && task && bearer) {
-      const timeout = window.setTimeout(() => void loadProjection(project, task, bearer), 0);
+      const timeout = window.setTimeout(() => {
+        void discoverTasks(project, bearer, task);
+        void loadProjection(project, task, bearer);
+      }, 0);
       return () => window.clearTimeout(timeout);
     }
-  }, [loadProjection]);
+    if (project && bearer) {
+      const timeout = window.setTimeout(() => void discoverTasks(project, bearer), 0);
+      return () => window.clearTimeout(timeout);
+    }
+  }, [discoverTasks, loadProjection]);
 
-  useEffect(() => () => lifecycle.invalidate(), [lifecycle]);
+  useEffect(() => () => {
+    lifecycle.invalidate();
+    discoveryLifecycle.invalidate();
+  }, [discoveryLifecycle, lifecycle]);
 
   return (
     <DeliveryShell active="Control Plane">
@@ -125,18 +180,57 @@ export default function ControlPlanePage() {
           projectId={projectId}
           taskId={taskId}
           token={token}
+          tasks={taskOptions}
+          taskTotal={taskTotal}
           loading={loading}
+          discovering={discovering}
           ready={ready}
-          onProject={setProjectId}
-          onTask={setTaskId}
-          onToken={setToken}
+          onProject={(value) => {
+            lifecycle.invalidate();
+            discoveryLifecycle.invalidate();
+            setProjectId(value);
+            setTaskOptions([]);
+            setTaskTotal(0);
+            setProjection(null);
+            setLoading(false);
+            setDiscovering(false);
+          }}
+          onTask={(value) => {
+            lifecycle.invalidate();
+            setTaskId(value);
+            setProjection(null);
+            setLoading(false);
+          }}
+          onToken={(value) => {
+            lifecycle.invalidate();
+            discoveryLifecycle.invalidate();
+            window.sessionStorage.removeItem(TOKEN_KEY);
+            const cleared = clearProtectedControlPlaneView({
+              projection,
+              tasks: taskOptions,
+              taskTotal,
+              error,
+            });
+            setToken(value);
+            setProjection(cleared.projection);
+            setTaskOptions(cleared.tasks);
+            setTaskTotal(cleared.taskTotal);
+            setError(cleared.error);
+            setLoading(false);
+            setDiscovering(false);
+          }}
           onConnect={() => void load()}
+          onDiscover={() => void discoverTasks(projectId, token, taskId)}
           onForget={() => {
             lifecycle.invalidate();
+            discoveryLifecycle.invalidate();
             window.sessionStorage.removeItem(TOKEN_KEY);
             setToken("");
             setProjection(null);
+            setTaskOptions([]);
+            setTaskTotal(0);
             setLoading(false);
+            setDiscovering(false);
             setError(null);
           }}
         />
@@ -155,24 +249,28 @@ export default function ControlPlanePage() {
   );
 }
 
-function ConnectionPanel({ projectId, taskId, token, loading, ready, onProject, onTask, onToken, onConnect, onForget }: {
+function ConnectionPanel({ projectId, taskId, token, tasks, taskTotal, loading, discovering, ready, onProject, onTask, onToken, onConnect, onDiscover, onForget }: {
   projectId: string;
   taskId: string;
   token: string;
+  tasks: UnifiedTaskIndexItem[];
+  taskTotal: number;
   loading: boolean;
+  discovering: boolean;
   ready: boolean;
   onProject: (value: string) => void;
   onTask: (value: string) => void;
   onToken: (value: string) => void;
   onConnect: () => void;
+  onDiscover: () => void;
   onForget: () => void;
 }) {
   return (
-    <form className="grid gap-3 rounded-2xl border bg-card p-4 shadow-sm md:grid-cols-[minmax(0,1fr)_minmax(0,1.25fr)_minmax(0,1.5fr)_auto]" onSubmit={(event) => { event.preventDefault(); onConnect(); }} aria-label="Control Plane connection">
+    <form className="grid gap-3 rounded-2xl border bg-card p-4 shadow-sm md:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.25fr)_minmax(0,1.5fr)_auto]" onSubmit={(event) => { event.preventDefault(); onConnect(); }} aria-label="Control Plane connection">
       <Field label="Project ID"><input className="field font-mono" value={projectId} onChange={(event) => onProject(event.target.value)} placeholder="agora" autoComplete="off" /></Field>
-      <Field label="Task ID"><input className="field font-mono" value={taskId} onChange={(event) => onTask(event.target.value)} placeholder="task_…" autoComplete="off" /></Field>
+      <Field label={tasks.length > 0 ? (taskTotal > tasks.length ? `Task (${tasks.length} of ${taskTotal} shown; any ID accepted)` : `Task (${taskTotal} inspectable)`) : "Task ID"}><input list="control-plane-task-options" className="field font-mono" value={taskId} onChange={(event) => onTask(event.target.value)} placeholder="Choose a suggestion or enter a Task ID" autoComplete="off" /><datalist id="control-plane-task-options">{tasks.map((task) => <option key={task.task_id} value={task.task_id}>{`[${task.task_state.replaceAll("_", " ")}] ${task.title}`}</option>)}</datalist></Field>
       <Field label="Bearer token"><div className="relative"><KeyRound className="pointer-events-none absolute left-3 top-2.5 size-4 text-muted-foreground" /><input className="field pl-9 font-mono" type="password" value={token} onChange={(event) => onToken(event.target.value)} placeholder="Stored for this tab only" autoComplete="off" /></div></Field>
-      <div className="flex items-end gap-2"><Button type="submit" size="lg" className="min-w-24" disabled={!ready || loading}>{loading ? <RefreshCw className="animate-spin" /> : <ArrowRight />}{loading ? "Loading" : "Connect"}</Button>{token && <Button type="button" variant="ghost" size="lg" onClick={onForget}>Forget</Button>}</div>
+      <div className="flex flex-wrap items-end gap-2 md:col-span-2 xl:col-span-1"><Button type="button" variant="outline" size="lg" onClick={onDiscover} disabled={!ready || discovering || loading}>{discovering ? <RefreshCw className="animate-spin" /> : <ListFilter />}{discovering ? "Finding" : "Find Tasks"}</Button><Button type="submit" size="lg" className="min-w-24" disabled={!ready || loading || discovering}>{loading ? <RefreshCw className="animate-spin" /> : <ArrowRight />}{loading ? "Loading" : "Connect"}</Button>{token && <Button type="button" variant="ghost" size="lg" onClick={onForget}>Forget</Button>}</div>
     </form>
   );
 }

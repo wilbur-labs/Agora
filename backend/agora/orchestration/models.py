@@ -48,7 +48,7 @@ from agora.protocol.methodology_stage_run_dispatch import (
     MethodologyStageRunDispatchReceipt,
 )
 from agora.protocol.state_machines import TaskStatus
-from agora.tasks.models import TaskManifest, TaskRisk
+from agora.tasks.models import TaskManifest, TaskRisk, TaskState
 
 
 class StrictModel(BaseModel):
@@ -1097,6 +1097,35 @@ class ProjectionPage(StrictModel):
     limit: int = Field(ge=1, le=200)
     offset: int = Field(ge=0)
     total: int = Field(ge=0)
+
+
+class UnifiedTaskIndexItem(StrictModel):
+    task_id: str
+    project_id: str
+    title: str
+    description: str
+    kind: str
+    risk: TaskRisk
+    priority: int = Field(ge=0, le=100)
+    task_state: TaskStatus
+    task_state_source: Literal["control_plane"] = "control_plane"
+    task_state_version: int = Field(ge=1)
+    compatibility_state: TaskState
+    plan_id: str
+    plan_state: PlanState
+    methodology_id: str
+    methodology_version: str
+    provisional: bool
+    task_updated_at: str
+    plan_updated_at: str
+
+
+class UnifiedTaskIndexPage(StrictModel):
+    schema_version: Literal["1.0"] = "1.0"
+    snapshot_at: str
+    project_id: str
+    tasks: list[UnifiedTaskIndexItem]
+    page: ProjectionPage
 
 
 class RunWaitState(str, Enum):

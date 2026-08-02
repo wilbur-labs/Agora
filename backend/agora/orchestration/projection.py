@@ -32,6 +32,8 @@ from .models import (
     UnifiedRunProjection,
     UnifiedStageGroupProgress,
     UnifiedStageProjection,
+    UnifiedTaskIndexItem,
+    UnifiedTaskIndexPage,
     UnifiedTaskProgress,
     UnifiedTaskProjection,
 )
@@ -59,6 +61,77 @@ class TaskProjectionStore:
         self.tasks = tasks
         self.orchestration = orchestration
         self.control_plane = control_plane
+
+    def list_tasks(
+        self,
+        project_id: str,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> UnifiedTaskIndexPage:
+        """List only Tasks that have both frozen authority and a Plan."""
+
+        if not 1 <= limit <= MAX_PROJECTION_PAGE:
+            raise OrchestrationValidationError("limit must be between 1 and 200")
+        if not 0 <= offset <= 1_000_000:
+            raise OrchestrationValidationError(
+                "offset must be between 0 and 1000000"
+            )
+        snapshot_at = utc_now()
+        with closing(self.tasks._connect()) as db:
+            db.execute("BEGIN")
+            try:
+                total = db.execute(
+                    """SELECT COUNT(*)
+                       FROM tasks AS task
+                       JOIN control_tasks AS authority
+                         ON authority.task_id = task.task_id
+                        AND authority.project_id = task.project_id
+                       JOIN orchestration_plans AS plan
+                         ON plan.task_id = task.task_id
+                        AND plan.project_id = task.project_id
+                       WHERE task.project_id = ?""",
+                    (project_id,),
+                ).fetchone()[0]
+                rows = db.execute(
+                    """SELECT
+                           task.task_id,
+                           task.project_id,
+                           task.title,
+                           task.description,
+                           task.kind,
+                           task.risk,
+                           task.priority,
+                           task.state AS compatibility_state,
+                           task.updated_at AS task_updated_at,
+                           authority.status AS task_state,
+                           authority.version AS task_state_version,
+                           plan.plan_id,
+                           plan.state AS plan_state,
+                           plan.methodology_id,
+                           plan.methodology_version,
+                           plan.provisional,
+                           plan.updated_at AS plan_updated_at
+                       FROM tasks AS task
+                       JOIN control_tasks AS authority
+                         ON authority.task_id = task.task_id
+                        AND authority.project_id = task.project_id
+                       JOIN orchestration_plans AS plan
+                         ON plan.task_id = task.task_id
+                        AND plan.project_id = task.project_id
+                       WHERE task.project_id = ?
+                       ORDER BY task.updated_at DESC, task.task_id
+                       LIMIT ? OFFSET ?""",
+                    (project_id, limit, offset),
+                ).fetchall()
+                return UnifiedTaskIndexPage(
+                    snapshot_at=snapshot_at,
+                    project_id=project_id,
+                    tasks=[UnifiedTaskIndexItem.model_validate(dict(row)) for row in rows],
+                    page=ProjectionPage(limit=limit, offset=offset, total=total),
+                )
+            finally:
+                db.rollback()
 
     def get(
         self,

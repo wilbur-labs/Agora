@@ -13,6 +13,7 @@ from agora.control_plane.router import (
     get_control_plane_store,
     initialize_control_plane_store,
     router,
+    task_discovery_router,
 )
 from agora.control_plane.store import ControlPlaneStore
 from agora.orchestration.methodology import FOUNDATION_METHODOLOGY
@@ -30,6 +31,7 @@ COMMIT = "1" * 40
 def _app(store: ControlPlaneStore, principal: ControlPrincipal | None) -> FastAPI:
     app = FastAPI()
     app.include_router(router, prefix="/api")
+    app.include_router(task_discovery_router, prefix="/api")
     app.dependency_overrides[get_control_plane_store] = lambda: store
     if principal is not None:
         app.dependency_overrides[authenticate_control_plane] = lambda: principal
@@ -62,6 +64,10 @@ def _principal(*permissions: str, projects=("agora",)) -> ControlPrincipal:
 
 def _base(task_id: str) -> str:
     return f"/api/control-plane/projects/agora/tasks/{task_id}"
+
+
+def _index_base(project_id: str = "agora") -> str:
+    return f"/api/control-plane/projects/{project_id}/tasks"
 
 
 def _requirement() -> dict:
@@ -206,6 +212,131 @@ def test_cross_project_task_lookup_is_non_enumerating(tmp_path):
     assert response.json()["detail"] == "Control Plane resource not found"
 
 
+def test_task_discovery_is_authoritative_bounded_and_plan_scoped(tmp_path):
+    store, task_id = _store(tmp_path)
+    _prepare_unified_projection(store, task_id)
+    undiscoverable = store.tasks.create(
+        CreateTaskRequest(
+            project_id="agora",
+            title="No authority or plan",
+            kind="implementation",
+        )
+    )
+    authority_only = store.tasks.create(
+        CreateTaskRequest(
+            project_id="agora",
+            title="Authority without plan",
+            kind="implementation",
+        )
+    )
+    store.ensure_task_state(authority_only.task_id, actor="test")
+    plan_only = store.tasks.create(
+        CreateTaskRequest(
+            project_id="agora",
+            title="Plan without authority",
+            kind="implementation",
+        )
+    )
+    OrchestrationStore(store.tasks).create_plan(
+        plan_only.task_id,
+        FOUNDATION_METHODOLOGY,
+        total_token_budget=60_000,
+        total_cost_budget_usd=10.0,
+        actor="test",
+    )
+    with store.tasks._transaction() as db:
+        db.execute(
+            "UPDATE tasks SET state = 'done' WHERE task_id = ?",
+            (task_id,),
+        )
+
+    response = TestClient(_app(store, _principal("control_plane.read"))).get(
+        f"{_index_base()}?limit=1&offset=0"
+    )
+
+    assert response.status_code == 200
+    index = response.json()
+    assert index["schema_version"] == "1.0"
+    assert index["project_id"] == "agora"
+    assert index["page"] == {"limit": 1, "offset": 0, "total": 1}
+    assert [item["task_id"] for item in index["tasks"]] == [task_id]
+    discovered_ids = {item["task_id"] for item in index["tasks"]}
+    assert undiscoverable.task_id not in discovered_ids
+    assert authority_only.task_id not in discovered_ids
+    assert plan_only.task_id not in discovered_ids
+    assert index["tasks"][0]["task_state"] == "backlog"
+    assert index["tasks"][0]["task_state_source"] == "control_plane"
+    assert index["tasks"][0]["compatibility_state"] == "done"
+
+
+def test_task_discovery_paginates_one_stable_total_in_deterministic_order(tmp_path):
+    store, first_id = _store(tmp_path)
+    _prepare_unified_projection(store, first_id)
+    task_ids = [first_id]
+    for title in ("Second", "Third"):
+        task = store.tasks.create(
+            CreateTaskRequest(
+                project_id="agora",
+                title=title,
+                kind="implementation",
+            )
+        )
+        _prepare_unified_projection(store, task.task_id)
+        task_ids.append(task.task_id)
+    with store.tasks._transaction() as db:
+        db.execute(
+            "UPDATE tasks SET updated_at = ? WHERE task_id = ?",
+            ("2026-08-01T00:00:00+00:00", task_ids[0]),
+        )
+        for task_id in task_ids[1:]:
+            db.execute(
+                "UPDATE tasks SET updated_at = ? WHERE task_id = ?",
+                ("2026-08-02T00:00:00+00:00", task_id),
+            )
+    expected = sorted(task_ids[1:]) + [task_ids[0]]
+    client = TestClient(_app(store, _principal("control_plane.read")))
+
+    first_page = client.get(f"{_index_base()}?limit=2&offset=0").json()
+    second_page = client.get(f"{_index_base()}?limit=2&offset=2").json()
+
+    assert first_page["page"] == {"limit": 2, "offset": 0, "total": 3}
+    assert [item["task_id"] for item in first_page["tasks"]] == expected[:2]
+    assert second_page["page"] == {"limit": 2, "offset": 2, "total": 3}
+    assert [item["task_id"] for item in second_page["tasks"]] == expected[2:]
+
+
+def test_task_discovery_accepts_the_minimum_legal_priority(tmp_path):
+    store, _ = _store(tmp_path)
+    task = store.tasks.create(
+        CreateTaskRequest(
+            project_id="agora",
+            title="Priority zero",
+            kind="implementation",
+            priority=0,
+        )
+    )
+    _prepare_unified_projection(store, task.task_id)
+
+    response = TestClient(_app(store, _principal("control_plane.read"))).get(
+        _index_base()
+    )
+
+    assert response.status_code == 200
+    item = next(
+        item for item in response.json()["tasks"] if item["task_id"] == task.task_id
+    )
+    assert item["priority"] == 0
+
+
+def test_task_discovery_enforces_project_membership(tmp_path):
+    store, _ = _store(tmp_path)
+    response = TestClient(
+        _app(store, _principal("control_plane.read", projects=("other",)))
+    ).get(_index_base())
+
+    assert response.status_code == 403
+
+
 def test_unified_projection_exposes_authoritative_state_not_legacy_state(tmp_path):
     store, task_id = _store(tmp_path)
     _prepare_unified_projection(store, task_id)
@@ -280,14 +411,17 @@ def test_unified_projection_production_dependency_is_initialized_before_get(
 
         app = FastAPI()
         app.include_router(router, prefix="/api")
+        app.include_router(task_discovery_router, prefix="/api")
         app.dependency_overrides[authenticate_control_plane] = lambda: _principal(
             "control_plane.read"
         )
         response = TestClient(app).get(
             f"{_base(task.task_id)}/unified-projection"
         )
+        discovery = TestClient(app).get(_index_base())
 
         assert response.status_code == 200
+        assert discovery.status_code == 200
         with store.tasks._connect() as db:
             after = "\n".join(db.iterdump())
         assert after == before

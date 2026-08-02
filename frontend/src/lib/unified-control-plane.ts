@@ -1,5 +1,6 @@
 import { getApiBase } from "@/lib/api";
 import { ApiError, type TaskManifest } from "@/lib/control-plane";
+import { controlPlaneTaskIndexPath } from "@/lib/control-plane-view";
 
 export type AuthoritativeTaskState =
   | "backlog"
@@ -185,6 +186,48 @@ export interface UnifiedTaskProjection {
   collection_totals: Record<string, number>;
 }
 
+export interface UnifiedTaskIndexItem {
+  task_id: string;
+  project_id: string;
+  title: string;
+  description: string;
+  kind: string;
+  risk: TaskManifest["risk"];
+  priority: number;
+  task_state: AuthoritativeTaskState;
+  task_state_source: "control_plane";
+  task_state_version: number;
+  compatibility_state: TaskManifest["state"];
+  plan_id: string;
+  plan_state: string;
+  methodology_id: string;
+  methodology_version: string;
+  provisional: boolean;
+  task_updated_at: string;
+  plan_updated_at: string;
+}
+
+export interface UnifiedTaskIndexPage {
+  schema_version: "1.0";
+  snapshot_at: string;
+  project_id: string;
+  tasks: UnifiedTaskIndexItem[];
+  page: { limit: number; offset: number; total: number };
+}
+
+export async function getControlPlaneTaskIndex(
+  projectId: string,
+  bearerToken: string,
+  signal?: AbortSignal,
+): Promise<UnifiedTaskIndexPage> {
+  const response = await fetch(
+    `${getApiBase()}${controlPlaneTaskIndexPath(projectId)}`,
+    { signal, headers: { Authorization: `Bearer ${bearerToken}` } },
+  );
+  if (!response.ok) throw await apiError(response);
+  return response.json() as Promise<UnifiedTaskIndexPage>;
+}
+
 export async function getUnifiedTaskProjection(
   projectId: string,
   taskId: string,
@@ -202,15 +245,17 @@ export async function getUnifiedTaskProjection(
     signal,
     headers: { Authorization: `Bearer ${bearerToken}` },
   });
-  if (!response.ok) {
-    let message = `Request failed (${response.status})`;
-    try {
-      const payload = (await response.json()) as { detail?: unknown };
-      if (typeof payload.detail === "string") message = payload.detail;
-    } catch {
-      // Preserve the status-based message for non-JSON failures.
-    }
-    throw new ApiError(response.status, message);
-  }
+  if (!response.ok) throw await apiError(response);
   return response.json() as Promise<UnifiedTaskProjection>;
+}
+
+async function apiError(response: Response): Promise<ApiError> {
+  let message = `Request failed (${response.status})`;
+  try {
+    const payload = (await response.json()) as { detail?: unknown };
+    if (typeof payload.detail === "string") message = payload.detail;
+  } catch {
+    // Preserve the status-based message for non-JSON failures.
+  }
+  return new ApiError(response.status, message);
 }

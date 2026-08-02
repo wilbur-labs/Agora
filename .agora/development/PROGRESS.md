@@ -1,5 +1,71 @@
 # Agora Control Plane Development Progress
 
+## 2026-08-03 - authenticated project Task discovery and console picker (reviewed)
+
+### Bounded implementation
+
+- [x] Froze `docs/architecture/control-plane-ui-task-discovery-v1.md` for a
+  project-scoped, authenticated, bounded, read-only Task index. The index is a
+  navigation aid only: authoritative Task lifecycle remains in the frozen
+  Control Plane row, compatibility state remains informational, and every
+  listed Task must also have a project-bound orchestration Plan.
+- [x] Added
+  `GET /api/control-plane/projects/{project_id}/tasks?limit=&offset=` behind
+  `control_plane.read`. Authorization runs before the projection query; the
+  production dependency is startup-cached and fails closed if lifespan startup
+  was skipped; count and page rows are read from one SQLite snapshot with a
+  deterministic `updated_at DESC, task_id` order.
+- [x] Added `UnifiedTaskIndexItem` and `UnifiedTaskIndexPage@1.0`, including the
+  authoritative and compatibility Task states, Plan identity/methodology, and
+  page metadata. Limits are bounded, legal priority zero is preserved, and
+  neither authority-only nor Plan-only rows are exposed or counted.
+- [x] Extended `/control-plane` with explicit project discovery and an
+  URL-encoded Task picker while retaining manual Task-ID entry beyond the
+  current page. The UI exposes shown-versus-total counts and keeps discovery
+  and projection request lifecycles independent.
+- [x] Project, Task, credential, Forget, invalid reconnect, and unmount changes
+  invalidate the appropriate request leases. Credential changes atomically
+  clear every protected Task/index/error fact, and bearer credentials remain
+  header-only and tab-scoped rather than entering URLs or local storage.
+- [x] Kept this increment zero-write and discovery-only. Cross-project search,
+  pagination controls, Task creation, approval/attention responses, Stage/Run/
+  Gate mutations, and methodology migration remain outside this contract.
+
+### Verification and review state
+
+- [x] Focused Control Plane API coverage passes 19 tests, including project
+  authorization, zero-write production dependencies, authority/Plan exclusion,
+  deterministic order/offset/total behavior, and priority zero. Frontend
+  request-lifecycle/path coverage passes 5 tests.
+- [x] Frontend lint passes with zero errors and the same 12 pre-existing
+  warnings. The Next.js 16 production build and 15-page static export pass.
+- [x] Independent Codex review found three MEDIUM issues: priority zero was
+  rejected, the first page could be presented as complete and hide other IDs,
+  and credential edits could leave an old protected view visible. All were
+  fixed and regression-pinned; final review returned `CODEX_APPROVE` with no
+  HIGH/MEDIUM. No Kiro review was used per the user's instruction.
+- [x] Independent Claude Code review found missing separate authority-only /
+  Plan-only exclusion coverage and insufficient pagination/order coverage.
+  Both were added; final re-review returned `CLAUDE_APPROVE` with no actionable
+  HIGH/MEDIUM.
+- [x] The final complete non-integration backend suite, including
+  `tests/test_web_ui.py`, passed 865 tests with 18 deselected in 1006.09
+  seconds. Its first attempt was terminated by the outer runner at 20 minutes
+  before pytest emitted a semantic summary; that transport/process timeout is
+  not counted as either test success or assertion failure. The successful
+  second run used a fresh system-Temp basetemp and a longer command window.
+- [x] Protocol Schema export/check, system-Temp-isolated `compileall`, and
+  `git diff --check` pass. The only backend warnings are the existing
+  Starlette/httpx deprecation and Windows Proactor cleanup warning.
+
+### Current checkpoint and next safe action
+
+The reviewed and fully validated implementation is ready for a bounded commit
+and push atop clean pushed baseline `ccf1e1e`. Stage only the listed
+discovery/UI files plus this progress record. The next safe UI increment is to
+freeze one authenticated, idempotent human-action command contract; no generic
+mutation surface should be inferred from this read-only discovery endpoint.
+
 ## 2026-08-02 - authenticated Agora 1.0 Task console read model (reviewed)
 
 ### Bounded implementation

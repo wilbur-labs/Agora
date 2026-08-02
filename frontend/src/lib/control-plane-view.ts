@@ -56,3 +56,26 @@ export function runProtocolDimensions(run: {
     semantic: run.semantic_result ?? "unavailable",
   };
 }
+
+export function controlPlaneTaskIndexPath(projectId: string): string {
+  return `/api/control-plane/projects/${encodeURIComponent(projectId)}/tasks`;
+}
+
+export interface ProtectedControlPlaneView<TProjection, TTask> {
+  projection: TProjection | null;
+  tasks: TTask[];
+  taskTotal: number;
+  error: string | null;
+}
+
+export function clearProtectedControlPlaneView<TProjection, TTask>(
+  current: ProtectedControlPlaneView<TProjection, TTask>,
+): ProtectedControlPlaneView<TProjection, TTask> {
+  return {
+    ...current,
+    projection: null,
+    tasks: [],
+    taskTotal: 0,
+    error: null,
+  };
+}
