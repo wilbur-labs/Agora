@@ -1,5 +1,60 @@
 # Agora Control Plane Development Progress
 
+## 2026-08-03 - paused after authenticated UI read/navigation checkpoint
+
+### Durable stop state
+
+- [x] `main`, local `HEAD`, and `origin/main` are all
+  `5cf1f13c9409fafba12319d518c3e2a807ab9dba` (`Add authenticated Task
+  discovery to console`). The preceding read-console checkpoint is `ccf1e1e`.
+- [x] No third-increment implementation was started. After `5cf1f13`, only a
+  read-only audit of the existing Attention/API/UI boundaries was performed.
+  There are no uncommitted backend, frontend, schema, or architecture-contract
+  changes at this stop point.
+- [x] User-owned `.kiro/` and legacy pytest temporary directories remain
+  untracked and untouched. Kiro is not an active review gate per the user's
+  instruction; the completed UI increments used independent Codex and Claude
+  approvals.
+- [x] The latest complete verification remains 865 non-integration backend
+  tests passed with 18 deselected, 5 focused frontend tests passed, frontend
+  lint at zero errors with 12 pre-existing warnings, a successful 15-page
+  static production build, and passing Schema export/check, `compileall`, and
+  `git diff --check`.
+
+### Recovered next boundary (analysis only)
+
+- The legacy `POST /api/attention/{item_id}/respond` route is not suitable for
+  the 1.0 Control Plane UI: it is outside the authenticated project/Task path,
+  accepts a caller-selected `actor`, and treats an exact retry as a conflict.
+  The new console must not call or silently repurpose that endpoint.
+- The next increment should first freeze a separate Task-scoped Attention
+  response contract. It should use an explicit response permission, verified
+  project membership, non-enumerating project/Task/item binding, an actor
+  derived only from the bearer principal, optimistic `expected_version`, and
+  an exact-replay `operation_key` whose conflicting reuse fails closed.
+- The contract must define question/blocker versus approval actions, optional
+  assignee binding, expiry settlement, redaction, audit identity, and the
+  distinction between bidirectional delivery and capture-only recording. It
+  must not mutate authoritative Task, Stage, or Gate state or create a formal
+  protocol Approval.
+- The unified backend projection already returns complete `AttentionItem`
+  records, while the new frontend type currently exposes only a read subset.
+  After the command is frozen and regression-pinned, expand that client type
+  and add a bounded response form with abortable mutation leases and stable
+  retry keys; refresh the authoritative projection after settlement.
+- Required adversarial coverage includes missing permission, wrong project or
+  Task/item scope, actor spoof prevention, assignee mismatch, stale version,
+  exact replay, operation-key collision, expired items, action/kind mismatch,
+  delivery-state effects, transactional rollback, credential changes, stale
+  browser responses, and uncertain-network retry behavior.
+
+### Next safe action
+
+Resume from clean pushed commit `5cf1f13`. Re-read this file and Git status,
+then freeze the authenticated idempotent Attention response contract before
+editing runtime or UI code. Keep the increment Attention-only and obtain
+independent Codex and Claude approval before any implementation commit.
+
 ## 2026-08-03 - authenticated project Task discovery and console picker (reviewed)
 
 ### Bounded implementation
@@ -60,11 +115,10 @@
 
 ### Current checkpoint and next safe action
 
-The reviewed and fully validated implementation is ready for a bounded commit
-and push atop clean pushed baseline `ccf1e1e`. Stage only the listed
-discovery/UI files plus this progress record. The next safe UI increment is to
-freeze one authenticated, idempotent human-action command contract; no generic
-mutation surface should be inferred from this read-only discovery endpoint.
+The reviewed and fully validated implementation was committed and pushed as
+`5cf1f13` atop `ccf1e1e`. The next safe UI increment is to freeze one
+authenticated, idempotent human-action command contract; no generic mutation
+surface should be inferred from this read-only discovery endpoint.
 
 ## 2026-08-02 - authenticated Agora 1.0 Task console read model (reviewed)
 
