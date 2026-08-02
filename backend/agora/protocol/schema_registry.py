@@ -7,6 +7,10 @@ from pydantic import BaseModel
 
 from .methodology import MethodologySourceGraph
 from .methodology_activation import MethodologyActivationDefinition
+from .methodology_completion_review_claim import (
+    MethodologyCompletionReviewClaimReceipt,
+    MethodologyCompletionReviewClaimRequest,
+)
 from .methodology_execution import MethodologyExecutionContract
 from .methodology_migration import (
     AuthenticatedMethodologyMigrationGate,
@@ -76,6 +80,12 @@ SCHEMA_MODELS: dict[str, SchemaModel] = {
     "handoff-pack": HandoffPack,
     "methodology-activation-definition": MethodologyActivationDefinition,
     "methodology-execution-contract": MethodologyExecutionContract,
+    "methodology-completion-review-claim-receipt": (
+        MethodologyCompletionReviewClaimReceipt
+    ),
+    "methodology-completion-review-claim-request": (
+        MethodologyCompletionReviewClaimRequest
+    ),
     "methodology-migration-activation-receipt": (
         MethodologyMigrationActivationReceipt
     ),

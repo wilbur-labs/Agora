@@ -35,21 +35,18 @@ from agora.protocol.hashing import (
     canonical_sha256,
     seal_model_payload,
 )
-from agora.protocol.models import (
-    ConsultationCandidate,
-    ConsultationCandidateDisposition,
-    GateRequirement,
-    NativeRuntimeCapabilityObservation,
-    StageInventory,
+from agora.protocol.methodology_completion_review_claim import (
+    MethodologyCompletionReviewClaimReceipt,
+    MethodologyCompletionReviewClaimRequest,
+)
+from agora.protocol.methodology_execution import (
+    MethodologyExecutionContract,
+    MethodologyStageExecutionContract,
 )
 from agora.protocol.methodology_migration import (
     MethodologyMigrationActivationReceipt,
     MethodologyMigrationPreviewDecision,
     MethodologyMigrationPreviewRequest,
-)
-from agora.protocol.methodology_execution import (
-    MethodologyExecutionContract,
-    MethodologyStageExecutionContract,
 )
 from agora.protocol.methodology_route_activation import (
     MethodologyRouteActivationReceipt,
@@ -75,6 +72,13 @@ from agora.protocol.methodology_stage_run_dispatch import (
     MethodologyStageRunDispatchClaim,
     MethodologyStageRunDispatchReceipt,
 )
+from agora.protocol.models import (
+    ConsultationCandidate,
+    ConsultationCandidateDisposition,
+    GateRequirement,
+    NativeRuntimeCapabilityObservation,
+    StageInventory,
+)
 from agora.protocol.state_machines import StageStatus, TaskStatus
 from agora.tasks.models import CreateTaskRequest, TaskBudget, TaskManifest, TaskRisk, utc_now
 from agora.tasks.store import TaskStore
@@ -92,6 +96,9 @@ from .methodology_migration import (
 )
 from .methodology_migration_activation import (
     build_methodology_successor_materialization,
+)
+from .methodology_completion_review_claim import (
+    validate_methodology_completion_review_claim,
 )
 from .methodology_execution_contract import (
     build_methodology_execution_contract,
@@ -1519,6 +1526,67 @@ class TaskOrchestrationService:
             )
 
         return self.store.claim_methodology_next_stage_run(
+            task_id,
+            request,
+            principal=principal,
+            control_plane=self.control_plane,
+            recheck=recheck,
+        )
+
+    def claim_methodology_completion_review(
+        self,
+        task_id: str,
+        request: MethodologyCompletionReviewClaimRequest,
+        *,
+        principal: ControlPrincipal,
+    ) -> MethodologyCompletionReviewClaimReceipt:
+        """Authenticate one final reviewer Run without starting a process."""
+
+        task = self.tasks.get(task_id)
+        if task is None:
+            raise OrchestrationConflictError("Task not found")
+        try:
+            project = self.projects.get(task.project_id)
+        except KeyError as exc:
+            raise OrchestrationConflictError(
+                "Methodology successor project is not registered"
+            ) from exc
+
+        def recheck(snapshot, _claimed_at: str):
+            try:
+                repository_before = self.revision_resolver(
+                    project.root,
+                    snapshot.task.project_id,
+                )
+            except (KeyError, TypeError, ValueError):
+                repository_before = None
+            observed_artifact_sha256s = observe_migration_artifacts(
+                project.root,
+                snapshot.migration_request.seed_artifacts,
+            )
+            try:
+                repository_after = self.revision_resolver(
+                    project.root,
+                    snapshot.task.project_id,
+                )
+            except (KeyError, TypeError, ValueError):
+                repository_after = None
+            repository = (
+                repository_after
+                if repository_before is not None
+                and repository_after == repository_before
+                else None
+            )
+            return validate_methodology_completion_review_claim(
+                snapshot=snapshot,
+                request=request,
+                principal=principal,
+                repository=repository,
+                observed_artifact_sha256s=observed_artifact_sha256s,
+                runtimes=self.runtimes,
+            )
+
+        return self.store.claim_methodology_completion_review(
             task_id,
             request,
             principal=principal,

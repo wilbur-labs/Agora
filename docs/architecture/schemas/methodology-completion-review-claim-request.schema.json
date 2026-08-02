@@ -1,0 +1,290 @@
+{
+  "$defs": {
+    "MigrationRepositoryBinding": {
+      "additionalProperties": false,
+      "properties": {
+        "commit_sha": {
+          "title": "Commit Sha",
+          "type": "string"
+        },
+        "ref": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "title": "Ref",
+          "type": "string"
+        },
+        "repository_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+          "title": "Repository Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repository_id",
+        "ref",
+        "commit_sha"
+      ],
+      "title": "MigrationRepositoryBinding",
+      "type": "object"
+    }
+  },
+  "$id": "https://agora.local/schemas/v1/methodology-completion-review-claim-request.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Explicit authority request for one reviewer Run without process start.",
+  "properties": {
+    "claim_review_run": {
+      "const": true,
+      "default": true,
+      "title": "Claim Review Run",
+      "type": "boolean"
+    },
+    "content_sha256": {
+      "title": "Content Sha256",
+      "type": "string"
+    },
+    "cost_reservation_usd": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Cost Reservation Usd"
+    },
+    "evaluate_gate": {
+      "const": false,
+      "default": false,
+      "title": "Evaluate Gate",
+      "type": "boolean"
+    },
+    "execution_contract_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Execution Contract Id",
+      "type": "string"
+    },
+    "execution_contract_sha256": {
+      "title": "Execution Contract Sha256",
+      "type": "string"
+    },
+    "expected_control_task_status": {
+      "const": "blocked",
+      "default": "blocked",
+      "title": "Expected Control Task Status",
+      "type": "string"
+    },
+    "expected_control_task_version": {
+      "minimum": 1,
+      "title": "Expected Control Task Version",
+      "type": "integer"
+    },
+    "expected_gate_version": {
+      "minimum": 1,
+      "title": "Expected Gate Version",
+      "type": "integer"
+    },
+    "expected_plan_version": {
+      "minimum": 1,
+      "title": "Expected Plan Version",
+      "type": "integer"
+    },
+    "expected_stage_version": {
+      "minimum": 1,
+      "title": "Expected Stage Version",
+      "type": "integer"
+    },
+    "expected_task_version": {
+      "minimum": 1,
+      "title": "Expected Task Version",
+      "type": "integer"
+    },
+    "final_dispatch_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Final Dispatch Id",
+      "type": "string"
+    },
+    "final_dispatch_receipt_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Final Dispatch Receipt Id",
+      "type": "string"
+    },
+    "final_dispatch_receipt_sha256": {
+      "title": "Final Dispatch Receipt Sha256",
+      "type": "string"
+    },
+    "finalize_stage": {
+      "const": false,
+      "default": false,
+      "title": "Finalize Stage",
+      "type": "boolean"
+    },
+    "gate_key": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Gate Key",
+      "type": "string"
+    },
+    "inventory_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Inventory Id",
+      "type": "string"
+    },
+    "inventory_sha256": {
+      "title": "Inventory Sha256",
+      "type": "string"
+    },
+    "plan_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Plan Id",
+      "type": "string"
+    },
+    "production_handoff_pack_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Production Handoff Pack Id",
+      "type": "string"
+    },
+    "production_handoff_pack_sha256": {
+      "title": "Production Handoff Pack Sha256",
+      "type": "string"
+    },
+    "production_run_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Production Run Id",
+      "type": "string"
+    },
+    "project_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Project Id",
+      "type": "string"
+    },
+    "register_evidence": {
+      "const": false,
+      "default": false,
+      "title": "Register Evidence",
+      "type": "boolean"
+    },
+    "repository": {
+      "$ref": "#/$defs/MigrationRepositoryBinding"
+    },
+    "request_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Request Id",
+      "type": "string"
+    },
+    "requested_at": {
+      "format": "date-time",
+      "title": "Requested At",
+      "type": "string"
+    },
+    "responsibility": {
+      "enum": [
+        "independent_correctness",
+        "methodology_stewardship"
+      ],
+      "title": "Responsibility",
+      "type": "string"
+    },
+    "runtime": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Runtime",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "stage_key": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Stage Key",
+      "type": "string"
+    },
+    "stage_sequence": {
+      "maximum": 200,
+      "minimum": 1,
+      "title": "Stage Sequence",
+      "type": "integer"
+    },
+    "start_runtime_process": {
+      "const": false,
+      "default": false,
+      "title": "Start Runtime Process",
+      "type": "boolean"
+    },
+    "task_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+      "title": "Task Id",
+      "type": "string"
+    },
+    "token_reservation": {
+      "maximum": 10000000,
+      "minimum": 1,
+      "title": "Token Reservation",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "content_sha256",
+    "request_id",
+    "requested_at",
+    "project_id",
+    "task_id",
+    "expected_task_version",
+    "expected_control_task_version",
+    "plan_id",
+    "expected_plan_version",
+    "inventory_id",
+    "inventory_sha256",
+    "execution_contract_id",
+    "execution_contract_sha256",
+    "final_dispatch_id",
+    "final_dispatch_receipt_id",
+    "final_dispatch_receipt_sha256",
+    "production_run_id",
+    "production_handoff_pack_id",
+    "production_handoff_pack_sha256",
+    "repository",
+    "stage_sequence",
+    "stage_key",
+    "gate_key",
+    "expected_stage_version",
+    "expected_gate_version",
+    "responsibility",
+    "runtime",
+    "token_reservation"
+  ],
+  "title": "MethodologyCompletionReviewClaimRequest",
+  "type": "object"
+}

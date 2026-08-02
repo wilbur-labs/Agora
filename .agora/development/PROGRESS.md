@@ -1,5 +1,80 @@
 # Agora Control Plane Development Progress
 
+## 2026-07-31 - AWS AI-DLC completion-review Run claim (implementation)
+
+### Bounded implementation
+
+- [x] Added strict hash-sealed
+  `MethodologyCompletionReviewClaimRequest@1.0` and
+  `MethodologyCompletionReviewClaimReceipt@1.0` contracts plus a CLI command
+  for one authenticated, non-dispatching final reviewer Run claim.
+- [x] Bound each claim to the exact final settled production dispatch, Run,
+  Handoff, seven registered output Artifact versions, active production
+  Evidence, blocked Stage/Gate versions, Task/Plan/inventory, repository and
+  seed hashes, reviewer responsibility/runtime command pin, complete runtime
+  registry, and protected Token/cost reservation.
+- [x] Preserved reviewer independence from production and from the other
+  reviewer through deterministic responsibility-scoped Run ids and the frozen
+  pairwise-distinct Claude/Kiro/Codex runtime pins. The temporary Codex
+  development-review replacement does not alter that product contract.
+- [x] Persisted one immutable claim per Task/responsibility with exact replay
+  and atomic Task/Control Plane audit events. The receipt proves no process,
+  Evidence, Artifact, Task, Plan, Stage, or Gate mutation authority was used.
+- [x] Added fail-closed validation of both protocol payloads and denormalized
+  ledger columns for the final output Artifacts and active production Evidence.
+  Row-only tampering blocks the claim with zero writes.
+- [x] Reconciled the frozen migration budget with the live Plan and validated
+  first-Stage plus later-Stage usage ledgers back to their sealed dispatch
+  receipts. A claim preserves both completion reviewers' Token/cost
+  reservations concurrently; Plan, claim, usage-payload, and usage-row drift
+  all fail before writes.
+- [x] Bound the successful production Run's Context/Handoff and separate
+  error/Attention columns, and globally reserved each deterministic reviewer
+  Run id. Ordinary protocol and compatibility Run creation cannot occupy that
+  id, including across Tasks; exact claim replay also detects raw ledger
+  occupation.
+- [x] Added checked request/receipt JSON Schemas and the architecture boundary
+  note. Reviewer dispatch, completion Evidence registration, Gate evaluation,
+  final Stage/Task settlement, rework, HTTP/UI, and provider substitution remain
+  outside this increment.
+
+### Verification and review state
+
+- [x] Final completion-review selection: 3 passed, 220 deselected. The final
+  route-replay plus reserved-identity selection passed 2 tests, 221 deselected.
+  Coverage includes CLI, concurrent exact replay, revoked-principal rejection,
+  event rollback, cross-Task Run-id collision, raw occupancy, and Plan/claim/
+  Context/usage/Artifact/Evidence tampering with zero claim writes.
+- [x] Final complete methodology coverage: all 223 collected nodeids passed in
+  four process-isolated shards (56 + 56 + 56 + 55). This avoided a Windows
+  execution-tool timeout that killed the equivalent single long pytest process
+  without a test verdict.
+- [x] The remaining complete non-integration backend suite passed 577 tests
+  with 18 deselected. Together with the 223 methodology nodeids, final backend
+  coverage is 800 passed and 18 deselected; only the existing Starlette/httpx
+  deprecation and Windows Proactor cleanup warnings remain.
+- [x] Protocol Schema export/check, system-Temp-isolated `compileall`, Task and
+  completion-claim CLI help, and `git diff --check` passed.
+- [x] Independent Codex replacement review found and closed migration/Context,
+  Plan/budget/usage, successful-Run, and reviewer-Run reservation authority
+  gaps. After final static review and independent focused/schema/compile/diff
+  checks it returned `CODEX_APPROVE` with no remaining actionable HIGH/MEDIUM.
+- [x] Independent Claude Code reviewed the complete final worktree across
+  protocol/orchestration/Control Plane code, persistence, generated Schemas,
+  tests, architecture docs, and this checkpoint. It confirmed transactional
+  atomicity, fail-closed provenance and budget/usage binding, reviewer
+  independence, global Run-id reservation, exact replay, compatibility, and
+  regression coverage, then returned `CLAUDE_APPROVE` with no actionable
+  HIGH/MEDIUM. No Kiro development review was used per the user's instruction.
+
+### Current checkpoint and next safe action
+
+Implementation, complete final validation, and both independent review gates
+are complete on pushed baseline `bdadeb8`; this checkpoint is ready for its
+exact-file commit and push. The next bounded slice is dispatch and settlement
+of an already claimed reviewer Run without allowing production to impersonate
+a reviewer.
+
 ## 2026-07-31 - AWS AI-DLC sequence-8 all-units aggregation (reviewed)
 
 ### Bounded implementation
@@ -68,11 +143,11 @@
 ### Current checkpoint and next safe action
 
 Implementation, complete validation, the user-authorized independent Codex
-replacement gate, and the independent Claude gate are complete on clean pushed
-baseline `7466b53`. This increment is ready for an exact-file commit/push. The
-next bounded slice is the independently authorized completion-review Evidence
-and final-Stage finalization path without allowing the production Run to
-impersonate a reviewer or inventing automatic rework semantics.
+replacement gate, and the independent Claude gate were committed and pushed as
+`bdadeb8`. The next bounded slice is the independently authorized
+completion-review Evidence and final-Stage finalization path without allowing
+the production Run to impersonate a reviewer or inventing automatic rework
+semantics.
 
 ## 2026-07-31 - AWS AI-DLC sequence-7 repeated-unit isolation (reviewed)
 

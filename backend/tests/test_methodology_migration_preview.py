@@ -15,13 +15,19 @@ import pytest
 from pydantic import ValidationError
 
 from agora.control_plane.auth import ControlPrincipal
-from agora.control_plane.store import ControlPlaneValidationError
+from agora.control_plane.store import (
+    ControlPlaneConflictError,
+    ControlPlaneValidationError,
+)
 from agora.orchestration import cli as orchestration_cli
 from agora.orchestration.aws_aidlc import AWS_AIDLC_V2_3_SOURCE_GRAPH
 from agora.orchestration.aws_aidlc_activation import (
     AWS_AIDLC_V2_3_ACTIVATION_DEFINITION,
 )
 from agora.orchestration.contracts import load_task_contract
+from agora.orchestration.methodology_completion_review_claim import (
+    load_methodology_completion_review_claim_request,
+)
 from agora.orchestration.methodology_migration import (
     load_methodology_migration_request,
     migration_budget_sha256,
@@ -75,6 +81,11 @@ from agora.orchestration.store import (
 )
 from agora.projects import ProjectRegistry
 from agora.protocol.hashing import canonical_sha256, seal_model_payload
+from agora.protocol.methodology_completion_review_claim import (
+    MethodologyCompletionReviewClaimReceipt,
+    MethodologyCompletionReviewClaimRequest,
+    methodology_completion_review_run_id,
+)
 from agora.protocol.methodology_execution import MethodologyExecutionContract
 from agora.protocol.methodology_migration import (
     AuthenticatedMethodologyMigrationGate,
@@ -112,6 +123,7 @@ from agora.protocol.methodology_stage_run_dispatch import (
 )
 from agora.protocol.models import (
     ContextPack,
+    Evidence,
     GateRequirement,
     HandoffPack,
     ProviderUsageObservation,
@@ -7743,6 +7755,88 @@ async def _claimed_sequence_eight_methodology_run(tmp_path):
     )
 
 
+async def _settled_sequence_eight_methodology_run(tmp_path):
+    claimed = await _claimed_sequence_eight_methodology_run(tmp_path)
+    _, service, contract, *_ = claimed
+    service.runner = MethodologyDispatchRunner()
+    dispatch = await service.dispatch_methodology_next_stage_run(
+        contract.task_id,
+        allow_unbounded_native_usage=True,
+    )
+    assert dispatch.dispatch_claim.stage_sequence == len(contract.stages)
+    assert dispatch.protocol_state.semantic_stage_result.value == "succeeded"
+    assert dispatch.stage_status.value == "blocked"
+    assert dispatch.gate_status.value == "blocked"
+    assert dispatch.next_stage_key is None
+    return (*claimed, dispatch)
+
+
+def _completion_review_claim_request(
+    service,
+    contract,
+    dispatch,
+    responsibility,
+):
+    snapshot = service.store.methodology_completion_review_claim_snapshot(
+        contract.task_id
+    )
+    pin = next(
+        item
+        for item in contract.runtime_pins
+        if item.responsibility == responsibility
+    )
+    reservation = next(
+        item
+        for item in snapshot.migration_request.budget.protected_runtime_reservations
+        if item.runtime == pin.runtime
+    )
+    assert dispatch.handoff_pack_id is not None
+    assert dispatch.handoff_pack_sha256 is not None
+    payload = {
+        "schema_version": "1.0",
+        "request_id": (
+            f"completion-review-claim-{responsibility}-"
+            f"{contract.content_sha256[:12]}"
+        ),
+        "requested_at": FIXED_TIME,
+        "project_id": snapshot.task.project_id,
+        "task_id": snapshot.task.task_id,
+        "expected_task_version": snapshot.task.version,
+        "expected_control_task_version": snapshot.control_task.version,
+        "expected_control_task_status": snapshot.control_task.status.value,
+        "plan_id": snapshot.plan.plan_id,
+        "expected_plan_version": snapshot.plan.version,
+        "inventory_id": snapshot.inventory.inventory_id,
+        "inventory_sha256": snapshot.inventory.content_sha256,
+        "execution_contract_id": contract.contract_id,
+        "execution_contract_sha256": contract.content_sha256,
+        "final_dispatch_id": dispatch.dispatch_claim.dispatch_id,
+        "final_dispatch_receipt_id": dispatch.receipt_id,
+        "final_dispatch_receipt_sha256": dispatch.content_sha256,
+        "production_run_id": dispatch.dispatch_claim.run_id,
+        "production_handoff_pack_id": dispatch.handoff_pack_id,
+        "production_handoff_pack_sha256": dispatch.handoff_pack_sha256,
+        "repository": contract.repository.model_dump(mode="json"),
+        "stage_sequence": len(contract.stages),
+        "stage_key": snapshot.final_stage.stage_key,
+        "gate_key": snapshot.final_gate.gate_key,
+        "expected_stage_version": snapshot.final_stage.version,
+        "expected_gate_version": snapshot.final_gate.version,
+        "responsibility": responsibility,
+        "runtime": pin.runtime,
+        "token_reservation": reservation.token_reservation,
+        "cost_reservation_usd": reservation.cost_reservation_usd,
+        "claim_review_run": True,
+        "start_runtime_process": False,
+        "register_evidence": False,
+        "evaluate_gate": False,
+        "finalize_stage": False,
+    }
+    return MethodologyCompletionReviewClaimRequest.model_validate(
+        seal_model_payload(MethodologyCompletionReviewClaimRequest, payload)
+    )
+
+
 @pytest.mark.asyncio
 async def test_methodology_sequence_four_produces_required_artifacts_and_settles(
     tmp_path,
@@ -8570,6 +8664,954 @@ async def test_methodology_sequence_eight_binds_all_units_and_awaits_review(
     )
     assert replay == receipt
     assert runner.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_methodology_completion_review_claims_are_independent_and_non_spawning(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    settled = await _settled_sequence_eight_methodology_run(tmp_path)
+    tasks, service, contract = settled[:3]
+    dispatch = settled[-1]
+    requests = {
+        responsibility: _completion_review_claim_request(
+            service,
+            contract,
+            dispatch,
+            responsibility,
+        )
+        for responsibility in (
+            "independent_correctness",
+            "methodology_stewardship",
+        )
+    }
+    task_before = tasks.get(contract.task_id)
+    control_before = service.control_plane.get_task_state(contract.task_id)
+    plan_before = service.status(contract.task_id).plan
+    stage_before = service.control_plane.get_stage(
+        contract.task_id,
+        contract.completion_stage_key,
+    )
+    gate_before = service.control_plane.get_gate(
+        contract.task_id,
+        contract.stages[-1].gate_key,
+    )
+    with sqlite3.connect(tasks.db_path) as db:
+        protocol_counts_before = tuple(
+            db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            for table in (
+                "protocol_runs",
+                "protocol_artifacts",
+                "protocol_evidence",
+            )
+        )
+
+    bad_payload = requests["independent_correctness"].model_dump(mode="json")
+    bad_payload.pop("content_sha256")
+    bad_payload["runtime"] = "codex"
+    bad_request = MethodologyCompletionReviewClaimRequest.model_validate(
+        seal_model_payload(MethodologyCompletionReviewClaimRequest, bad_payload)
+    )
+    with pytest.raises(
+        OrchestrationConflictError,
+        match="runtime or protected budget binding differs",
+    ):
+        service.claim_methodology_completion_review(
+            contract.task_id,
+            bad_request,
+            principal=_migration_principal(),
+        )
+
+    before_failed_event = _database_dump(tasks)
+    original_event = service.control_plane._event
+
+    def fail_event(*_args, **_kwargs):
+        raise RuntimeError("injected completion-review claim event failure")
+
+    monkeypatch.setattr(service.control_plane, "_event", fail_event)
+    with pytest.raises(RuntimeError, match="injected completion-review claim"):
+        service.claim_methodology_completion_review(
+            contract.task_id,
+            requests["independent_correctness"],
+            principal=_migration_principal(),
+        )
+    assert _database_dump(tasks) == before_failed_event
+    monkeypatch.setattr(service.control_plane, "_event", original_event)
+
+    barrier = Barrier(2)
+
+    def claim_independent():
+        barrier.wait()
+        return service.claim_methodology_completion_review(
+            contract.task_id,
+            requests["independent_correctness"],
+            principal=_migration_principal(),
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        concurrent_receipts = list(
+            executor.map(lambda _index: claim_independent(), range(2))
+        )
+    assert concurrent_receipts[0] == concurrent_receipts[1]
+    receipts = {
+        "independent_correctness": concurrent_receipts[0]
+    }
+    stewardship_path = tmp_path / "completion-review-claim.json"
+    stewardship_path.write_text(
+        requests["methodology_stewardship"].model_dump_json(),
+        encoding="utf-8",
+    )
+    assert load_methodology_completion_review_claim_request(
+        stewardship_path
+    ) == requests["methodology_stewardship"]
+    secret = "completion-review-claim-control-secret"
+    monkeypatch.setenv("AGORA_TEST_COMPLETION_REVIEW_TOKEN", secret)
+    monkeypatch.setattr(orchestration_cli, "build_service", lambda: service)
+    monkeypatch.setattr(
+        "agora.control_plane.auth.get_config",
+        lambda: {
+            "control_plane": {
+                "auth": {
+                    "credentials": [
+                        {
+                            "secret_ref": "AGORA_TEST_COMPLETION_REVIEW_TOKEN",
+                            "principal": "user",
+                            "permissions": ["control_plane.approve"],
+                            "projects": ["alpha"],
+                        }
+                    ]
+                }
+            }
+        },
+    )
+    code = orchestration_cli.main(
+        [
+            "migration-completion-review-claim",
+            contract.task_id,
+            "--request",
+            str(stewardship_path),
+            "--credential-env",
+            "AGORA_TEST_COMPLETION_REVIEW_TOKEN",
+        ]
+    )
+    output = capsys.readouterr().out
+    assert code == 0
+    assert secret not in output
+    receipts["methodology_stewardship"] = (
+        service.store.get_methodology_completion_review_claim(
+            contract.task_id,
+            "methodology_stewardship",
+        )
+    )
+    assert receipts["methodology_stewardship"] is not None
+    assert json.loads(output)["receipt_id"] == (
+        receipts["methodology_stewardship"].receipt_id
+    )
+
+    assert [
+        receipts[responsibility].runtime
+        for responsibility in (
+            "independent_correctness",
+            "methodology_stewardship",
+        )
+    ] == ["claude", "kiro"]
+    assert len({item.review_run_id for item in receipts.values()}) == 2
+    completion_runtimes = {item.runtime for item in contract.runtime_pins[1:]}
+    completion_reservations = [
+        item
+        for item in service.store.methodology_completion_review_claim_snapshot(
+            contract.task_id
+        ).migration_request.budget.protected_runtime_reservations
+        if item.runtime in completion_runtimes
+    ]
+    protected_tokens = sum(
+        item.token_reservation for item in completion_reservations
+    )
+    protected_cost = (
+        None
+        if any(
+            item.cost_reservation_usd is None
+            for item in completion_reservations
+        )
+        else sum(
+            item.cost_reservation_usd
+            for item in completion_reservations
+            if item.cost_reservation_usd is not None
+        )
+    )
+    for responsibility, receipt in receipts.items():
+        assert receipt.review_run_id == methodology_completion_review_run_id(
+            task_id=contract.task_id,
+            execution_contract_sha256=contract.content_sha256,
+            final_dispatch_receipt_sha256=dispatch.content_sha256,
+            responsibility=responsibility,
+        )
+        assert receipt.review_run_id != dispatch.dispatch_claim.run_id
+        assert receipt.requirement.requirement_id == (
+            f"task-completion-{responsibility}"
+        )
+        assert sorted(item.artifact_id for item in receipt.artifact_versions) == (
+            dispatch.artifact_ids
+        )
+        assert receipt.process_started is False
+        assert receipt.process_spawn_authority is False
+        assert receipt.protocol_evidence_created is False
+        assert receipt.stage_mutated is False
+        assert receipt.gate_mutated is False
+        assert receipt.task_token_budget == plan_before.total_token_budget
+        assert receipt.task_cost_budget_usd == plan_before.total_cost_budget_usd
+        assert receipt.completion_review_protected_tokens == protected_tokens
+        assert receipt.completion_review_protected_cost_usd == protected_cost
+        assert receipt.budget_admission_passed is True
+        assert (
+            receipt.provider_settled_tokens_before
+            + receipt.provider_active_tokens_before
+            + receipt.completion_review_protected_tokens
+            <= receipt.task_token_budget
+        )
+        assert service.store.get_methodology_completion_review_claim(
+            contract.task_id,
+            responsibility,
+        ) == receipt
+        assert service.claim_methodology_completion_review(
+            contract.task_id,
+            requests[responsibility],
+            principal=_migration_principal(),
+        ) == receipt
+
+    reserved_run_id = receipts["independent_correctness"].review_run_id
+    production_run = service.control_plane.get_protocol_run(
+        dispatch.dispatch_claim.run_id
+    )
+    assert production_run is not None
+    reserved_context_data = production_run.context_pack.model_dump(mode="json")
+    reserved_context_data.pop("content_sha256")
+    reserved_context_data.update(
+        {
+            "pack_id": f"context:{reserved_run_id}",
+            "task_id": "other-task",
+            "run_id": reserved_run_id,
+        }
+    )
+    reserved_context = ContextPack.model_validate(
+        seal_model_payload(ContextPack, reserved_context_data)
+    )
+    before_reserved_collision = _database_dump(tasks)
+    with pytest.raises(
+        ControlPlaneConflictError,
+        match="Run identity is reserved by a methodology completion-review claim",
+    ):
+        service.control_plane.start_protocol_run(
+            reserved_context,
+            gate_key=contract.stages[-1].gate_key,
+            actor="cross-task-production",
+            operation_key="cross-task:reserved-review-protocol-run",
+        )
+    assert _database_dump(tasks) == before_reserved_collision
+    with pytest.raises(
+        OrchestrationConflictError,
+        match="Run identity is reserved by a methodology completion-review claim",
+    ):
+        service.store.claim_current_stage(
+            "other-task",
+            prompt_sha256="f" * 64,
+            operation_key="cross-task:reserved-review-compatibility-run",
+            run_id=reserved_run_id,
+        )
+    assert _database_dump(tasks) == before_reserved_collision
+
+    with sqlite3.connect(tasks.db_path) as db:
+        db.execute(
+            """
+            INSERT INTO protocol_runs (
+                run_id, project_id, task_id, stage_key, gate_key,
+                context_pack_id, context_payload, context_sha256,
+                attention_required, created_at
+            )
+            SELECT ?, project_id, task_id, stage_key, gate_key,
+                   ?, context_payload, context_sha256, 0, created_at
+            FROM protocol_runs WHERE run_id = ?
+            """,
+            (
+                reserved_run_id,
+                f"raw-occupied-context:{reserved_run_id}",
+                dispatch.dispatch_claim.run_id,
+            ),
+        )
+        db.commit()
+    before_raw_collision = _database_dump(tasks)
+    with pytest.raises(
+        OrchestrationConflictError,
+        match="was occupied outside its claim",
+    ):
+        service.claim_methodology_completion_review(
+            contract.task_id,
+            requests["independent_correctness"],
+            principal=_migration_principal(),
+        )
+    assert _database_dump(tasks) == before_raw_collision
+    with sqlite3.connect(tasks.db_path) as db:
+        db.execute(
+            "DELETE FROM protocol_runs WHERE run_id = ?",
+            (reserved_run_id,),
+        )
+        db.commit()
+
+    with pytest.raises(
+        OrchestrationValidationError,
+        match="original currently authorized principal",
+    ):
+        service.claim_methodology_completion_review(
+            contract.task_id,
+            requests["independent_correctness"],
+            principal=_migration_principal(permissions=frozenset()),
+        )
+
+    conflict_payload = requests["independent_correctness"].model_dump(mode="json")
+    conflict_payload.pop("content_sha256")
+    conflict_payload["request_id"] += "-other"
+    conflict_request = MethodologyCompletionReviewClaimRequest.model_validate(
+        seal_model_payload(
+            MethodologyCompletionReviewClaimRequest,
+            conflict_payload,
+        )
+    )
+    with pytest.raises(
+        OrchestrationConflictError,
+        match="responsibility is already claimed",
+    ):
+        service.claim_methodology_completion_review(
+            contract.task_id,
+            conflict_request,
+            principal=_migration_principal(),
+        )
+
+    assert tasks.get(contract.task_id) == task_before
+    assert service.control_plane.get_task_state(contract.task_id) == control_before
+    assert service.status(contract.task_id).plan == plan_before
+    assert service.control_plane.get_stage(
+        contract.task_id,
+        contract.completion_stage_key,
+    ) == stage_before
+    assert service.control_plane.get_gate(
+        contract.task_id,
+        contract.stages[-1].gate_key,
+    ) == gate_before
+    with sqlite3.connect(tasks.db_path) as db:
+        assert tuple(
+            db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            for table in (
+                "protocol_runs",
+                "protocol_artifacts",
+                "protocol_evidence",
+            )
+        ) == protocol_counts_before
+        assert db.execute(
+            """
+            SELECT COUNT(*)
+            FROM orchestration_methodology_completion_review_claims
+            WHERE task_id = ?
+            """,
+            (contract.task_id,),
+        ).fetchone()[0] == 2
+
+    assert (
+        SCHEMA_MODELS["methodology-completion-review-claim-request"]
+        is MethodologyCompletionReviewClaimRequest
+    )
+    assert (
+        SCHEMA_MODELS["methodology-completion-review-claim-receipt"]
+        is MethodologyCompletionReviewClaimReceipt
+    )
+
+
+def test_methodology_completion_review_claim_authenticates_before_store(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    monkeypatch.delenv("AGORA_MISSING_COMPLETION_REVIEW_TOKEN", raising=False)
+    built = False
+
+    def build_forbidden():
+        nonlocal built
+        built = True
+        raise AssertionError("service must not be built before authentication")
+
+    monkeypatch.setattr(orchestration_cli, "build_service", build_forbidden)
+    code = orchestration_cli.main(
+        [
+            "migration-completion-review-claim",
+            "task-successor",
+            "--request",
+            str(tmp_path / "missing.json"),
+            "--credential-env",
+            "AGORA_MISSING_COMPLETION_REVIEW_TOKEN",
+        ]
+    )
+
+    assert code == 2
+    assert built is False
+    assert "credential environment variable is absent" in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+async def test_methodology_completion_review_claim_rejects_artifact_and_evidence_drift(
+    tmp_path,
+):
+    settled = await _settled_sequence_eight_methodology_run(tmp_path)
+    tasks, service, contract = settled[:3]
+    dispatch = settled[-1]
+    request = _completion_review_claim_request(
+        service,
+        contract,
+        dispatch,
+        "independent_correctness",
+    )
+
+    with sqlite3.connect(tasks.db_path) as db:
+        migration_row = db.execute(
+            """
+            SELECT request_payload
+            FROM orchestration_methodology_migrations
+            WHERE request_id = ?
+            """,
+            (contract.migration_request_id,),
+        ).fetchone()
+        assert migration_row is not None
+        migration_payload = migration_row[0]
+        migration_request = MethodologyMigrationPreviewRequest.model_validate_json(
+            migration_payload
+        )
+        tampered_payload = migration_request.model_dump(mode="json")
+        tampered_payload.pop("content_sha256")
+        reservation = next(
+            item
+            for item in tampered_payload["budget"][
+                "protected_runtime_reservations"
+            ]
+            if item["runtime"] == request.runtime
+        )
+        reservation["token_reservation"] += 1
+        tampered_request = MethodologyMigrationPreviewRequest.model_validate(
+            seal_model_payload(MethodologyMigrationPreviewRequest, tampered_payload)
+        )
+        db.execute(
+            """
+            UPDATE orchestration_methodology_migrations
+            SET request_payload = ?
+            WHERE request_id = ?
+            """,
+            (
+                json.dumps(tampered_request.model_dump(mode="json")),
+                contract.migration_request_id,
+            ),
+        )
+        db.commit()
+    before = _database_dump(tasks)
+    with pytest.raises(
+        OrchestrationValidationError,
+        match="migration provenance drifted",
+    ):
+        service.claim_methodology_completion_review(
+            contract.task_id,
+            request,
+            principal=_migration_principal(),
+        )
+    assert _database_dump(tasks) == before
+    with sqlite3.connect(tasks.db_path) as db:
+        db.execute(
+            """
+            UPDATE orchestration_methodology_migrations
+            SET request_payload = ?
+            WHERE request_id = ?
+            """,
+            (migration_payload, contract.migration_request_id),
+        )
+        db.commit()
+
+    with sqlite3.connect(tasks.db_path) as db:
+        plan_row = db.execute(
+            """
+            SELECT total_token_budget FROM orchestration_plans
+            WHERE plan_id = ?
+            """,
+            (contract.plan_id,),
+        ).fetchone()
+        assert plan_row is not None
+        plan_token_budget = plan_row[0]
+        db.execute(
+            """
+            UPDATE orchestration_plans SET total_token_budget = ?
+            WHERE plan_id = ?
+            """,
+            (plan_token_budget - 1, contract.plan_id),
+        )
+        db.commit()
+    before = _database_dump(tasks)
+    with pytest.raises(
+        OrchestrationConflictError,
+        match="Plan budget differs from the frozen methodology migration budget",
+    ):
+        service.claim_methodology_completion_review(
+            contract.task_id,
+            request,
+            principal=_migration_principal(),
+        )
+    assert _database_dump(tasks) == before
+    with sqlite3.connect(tasks.db_path) as db:
+        db.execute(
+            """
+            UPDATE orchestration_plans SET total_token_budget = ?
+            WHERE plan_id = ?
+            """,
+            (plan_token_budget, contract.plan_id),
+        )
+        db.commit()
+
+    with sqlite3.connect(tasks.db_path) as db:
+        methodology_row = db.execute(
+            """
+            SELECT methodology_id FROM orchestration_plans
+            WHERE plan_id = ?
+            """,
+            (contract.plan_id,),
+        ).fetchone()
+        assert methodology_row is not None
+        methodology_id = methodology_row[0]
+        db.execute(
+            """
+            UPDATE orchestration_plans SET methodology_id = ?
+            WHERE plan_id = ?
+            """,
+            ("tampered-methodology", contract.plan_id),
+        )
+        db.commit()
+    before = _database_dump(tasks)
+    with pytest.raises(
+        OrchestrationConflictError,
+        match="Plan methodology identity differs from the frozen migration",
+    ):
+        service.claim_methodology_completion_review(
+            contract.task_id,
+            request,
+            principal=_migration_principal(),
+        )
+    assert _database_dump(tasks) == before
+    with sqlite3.connect(tasks.db_path) as db:
+        db.execute(
+            """
+            UPDATE orchestration_plans SET methodology_id = ?
+            WHERE plan_id = ?
+            """,
+            (methodology_id, contract.plan_id),
+        )
+        db.commit()
+
+    with sqlite3.connect(tasks.db_path) as db:
+        first_claim_row = db.execute(
+            """
+            SELECT receipt_payload, receipt_sha256, token_reserved
+            FROM orchestration_methodology_run_claims
+            WHERE plan_id = ?
+            """,
+            (contract.plan_id,),
+        ).fetchone()
+        assert first_claim_row is not None
+        first_claim_payload, first_claim_sha256, first_token_reserved = (
+            first_claim_row
+        )
+        first_claim_receipt = MethodologyRunClaimReceipt.model_validate_json(
+            first_claim_payload
+        )
+        first_claim_data = first_claim_receipt.model_dump(mode="json")
+        first_claim_data.pop("content_sha256")
+        first_claim_data["budget"]["max_model_tokens"] -= 1
+        tampered_first_claim = MethodologyRunClaimReceipt.model_validate(
+            seal_model_payload(MethodologyRunClaimReceipt, first_claim_data)
+        )
+        db.execute(
+            """
+            UPDATE orchestration_methodology_run_claims
+            SET receipt_payload = ?, receipt_sha256 = ?, token_reserved = ?
+            WHERE plan_id = ?
+            """,
+            (
+                json.dumps(tampered_first_claim.model_dump(mode="json")),
+                tampered_first_claim.content_sha256,
+                tampered_first_claim.budget.max_model_tokens,
+                contract.plan_id,
+            ),
+        )
+        db.commit()
+    before = _database_dump(tasks)
+    with pytest.raises(
+        OrchestrationValidationError,
+        match="first-Stage dispatch differs from its reservation",
+    ):
+        service.claim_methodology_completion_review(
+            contract.task_id,
+            request,
+            principal=_migration_principal(),
+        )
+    assert _database_dump(tasks) == before
+    with sqlite3.connect(tasks.db_path) as db:
+        db.execute(
+            """
+            UPDATE orchestration_methodology_run_claims
+            SET receipt_payload = ?, receipt_sha256 = ?, token_reserved = ?
+            WHERE plan_id = ?
+            """,
+            (
+                first_claim_payload,
+                first_claim_sha256,
+                first_token_reserved,
+                contract.plan_id,
+            ),
+        )
+        db.commit()
+
+    with sqlite3.connect(tasks.db_path) as db:
+        usage_row = db.execute(
+            """
+            SELECT tokens
+            FROM orchestration_methodology_stage_usage_ledger
+            WHERE run_id = ?
+            """,
+            (dispatch.dispatch_claim.run_id,),
+        ).fetchone()
+        assert usage_row is not None
+        usage_tokens = usage_row[0]
+        db.execute(
+            """
+            UPDATE orchestration_methodology_stage_usage_ledger
+            SET tokens = ? WHERE run_id = ?
+            """,
+            (
+                1 if usage_tokens is None else usage_tokens + 1,
+                dispatch.dispatch_claim.run_id,
+            ),
+        )
+        db.commit()
+    before = _database_dump(tasks)
+    with pytest.raises(
+        OrchestrationValidationError,
+        match="usage row differs from its observation",
+    ):
+        service.claim_methodology_completion_review(
+            contract.task_id,
+            request,
+            principal=_migration_principal(),
+        )
+    assert _database_dump(tasks) == before
+    with sqlite3.connect(tasks.db_path) as db:
+        db.execute(
+            """
+            UPDATE orchestration_methodology_stage_usage_ledger
+            SET tokens = ? WHERE run_id = ?
+            """,
+            (usage_tokens, dispatch.dispatch_claim.run_id),
+        )
+        db.commit()
+
+    for dispatch_table, usage_table, run_id, error_match in (
+        (
+            "orchestration_methodology_run_dispatches",
+            "orchestration_methodology_usage_ledger",
+            None,
+            "Persisted methodology dispatch binding drifted",
+        ),
+        (
+            "orchestration_methodology_stage_run_dispatches",
+            "orchestration_methodology_stage_usage_ledger",
+            dispatch.dispatch_claim.run_id,
+            "Persisted methodology Stage dispatch binding drifted",
+        ),
+    ):
+        with sqlite3.connect(tasks.db_path) as db:
+            if run_id is None:
+                row = db.execute(
+                    f"""
+                    SELECT run_id, usage_observation_payload
+                    FROM {dispatch_table} WHERE plan_id = ?
+                    """,
+                    (contract.plan_id,),
+                ).fetchone()
+                assert row is not None
+                tampered_run_id, usage_payload = row
+            else:
+                row = db.execute(
+                    f"""
+                    SELECT usage_observation_payload FROM {dispatch_table}
+                    WHERE run_id = ?
+                    """,
+                    (run_id,),
+                ).fetchone()
+                assert row is not None
+                tampered_run_id, usage_payload = run_id, row[0]
+            usage = ProviderUsageObservation.model_validate_json(usage_payload)
+            usage_data = usage.model_dump(mode="json")
+            usage_data.pop("content_sha256")
+            usage_data.update(
+                {
+                    "input_tokens": 0,
+                    "output_tokens": 1,
+                    "total_tokens": 1,
+                }
+            )
+            tampered_usage = ProviderUsageObservation.model_validate(
+                seal_model_payload(ProviderUsageObservation, usage_data)
+            )
+            ledger_row = db.execute(
+                f"""
+                SELECT tokens, usage_observation_sha256 FROM {usage_table}
+                WHERE run_id = ?
+                """,
+                (tampered_run_id,),
+            ).fetchone()
+            assert ledger_row is not None
+            original_tokens, original_usage_sha256 = ledger_row
+            db.execute(
+                f"""
+                UPDATE {dispatch_table} SET usage_observation_payload = ?
+                WHERE run_id = ?
+                """,
+                (
+                    json.dumps(tampered_usage.model_dump(mode="json")),
+                    tampered_run_id,
+                ),
+            )
+            db.execute(
+                f"""
+                UPDATE {usage_table}
+                SET tokens = ?, usage_observation_sha256 = ?
+                WHERE run_id = ?
+                """,
+                (
+                    tampered_usage.total_tokens,
+                    tampered_usage.content_sha256,
+                    tampered_run_id,
+                ),
+            )
+            db.commit()
+        before = _database_dump(tasks)
+        with pytest.raises(OrchestrationValidationError, match=error_match):
+            service.claim_methodology_completion_review(
+                contract.task_id,
+                request,
+                principal=_migration_principal(),
+            )
+        assert _database_dump(tasks) == before
+        with sqlite3.connect(tasks.db_path) as db:
+            db.execute(
+                f"""
+                UPDATE {dispatch_table} SET usage_observation_payload = ?
+                WHERE run_id = ?
+                """,
+                (usage_payload, tampered_run_id),
+            )
+            db.execute(
+                f"""
+                UPDATE {usage_table}
+                SET tokens = ?, usage_observation_sha256 = ?
+                WHERE run_id = ?
+                """,
+                (original_tokens, original_usage_sha256, tampered_run_id),
+            )
+            db.commit()
+
+    with sqlite3.connect(tasks.db_path) as db:
+        context_row = db.execute(
+            """
+            SELECT context_payload, context_sha256 FROM protocol_runs
+            WHERE run_id = ?
+            """,
+            (dispatch.dispatch_claim.run_id,),
+        ).fetchone()
+        assert context_row is not None
+        context_payload, context_sha256 = context_row
+        context = ContextPack.model_validate_json(context_payload)
+        tampered_payload = context.model_dump(mode="json")
+        tampered_payload.pop("content_sha256")
+        tampered_payload["policies"][0]["content"] += "\nresealed tamper"
+        tampered_context = ContextPack.model_validate(
+            seal_model_payload(ContextPack, tampered_payload)
+        )
+        db.execute(
+            """
+            UPDATE protocol_runs
+            SET context_payload = ?, context_sha256 = ?
+            WHERE run_id = ?
+            """,
+            (
+                json.dumps(tampered_context.model_dump(mode="json")),
+                tampered_context.content_sha256,
+                dispatch.dispatch_claim.run_id,
+            ),
+        )
+        db.commit()
+    before = _database_dump(tasks)
+    with pytest.raises(
+        OrchestrationValidationError,
+        match="Context or input Artifact authority drifted",
+    ):
+        service.claim_methodology_completion_review(
+            contract.task_id,
+            request,
+            principal=_migration_principal(),
+        )
+    assert _database_dump(tasks) == before
+    with sqlite3.connect(tasks.db_path) as db:
+        db.execute(
+            """
+            UPDATE protocol_runs
+            SET context_payload = ?, context_sha256 = ?
+            WHERE run_id = ?
+            """,
+            (
+                context_payload,
+                context_sha256,
+                dispatch.dispatch_claim.run_id,
+            ),
+        )
+        db.commit()
+
+    with sqlite3.connect(tasks.db_path) as db:
+        db.execute(
+            """
+            UPDATE protocol_runs
+            SET adapter_error_code = ?, attention_required = 1
+            WHERE run_id = ?
+            """,
+            (
+                "handoff_schema_invalid",
+                dispatch.dispatch_claim.run_id,
+            ),
+        )
+        db.commit()
+    before = _database_dump(tasks)
+    with pytest.raises(
+        OrchestrationConflictError,
+        match="Run, Context, or Handoff binding differs",
+    ):
+        service.claim_methodology_completion_review(
+            contract.task_id,
+            request,
+            principal=_migration_principal(),
+        )
+    assert _database_dump(tasks) == before
+    with sqlite3.connect(tasks.db_path) as db:
+        db.execute(
+            """
+            UPDATE protocol_runs
+            SET adapter_error_code = NULL, attention_required = 0
+            WHERE run_id = ?
+            """,
+            (dispatch.dispatch_claim.run_id,),
+        )
+        db.commit()
+
+    with sqlite3.connect(tasks.db_path) as db:
+        artifact_id = dispatch.artifact_ids[0]
+        artifact_row = db.execute(
+            """
+            SELECT version, payload_sha256 FROM protocol_artifacts
+            WHERE artifact_id = ?
+            """,
+            (artifact_id,),
+        ).fetchone()
+        assert artifact_row is not None
+        artifact_version, artifact_payload_sha256 = artifact_row
+        db.execute(
+            """
+            UPDATE protocol_artifacts SET payload_sha256 = ?
+            WHERE artifact_id = ? AND version = ?
+            """,
+            ("0" * 64, artifact_id, artifact_version),
+        )
+        db.commit()
+    before = _database_dump(tasks)
+    with pytest.raises(
+        OrchestrationValidationError,
+        match="output Artifact binding drifted",
+    ):
+        service.claim_methodology_completion_review(
+            contract.task_id,
+            request,
+            principal=_migration_principal(),
+        )
+    assert _database_dump(tasks) == before
+
+    with sqlite3.connect(tasks.db_path) as db:
+        db.execute(
+            """
+            UPDATE protocol_artifacts SET payload_sha256 = ?
+            WHERE artifact_id = ? AND version = ?
+            """,
+            (artifact_payload_sha256, artifact_id, artifact_version),
+        )
+        evidence_id = dispatch.active_evidence_ids[0]
+        evidence_row = db.execute(
+            """
+            SELECT payload FROM protocol_evidence
+            WHERE evidence_id = ?
+            """,
+            (evidence_id,),
+        ).fetchone()
+        assert evidence_row is not None
+        evidence_payload = evidence_row[0]
+        db.execute(
+            """
+            UPDATE protocol_evidence SET payload_sha256 = ?
+            WHERE evidence_id = ?
+            """,
+            ("0" * 64, evidence_id),
+        )
+        db.commit()
+    before = _database_dump(tasks)
+    with pytest.raises(
+        OrchestrationValidationError,
+        match="active Evidence binding drifted",
+    ):
+        service.claim_methodology_completion_review(
+            contract.task_id,
+            request,
+            principal=_migration_principal(),
+        )
+    assert _database_dump(tasks) == before
+
+    evidence_data = json.loads(evidence_payload)
+    evidence_data["details"] = {
+        **evidence_data.get("details", {}),
+        "tampered_after_settlement": True,
+    }
+    tampered_evidence = Evidence.model_validate(evidence_data)
+    with sqlite3.connect(tasks.db_path) as db:
+        db.execute(
+            """
+            UPDATE protocol_evidence SET payload = ?, payload_sha256 = ?
+            WHERE evidence_id = ?
+            """,
+            (
+                json.dumps(tampered_evidence.model_dump(mode="json")),
+                canonical_sha256(tampered_evidence),
+                evidence_id,
+            ),
+        )
+        db.commit()
+    before = _database_dump(tasks)
+    with pytest.raises(
+        OrchestrationValidationError,
+        match="active Evidence differs from its Handoff",
+    ):
+        service.claim_methodology_completion_review(
+            contract.task_id,
+            request,
+            principal=_migration_principal(),
+        )
+    assert _database_dump(tasks) == before
 
 
 @pytest.mark.asyncio

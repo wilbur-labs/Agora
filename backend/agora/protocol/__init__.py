@@ -23,6 +23,11 @@ from .methodology_activation import (
     validate_activation_source_binding,
 )
 from .methodology_execution import MethodologyExecutionContract
+from .methodology_completion_review_claim import (
+    MethodologyCompletionReviewClaimReceipt,
+    MethodologyCompletionReviewClaimRequest,
+    methodology_completion_review_run_id,
+)
 from .methodology_migration import (
     AuthenticatedMethodologyMigrationGate,
     MethodologyMigrationActivationReceipt,
@@ -118,6 +123,8 @@ __all__ = [
     "AuthenticatedMethodologyMigrationGate",
     "MethodologyActivationDefinition",
     "MethodologyExecutionContract",
+    "MethodologyCompletionReviewClaimReceipt",
+    "MethodologyCompletionReviewClaimRequest",
     "MethodologyMigrationActivationReceipt",
     "MethodologyMigrationGateAssertion",
     "MethodologyMigrationPreviewDecision",
@@ -138,6 +145,7 @@ __all__ = [
     "MethodologyStageRunDispatchPolicyDecision",
     "MethodologyStageRunDispatchReceipt",
     "methodology_stage_run_id",
+    "methodology_completion_review_run_id",
     "MethodologySeedArtifactRegistration",
     "MethodologyExternalSourceArtifact",
     "MethodologyScopeProfile",

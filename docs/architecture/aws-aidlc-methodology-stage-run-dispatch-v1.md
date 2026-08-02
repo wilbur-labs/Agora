@@ -158,4 +158,6 @@ Evidence is a protocol failure with zero registration. A valid production
 Handoff registers the seven declared build/test outputs and its production
 Evidence, then the still-unsatisfied formal Gate and final Stage remain
 `BLOCKED` with no next route. Independent review/finalization and cross-Stage
-rework remain separate authority paths.
+rework remain separate authority paths. The first of those separate boundaries
+is the non-dispatching authenticated reviewer claim defined in
+`aws-aidlc-methodology-completion-review-claim-v1.md`.

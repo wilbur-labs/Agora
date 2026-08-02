@@ -811,6 +811,25 @@ class ControlPlaneStore:
     ) -> ProtocolRunRecord:
         """Start one formal Run inside a caller-owned atomic transaction."""
 
+        completion_claims_available = db.execute(
+            """
+            SELECT 1 FROM sqlite_master
+            WHERE type = 'table'
+              AND name = 'orchestration_methodology_completion_review_claims'
+            """
+        ).fetchone()
+        if completion_claims_available is not None and db.execute(
+            """
+            SELECT 1
+            FROM orchestration_methodology_completion_review_claims
+            WHERE review_run_id = ?
+            LIMIT 1
+            """,
+            (context_pack.run_id,),
+        ).fetchone() is not None:
+            raise ControlPlaneConflictError(
+                "Run identity is reserved by a methodology completion-review claim"
+            )
         task = self._task_row(db, context_pack.task_id)
         self._assert_project(task, context_pack.project_id)
         route = self._stage_route_decision_tx(

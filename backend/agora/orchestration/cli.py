@@ -22,6 +22,9 @@ from agora.tasks.models import TaskRisk
 from agora.tasks.store import TaskNotFoundError, TaskStore
 
 from .contracts import load_task_contract
+from .methodology_completion_review_claim import (
+    load_methodology_completion_review_claim_request,
+)
 from .methodology_migration import load_methodology_migration_request
 from .methodology_route_activation import (
     load_methodology_route_activation_request,
@@ -225,6 +228,25 @@ def parser() -> argparse.ArgumentParser:
         ),
     )
 
+    migration_completion_review_claim = commands.add_parser(
+        "migration-completion-review-claim",
+        help=(
+            "Authenticate and claim one exact final AWS AI-DLC reviewer Run "
+            "without starting a process or registering Evidence"
+        ),
+    )
+    migration_completion_review_claim.add_argument("task_id")
+    migration_completion_review_claim.add_argument(
+        "--request",
+        type=Path,
+        required=True,
+    )
+    migration_completion_review_claim.add_argument(
+        "--credential-env",
+        required=True,
+        help="Environment variable containing a configured Control Plane token",
+    )
+
     start = commands.add_parser("start", help="Create a Task and attach the provisional method")
     start.add_argument("title", nargs="?")
     start.add_argument("--description", default="")
@@ -407,6 +429,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         methodology_run_claim = None
         methodology_stage_gate = None
         methodology_stage_run_claim = None
+        methodology_completion_review_claim = None
         if args.command in {
             "migration-activate",
             "migration-contract",
@@ -414,6 +437,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "migration-run-claim",
             "migration-next-stage-gate",
             "migration-next-stage-run-claim",
+            "migration-completion-review-claim",
         }:
             if re.fullmatch(
                 r"[A-Za-z_][A-Za-z0-9_]{0,127}",
@@ -448,9 +472,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                     load_methodology_stage_gate_request(args.request),
                     principal,
                 )
-            else:
+            elif args.command == "migration-next-stage-run-claim":
                 methodology_stage_run_claim = (
                     load_methodology_stage_run_claim_request(args.request),
+                    principal,
+                )
+            else:
+                methodology_completion_review_claim = (
+                    load_methodology_completion_review_claim_request(
+                        args.request
+                    ),
                     principal,
                 )
         service = build_service()
@@ -587,6 +618,22 @@ def main(argv: Sequence[str] | None = None) -> int:
                         args.allow_unbounded_native_usage
                     ),
                 )
+            )
+            print(
+                json.dumps(
+                    receipt.model_dump(mode="json"),
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return 0
+        if args.command == "migration-completion-review-claim":
+            assert methodology_completion_review_claim is not None
+            request, principal = methodology_completion_review_claim
+            receipt = service.claim_methodology_completion_review(
+                args.task_id,
+                request,
+                principal=principal,
             )
             print(
                 json.dumps(
