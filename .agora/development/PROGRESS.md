@@ -1,5 +1,95 @@
 # Agora Control Plane Development Progress
 
+## 2026-08-03 - authenticated idempotent Attention response console (reviewed)
+
+### Bounded implementation
+
+- [x] Froze
+  `docs/architecture/control-plane-ui-attention-response-v1.md` for one new
+  authenticated Task-scoped response command. The legacy unscoped
+  `/api/attention/{item_id}/respond` route remains unchanged and is not used by
+  the 1.0 console.
+- [x] Added
+  `POST /api/control-plane/projects/{project_id}/tasks/{task_id}/attention/{item_id}/responses`
+  behind the new `control_plane.attention.respond` permission. Authentication,
+  project membership, Task scope, non-enumerating item binding, optional
+  assignee binding, action/kind validation, expiry, and optimistic versioning
+  all fail closed; the response/audit actor comes only from the bearer
+  principal.
+- [x] Added exact replay through one globally unique `operation_key`. Attention
+  stores its detail receipt and also participates in the existing shared
+  `control_operations` namespace in the same transaction. Exact retries
+  validate both ledgers; reuse by any other Control Plane command or different
+  Attention input returns 409.
+- [x] Made the item update, redacted audit event, optional bidirectional bridge
+  `pending -> ready` transition, detail receipt, and shared receipt atomic.
+  Capture-only responses are recorded without claiming delivery. Expiry
+  commits without a response receipt, and a late `AFTER INSERT` failure
+  regression proves all response writes roll back together.
+- [x] Added `ControlPlaneAttentionResponseReceipt@1.0`, which reports the
+  settled `AttentionItem` and local/capture/delivery-ready effect while
+  explicitly keeping `task_state_mutated=false` and
+  `formal_approval_created=false`. Approval-shaped Attention remains distinct
+  from a formal protocol `Approval` and cannot satisfy a Gate.
+- [x] Expanded the frontend Attention type and added bounded question/blocker
+  and approval response forms. Unchanged drafts keep one retry key across an
+  uncertain network attempt; edits or item-version changes rotate the key.
+  Response and refresh requests use separate abortable leases, project/Task/
+  credential/Forget/unmount changes invalidate them, and a successful response
+  always reloads the authoritative unified projection.
+- [x] Kept the slice Attention-only. Creation/cancellation, formal Approval,
+  Task completion, Stage/Run/Gate commands, provider substitution, methodology
+  migration, and generic mutation surfaces remain deferred.
+
+### Verification and review state
+
+- [x] Final focused Attention and Control Plane API coverage passes 37 tests.
+  It includes missing permission, wrong project/Task/item scope, actor spoofing,
+  assignee mismatch, action/kind mismatch, redaction, stale/replayed/colliding
+  operations, shared-namespace collisions in both directions, expiry,
+  capture-only versus bidirectional effects, no Task/formal-Approval mutation,
+  and late transactional rollback.
+- [x] Frontend lifecycle/path/retry coverage passes 8 tests, including stable
+  uncertain-network keys and projection-refresh blocking while a response can
+  start. Frontend lint passes with zero errors and the same 12 pre-existing
+  warnings. The Next.js 16 production build and 15-page static export pass.
+- [x] The final complete non-integration backend suite, including
+  `tests/test_web_ui.py` and `tests/test_web_ui_extra.py`, passed 871 tests with
+  18 deselected in 1138.39 seconds. Only the existing Starlette/httpx
+  deprecation and Windows Proactor cleanup warning remain. A preliminary
+  ad-hoc `test_web_ui_extra.py` run reached a real retired Anthropic model and
+  returned 404; it was not counted as product success or failure, and the
+  canonical full suite later passed the same tests in their normal isolated
+  order.
+- [x] Protocol Schema export/check, system-Temp-isolated `compileall`,
+  `git diff --check`, and the 15-page frontend build pass after review fixes.
+- [x] Independent Codex review returned `CHANGES_REQUESTED` for a separate
+  operation-key namespace and a refresh/response loading race. Both were fixed
+  and regression-pinned. Targeted re-review returned `CODEX_APPROVE`; a final
+  LOW about pre-receipt rollback injection was closed with the late SQLite
+  trigger regression, and final confirmation found no HIGH/MEDIUM/LOW.
+- [x] Independent Claude Code review initially returned `CLAUDE_APPROVE` with
+  one LOW about displaying a context-derived bridge mode; that non-authoritative
+  badge was removed. One later provider stream stalled without a verdict and
+  was not counted. The narrowed final re-review verified every Codex/Claude fix
+  and returned `CLAUDE_APPROVE` with no remaining HIGH/MEDIUM.
+- [x] Kiro was not used, preserving the user's recorded exclusion for these UI
+  increments. This slice does not change protocol, AI-DLC, reconciliation, or
+  methodology boundaries that would independently require the Kiro gate.
+
+### Current checkpoint and next safe action
+
+The reviewed increment is the commit containing this snapshot, directly atop
+clean pushed pause checkpoint `e7cda76`. User-owned `.kiro/` and legacy pytest
+temporary directories remain untracked and unstaged.
+
+The next safe action is a read-only audit of the remaining
+`required_human_actions` types (`plan_approval` and `candidate_disposition`),
+then freeze exactly one authenticated, Task-scoped, optimistic, idempotent
+command contract before any further runtime or UI edit. Do not infer generic
+mutation, formal Approval, Task completion, Stage/Run/Gate control, or
+methodology authority from this Attention-only checkpoint.
+
 ## 2026-08-03 - paused after authenticated UI read/navigation checkpoint
 
 ### Durable stop state

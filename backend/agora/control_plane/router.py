@@ -4,9 +4,16 @@ from __future__ import annotations
 import sqlite3
 from functools import lru_cache
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from fastapi.concurrency import run_in_threadpool
 
+from agora.attention.store import (
+    AttentionConflictError,
+    AttentionForbiddenError,
+    AttentionNotFoundError,
+    AttentionStore,
+    AttentionValidationError,
+)
 from agora.protocol.models import Approval, Artifact, Evidence
 from agora.orchestration.models import UnifiedTaskIndexPage, UnifiedTaskProjection
 from agora.orchestration.projection import TaskProjectionStore
@@ -19,6 +26,8 @@ from agora.orchestration.store import (
 from agora.tasks.router import get_task_store
 
 from .api_models import (
+    ControlPlaneAttentionResponseReceipt,
+    ControlPlaneAttentionResponseRequest,
     ConfigureGateRequest,
     ControlEventPage,
     ControlPlaneProjection,
@@ -69,6 +78,14 @@ def get_task_projection_store(
     )
 
 
+def get_control_plane_attention_store(
+    store: ControlPlaneStore = Depends(get_control_plane_store),
+) -> AttentionStore:
+    """Use startup-initialized Attention tables without request-time schema writes."""
+
+    return AttentionStore(store.tasks, initialize_schema=False)
+
+
 def _scope(
     project_id: str,
     task_id: str,
@@ -97,11 +114,34 @@ def _read_bound(entity, project_id: str, task_id: str):
 
 
 def _translate(exc: Exception) -> HTTPException:
-    if isinstance(exc, (ControlPlaneNotFoundError, OrchestrationNotFoundError)):
+    if isinstance(
+        exc,
+        (
+            AttentionNotFoundError,
+            ControlPlaneNotFoundError,
+            OrchestrationNotFoundError,
+        ),
+    ):
         return HTTPException(status.HTTP_404_NOT_FOUND, "Control Plane resource not found")
-    if isinstance(exc, (ControlPlaneConflictError, OrchestrationConflictError)):
+    if isinstance(exc, AttentionForbiddenError):
+        return HTTPException(status.HTTP_403_FORBIDDEN, "Insufficient permission")
+    if isinstance(
+        exc,
+        (
+            AttentionConflictError,
+            ControlPlaneConflictError,
+            OrchestrationConflictError,
+        ),
+    ):
         return HTTPException(status.HTTP_409_CONFLICT, "Control Plane state conflict")
-    if isinstance(exc, (ControlPlaneValidationError, OrchestrationValidationError)):
+    if isinstance(
+        exc,
+        (
+            AttentionValidationError,
+            ControlPlaneValidationError,
+            OrchestrationValidationError,
+        ),
+    ):
         return HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
             "Control Plane validation failed",
@@ -245,6 +285,45 @@ async def evaluate_gate(
         expected_gate_version=request.expected_gate_version,
         actor=principal.principal_id,
         operation_key=request.operation_key,
+    )
+
+
+@router.post(
+    "/attention/{item_id}/responses",
+    response_model=ControlPlaneAttentionResponseReceipt,
+)
+async def respond_to_attention(
+    project_id: str,
+    task_id: str,
+    item_id: str = Path(max_length=128),
+    request: ControlPlaneAttentionResponseRequest = ...,
+    principal: ControlPrincipal = Depends(authenticate_control_plane),
+    store: ControlPlaneStore = Depends(get_control_plane_store),
+    attention_store: AttentionStore = Depends(get_control_plane_attention_store),
+):
+    await _call(
+        _scope,
+        project_id,
+        task_id,
+        "control_plane.attention.respond",
+        principal,
+        store,
+    )
+    attention, response_effect = await _call(
+        attention_store.respond_control_plane,
+        project_id=project_id,
+        task_id=task_id,
+        item_id=item_id,
+        action=request.action,
+        response=request.response,
+        expected_version=request.expected_version,
+        actor=principal.principal_id,
+        operation_key=request.operation_key,
+    )
+    return ControlPlaneAttentionResponseReceipt(
+        operation_key=request.operation_key,
+        attention=attention,
+        response_effect=response_effect,
     )
 
 

@@ -55,6 +55,20 @@ def initialize_attention_schema(db: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_attention_bridge_item
             ON attention_bridge_events(item_id);
+
+        CREATE TABLE IF NOT EXISTS control_plane_attention_response_operations (
+            operation_key TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            task_id TEXT NOT NULL REFERENCES tasks(task_id),
+            item_id TEXT NOT NULL REFERENCES attention_items(item_id),
+            actor TEXT NOT NULL,
+            request_sha256 TEXT NOT NULL,
+            result_version INTEGER NOT NULL,
+            response_effect TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_control_plane_attention_response_item
+            ON control_plane_attention_response_operations(item_id, created_at);
         """
     )
     columns = {row[1] for row in db.execute("PRAGMA table_info(attention_bridge_events)")}

@@ -1,6 +1,9 @@
 import { getApiBase } from "@/lib/api";
 import { ApiError, type TaskManifest } from "@/lib/control-plane";
-import { controlPlaneTaskIndexPath } from "@/lib/control-plane-view";
+import {
+  controlPlaneAttentionResponsePath,
+  controlPlaneTaskIndexPath,
+} from "@/lib/control-plane-view";
 
 export type AuthoritativeTaskState =
   | "backlog"
@@ -142,15 +145,7 @@ export interface UnifiedTaskProjection {
     approved_at: string;
     stale_reason: string | null;
   }>;
-  attention: Array<{
-    item_id: string;
-    kind: string;
-    state: string;
-    urgency: string;
-    title: string;
-    body: string;
-    created_at: string;
-  }>;
+  attention: UnifiedAttentionItem[];
   required_human_actions: Array<{
     action_id: string;
     kind: "attention" | "plan_approval" | "candidate_disposition";
@@ -184,6 +179,45 @@ export interface UnifiedTaskProjection {
   };
   compatibility_next_action: string;
   collection_totals: Record<string, number>;
+}
+
+export type AttentionResponseAction = "answer" | "approve" | "reject";
+
+export interface UnifiedAttentionItem {
+  item_id: string;
+  project_id: string;
+  task_id: string;
+  run_id: string | null;
+  kind: "question" | "approval" | "blocker";
+  state: "open" | "responded" | "cancelled" | "expired";
+  urgency: "low" | "normal" | "high" | "critical";
+  title: string;
+  body: string;
+  options: string[];
+  context: Record<string, unknown>;
+  requester: string;
+  assignee: string | null;
+  response: string | null;
+  response_action: AttentionResponseAction | null;
+  responded_by: string | null;
+  cancellation_reason: string | null;
+  version: number;
+  expires_at: string | null;
+  created_at: string;
+  responded_at: string | null;
+  updated_at: string;
+}
+
+export interface ControlPlaneAttentionResponseReceipt {
+  schema_version: "1.0";
+  operation_key: string;
+  attention: UnifiedAttentionItem;
+  response_effect:
+    | "local_recorded"
+    | "capture_only_recorded"
+    | "delivery_ready";
+  task_state_mutated: false;
+  formal_approval_created: false;
 }
 
 export interface UnifiedTaskIndexItem {
@@ -247,6 +281,35 @@ export async function getUnifiedTaskProjection(
   });
   if (!response.ok) throw await apiError(response);
   return response.json() as Promise<UnifiedTaskProjection>;
+}
+
+export async function respondToControlPlaneAttention(
+  projectId: string,
+  taskId: string,
+  itemId: string,
+  bearerToken: string,
+  input: {
+    action: AttentionResponseAction;
+    response: string;
+    expected_version: number;
+    operation_key: string;
+  },
+  signal?: AbortSignal,
+): Promise<ControlPlaneAttentionResponseReceipt> {
+  const response = await fetch(
+    `${getApiBase()}${controlPlaneAttentionResponsePath(projectId, taskId, itemId)}`,
+    {
+      method: "POST",
+      signal,
+      headers: {
+        Authorization: `Bearer ${bearerToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(input),
+    },
+  );
+  if (!response.ok) throw await apiError(response);
+  return response.json() as Promise<ControlPlaneAttentionResponseReceipt>;
 }
 
 async function apiError(response: Response): Promise<ApiError> {

@@ -33,7 +33,13 @@ control_plane.read
 control_plane.register
 control_plane.evaluate
 control_plane.approve
+control_plane.attention.respond
 ```
+
+`control_plane.attention.respond` is limited to the separately frozen
+Task-scoped Attention response command. It does not grant formal protocol
+Approval, Gate, Task, Stage, Run, creation, cancellation, or repository-wide
+mutation authority.
 
 Every route requires both the relevant permission and membership in the path
 project. Missing or invalid credentials return `401`; a verified principal

@@ -61,6 +61,62 @@ export function controlPlaneTaskIndexPath(projectId: string): string {
   return `/api/control-plane/projects/${encodeURIComponent(projectId)}/tasks`;
 }
 
+export function controlPlaneAttentionResponsePath(
+  projectId: string,
+  taskId: string,
+  itemId: string,
+): string {
+  return [
+    "/api/control-plane/projects",
+    encodeURIComponent(projectId),
+    "tasks",
+    encodeURIComponent(taskId),
+    "attention",
+    encodeURIComponent(itemId),
+    "responses",
+  ].join("/");
+}
+
+export interface AttentionResponseDraft {
+  itemId: string;
+  expectedVersion: number;
+  action: "answer" | "approve" | "reject";
+  response: string;
+}
+
+export class AttentionResponseRetryKey {
+  private fingerprint: string | null = null;
+  private operationKey: string | null = null;
+
+  forDraft(draft: AttentionResponseDraft, createNonce: () => string): string {
+    const fingerprint = JSON.stringify([
+      draft.itemId,
+      draft.expectedVersion,
+      draft.action,
+      draft.response,
+    ]);
+    if (this.fingerprint !== fingerprint || this.operationKey === null) {
+      const nonce = createNonce().replace(/[^A-Za-z0-9_.:-]/g, "-").slice(0, 160);
+      if (!nonce) throw new Error("Could not create an Attention retry key.");
+      this.fingerprint = fingerprint;
+      this.operationKey = `attention-response:${nonce}`;
+    }
+    return this.operationKey;
+  }
+
+  clear(): void {
+    this.fingerprint = null;
+    this.operationKey = null;
+  }
+}
+
+export function controlPlaneResponseBusy(
+  projectionLoading: boolean,
+  respondingItemId: string | null,
+): boolean {
+  return projectionLoading || respondingItemId !== null;
+}
+
 export interface ProtectedControlPlaneView<TProjection, TTask> {
   projection: TProjection | null;
   tasks: TTask[];

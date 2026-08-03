@@ -16,6 +16,7 @@ import {
   ListFilter,
   RefreshCw,
   Route,
+  Send,
   ShieldCheck,
   UserRoundCheck,
   X,
@@ -25,13 +26,18 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ApiError } from "@/lib/control-plane";
 import {
+  AttentionResponseRetryKey,
   clearProtectedControlPlaneView,
+  controlPlaneResponseBusy,
   ProjectionRequestLifecycle,
   runProtocolDimensions,
 } from "@/lib/control-plane-view";
 import {
   getUnifiedTaskProjection,
   getControlPlaneTaskIndex,
+  respondToControlPlaneAttention,
+  type AttentionResponseAction,
+  type UnifiedAttentionItem,
   type UnifiedRunProjection,
   type UnifiedStageProjection,
   type UnifiedTaskProjection,
@@ -50,6 +56,7 @@ export default function ControlPlanePage() {
   const [taskTotal, setTaskTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [discovering, setDiscovering] = useState(false);
+  const [respondingItemId, setRespondingItemId] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const lifecycleRef = useRef<ProjectionRequestLifecycle | null>(null);
@@ -62,6 +69,11 @@ export default function ControlPlanePage() {
     discoveryLifecycleRef.current = new ProjectionRequestLifecycle();
   }
   const discoveryLifecycle = discoveryLifecycleRef.current;
+  const responseLifecycleRef = useRef<ProjectionRequestLifecycle | null>(null);
+  if (responseLifecycleRef.current === null) {
+    responseLifecycleRef.current = new ProjectionRequestLifecycle();
+  }
+  const responseLifecycle = responseLifecycleRef.current;
 
   const discoverTasks = useCallback(async (projectValue: string, bearer: string, selectedTask = "") => {
     const lease = discoveryLifecycle.begin();
@@ -133,6 +145,67 @@ export default function ControlPlanePage() {
     [loadProjection, projectId, taskId, token],
   );
 
+  const respondToAttention = useCallback(async (
+    item: UnifiedAttentionItem,
+    action: AttentionResponseAction,
+    response: string,
+    operationKey: string,
+  ) => {
+    lifecycle.invalidate();
+    setLoading(false);
+    const lease = responseLifecycle.begin();
+    const project = projectId.trim();
+    const task = taskId.trim();
+    if (
+      !project
+      || !task
+      || !token
+      || item.project_id !== project
+      || item.task_id !== task
+    ) {
+      setRespondingItemId(null);
+      setError("The visible Attention item is no longer bound to this Project and Task.");
+      responseLifecycle.finish(lease.requestId);
+      return;
+    }
+    setRespondingItemId(item.item_id);
+    setError(null);
+    try {
+      await respondToControlPlaneAttention(
+        project,
+        task,
+        item.item_id,
+        token,
+        {
+          action,
+          response,
+          expected_version: item.version,
+          operation_key: operationKey,
+        },
+        lease.signal,
+      );
+      const next = await getUnifiedTaskProjection(
+        project,
+        task,
+        token,
+        lease.signal,
+      );
+      if (!responseLifecycle.isCurrent(lease.requestId)) return;
+      setProjection(next);
+    } catch (err) {
+      if (
+        (err as Error).name === "AbortError"
+        || !responseLifecycle.isCurrent(lease.requestId)
+      ) return;
+      setError(messageFor(err));
+    } finally {
+      if (responseLifecycle.isCurrent(lease.requestId)) {
+        setRespondingItemId(null);
+        responseLifecycle.finish(lease.requestId);
+      }
+    }
+  }, [lifecycle, projectId, responseLifecycle, taskId, token]);
+
   useEffect(() => {
     const query = new URLSearchParams(window.location.search);
     const project = query.get("project") ?? "";
@@ -158,7 +231,8 @@ export default function ControlPlanePage() {
   useEffect(() => () => {
     lifecycle.invalidate();
     discoveryLifecycle.invalidate();
-  }, [discoveryLifecycle, lifecycle]);
+    responseLifecycle.invalidate();
+  }, [discoveryLifecycle, lifecycle, responseLifecycle]);
 
   return (
     <DeliveryShell active="Control Plane">
@@ -169,8 +243,8 @@ export default function ControlPlanePage() {
             <h1 className="mt-1 text-2xl font-bold">Task Control Plane</h1>
           </div>
           <div className="flex items-center gap-2">
-            <Badge variant="outline" className="h-7 gap-1.5 border-emerald-500/30 bg-emerald-500/5 text-emerald-700 dark:text-emerald-300"><DatabaseZap /> Read-only snapshot</Badge>
-            {projection && <Button variant="outline" size="lg" onClick={() => void load()} disabled={loading}><RefreshCw className={cn(loading && "animate-spin")} /> Refresh</Button>}
+            <Badge variant="outline" className="h-7 gap-1.5 border-emerald-500/30 bg-emerald-500/5 text-emerald-700 dark:text-emerald-300"><DatabaseZap /> Authenticated Task scope</Badge>
+            {projection && <Button variant="outline" size="lg" onClick={() => void load()} disabled={loading || respondingItemId !== null}><RefreshCw className={cn(loading && "animate-spin")} /> Refresh</Button>}
           </div>
         </div>
       </header>
@@ -184,26 +258,32 @@ export default function ControlPlanePage() {
           taskTotal={taskTotal}
           loading={loading}
           discovering={discovering}
+          responding={respondingItemId !== null}
           ready={ready}
           onProject={(value) => {
             lifecycle.invalidate();
             discoveryLifecycle.invalidate();
+            responseLifecycle.invalidate();
             setProjectId(value);
             setTaskOptions([]);
             setTaskTotal(0);
             setProjection(null);
             setLoading(false);
             setDiscovering(false);
+            setRespondingItemId(null);
           }}
           onTask={(value) => {
             lifecycle.invalidate();
+            responseLifecycle.invalidate();
             setTaskId(value);
             setProjection(null);
             setLoading(false);
+            setRespondingItemId(null);
           }}
           onToken={(value) => {
             lifecycle.invalidate();
             discoveryLifecycle.invalidate();
+            responseLifecycle.invalidate();
             window.sessionStorage.removeItem(TOKEN_KEY);
             const cleared = clearProtectedControlPlaneView({
               projection,
@@ -218,12 +298,14 @@ export default function ControlPlanePage() {
             setError(cleared.error);
             setLoading(false);
             setDiscovering(false);
+            setRespondingItemId(null);
           }}
           onConnect={() => void load()}
           onDiscover={() => void discoverTasks(projectId, token, taskId)}
           onForget={() => {
             lifecycle.invalidate();
             discoveryLifecycle.invalidate();
+            responseLifecycle.invalidate();
             window.sessionStorage.removeItem(TOKEN_KEY);
             setToken("");
             setProjection(null);
@@ -231,6 +313,7 @@ export default function ControlPlanePage() {
             setTaskTotal(0);
             setLoading(false);
             setDiscovering(false);
+            setRespondingItemId(null);
             setError(null);
           }}
         />
@@ -243,13 +326,20 @@ export default function ControlPlanePage() {
           </section>
         )}
 
-        {projection && <ProjectionDashboard projection={projection} />}
+        {projection && (
+          <ProjectionDashboard
+            projection={projection}
+            respondingItemId={respondingItemId}
+            responseBusy={controlPlaneResponseBusy(loading, respondingItemId)}
+            onRespond={respondToAttention}
+          />
+        )}
       </main>
     </DeliveryShell>
   );
 }
 
-function ConnectionPanel({ projectId, taskId, token, tasks, taskTotal, loading, discovering, ready, onProject, onTask, onToken, onConnect, onDiscover, onForget }: {
+function ConnectionPanel({ projectId, taskId, token, tasks, taskTotal, loading, discovering, responding, ready, onProject, onTask, onToken, onConnect, onDiscover, onForget }: {
   projectId: string;
   taskId: string;
   token: string;
@@ -257,6 +347,7 @@ function ConnectionPanel({ projectId, taskId, token, tasks, taskTotal, loading, 
   taskTotal: number;
   loading: boolean;
   discovering: boolean;
+  responding: boolean;
   ready: boolean;
   onProject: (value: string) => void;
   onTask: (value: string) => void;
@@ -270,12 +361,22 @@ function ConnectionPanel({ projectId, taskId, token, tasks, taskTotal, loading, 
       <Field label="Project ID"><input className="field font-mono" value={projectId} onChange={(event) => onProject(event.target.value)} placeholder="agora" autoComplete="off" /></Field>
       <Field label={tasks.length > 0 ? (taskTotal > tasks.length ? `Task (${tasks.length} of ${taskTotal} shown; any ID accepted)` : `Task (${taskTotal} inspectable)`) : "Task ID"}><input list="control-plane-task-options" className="field font-mono" value={taskId} onChange={(event) => onTask(event.target.value)} placeholder="Choose a suggestion or enter a Task ID" autoComplete="off" /><datalist id="control-plane-task-options">{tasks.map((task) => <option key={task.task_id} value={task.task_id}>{`[${task.task_state.replaceAll("_", " ")}] ${task.title}`}</option>)}</datalist></Field>
       <Field label="Bearer token"><div className="relative"><KeyRound className="pointer-events-none absolute left-3 top-2.5 size-4 text-muted-foreground" /><input className="field pl-9 font-mono" type="password" value={token} onChange={(event) => onToken(event.target.value)} placeholder="Stored for this tab only" autoComplete="off" /></div></Field>
-      <div className="flex flex-wrap items-end gap-2 md:col-span-2 xl:col-span-1"><Button type="button" variant="outline" size="lg" onClick={onDiscover} disabled={!ready || discovering || loading}>{discovering ? <RefreshCw className="animate-spin" /> : <ListFilter />}{discovering ? "Finding" : "Find Tasks"}</Button><Button type="submit" size="lg" className="min-w-24" disabled={!ready || loading || discovering}>{loading ? <RefreshCw className="animate-spin" /> : <ArrowRight />}{loading ? "Loading" : "Connect"}</Button>{token && <Button type="button" variant="ghost" size="lg" onClick={onForget}>Forget</Button>}</div>
+      <div className="flex flex-wrap items-end gap-2 md:col-span-2 xl:col-span-1"><Button type="button" variant="outline" size="lg" onClick={onDiscover} disabled={!ready || discovering || loading || responding}>{discovering ? <RefreshCw className="animate-spin" /> : <ListFilter />}{discovering ? "Finding" : "Find Tasks"}</Button><Button type="submit" size="lg" className="min-w-24" disabled={!ready || loading || discovering || responding}>{loading ? <RefreshCw className="animate-spin" /> : <ArrowRight />}{loading ? "Loading" : "Connect"}</Button>{token && <Button type="button" variant="ghost" size="lg" onClick={onForget}>Forget</Button>}</div>
     </form>
   );
 }
 
-function ProjectionDashboard({ projection }: { projection: UnifiedTaskProjection }) {
+function ProjectionDashboard({ projection, respondingItemId, responseBusy, onRespond }: {
+  projection: UnifiedTaskProjection;
+  respondingItemId: string | null;
+  responseBusy: boolean;
+  onRespond: (
+    item: UnifiedAttentionItem,
+    action: AttentionResponseAction,
+    response: string,
+    operationKey: string,
+  ) => Promise<void>;
+}) {
   const state = projection.task_state;
   const progressPercent = projection.progress.total_stages ? Math.round(((projection.progress.completed_stages ?? 0) / projection.progress.total_stages) * 100) : null;
   const drift = state !== null && projection.task.state !== state;
@@ -315,7 +416,7 @@ function ProjectionDashboard({ projection }: { projection: UnifiedTaskProjection
         <Metric icon={UserRoundCheck} label="Human actions" value={String(projection.required_human_actions.length)} detail={`${projection.collection_totals.attention ?? 0} attention items`} />
       </section>
 
-      <section className="grid items-start gap-5 xl:grid-cols-[minmax(0,1.35fr)_minmax(330px,0.65fr)]"><StageLedger stages={projection.stages} currentStageSource={projection.progress.current_stage_source} /><HumanActions projection={projection} /></section>
+      <section className="grid items-start gap-5 xl:grid-cols-[minmax(0,1.35fr)_minmax(330px,0.65fr)]"><StageLedger stages={projection.stages} currentStageSource={projection.progress.current_stage_source} /><HumanActions projection={projection} respondingItemId={respondingItemId} responseBusy={responseBusy} onRespond={onRespond} /></section>
       <RunLedger runs={projection.runs} />
       <section className="grid items-start gap-5 xl:grid-cols-2 2xl:grid-cols-4"><ArtifactLedger projection={projection} /><EvidenceLedger projection={projection} /><ApprovalLedger projection={projection} /><AuditLedger projection={projection} /></section>
     </div>
@@ -327,8 +428,135 @@ function StageLedger({ stages, currentStageSource }: { stages: UnifiedStageProje
   return <section className="overflow-hidden rounded-xl border bg-card"><SectionHeader icon={Route} title="Stage ledger" meta={`${stages.length} stages · ${sourceLabel}`} /><div className="divide-y">{stages.map((stage, index) => <article key={stage.stage_key} className={cn("grid gap-3 p-4 sm:grid-cols-[36px_minmax(0,1fr)_auto]", stage.current && "bg-primary/5")}><div className={cn("grid size-9 place-items-center rounded-full border font-mono text-xs", stage.current && currentStageSource === "control_plane_route" && "border-primary bg-primary text-primary-foreground")}>{stage.sequence ?? index + 1}</div><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><h3 className="font-medium">{stage.title ?? stage.stage_key}</h3>{stage.current && currentStageSource === "control_plane_route" && <Badge>authority current</Badge>}{stage.current && currentStageSource === "compatibility_plan" && <Badge variant="outline" className="border-amber-500/40 text-amber-700 dark:text-amber-300">compatibility cursor</Badge>}</div><p className="mt-1 font-mono text-xs text-muted-foreground">{stage.stage_key} · {stage.runtime ?? "runtime unassigned"}</p>{stage.semantic_summary && <p className="mt-2 text-xs leading-5 text-muted-foreground">{stage.semantic_summary}</p>}{stage.blockers.length > 0 && <p className="mt-2 text-xs text-destructive">{stage.blockers.join(" · ")}</p>}</div><div className="flex items-start gap-2 sm:justify-end"><StatusBadge value={stage.authoritative_stage?.status ?? "not initialized"} /><StatusBadge value={stage.gate?.status ? `gate ${stage.gate.status}` : "no gate"} muted /></div></article>)}{stages.length === 0 && <EmptyState text="No stages are present in the projection." />}</div></section>;
 }
 
-function HumanActions({ projection }: { projection: UnifiedTaskProjection }) {
-  return <section className="overflow-hidden rounded-xl border bg-card"><SectionHeader icon={UserRoundCheck} title="Human checkpoint" meta={`${projection.required_human_actions.length} required`} /><div className="divide-y">{projection.required_human_actions.map((action) => <article key={action.action_id} className="p-4"><div className="flex items-start gap-3"><CircleDot className="mt-0.5 size-4 text-amber-600" /><div><p className="text-sm font-medium">{action.title}</p><p className="mt-1 font-mono text-[11px] text-muted-foreground">{action.kind} · {action.source_id}</p></div></div></article>)}{projection.required_human_actions.length === 0 && <EmptyState icon={CheckCircle2} text="No human action is currently required." />}</div><div className="border-t bg-muted/25 p-4"><p className="text-xs font-medium text-muted-foreground">Methodology</p><p className="mt-1 text-sm">{projection.plan.methodology_id} <span className="text-muted-foreground">v{projection.plan.methodology_version}{projection.plan.provisional ? " · provisional" : ""}</span></p></div></section>;
+function HumanActions({ projection, respondingItemId, responseBusy, onRespond }: {
+  projection: UnifiedTaskProjection;
+  respondingItemId: string | null;
+  responseBusy: boolean;
+  onRespond: (
+    item: UnifiedAttentionItem,
+    action: AttentionResponseAction,
+    response: string,
+    operationKey: string,
+  ) => Promise<void>;
+}) {
+  const attention = new Map(
+    projection.attention.map((item) => [item.item_id, item]),
+  );
+  return (
+    <section className="overflow-hidden rounded-xl border bg-card">
+      <SectionHeader icon={UserRoundCheck} title="Human checkpoint" meta={`${projection.required_human_actions.length} required`} />
+      <div className="divide-y">
+        {projection.required_human_actions.map((action) => {
+          const item = action.kind === "attention" ? attention.get(action.source_id) : undefined;
+          return (
+            <article key={action.action_id} className="p-4">
+              <div className="flex items-start gap-3">
+                <CircleDot className="mt-0.5 size-4 text-amber-600" />
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-medium">{action.title}</p>
+                  <p className="mt-1 font-mono text-[11px] text-muted-foreground">{action.kind} · {action.source_id}</p>
+                  {item && item.state === "open" && (
+                    <AttentionResponseForm
+                      item={item}
+                      busy={responseBusy}
+                      active={respondingItemId === item.item_id}
+                      onRespond={onRespond}
+                    />
+                  )}
+                </div>
+              </div>
+            </article>
+          );
+        })}
+        {projection.required_human_actions.length === 0 && <EmptyState icon={CheckCircle2} text="No human action is currently required." />}
+      </div>
+      <div className="border-t bg-muted/25 p-4"><p className="text-xs font-medium text-muted-foreground">Methodology</p><p className="mt-1 text-sm">{projection.plan.methodology_id} <span className="text-muted-foreground">v{projection.plan.methodology_version}{projection.plan.provisional ? " · provisional" : ""}</span></p></div>
+    </section>
+  );
+}
+
+function AttentionResponseForm({ item, busy, active, onRespond }: {
+  item: UnifiedAttentionItem;
+  busy: boolean;
+  active: boolean;
+  onRespond: (
+    item: UnifiedAttentionItem,
+    action: AttentionResponseAction,
+    response: string,
+    operationKey: string,
+  ) => Promise<void>;
+}) {
+  const actions: AttentionResponseAction[] = item.kind === "approval"
+    ? ["approve", "reject"]
+    : ["answer"];
+  const [action, setAction] = useState<AttentionResponseAction>(actions[0]);
+  const [response, setResponse] = useState("");
+  const retryKeyRef = useRef<AttentionResponseRetryKey | null>(null);
+  if (retryKeyRef.current === null) retryKeyRef.current = new AttentionResponseRetryKey();
+  const retryKey = retryKeyRef.current;
+  const requiresText = action === "answer";
+  return (
+    <form
+      className="mt-4 space-y-3 rounded-lg border bg-background/70 p-3"
+      aria-label={`Respond to ${item.title}`}
+      onSubmit={(event) => {
+        event.preventDefault();
+        const operationKey = retryKey.forDraft(
+          {
+            itemId: item.item_id,
+            expectedVersion: item.version,
+            action,
+            response,
+          },
+          () => window.crypto.randomUUID(),
+        );
+        void onRespond(item, action, response, operationKey);
+      }}
+    >
+      {item.body && <p className="text-xs leading-5 text-muted-foreground">{item.body}</p>}
+      <div className="flex flex-wrap gap-2 text-[11px] text-muted-foreground">
+        <Badge variant="outline">{item.kind}</Badge>
+        <Badge variant="outline">v{item.version}</Badge>
+        <span>{item.assignee ? `Assigned to ${item.assignee}` : "Any authorized responder"}</span>
+        {item.expires_at && <span>Expires {formatDate(item.expires_at)}</span>}
+      </div>
+      {item.options.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {item.options.map((option) => (
+            <Button key={option} type="button" size="sm" variant="outline" onClick={() => setResponse(option)} disabled={busy}>{option}</Button>
+          ))}
+        </div>
+      )}
+      {actions.length > 1 && (
+        <Field label="Decision">
+          <select
+            className="field capitalize"
+            value={action}
+            onChange={(event) => setAction(event.target.value as AttentionResponseAction)}
+            disabled={busy}
+          >
+            {actions.map((value) => <option key={value} value={value}>{value}</option>)}
+          </select>
+        </Field>
+      )}
+      <Field label={requiresText ? "Response (required)" : "Response note (optional)"}>
+        <textarea
+          className="field min-h-24 resize-y"
+          value={response}
+          onChange={(event) => setResponse(event.target.value)}
+          maxLength={32_000}
+          disabled={busy}
+        />
+      </Field>
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-[11px] leading-4 text-muted-foreground">This settles Attention only; it does not create a formal Approval or change Task state.</p>
+        <Button type="submit" size="sm" disabled={busy || (requiresText && !response.trim())}>
+          {active ? <RefreshCw className="animate-spin" /> : <Send />}
+          {active ? "Sending" : action}
+        </Button>
+      </div>
+    </form>
+  );
 }
 
 function RunLedger({ runs }: { runs: UnifiedRunProjection[] }) {
@@ -381,9 +609,9 @@ function Fact({ label, value }: { label: string; value: string }) {
 function messageFor(error: unknown): string {
   if (error instanceof ApiError) {
     if (error.status === 401) return "Authentication failed. Check the bearer credential.";
-    if (error.status === 403) return "This credential cannot read the selected project.";
+    if (error.status === 403) return "This credential lacks the required permission, project membership, or Attention assignment.";
     if (error.status === 404) return "The Task does not exist in this project, or its orchestration plan is not initialized.";
-    if (error.status === 409) return "The authoritative ledgers conflict. Reconciliation is required before this snapshot can be trusted.";
+    if (error.status === 409) return "The authoritative state changed or the operation key conflicts. Refresh before retrying a changed response.";
     if (error.status === 503) return "The Control Plane is temporarily busy. Retry in a moment.";
   }
   return error instanceof Error ? error.message : "Could not load the Control Plane snapshot.";

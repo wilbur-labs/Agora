@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  AttentionResponseRetryKey,
   clearProtectedControlPlaneView,
+  controlPlaneAttentionResponsePath,
+  controlPlaneResponseBusy,
   controlPlaneTaskIndexPath,
   ProjectionRequestLifecycle,
   runProtocolDimensions,
@@ -35,6 +38,46 @@ test("Task discovery path is project-scoped and URL encoded", () => {
     controlPlaneTaskIndexPath("project/with space"),
     "/api/control-plane/projects/project%2Fwith%20space/tasks",
   );
+});
+
+test("Attention response path binds and URL encodes Project, Task, and item", () => {
+  assert.equal(
+    controlPlaneAttentionResponsePath(
+      "project/with space",
+      "task/with space",
+      "item/with space",
+    ),
+    "/api/control-plane/projects/project%2Fwith%20space/tasks/task%2Fwith%20space/attention/item%2Fwith%20space/responses",
+  );
+});
+
+test("an unchanged Attention draft keeps its retry key after uncertainty", () => {
+  const retry = new AttentionResponseRetryKey();
+  const draft = {
+    itemId: "attn_1",
+    expectedVersion: 1,
+    action: "answer" as const,
+    response: "Tokyo",
+  };
+  let nonce = 0;
+  const createNonce = () => `nonce-${++nonce}`;
+
+  assert.equal(retry.forDraft(draft, createNonce), "attention-response:nonce-1");
+  assert.equal(retry.forDraft(draft, createNonce), "attention-response:nonce-1");
+  assert.equal(
+    retry.forDraft({ ...draft, response: "Osaka" }, createNonce),
+    "attention-response:nonce-2",
+  );
+  assert.equal(
+    retry.forDraft({ ...draft, expectedVersion: 2 }, createNonce),
+    "attention-response:nonce-3",
+  );
+});
+
+test("projection refresh blocks Attention submission until its lease settles", () => {
+  assert.equal(controlPlaneResponseBusy(true, null), true);
+  assert.equal(controlPlaneResponseBusy(false, "attn_1"), true);
+  assert.equal(controlPlaneResponseBusy(false, null), false);
 });
 
 test("starting even an invalid reconnect attempt retires the older lease", () => {

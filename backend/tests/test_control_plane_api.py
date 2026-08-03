@@ -6,10 +6,12 @@ from datetime import datetime, timezone
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from agora.attention.bridges.models import BridgeEventRequest, DeliveryMode
 from agora.attention.models import CreateAttentionRequest
 from agora.attention.store import AttentionStore
 from agora.control_plane.auth import ControlPrincipal, authenticate_control_plane
 from agora.control_plane.router import (
+    get_control_plane_attention_store,
     get_control_plane_store,
     initialize_control_plane_store,
     router,
@@ -28,11 +30,19 @@ NOW = datetime(2026, 7, 18, 9, 0, tzinfo=timezone.utc)
 COMMIT = "1" * 40
 
 
-def _app(store: ControlPlaneStore, principal: ControlPrincipal | None) -> FastAPI:
+def _app(
+    store: ControlPlaneStore,
+    principal: ControlPrincipal | None,
+    attention_store: AttentionStore | None = None,
+) -> FastAPI:
     app = FastAPI()
     app.include_router(router, prefix="/api")
     app.include_router(task_discovery_router, prefix="/api")
     app.dependency_overrides[get_control_plane_store] = lambda: store
+    if attention_store is not None:
+        app.dependency_overrides[get_control_plane_attention_store] = (
+            lambda: attention_store
+        )
     if principal is not None:
         app.dependency_overrides[authenticate_control_plane] = lambda: principal
     return app
@@ -68,6 +78,22 @@ def _base(task_id: str) -> str:
 
 def _index_base(project_id: str = "agora") -> str:
     return f"/api/control-plane/projects/{project_id}/tasks"
+
+
+def _attention_response(
+    item_id: str,
+    *,
+    action: str = "answer",
+    response: str = "Proceed",
+    expected_version: int = 1,
+    operation_key: str = "attention-response-1",
+) -> dict:
+    return {
+        "action": action,
+        "response": response,
+        "expected_version": expected_version,
+        "operation_key": operation_key,
+    }
 
 
 def _requirement() -> dict:
@@ -210,6 +236,373 @@ def test_cross_project_task_lookup_is_non_enumerating(tmp_path):
     )
     assert response.status_code == 404
     assert response.json()["detail"] == "Control Plane resource not found"
+
+
+def test_attention_response_is_authenticated_scoped_and_exactly_replayable(
+    tmp_path,
+):
+    store, task_id = _store(tmp_path)
+    store.ensure_task_state(task_id, actor="test")
+    attention_store = AttentionStore(store.tasks)
+    item = attention_store.create(
+        CreateAttentionRequest(
+            task_id=task_id,
+            kind="question",
+            title="Choose the deployment region.",
+            requester="runtime",
+            assignee="principal-api",
+        )
+    )
+    principal = _principal("control_plane.attention.respond")
+    client = TestClient(_app(store, principal, attention_store))
+    path = f"{_base(task_id)}/attention/{item.item_id}/responses"
+    payload = _attention_response(
+        item.item_id,
+        response="Tokyo access_token=response-secret",
+    )
+    before_state = store.get_task_state(task_id)
+
+    first = client.post(path, json=payload)
+    second = client.post(path, json=payload)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json() == first.json()
+    receipt = first.json()
+    assert receipt["schema_version"] == "1.0"
+    assert receipt["operation_key"] == "attention-response-1"
+    assert receipt["response_effect"] == "local_recorded"
+    assert receipt["task_state_mutated"] is False
+    assert receipt["formal_approval_created"] is False
+    assert receipt["attention"]["state"] == "responded"
+    assert receipt["attention"]["responded_by"] == "principal-api"
+    assert receipt["attention"]["response"] == "Tokyo access_token=[REDACTED]"
+    assert store.get_task_state(task_id) == before_state
+    responded_events = [
+        event
+        for event in store.tasks.events(task_id)
+        if event.event_type == "attention.responded"
+    ]
+    assert len(responded_events) == 1
+    assert responded_events[0].actor == "principal-api"
+    assert responded_events[0].payload == {
+        "item_id": item.item_id,
+        "action": "answer",
+        "operation_key": "attention-response-1",
+        "response_effect": "local_recorded",
+    }
+    with store.tasks._connect() as db:
+        assert db.execute(
+            "SELECT COUNT(*) FROM protocol_approvals WHERE task_id = ?",
+            (task_id,),
+        ).fetchone()[0] == 0
+
+    collision = client.post(
+        path,
+        json={**payload, "response": "Osaka"},
+    )
+    assert collision.status_code == 409
+    spoof = client.post(path, json={**payload, "actor": "spoofed"})
+    assert spoof.status_code == 422
+
+
+def test_attention_response_enforces_permission_scope_assignee_and_kind(tmp_path):
+    store, task_id = _store(tmp_path)
+    attention_store = AttentionStore(store.tasks)
+    item = attention_store.create(
+        CreateAttentionRequest(
+            task_id=task_id,
+            kind="approval",
+            title="Approve the proposed local action.",
+            requester="runtime",
+            assignee="assigned-principal",
+        )
+    )
+    path = f"{_base(task_id)}/attention/{item.item_id}/responses"
+
+    assert TestClient(_app(store, _principal("control_plane.read"))).post(
+        path,
+        json=_attention_response(item.item_id, action="approve"),
+    ).status_code == 403
+    assert TestClient(
+        _app(store, _principal("control_plane.attention.respond"), attention_store)
+    ).post(
+        path,
+        json=_attention_response(item.item_id, action="approve"),
+    ).status_code == 403
+
+    assigned = ControlPrincipal(
+        "assigned-principal",
+        frozenset({"control_plane.attention.respond"}),
+        frozenset({"agora"}),
+    )
+    client = TestClient(_app(store, assigned, attention_store))
+    mismatch = client.post(
+        path,
+        json=_attention_response(item.item_id, action="answer"),
+    )
+    assert mismatch.status_code == 422
+
+    other = store.tasks.create(
+        CreateTaskRequest(project_id="agora", title="Other Task")
+    )
+    cross_task = client.post(
+        f"{_base(other.task_id)}/attention/{item.item_id}/responses",
+        json=_attention_response(item.item_id, action="approve"),
+    )
+    assert cross_task.status_code == 404
+    cross_project = TestClient(
+        _app(
+            store,
+            ControlPrincipal(
+                "assigned-principal",
+                frozenset({"control_plane.attention.respond"}),
+                frozenset({"agora", "other"}),
+            ),
+            attention_store,
+        )
+    ).post(
+        f"/api/control-plane/projects/other/tasks/{task_id}/attention/{item.item_id}/responses",
+        json=_attention_response(item.item_id, action="approve"),
+    )
+    assert cross_project.status_code == 404
+
+
+def test_attention_response_operation_keys_share_the_control_plane_namespace(
+    tmp_path,
+):
+    store, task_id = _store(tmp_path)
+    attention_store = AttentionStore(store.tasks)
+    principal = _principal(
+        "control_plane.attention.respond",
+        "control_plane.register",
+    )
+    client = TestClient(_app(store, principal, attention_store))
+    base = _base(task_id)
+    assert client.put(
+        f"{base}/gates/review-gate",
+        json={"stage_key": "review-stage", "requirements": [_requirement()]},
+    ).status_code == 200
+    control_first = client.put(
+        f"{base}/gates/review-gate/active-evidence",
+        json={
+            "evidence_ids": [],
+            "expected_gate_version": 1,
+            "operation_key": "shared-control-first",
+        },
+    )
+    assert control_first.status_code == 200
+
+    blocked_item = attention_store.create(
+        CreateAttentionRequest(
+            task_id=task_id,
+            kind="question",
+            title="Control key already used.",
+            requester="runtime",
+        )
+    )
+    control_collision = client.post(
+        f"{base}/attention/{blocked_item.item_id}/responses",
+        json=_attention_response(
+            blocked_item.item_id,
+            operation_key="shared-control-first",
+        ),
+    )
+    assert control_collision.status_code == 409
+    assert attention_store.get(blocked_item.item_id).state.value == "open"
+
+    responded_item = attention_store.create(
+        CreateAttentionRequest(
+            task_id=task_id,
+            kind="question",
+            title="Attention key is reserved globally.",
+            requester="runtime",
+        )
+    )
+    attention_first = client.post(
+        f"{base}/attention/{responded_item.item_id}/responses",
+        json=_attention_response(
+            responded_item.item_id,
+            operation_key="shared-attention-first",
+        ),
+    )
+    assert attention_first.status_code == 200
+    attention_collision = client.put(
+        f"{base}/gates/review-gate/active-evidence",
+        json={
+            "evidence_ids": [],
+            "expected_gate_version": control_first.json()["version"],
+            "operation_key": "shared-attention-first",
+        },
+    )
+    assert attention_collision.status_code == 409
+
+
+def test_attention_response_settles_expiry_without_an_operation_receipt(tmp_path):
+    store, task_id = _store(tmp_path)
+    attention_store = AttentionStore(store.tasks)
+    item = attention_store.create(
+        CreateAttentionRequest(
+            task_id=task_id,
+            kind="blocker",
+            title="Expired decision.",
+            requester="runtime",
+        )
+    )
+    with store.tasks._transaction() as db:
+        db.execute(
+            "UPDATE attention_items SET expires_at = ? WHERE item_id = ?",
+            ("2020-01-01T00:00:00+00:00", item.item_id),
+        )
+    response = TestClient(
+        _app(
+            store,
+            _principal("control_plane.attention.respond"),
+            attention_store,
+        )
+    ).post(
+        f"{_base(task_id)}/attention/{item.item_id}/responses",
+        json=_attention_response(item.item_id, operation_key="expired-response"),
+    )
+
+    assert response.status_code == 409
+    assert attention_store.get(item.item_id).state.value == "expired"
+    with store.tasks._connect() as db:
+        assert db.execute(
+            """SELECT COUNT(*) FROM control_plane_attention_response_operations
+               WHERE operation_key = 'expired-response'"""
+        ).fetchone()[0] == 0
+        assert db.execute(
+            """SELECT COUNT(*) FROM control_operations
+               WHERE operation_key = 'expired-response'"""
+        ).fetchone()[0] == 0
+
+
+def test_attention_response_preserves_capture_only_and_queues_bidirectional(
+    tmp_path,
+):
+    store, task_id = _store(tmp_path)
+    attention_store = AttentionStore(store.tasks)
+    now = datetime.now(timezone.utc).isoformat()
+    with store.tasks._transaction() as db:
+        db.execute(
+            """INSERT INTO execution_runs
+               (run_id, task_id, project_id, adapter, state, prompt, workspace,
+                timeout_seconds, queued_at, actor)
+               VALUES ('run-attention', ?, 'agora', 'codex', 'running', 'x',
+                       '.', 60, ?, 'runtime')""",
+            (task_id, now),
+        )
+    capture = attention_store.create_bridge_event(
+        BridgeEventRequest(
+            vendor="codex",
+            vendor_event_id="capture-1",
+            task_id=task_id,
+            run_id="run-attention",
+            kind="question",
+            title="Captured question",
+            requester="codex-bridge",
+            delivery_mode=DeliveryMode.CAPTURE_ONLY,
+        )
+    )
+    bidirectional = attention_store.create_bridge_event(
+        BridgeEventRequest(
+            vendor="codex",
+            vendor_event_id="bidirectional-1",
+            task_id=task_id,
+            run_id="run-attention",
+            kind="question",
+            title="Bidirectional question",
+            requester="codex-bridge",
+            delivery_mode=DeliveryMode.BIDIRECTIONAL,
+        ),
+        trusted_bidirectional=True,
+    )
+    client = TestClient(
+        _app(
+            store,
+            _principal("control_plane.attention.respond"),
+            attention_store,
+        )
+    )
+    capture_response = client.post(
+        f"{_base(task_id)}/attention/{capture.item_id}/responses",
+        json=_attention_response(
+            capture.item_id,
+            operation_key="capture-response",
+        ),
+    )
+    delivery_response = client.post(
+        f"{_base(task_id)}/attention/{bidirectional.item_id}/responses",
+        json=_attention_response(
+            bidirectional.item_id,
+            operation_key="bidirectional-response",
+        ),
+    )
+
+    assert capture_response.json()["response_effect"] == "capture_only_recorded"
+    assert delivery_response.json()["response_effect"] == "delivery_ready"
+    with store.tasks._connect() as db:
+        states = {
+            row["item_id"]: row["delivery_state"]
+            for row in db.execute(
+                """SELECT item_id, delivery_state FROM attention_bridge_events
+                   WHERE item_id IN (?, ?)""",
+                (capture.item_id, bidirectional.item_id),
+            )
+        }
+    assert states == {
+        capture.item_id: "pending",
+        bidirectional.item_id: "ready",
+    }
+
+
+def test_attention_response_rolls_back_item_event_delivery_and_receipt(
+    tmp_path,
+):
+    store, task_id = _store(tmp_path)
+    attention_store = AttentionStore(store.tasks)
+    item = attention_store.create(
+        CreateAttentionRequest(
+            task_id=task_id,
+            kind="question",
+            title="Rollback response.",
+            requester="runtime",
+        )
+    )
+    event_count = len(store.tasks.events(task_id))
+    with store.tasks._transaction() as db:
+        db.execute(
+            """CREATE TRIGGER fail_attention_shared_operation
+               AFTER INSERT ON control_operations
+               WHEN NEW.operation_key = 'rollback-response'
+               BEGIN
+                   SELECT RAISE(ABORT, 'injected shared receipt failure');
+               END"""
+        )
+    response = TestClient(
+        _app(
+            store,
+            _principal("control_plane.attention.respond"),
+            attention_store,
+        )
+    ).post(
+        f"{_base(task_id)}/attention/{item.item_id}/responses",
+        json=_attention_response(item.item_id, operation_key="rollback-response"),
+    )
+
+    assert response.status_code == 500
+    assert attention_store.get(item.item_id).state.value == "open"
+    assert len(store.tasks.events(task_id)) == event_count
+    with store.tasks._connect() as db:
+        assert db.execute(
+            """SELECT COUNT(*) FROM control_plane_attention_response_operations
+               WHERE operation_key = 'rollback-response'"""
+        ).fetchone()[0] == 0
+        assert db.execute(
+            """SELECT COUNT(*) FROM control_operations
+               WHERE operation_key = 'rollback-response'"""
+        ).fetchone()[0] == 0
 
 
 def test_task_discovery_is_authoritative_bounded_and_plan_scoped(tmp_path):

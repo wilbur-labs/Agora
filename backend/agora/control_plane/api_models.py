@@ -1,9 +1,12 @@
 """Bounded request and response models for the Control Plane API."""
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field
+from enum import Enum
+from typing import Literal
 
-from agora.attention.models import AttentionItem
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from agora.attention.models import AttentionItem, ResponseAction
 from agora.control_plane.models import ControlEvent, GateRecord, StageRecord
 from agora.protocol.models import Approval, Artifact, Evidence, GateRequirement, StableId
 from agora.tasks.models import TaskManifest
@@ -36,6 +39,38 @@ class EvaluateGateRequest(ApiModel):
         max_length=200,
         pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
     )
+
+
+class ControlPlaneAttentionResponseRequest(ApiModel):
+    action: ResponseAction
+    response: str = Field(default="", max_length=32_000)
+    expected_version: int = Field(ge=1)
+    operation_key: str = Field(
+        min_length=1,
+        max_length=200,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+    )
+
+    @model_validator(mode="after")
+    def answer_requires_text(self):
+        if self.action == ResponseAction.ANSWER and not self.response.strip():
+            raise ValueError("answer responses may not be blank")
+        return self
+
+
+class AttentionResponseEffect(str, Enum):
+    LOCAL_RECORDED = "local_recorded"
+    CAPTURE_ONLY_RECORDED = "capture_only_recorded"
+    DELIVERY_READY = "delivery_ready"
+
+
+class ControlPlaneAttentionResponseReceipt(ApiModel):
+    schema_version: Literal["1.0"] = "1.0"
+    operation_key: str
+    attention: AttentionItem
+    response_effect: AttentionResponseEffect
+    task_state_mutated: Literal[False] = False
+    formal_approval_created: Literal[False] = False
 
 
 class EventPage(ApiModel):

@@ -10,12 +10,14 @@ from pathlib import Path
 from typing import Iterator
 
 from agora.execution.security import redact_text, sanitize_data
+from agora.protocol.hashing import canonical_sha256
 from agora.tasks.models import utc_now
 from agora.tasks.store import TaskStore
 
 from .models import (
     AttentionItem, AttentionKind, AttentionState, AttentionUrgency,
     CancelAttentionRequest, CreateAttentionRequest, RespondAttentionRequest,
+    ResponseAction,
 )
 from .schema import initialize_attention_schema
 from .bridges.models import (
@@ -35,14 +37,19 @@ class AttentionValidationError(ValueError):
     pass
 
 
+class AttentionForbiddenError(PermissionError):
+    pass
+
+
 class AttentionStore:
     MAX_OPEN_BRIDGE_ITEMS_PER_RUN = 50
-    def __init__(self, task_store: TaskStore):
+    def __init__(self, task_store: TaskStore, *, initialize_schema: bool = True):
         self.tasks = task_store
         self.db_path = Path(task_store.db_path)
-        with closing(self._connect()) as db:
-            initialize_attention_schema(db)
-            db.commit()
+        if initialize_schema:
+            with closing(self._connect()) as db:
+                initialize_attention_schema(db)
+                db.commit()
 
     def _connect(self) -> sqlite3.Connection:
         db = sqlite3.connect(str(self.db_path), timeout=10)
@@ -342,6 +349,231 @@ class AttentionStore:
             raise AttentionConflictError("Attention item is already expired")
         return self.require(item_id)
 
+    def respond_control_plane(
+        self,
+        *,
+        project_id: str,
+        task_id: str,
+        item_id: str,
+        action: ResponseAction,
+        response: str,
+        expected_version: int,
+        actor: str,
+        operation_key: str,
+    ) -> tuple[AttentionItem, str]:
+        """Settle one authenticated Task-scoped Attention item exactly once."""
+
+        now = utc_now()
+        safe_response = redact_text(response)
+        request_sha256 = canonical_sha256(
+            {
+                "operation": "control_plane.attention.respond@1.0",
+                "project_id": project_id,
+                "task_id": task_id,
+                "item_id": item_id,
+                "action": action.value,
+                "response": safe_response,
+                "expected_version": expected_version,
+                "actor": actor,
+            }
+        )
+        expired = False
+        result: tuple[AttentionItem, str] | None = None
+        with self._transaction() as db:
+            row = self._locked(db, item_id)
+            if row["project_id"] != project_id or row["task_id"] != task_id:
+                raise AttentionNotFoundError("Attention item not found")
+            if row["assignee"] is not None and row["assignee"] != actor:
+                raise AttentionForbiddenError(
+                    "Attention item is assigned to a different principal"
+                )
+
+            operation = db.execute(
+                """SELECT * FROM control_plane_attention_response_operations
+                   WHERE operation_key = ?""",
+                (operation_key,),
+            ).fetchone()
+            shared_operation = db.execute(
+                """SELECT fingerprint, result FROM control_operations
+                   WHERE operation_key = ?""",
+                (operation_key,),
+            ).fetchone()
+            if operation is not None or shared_operation is not None:
+                if operation is None or shared_operation is None:
+                    raise AttentionConflictError(
+                        "Attention response operation key was already used"
+                    )
+                if any(
+                    (
+                        operation["project_id"] != project_id,
+                        operation["task_id"] != task_id,
+                        operation["item_id"] != item_id,
+                        operation["actor"] != actor,
+                        operation["request_sha256"] != request_sha256,
+                    )
+                ):
+                    raise AttentionConflictError(
+                        "Attention response operation key was reused"
+                    )
+                shared_result = {
+                    "operation": "control_plane.attention.respond@1.0",
+                    "project_id": project_id,
+                    "task_id": task_id,
+                    "item_id": item_id,
+                    "actor": actor,
+                    "result_version": int(operation["result_version"]),
+                    "response_effect": operation["response_effect"],
+                }
+                if (
+                    shared_operation["fingerprint"] != request_sha256
+                    or json.loads(shared_operation["result"]) != shared_result
+                ):
+                    raise AttentionConflictError(
+                        "Attention response operation key was reused"
+                    )
+                if (
+                    row["state"] != AttentionState.RESPONDED.value
+                    or int(row["version"]) != int(operation["result_version"])
+                    or row["response_action"] != action.value
+                    or row["response"] != safe_response
+                    or row["responded_by"] != actor
+                ):
+                    raise AttentionConflictError(
+                        "Attention response receipt no longer matches the item"
+                    )
+                result = (self._item(row), operation["response_effect"])
+            else:
+                expired = self._expire_locked(db, row, now)
+                if not expired:
+                    self._assert_open_version(row, expected_version)
+                    self._validate_response_action(row["kind"], action)
+                    bridge = db.execute(
+                        """SELECT delivery_mode, delivery_state
+                           FROM attention_bridge_events WHERE item_id = ?""",
+                        (item_id,),
+                    ).fetchone()
+                    if bridge is None:
+                        response_effect = "local_recorded"
+                    elif bridge["delivery_mode"] == DeliveryMode.CAPTURE_ONLY.value:
+                        if bridge["delivery_state"] != DeliveryState.PENDING.value:
+                            raise AttentionConflictError(
+                                "Capture-only Attention delivery state is invalid"
+                            )
+                        response_effect = "capture_only_recorded"
+                    elif bridge["delivery_mode"] == DeliveryMode.BIDIRECTIONAL.value:
+                        if bridge["delivery_state"] != DeliveryState.PENDING.value:
+                            raise AttentionConflictError(
+                                "Bidirectional Attention response is not pending"
+                            )
+                        response_effect = "delivery_ready"
+                    else:
+                        raise AttentionValidationError(
+                            "Attention bridge delivery mode is invalid"
+                        )
+
+                    cursor = db.execute(
+                        """UPDATE attention_items SET state = ?, response = ?,
+                           response_action = ?, responded_by = ?, responded_at = ?,
+                           updated_at = ?, version = version + 1
+                           WHERE item_id = ? AND project_id = ? AND task_id = ?
+                             AND state = ? AND version = ?""",
+                        (
+                            AttentionState.RESPONDED.value,
+                            safe_response,
+                            action.value,
+                            actor,
+                            now,
+                            now,
+                            item_id,
+                            project_id,
+                            task_id,
+                            AttentionState.OPEN.value,
+                            expected_version,
+                        ),
+                    )
+                    if cursor.rowcount != 1:
+                        raise AttentionConflictError(
+                            "Attention item changed while responding"
+                        )
+                    if response_effect == "delivery_ready":
+                        delivery = db.execute(
+                            """UPDATE attention_bridge_events
+                               SET delivery_state = 'ready'
+                               WHERE item_id = ? AND delivery_mode = 'bidirectional'
+                                 AND delivery_state = 'pending'""",
+                            (item_id,),
+                        )
+                        if delivery.rowcount != 1:
+                            raise AttentionConflictError(
+                                "Bidirectional Attention response changed while settling"
+                            )
+                    self._event(
+                        db,
+                        task_id,
+                        "attention.responded",
+                        actor,
+                        {
+                            "item_id": item_id,
+                            "action": action.value,
+                            "operation_key": operation_key,
+                            "response_effect": response_effect,
+                        },
+                        now,
+                    )
+                    result_version = expected_version + 1
+                    db.execute(
+                        """INSERT INTO control_plane_attention_response_operations (
+                               operation_key, project_id, task_id, item_id, actor,
+                               request_sha256, result_version, response_effect, created_at
+                           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            operation_key,
+                            project_id,
+                            task_id,
+                            item_id,
+                            actor,
+                            request_sha256,
+                            result_version,
+                            response_effect,
+                            now,
+                        ),
+                    )
+                    shared_result = {
+                        "operation": "control_plane.attention.respond@1.0",
+                        "project_id": project_id,
+                        "task_id": task_id,
+                        "item_id": item_id,
+                        "actor": actor,
+                        "result_version": result_version,
+                        "response_effect": response_effect,
+                    }
+                    db.execute(
+                        """INSERT INTO control_operations (
+                               operation_key, fingerprint, result, created_at
+                           ) VALUES (?, ?, ?, ?)""",
+                        (
+                            operation_key,
+                            request_sha256,
+                            json.dumps(
+                                shared_result,
+                                ensure_ascii=False,
+                                separators=(",", ":"),
+                                sort_keys=True,
+                            ),
+                            now,
+                        ),
+                    )
+                    settled = db.execute(
+                        "SELECT * FROM attention_items WHERE item_id = ?",
+                        (item_id,),
+                    ).fetchone()
+                    result = (self._item(settled), response_effect)
+        if expired:
+            raise AttentionConflictError("Attention item is already expired")
+        if result is None:
+            raise AttentionConflictError("Attention response did not settle")
+        return result
+
     def cancel(self, item_id: str, request: CancelAttentionRequest) -> AttentionItem:
         now = utc_now()
         expired = False
@@ -421,6 +653,22 @@ class AttentionStore:
             raise AttentionConflictError(f"Attention item is already {row['state']}")
         if int(row["version"]) != expected:
             raise AttentionConflictError(f"Expected version {expected}, current version is {row['version']}")
+
+    @staticmethod
+    def _validate_response_action(kind: str, action: ResponseAction) -> None:
+        if kind in {AttentionKind.QUESTION.value, AttentionKind.BLOCKER.value}:
+            if action != ResponseAction.ANSWER:
+                raise AttentionValidationError(
+                    "Questions and blockers require an answer response"
+                )
+            return
+        if kind == AttentionKind.APPROVAL.value:
+            if action not in {ResponseAction.APPROVE, ResponseAction.REJECT}:
+                raise AttentionValidationError(
+                    "Approval Attention requires approve or reject"
+                )
+            return
+        raise AttentionValidationError("Attention kind is invalid")
 
     def _event(self, db: sqlite3.Connection, task_id: str, event_type: str, actor: str, payload: dict, now: str) -> None:
         self.tasks._insert_event(db, task_id=task_id, event_type=event_type, actor=actor, payload=payload, created_at=now)
