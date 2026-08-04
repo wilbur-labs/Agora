@@ -67,15 +67,19 @@
 
 ### Current checkpoint and next safe action
 
-This reviewed release closeout is directly atop pushed Council-cleanup commit
+The reviewed release closeout is committed and pushed as
+`920573d9e990e850661ed044a51487dbfa6067d4` on `origin/main`, directly atop
+pushed Council-cleanup commit
 `e2e30cec209024271b49942365766498a07d2b12`. User-owned `.kiro/` and legacy
 pytest temporary directories remain untracked and untouched.
 
-The exact next action is to stage only the 1.0 release files, commit, and push.
-Then write one documentation-only terminal checkpoint that names the pushed
-release commit and records that no repository-defined 1.0 implementation work
-remains. Future dynamic-role/local-model work begins only as a separate
-post-1.0 request; Kiro support remains present for later reactivation.
+No repository-defined Agora 1.0 implementation work remains. The next safe
+action is to keep this baseline stable and begin a new, separately frozen
+post-1.0 increment only when explicitly requested. The known candidates are
+dynamic role/local-model configuration, policy-governed runtime substitution,
+additional provider usage/cost integrations, and wider isolation/operations
+support. Kiro remains configured for later reactivation; no post-1.0 item is a
+hidden prerequisite for using the current local Control Plane or tutorial.
 
 ## 2026-08-04 - unreachable 0.5 Council source cleanup (reviewed)
 
