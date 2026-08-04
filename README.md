@@ -47,6 +47,18 @@ Open `http://localhost:8000/control-plane` for the authenticated Task console.
 The console reads one authoritative projection and exposes only separately
 reviewed, Task-scoped human actions.
 
+To verify the complete formal control path without calling any AI/provider or
+touching the configured Agora database:
+
+```powershell
+.\backend\.venv\Scripts\python.exe scripts\run_task_acceptance.py
+```
+
+The command launches deterministic local child processes in a temporary Git
+project, runs all formal Stages and Gates, records explicit human approval,
+reopens SQLite, prints one JSON receipt, and removes the temporary workspace.
+It is control-plane acceptance, not native Codex/Claude/Kiro quality evidence.
+
 For architecture and current implementation status, see:
 
 - [`AGENTS.md`](AGENTS.md)

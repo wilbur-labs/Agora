@@ -1,5 +1,78 @@
 # Agora Control Plane Development Progress
 
+## 2026-08-04 - deterministic formal Task mainline acceptance (reviewed)
+
+### Bounded implementation
+
+- [x] Froze `docs/architecture/deterministic-task-acceptance-v1.md` and added
+  `scripts/run_task_acceptance.py`. The command creates a script-owned
+  temporary Git project and SQLite database, then uses the production
+  `TaskOrchestrationService`, `ReadOnlyCliRunner`, protocol parser, Control
+  Plane store, routing/preflight decisions, and unified projection.
+- [x] The three contract-pinned runtime commands launch real local child
+  processes. Their fixture is deterministic and non-AI: it consumes only the
+  sealed Context Pack, cross-checks the routing-policy `pinned_runtime` against
+  the Task contract, and emits exact sealed Artifact, Evidence, and Handoff
+  structures. It does not contact Codex, Claude, Kiro, a provider API, or a
+  local model and is guarded by an inherited acceptance-only marker.
+- [x] The acceptance run proves all three formal Stages/Runs and Stage Gates
+  pass, the Task stops at `needs_review` with exactly one `plan_approval` human
+  action, explicit approval completes the authoritative Task, a newly opened
+  store reproduces the completed projection, and the temporary workspace is
+  removed. Its JSON receipt reports three child process exits at zero, three
+  managed Artifacts, three Evidence records, and no remaining human action.
+- [x] Replaced the old manually executable `backend/tests/test_scenarios.py`,
+  which still routed into Council multi-agent discussion, with a regression
+  that invokes the formal deterministic acceptance as a subprocess. The
+  obsolete Council scenario is no longer presented as end-to-end product
+  validation.
+- [x] Kept native runtime semantics unchanged. The receipt's runtime labels
+  remain the contract pins `codex`, `claude`, and `kiro`; they identify formal
+  routing, not provider calls. Kiro support is retained, and configurable
+  roles/local-model adapters plus native provider-backed acceptance remain
+  deferred while the Kiro subscription is unavailable.
+
+### Verification and review state
+
+- [x] Direct system-Temp execution completed in about six seconds and emitted
+  `task_state_before_approval=needs_review`,
+  `task_state_after_reopen=completed`, three passed Stages/Gates/Runs,
+  `artifact_count=3`, `evidence_count=3`,
+  `persisted_reopen_verified=true`, and
+  `temporary_workspace_removed=true` with
+  `provider_or_model_called=false`.
+- [x] The executable acceptance regression passed 1 test. The combined new
+  acceptance plus existing formal protocol orchestration suite passed 66 tests
+  in 17.33 seconds. Protocol Schema export/check, isolated script `compileall`,
+  `git diff --check`, legacy Council scenario search, and debug-log cleanup
+  checks pass.
+- [x] The user-designated Codex substitute review found that the first fixture
+  version derived `producer.runtime` only from the contract. The final version
+  derives it from the sealed routing-policy projection and fails unless that
+  pin matches the contract. Final Codex review found no remaining actionable
+  issue: `CODEX_APPROVE`.
+- [x] The first broad Claude review exceeded its USD 1 budget without a
+  verdict and was not counted. A narrowed independent review verified bounded
+  execution, Windows handle/cleanup behavior, exact routing and protocol
+  bindings, real child process evidence, approval, and cold SQLite reopen, and
+  returned `VERDICT: CLAUDE_APPROVE` with no HIGH/MEDIUM/LOW.
+- [x] Kiro was not invoked under the user's temporary development-review
+  exclusion. This exception does not alter or remove Kiro from the product
+  runtime registry or Task contracts.
+
+### Current checkpoint and next safe action
+
+This reviewed increment is directly atop pushed Council-entrypoint retirement
+commit `7907a03`. User-owned `.kiro/` and legacy pytest temporary directories
+remain untracked and untouched.
+
+The exact next action is to stage only the four acceptance files plus this
+progress record, commit, and push. Then start the actual API/static Control
+Plane in an isolated configuration and perform browser/API acceptance against
+the persisted deterministic Task receipt path. Do not claim native
+Codex/Claude/Kiro quality acceptance from this fixture, do not remove Kiro,
+and do not begin configurable-role/local-model implementation yet.
+
 ## 2026-08-04 - autonomous council entrypoint retirement (reviewed)
 
 ### Bounded implementation
