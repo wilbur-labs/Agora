@@ -5,8 +5,11 @@ import {
   AttentionResponseRetryKey,
   clearProtectedControlPlaneView,
   controlPlaneAttentionResponsePath,
+  controlPlanePlanApprovalPath,
   controlPlaneResponseBusy,
   controlPlaneTaskIndexPath,
+  PlanApprovalRetryKey,
+  planApprovalActionReady,
   ProjectionRequestLifecycle,
   runProtocolDimensions,
 } from "../src/lib/control-plane-view.ts";
@@ -51,6 +54,13 @@ test("Attention response path binds and URL encodes Project, Task, and item", ()
   );
 });
 
+test("Plan approval path binds and URL encodes Project and Task", () => {
+  assert.equal(
+    controlPlanePlanApprovalPath("project/with space", "task/with space"),
+    "/api/control-plane/projects/project%2Fwith%20space/tasks/task%2Fwith%20space/plan-approvals",
+  );
+});
+
 test("an unchanged Attention draft keeps its retry key after uncertainty", () => {
   const retry = new AttentionResponseRetryKey();
   const draft = {
@@ -74,10 +84,53 @@ test("an unchanged Attention draft keeps its retry key after uncertainty", () =>
   );
 });
 
+test("an unchanged Plan approval keeps its retry key after uncertainty", () => {
+  const retry = new PlanApprovalRetryKey();
+  const draft = {
+    taskId: "task_1",
+    expectedTaskVersion: 7,
+    planId: "plan_1",
+    expectedPlanVersion: 4,
+    reason: "Reviewed all formal evidence.",
+  };
+  let nonce = 0;
+  const createNonce = () => `nonce-${++nonce}`;
+
+  assert.equal(retry.forDraft(draft, createNonce), "plan-approval:nonce-1");
+  assert.equal(retry.forDraft(draft, createNonce), "plan-approval:nonce-1");
+  assert.equal(
+    retry.forDraft({ ...draft, reason: "Updated rationale." }, createNonce),
+    "plan-approval:nonce-2",
+  );
+  assert.equal(
+    retry.forDraft({ ...draft, expectedTaskVersion: 8 }, createNonce),
+    "plan-approval:nonce-3",
+  );
+  assert.equal(
+    retry.forDraft({ ...draft, expectedPlanVersion: 5 }, createNonce),
+    "plan-approval:nonce-4",
+  );
+});
+
 test("projection refresh blocks Attention submission until its lease settles", () => {
   assert.equal(controlPlaneResponseBusy(true, null), true);
   assert.equal(controlPlaneResponseBusy(false, "attn_1"), true);
+  assert.equal(controlPlaneResponseBusy(false, null, true), true);
   assert.equal(controlPlaneResponseBusy(false, null), false);
+});
+
+test("Plan approval is actionable only as the sole matching human action", () => {
+  const planApproval = { kind: "plan_approval", source_id: "plan_1" };
+
+  assert.equal(planApprovalActionReady([planApproval], "plan_1"), true);
+  assert.equal(planApprovalActionReady([planApproval], "plan_other"), false);
+  assert.equal(
+    planApprovalActionReady(
+      [planApproval, { kind: "candidate_disposition", source_id: "candidate_1" }],
+      "plan_1",
+    ),
+    false,
+  );
 });
 
 test("starting even an invalid reconnect attempt retires the older lease", () => {

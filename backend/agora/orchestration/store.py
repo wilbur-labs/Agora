@@ -144,6 +144,7 @@ from .models import (
     BudgetAmendment,
     ConsultationRun,
     ConsultationState,
+    ControlPlanePlanApprovalReceipt,
     LedgerEntryType,
     Measurement,
     MethodologyDispatchState,
@@ -3019,6 +3020,236 @@ class OrchestrationStore:
                 payload={"plan_id": plan["plan_id"], "reason": redact_text(reason)}, created_at=now,
             )
         return self.require_plan(task_id)
+
+    def approve_control_plane_plan(
+        self,
+        task_id: str,
+        *,
+        project_id: str,
+        expected_task_version: int,
+        expected_plan_version: int,
+        actor: str,
+        reason: str,
+        operation_key: str,
+        control_plane: ControlPlaneStore,
+    ) -> ControlPlanePlanApprovalReceipt:
+        """Atomically approve one reviewed non-methodology Plan and Task."""
+
+        control_plane._validate_operation_key(operation_key)
+        control_plane._validate_actor(actor)
+        reason = reason.strip()
+        if not reason or len(reason) > 4_000:
+            raise OrchestrationValidationError(
+                "Plan approval reason must contain between 1 and 4000 characters"
+            )
+        persisted_reason = redact_text(reason)
+        fingerprint = canonical_sha256(
+            {
+                "operation": "control_plane.plan.approve@1.0",
+                "project_id": project_id,
+                "task_id": task_id,
+                "expected_task_version": expected_task_version,
+                "expected_plan_version": expected_plan_version,
+                "actor": actor,
+                "reason": persisted_reason,
+            }
+        )
+        now = utc_now()
+        with self._transaction() as db:
+            replay = control_plane._operation_result(db, operation_key, fingerprint)
+            if replay is not None:
+                receipt = ControlPlanePlanApprovalReceipt.model_validate(
+                    replay["receipt"]
+                )
+                return receipt.model_copy(update={"replayed": True})
+
+            task = db.execute(
+                "SELECT task_id, project_id FROM tasks WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
+            if task is None or task["project_id"] != project_id:
+                raise OrchestrationNotFoundError("Control Plane resource not found")
+
+            control_task = db.execute(
+                "SELECT * FROM control_tasks WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
+            if control_task is None:
+                raise OrchestrationConflictError(
+                    "Frozen Task state is not initialized"
+                )
+            if control_task["project_id"] != project_id:
+                raise OrchestrationNotFoundError("Control Plane resource not found")
+            if control_task["version"] != expected_task_version:
+                raise OrchestrationConflictError(
+                    f"Expected Task version {expected_task_version}, current version is "
+                    f"{control_task['version']}"
+                )
+            if control_task["status"] != TaskStatus.NEEDS_REVIEW.value:
+                raise OrchestrationConflictError(
+                    "Task is not awaiting explicit Plan approval"
+                )
+
+            plan = db.execute(
+                "SELECT * FROM orchestration_plans WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
+            if plan is None:
+                raise OrchestrationNotFoundError(task_id)
+            if plan["project_id"] != project_id:
+                raise OrchestrationNotFoundError("Control Plane resource not found")
+            if plan["version"] != expected_plan_version:
+                raise OrchestrationConflictError(
+                    f"Expected Plan version {expected_plan_version}, current version is "
+                    f"{plan['version']}"
+                )
+            if plan["state"] != PlanState.AWAITING_APPROVAL.value:
+                raise OrchestrationConflictError(
+                    "Plan is not awaiting human approval"
+                )
+
+            if db.execute(
+                """
+                SELECT 1 FROM orchestration_methodology_execution_contracts
+                WHERE task_id = ?
+                """,
+                (task_id,),
+            ).fetchone() is not None:
+                raise OrchestrationConflictError(
+                    "Methodology Task completion requires its authenticated "
+                    "artifact-bound atomic approval"
+                )
+
+            active_work = db.execute(
+                """
+                SELECT
+                    (SELECT COUNT(*) FROM orchestration_runs
+                     WHERE plan_id = ? AND state = ?) AS runs,
+                    (SELECT COUNT(*) FROM protocol_runs
+                     WHERE task_id = ? AND settled_at IS NULL) AS protocol_runs,
+                    (SELECT COUNT(*) FROM orchestration_consultations
+                     WHERE plan_id = ? AND state = ?) AS consultations
+                """,
+                (
+                    plan["plan_id"],
+                    RunState.RUNNING.value,
+                    task_id,
+                    plan["plan_id"],
+                    ConsultationState.RUNNING.value,
+                ),
+            ).fetchone()
+            assert active_work is not None
+            if (
+                active_work["runs"]
+                or active_work["protocol_runs"]
+                or active_work["consultations"]
+            ):
+                raise OrchestrationConflictError(
+                    "Plan approval requires every Run and consultation to be settled"
+                )
+            pending_candidate = db.execute(
+                """
+                SELECT 1
+                FROM orchestration_consultation_candidates AS candidate
+                LEFT JOIN orchestration_candidate_dispositions AS disposition
+                  ON disposition.candidate_id = candidate.candidate_id
+                WHERE candidate.plan_id = ? AND disposition.candidate_id IS NULL
+                LIMIT 1
+                """,
+                (plan["plan_id"],),
+            ).fetchone()
+            if pending_candidate is not None:
+                raise OrchestrationConflictError(
+                    "Plan approval requires every consultation candidate to be "
+                    "adopted or rejected by a human"
+                )
+
+            decision = control_plane._task_lifecycle_decision_tx(
+                db,
+                task_id,
+                required=True,
+            )
+            assert decision is not None
+            if (
+                decision.target_status != TaskStatus.NEEDS_REVIEW
+                or decision.reason != TaskLifecycleReason.ALL_STAGES_PASSED
+            ):
+                raise OrchestrationConflictError(
+                    "Plan approval requires every inventory Stage and its exact "
+                    "formal Gate to have passed"
+                )
+
+            updated_task = control_plane._apply_task_transition_tx(
+                db,
+                row=control_task,
+                target=TaskStatus.COMPLETED,
+                cause=TaskTransitionCause.USER_ACTION,
+                actor=actor,
+                reason=persisted_reason,
+                event_key=f"{operation_key}:task.state_changed",
+                now=now,
+                decision=decision,
+            )
+            cursor = db.execute(
+                """
+                UPDATE orchestration_plans
+                SET state = ?, approved_at = ?, approved_by = ?,
+                    version = version + 1, updated_at = ?
+                WHERE plan_id = ? AND task_id = ? AND project_id = ?
+                  AND state = ? AND version = ?
+                """,
+                (
+                    PlanState.READY_FOR_IMPLEMENTATION.value,
+                    now,
+                    actor,
+                    now,
+                    plan["plan_id"],
+                    task_id,
+                    project_id,
+                    PlanState.AWAITING_APPROVAL.value,
+                    expected_plan_version,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise OrchestrationConflictError("Plan changed during approval")
+
+            updated_plan_row = db.execute(
+                "SELECT * FROM orchestration_plans WHERE plan_id = ?",
+                (plan["plan_id"],),
+            ).fetchone()
+            assert updated_plan_row is not None
+            updated_plan = self._plan(updated_plan_row)
+            control_plane._event(
+                db,
+                event_key=f"{operation_key}:orchestration.plan_approved",
+                task_id=task_id,
+                project_id=project_id,
+                event_type="orchestration.plan_approved",
+                actor=actor,
+                payload={
+                    "plan_id": plan["plan_id"],
+                    "from": PlanState.AWAITING_APPROVAL.value,
+                    "to": PlanState.READY_FOR_IMPLEMENTATION.value,
+                    "reason": persisted_reason,
+                    "version": updated_plan.version,
+                },
+                now=now,
+            )
+            receipt = ControlPlanePlanApprovalReceipt(
+                operation_key=operation_key,
+                task=updated_task,
+                plan=updated_plan,
+                previous_task_status=TaskStatus.NEEDS_REVIEW,
+                previous_plan_state=PlanState.AWAITING_APPROVAL,
+            )
+            control_plane._complete_operation(
+                db,
+                operation_key,
+                fingerprint,
+                {"receipt": receipt.model_dump(mode="json")},
+                now,
+            )
+            return receipt
 
     def activate_methodology_successor(
         self,

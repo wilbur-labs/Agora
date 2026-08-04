@@ -2,6 +2,7 @@ import { getApiBase } from "@/lib/api";
 import { ApiError, type TaskManifest } from "@/lib/control-plane";
 import {
   controlPlaneAttentionResponsePath,
+  controlPlanePlanApprovalPath,
   controlPlaneTaskIndexPath,
 } from "@/lib/control-plane-view";
 
@@ -104,11 +105,14 @@ export interface UnifiedTaskProjection {
   stage_route_unavailable_reason: string | null;
   plan: {
     plan_id: string;
+    task_id: string;
+    project_id: string;
     methodology_id: string;
     methodology_version: string;
     provisional: boolean;
     state: string;
     current_stage_key: string | null;
+    version: number;
     total_token_budget: number;
     total_cost_budget_usd: number | null;
   };
@@ -220,6 +224,29 @@ export interface ControlPlaneAttentionResponseReceipt {
   formal_approval_created: false;
 }
 
+export interface ControlPlanePlanApprovalReceipt {
+  schema_version: "1.0";
+  operation_key: string;
+  task: {
+    task_id: string;
+    project_id: string;
+    status: AuthoritativeTaskState;
+    version: number;
+    created_at: string;
+    updated_at: string;
+  };
+  plan: UnifiedTaskProjection["plan"] & {
+    approved_at: string | null;
+    approved_by: string | null;
+  };
+  previous_task_status: AuthoritativeTaskState;
+  previous_plan_state: string;
+  task_completed: true;
+  formal_approval_created: false;
+  methodology_completion_approval_created: false;
+  replayed: boolean;
+}
+
 export interface UnifiedTaskIndexItem {
   task_id: string;
   project_id: string;
@@ -310,6 +337,34 @@ export async function respondToControlPlaneAttention(
   );
   if (!response.ok) throw await apiError(response);
   return response.json() as Promise<ControlPlaneAttentionResponseReceipt>;
+}
+
+export async function approveControlPlanePlan(
+  projectId: string,
+  taskId: string,
+  bearerToken: string,
+  input: {
+    reason: string;
+    expected_task_version: number;
+    expected_plan_version: number;
+    operation_key: string;
+  },
+  signal?: AbortSignal,
+): Promise<ControlPlanePlanApprovalReceipt> {
+  const response = await fetch(
+    `${getApiBase()}${controlPlanePlanApprovalPath(projectId, taskId)}`,
+    {
+      method: "POST",
+      signal,
+      headers: {
+        Authorization: `Bearer ${bearerToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(input),
+    },
+  );
+  if (!response.ok) throw await apiError(response);
+  return response.json() as Promise<ControlPlanePlanApprovalReceipt>;
 }
 
 async function apiError(response: Response): Promise<ApiError> {

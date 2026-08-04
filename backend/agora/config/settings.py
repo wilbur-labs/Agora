@@ -39,6 +39,8 @@ def get_config(path: str | Path | None = None) -> dict:
     global _config, _config_path
     if path:
         p = Path(path)
+    elif configured_path := os.environ.get("AGORA_CONFIG_PATH", "").strip():
+        p = Path(configured_path)
     else:
         # Search: project root → backend dir → cwd
         for d in [_root, _backend, Path.cwd()]:

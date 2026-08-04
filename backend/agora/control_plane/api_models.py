@@ -58,6 +58,17 @@ class ControlPlaneAttentionResponseRequest(ApiModel):
         return self
 
 
+class ControlPlanePlanApprovalRequest(ApiModel):
+    reason: str = Field(min_length=1, max_length=4_000)
+    expected_task_version: int = Field(ge=1)
+    expected_plan_version: int = Field(ge=1)
+    operation_key: str = Field(
+        min_length=1,
+        max_length=200,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+    )
+
+
 class AttentionResponseEffect(str, Enum):
     LOCAL_RECORDED = "local_recorded"
     CAPTURE_ONLY_RECORDED = "capture_only_recorded"

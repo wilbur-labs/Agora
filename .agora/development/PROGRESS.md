@@ -1,5 +1,107 @@
 # Agora Control Plane Development Progress
 
+## 2026-08-04 - authenticated atomic Plan approval and live service closeout (reviewed)
+
+### Bounded implementation
+
+- [x] Froze `docs/architecture/control-plane-ui-plan-approval-v1.md` before
+  implementation. Added the distinct `control_plane.plan.approve` permission;
+  the existing `control_plane.approve` remains the artifact-bound formal
+  protocol/methodology authority and is not silently widened.
+- [x] Added the authenticated project/Task-scoped
+  `POST /api/control-plane/projects/{project_id}/tasks/{task_id}/plan-approvals`
+  command. Its principal-derived actor, bounded redacted rationale, expected
+  frozen Task version, expected Plan version, and globally shared operation key
+  are mandatory. Exact retry returns the original receipt with
+  `replayed=true`; cross-command or changed-input reuse fails 409.
+- [x] Made non-methodology Task completion and Plan approval one
+  `BEGIN IMMEDIATE` transaction. It fails closed unless the Task is exactly
+  `needs_review`, the Plan is exactly `awaiting_approval`, deterministic
+  lifecycle authority is `all_stages_passed`, and there is no methodology
+  execution contract, running operational Run, unsettled formal protocol Run,
+  running explicit consultation, pending consultation candidate, or blocking
+  Attention. Task/Plan writes, redacted audit events, and the shared receipt
+  all roll back together.
+- [x] Kept plan approval separate from every protocol dimension. The receipt
+  reports `formal_approval_created=false` and
+  `methodology_completion_approval_created=false`; no Stage, Gate, Run,
+  Artifact, Evidence, provider, local model, Codex, Claude, or Kiro process is
+  invoked by the command.
+- [x] Connected the static authenticated console. It renders the form only
+  when the sole authoritative human action is the matching `plan_approval`,
+  binds visible Task/Plan versions, retains one retry key across an uncertain
+  unchanged attempt, aborts superseded mutation/projection leases, refreshes
+  from the authoritative projection after success, and clears protected state
+  when project, Task, credential, Forget, or unmount changes.
+- [x] Added a fail-closed local-owner bearer mapping in `config.yaml` through
+  the unresolved `AGORA_CONTROL_PLANE_TOKEN` secret reference and documented it
+  in `.env.example`. An unset token authorizes nobody. Added optional
+  `AGORA_CONFIG_PATH` selection, below an explicit function argument and above
+  normal config discovery, so isolated/local instances can use a separate DB
+  without editing repository configuration.
+- [x] Preserved `.kiro/`, Kiro runtime pins/configuration, and future
+  configurable role/local-model boundaries. Kiro was not called. Autonomous
+  AI-to-AI discussion and candidate disposition remain outside this increment.
+
+### Verification and review state
+
+- [x] New Plan approval API regressions passed 9 tests. They cover successful
+  mutation and exact replay, redacted fingerprint/audits, cold unified
+  projection, distinct permission and non-enumerating scope, body actor
+  rejection, blank rationale, stale Task/Plan versions, Gate drift, shared
+  Attention-operation collisions in both directions, methodology exclusion,
+  every active/unsettled/pending guard, no protocol Approval, and injected
+  transaction-tail rollback. The final related Control Plane/lifecycle/protocol
+  shard passed 124 tests before the last strictly additive active-work guard;
+  the complete suite below includes its final form.
+- [x] The complete non-integration suite including the rebuilt static UI ran
+  all tests: 825 passed and 15 were deselected. Its only two failures were old
+  retired Council/executor tests whose literal Linux `/tmp/...` paths resolve
+  to sandbox-denied `D:\tmp` on Windows. The exact two tests passed 2/2 in
+  0.28 seconds when rerun outside the filesystem sandbox; there was no
+  assertion or Agora behavior failure.
+- [x] Frontend Control Plane tests passed 11 tests. ESLint completed with zero
+  errors and the same 11 warnings in retired `use-chat.ts`; the Next.js 16
+  production build and static export passed with the eight supported routes.
+  Protocol Schema check, isolated `compileall`, YAML parsing,
+  `git diff --check`, and root configuration loading pass.
+- [x] A live isolated FastAPI/static-export instance used a temporary bearer
+  and SQLite database. Authenticated discovery observed
+  `needs_review / awaiting_approval` with exactly `plan_approval`; the real HTTP
+  command returned `completed / ready_for_implementation`, an exact retry
+  returned `replayed=true`, a new projection had zero human actions and zero
+  formal Approvals, and a full server stop/restart cold-read preserved those
+  facts. The temporary service, DB, config, token, and directory were removed.
+  Browser setup reported no available browser instances, so no click-through
+  result is claimed; frontend interaction remains covered by build and focused
+  lease/retry tests.
+- [x] The user-designated current Codex review found that the first boundary
+  could complete with active/unsettled Runs or an undisposed consultation
+  candidate. The final code and UI fail closed on those facts; substantive
+  re-review found no remaining actionable issue: `CODEX_APPROVE`.
+- [x] Several broad/default Claude attempts produced no verdict, exceeded a
+  USD 1 read budget, or timed out and were not counted. Two bounded read-only
+  Claude Code Haiku reviews then inspected the actual backend/test boundary and
+  the frontend/config boundary independently. Both returned explicit
+  `VERDICT: CLAUDE_APPROVE` with no HIGH/MEDIUM findings.
+- [x] Kiro was intentionally not invoked under the user's temporary review
+  exclusion. This does not remove Kiro or substitute another runtime inside a
+  Task; only the development review gate used Codex temporarily.
+
+### Current checkpoint and next safe action
+
+The implementation is directly atop pushed deterministic acceptance commit
+`9a1dd27`. User-owned `.kiro/` and legacy pytest temporary directories remain
+untracked and untouched.
+
+This reviewed Plan approval/config/UI increment is the next commit directly
+atop `9a1dd27`. After it is pushed, the exact next action is to freeze the
+separate authenticated human consultation-candidate `adopt`/`reject` boundary
+so an explicitly requested candidate can be disposed from the same console
+before Plan approval. Do not add autonomous discussion, remove Kiro, implement
+dynamic role/local-model configuration, or conflate candidate disposition with
+Task/Stage/Gate authority.
+
 ## 2026-08-04 - deterministic formal Task mainline acceptance (reviewed)
 
 ### Bounded implementation

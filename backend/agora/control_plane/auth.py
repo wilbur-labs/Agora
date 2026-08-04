@@ -34,6 +34,7 @@ _permissions = frozenset(
         "control_plane.evaluate",
         "control_plane.approve",
         "control_plane.attention.respond",
+        "control_plane.plan.approve",
     }
 )
 

@@ -153,6 +153,26 @@ class OrchestrationPlan(StrictModel):
     approved_by: str | None = None
 
 
+class ControlPlanePlanApprovalReceipt(StrictModel):
+    schema_version: Literal["1.0"] = "1.0"
+    operation_key: Annotated[
+        str,
+        Field(
+            min_length=1,
+            max_length=200,
+            pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+        ),
+    ]
+    task: TaskRecord
+    plan: OrchestrationPlan
+    previous_task_status: TaskStatus
+    previous_plan_state: PlanState
+    task_completed: Literal[True] = True
+    formal_approval_created: Literal[False] = False
+    methodology_completion_approval_created: Literal[False] = False
+    replayed: bool = False
+
+
 class OrchestrationStage(StrictModel):
     stage_id: str
     plan_id: str

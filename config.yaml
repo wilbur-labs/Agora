@@ -82,6 +82,22 @@ memory:
   user_char_limit: 1375
   data_dir: ./data
 
+# Authenticated Agora 1.0 Control Plane. The referenced bearer stays outside
+# the repository; an unset or empty environment variable authorizes nobody.
+control_plane:
+  auth:
+    credentials:
+      - secret_ref: AGORA_CONTROL_PLANE_TOKEN
+        principal: local-owner
+        permissions:
+          - control_plane.read
+          - control_plane.register
+          - control_plane.evaluate
+          - control_plane.approve
+          - control_plane.attention.respond
+          - control_plane.plan.approve
+        projects: [agora]
+
 skills:
   enabled: true
   paths:

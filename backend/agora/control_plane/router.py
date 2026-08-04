@@ -15,7 +15,11 @@ from agora.attention.store import (
     AttentionValidationError,
 )
 from agora.protocol.models import Approval, Artifact, Evidence
-from agora.orchestration.models import UnifiedTaskIndexPage, UnifiedTaskProjection
+from agora.orchestration.models import (
+    ControlPlanePlanApprovalReceipt,
+    UnifiedTaskIndexPage,
+    UnifiedTaskProjection,
+)
 from agora.orchestration.projection import TaskProjectionStore
 from agora.orchestration.store import (
     OrchestrationConflictError,
@@ -28,6 +32,7 @@ from agora.tasks.router import get_task_store
 from .api_models import (
     ControlPlaneAttentionResponseReceipt,
     ControlPlaneAttentionResponseRequest,
+    ControlPlanePlanApprovalRequest,
     ConfigureGateRequest,
     ControlEventPage,
     ControlPlaneProjection,
@@ -76,6 +81,12 @@ def get_task_projection_store(
         OrchestrationStore(store.tasks),
         store,
     )
+
+
+def get_control_plane_orchestration_store(
+    store: ControlPlaneStore = Depends(get_control_plane_store),
+) -> OrchestrationStore:
+    return OrchestrationStore(store.tasks)
 
 
 def get_control_plane_attention_store(
@@ -324,6 +335,41 @@ async def respond_to_attention(
         operation_key=request.operation_key,
         attention=attention,
         response_effect=response_effect,
+    )
+
+
+@router.post(
+    "/plan-approvals",
+    response_model=ControlPlanePlanApprovalReceipt,
+)
+async def approve_control_plane_plan(
+    project_id: str,
+    task_id: str,
+    request: ControlPlanePlanApprovalRequest,
+    principal: ControlPrincipal = Depends(authenticate_control_plane),
+    store: ControlPlaneStore = Depends(get_control_plane_store),
+    orchestration: OrchestrationStore = Depends(
+        get_control_plane_orchestration_store
+    ),
+):
+    await _call(
+        _scope,
+        project_id,
+        task_id,
+        "control_plane.plan.approve",
+        principal,
+        store,
+    )
+    return await _call(
+        orchestration.approve_control_plane_plan,
+        task_id,
+        project_id=project_id,
+        expected_task_version=request.expected_task_version,
+        expected_plan_version=request.expected_plan_version,
+        actor=principal.principal_id,
+        reason=request.reason,
+        operation_key=request.operation_key,
+        control_plane=store,
     )
 
 

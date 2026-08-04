@@ -33,6 +33,16 @@ class TestConfig:
             os.unlink(path)
             reset_config()
 
+    def test_environment_can_select_an_isolated_config(self, tmp_path, monkeypatch):
+        path = tmp_path / "isolated-config.yaml"
+        path.write_text("control_plane:\n  db_path: isolated.db\n", encoding="utf-8")
+        monkeypatch.setenv("AGORA_CONFIG_PATH", str(path))
+        reset_config()
+        try:
+            assert get_config()["control_plane"]["db_path"] == "isolated.db"
+        finally:
+            reset_config()
+
     def test_loads_utf8_yaml(self, tmp_path):
         path = tmp_path / "config.yaml"
         path.write_text('display_name: "交付控制面 🚦"\n', encoding="utf-8")

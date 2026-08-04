@@ -77,6 +77,19 @@ export function controlPlaneAttentionResponsePath(
   ].join("/");
 }
 
+export function controlPlanePlanApprovalPath(
+  projectId: string,
+  taskId: string,
+): string {
+  return [
+    "/api/control-plane/projects",
+    encodeURIComponent(projectId),
+    "tasks",
+    encodeURIComponent(taskId),
+    "plan-approvals",
+  ].join("/");
+}
+
 export interface AttentionResponseDraft {
   itemId: string;
   expectedVersion: number;
@@ -110,11 +123,56 @@ export class AttentionResponseRetryKey {
   }
 }
 
+export interface PlanApprovalDraft {
+  taskId: string;
+  expectedTaskVersion: number;
+  planId: string;
+  expectedPlanVersion: number;
+  reason: string;
+}
+
+export class PlanApprovalRetryKey {
+  private fingerprint: string | null = null;
+  private operationKey: string | null = null;
+
+  forDraft(draft: PlanApprovalDraft, createNonce: () => string): string {
+    const fingerprint = JSON.stringify([
+      draft.taskId,
+      draft.expectedTaskVersion,
+      draft.planId,
+      draft.expectedPlanVersion,
+      draft.reason,
+    ]);
+    if (this.fingerprint !== fingerprint || this.operationKey === null) {
+      const nonce = createNonce().replace(/[^A-Za-z0-9_.:-]/g, "-").slice(0, 160);
+      if (!nonce) throw new Error("Could not create a Plan approval retry key.");
+      this.fingerprint = fingerprint;
+      this.operationKey = `plan-approval:${nonce}`;
+    }
+    return this.operationKey;
+  }
+
+  clear(): void {
+    this.fingerprint = null;
+    this.operationKey = null;
+  }
+}
+
 export function controlPlaneResponseBusy(
   projectionLoading: boolean,
   respondingItemId: string | null,
+  approvingPlan = false,
 ): boolean {
-  return projectionLoading || respondingItemId !== null;
+  return projectionLoading || respondingItemId !== null || approvingPlan;
+}
+
+export function planApprovalActionReady(
+  actions: Array<{ kind: string; source_id: string }>,
+  planId: string,
+): boolean {
+  return actions.length === 1
+    && actions[0].kind === "plan_approval"
+    && actions[0].source_id === planId;
 }
 
 export interface ProtectedControlPlaneView<TProjection, TTask> {
