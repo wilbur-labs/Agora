@@ -206,61 +206,57 @@ deferred until the CLI-first orchestration path is proven.
 
 ## 9. Current implementation alignment
 
-Already present and reviewed as of commit `2750dfe`:
+The reviewed Agora 1.0 baseline now includes:
 
-- frozen protocol/domain contracts and Control Plane v2 persistence;
-- provisional version-pinned `agora-aidlc-foundation@0.1`;
-- one `agora task` CLI entry point for start/attach/status/next/run/resume/
-  retry/approve;
-- sequential read-only Codex -> Claude -> Kiro planning/review loop;
-- append-only Token reservation/settlement with measurement truthfulness;
-- restart safety, Windows native runtime recovery, and bounded output capture.
+- frozen protocol/domain models, checked-in matching Schemas, Control Plane v2
+  persistence, and deterministic reconciliation;
+- concrete versioned Task contracts with roles, ordered workflow,
+  Context/Handoff expectations, acceptance criteria, and required
+  Artifacts/Evidence/Gates;
+- authoritative grouped Stage inventory, lifecycle derivation, linear routing,
+  protected review budgets, versioned amendment, retry, and resume semantics;
+- bounded native capability observation and fail-closed preflight for pinned
+  Codex, Claude Code, and Kiro CLI routes without runtime substitution;
+- the source-bound AWS AI-DLC graph, migration preview and activation,
+  execution contract, all eight formal Stage claim/dispatch/settlement paths,
+  independent completion reviews, and artifact-bound human completion;
+- an explicit single-runtime consultation path whose immutable result is
+  advisory until a human adopts or rejects it;
+- one unified authoritative Task projection plus authenticated project/Task
+  discovery, Attention response, candidate disposition, and atomic Plan
+  approval in the static Control Plane;
+- deterministic end-to-end formal acceptance covering three runtime labels,
+  every Stage/Gate, explicit human approval, cold SQLite reopen, and temporary
+  cleanup without calling a provider or model; and
+- fail-closed retirement and source removal of the 0.5 autonomous Council.
 
-Subsequent reviewed increments added frozen Task state, a sealed grouped Stage
-inventory, lifecycle derivation, and authoritative linear Stage routing. The
-current explainable-routing increment adds a bounded policy record for the
-already pinned runtime/reviewer assignments and protects unfinished reviewer
-Stage budgets; its final review state is tracked in `PROGRESS.md`.
+Native CLI subscriptions remain external dependencies. An unavailable pinned
+runtime truthfully blocks its Stage; it is not silently replaced and does not
+invalidate the deterministic control-plane acceptance. The current Kiro
+adapter and configuration remain present while the user's Kiro contract is
+temporarily unavailable.
 
-The current bounded follow-up adds a versioned Task budget-amendment receipt
-for a retry blocked only by protected review capacity. It increases the total
-envelope without reallocating Stages, reducing reviewers, or rewriting usage,
-and forces the next Run claim to derive a fresh policy. Its review state is
-tracked in `PROGRESS.md`.
+Post-1.0 enhancements are intentionally separate:
 
-The source-bound AWS AI-DLC increments now include the pinned source graph,
-inert activation definition, read-only migration preview, and authenticated
-transactional successor writer. The writer persists the Gate and seals the
-successor Task/Plan/inventory, but intentionally stops before route activation
-or provider dispatch. The subsequent authenticated contract materializer binds
-that unchanged inventory to exact per-Stage Context/Handoff templates,
-input/output routing, Run reservations, and formal Evidence/Gate requirements.
-It still creates no route, Run, or dispatch authority.
+- dynamically configurable role graphs, arbitrary local-model adapters, and
+  policy-governed runtime substitution;
+- additional provider/model-specific exact usage and cost integrations;
+- POSIX/remote embedded-runner isolation and large shared-repository
+  invalidation operations; and
+- further UI convenience beyond the reviewed authoritative Task console.
 
-Still required:
+## 10. Agora 1.0 acceptance
 
-- a separately reviewed first-route activation path that rechecks the sealed
-  AWS AI-DLC successor execution contract and grants only the exact first route;
-  the migration writer and contract materializer deliberately grant no runtime
-  dispatch authority;
-- a concrete Task contract with roles, process, Context/Handoff expectations,
-  acceptance criteria, and required Artifacts/Evidence/Gates;
-- consult and decide/adopt semantics under the authoritative Task;
-- dynamic runtime/model selection or substitution beyond the recorded,
-  capability-checked pinned routing rationale;
-- provider/model-specific exact usage where available, plus any future dynamic
-  cost/model policy beyond the fixed protected-review baseline;
-- the unified authoritative Task status/progress/result projection;
-- a real CLI-first three-runtime end-to-end Task through review, Gate,
-  intervention, resume, and handoff;
-- only after that proof, an optional Task Workbench UI.
+A user can enter through Agora, operate one concrete Task without manually
+coordinating native CLI state, inspect truthful Run and budget dimensions,
+receive explicit semantic blockers or results, resume safely, and pass or fail
+formal Gates based on version-bound Artifacts and Evidence. Implementation
+budget cannot remove mandatory review, and process exit zero cannot advance a
+semantically blocked Stage.
 
-## 10. Acceptance criteria for the next vertical slice
-
-The next product slice is acceptable only when a user can enter through Agora,
-operate one concrete Task without manually coordinating native CLIs, inspect
-truthful Run and budget state, receive an explicit semantic blocker or result,
-resume safely, and pass or fail formal review/Gate checks based on version-bound
-Artifacts and Evidence. The slice must demonstrate that implementation budget
-exhaustion cannot remove mandatory review and that a process-level success
-cannot advance a semantically blocked Stage.
+`scripts/run_task_acceptance.py` is the reproducible no-provider control-plane
+proof. The release checklist, locked startup requirements, live HTTP checks,
+and explicit post-1.0 exclusions are frozen in
+`docs/architecture/agora-1.0-release-readiness-v1.md`. Current test/review
+evidence and the exact release commit remain recorded in
+`.agora/development/PROGRESS.md`.

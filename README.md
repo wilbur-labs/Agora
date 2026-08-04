@@ -38,14 +38,18 @@ advisory candidate until a human explicitly adopts or rejects it.
 cd backend
 .\.venv\Scripts\agora.exe task --help
 
-# Start the API and static Control Plane UI during development
-cd ..
-make dev
+# Start the API and the built static Control Plane UI
+$env:AGORA_CONTROL_PLANE_TOKEN = "replace-with-a-long-random-secret"
+uv run uvicorn agora.api.app:app --host 127.0.0.1 --port 8000
 ```
 
 Open `http://localhost:8000/control-plane` for the authenticated Task console.
 The console reads one authoritative projection and exposes only separately
 reviewed, Task-scoped human actions.
+
+For locked installation, frontend build, first Task, explicit consultation,
+human adopt/reject, recovery, and shutdown, follow the
+[Agora 1.0 practical tutorial](docs/usage/agora-1.0-tutorial.md).
 
 To verify the complete formal control path without calling any AI/provider or
 touching the configured Agora database:
@@ -66,9 +70,11 @@ For architecture and current implementation status, see:
 - [`docs/requirements/latest-transformation-requirements.md`](docs/requirements/latest-transformation-requirements.md)
 - [`.agora/development/PROGRESS.md`](.agora/development/PROGRESS.md)
 
-Agora 1.0 migration is still in progress. Do not infer feature completion from
-the historical 0.5 release number or from files retained only for audited
-cleanup.
+Agora 1.0 is the reviewed local control-plane baseline. Native CLI
+subscriptions and service availability remain external dependencies; a missing
+pinned runtime blocks its Stage and is never silently replaced. Dynamic roles,
+arbitrary local-model adapters, and runtime substitution are post-1.0
+enhancements.
 
 ## Development
 

@@ -1,5 +1,82 @@
 # Agora Control Plane Development Progress
 
+## 2026-08-04 - Agora 1.0 release closeout (reviewed)
+
+### Release boundary
+
+- [x] Froze `docs/architecture/agora-1.0-release-readiness-v1.md` before
+  closeout. Agora 1.0 is the reviewed local Task delivery control-plane
+  baseline; native subscription/serviceability, dynamic roles, arbitrary
+  local-model adapters, runtime substitution, POSIX embedded isolation, and
+  large shared-repository operations remain explicit external conditions or
+  post-1.0 enhancements.
+- [x] Published consistent `1.0.0` metadata through the Python package, API,
+  frontend package, locked Python graph, and changelog. Reconciled the
+  authoritative latest requirements so completed Stage routing, Task contract,
+  consultation, unified projection, AWS AI-DLC sequence, and authenticated UI
+  are no longer listed under a stale `Still required` heading.
+- [x] Replaced corrupted Chinese and Japanese READMEs with valid UTF-8 pages,
+  updated the English entry page and locked startup commands, archived the 0.5
+  operations document as historical, and added the practical Chinese
+  `docs/usage/agora-1.0-tutorial.md` covering install, auth, startup,
+  deterministic acceptance, first Task, provider safety acknowledgement,
+  status, consult/adopt/reject, approval, resume/retry, and shutdown.
+- [x] Added `scripts/run_http_startup_acceptance.py`. It copies current config
+  into an isolated temporary instance, generates a non-printed bearer, starts
+  a real uvicorn subprocess, checks health/static/authenticated/fail-closed
+  HTTP behavior, stops the process, and removes all temporary state. It does
+  not create a Task or call a provider/model.
+- [x] Preserved all Codex, Claude Code, and Kiro runtime adapters, route pins,
+  workspaces, normalization, research, execution, and UI adapter choices.
+  Kiro was not invoked, `.kiro/` was not changed or staged, and unavailable
+  Kiro serviceability remains a truthful Stage blocker rather than a release
+  correctness failure or silent substitution trigger.
+
+### Verification and review state
+
+- [x] Locked `uv sync --locked --extra dev` updated the environment from
+  Agora 0.5.0 to 1.0.0; locked pnpm install passed. The complete current
+  non-integration collection passed 723/723 using the previously verified
+  mutually exclusive long-file split: methodology 214 + 7 + 8 + 6, and all
+  remaining files 488. The sole warning is the existing FastAPI TestClient
+  notice that Starlette's `httpx` integration is deprecated in favor of
+  `httpx2`.
+- [x] Frontend Control Plane tests passed 14/14, ESLint passed without errors
+  or warnings, and Next.js 16 production build/static export passed with all
+  eight supported routes. Protocol Schema check, isolated `compileall` for the
+  package and HTTP acceptance script, UTF-8 user-doc scan, stale version/
+  migration-marker scan, and `git diff --check` passed.
+- [x] Deterministic formal Task acceptance passed with
+  `provider_or_model_called=false`, three passed Stages/Gates, explicit human
+  Plan approval, cold SQLite reopen to `completed`, and temporary workspace
+  removal.
+- [x] Isolated live HTTP acceptance passed with
+  `provider_or_model_called=false`: `/health` returned 1.0.0, `/` and
+  `/control-plane` served the static Task UI, the protected Task index returned
+  401 without a bearer and 200 with the scoped bearer, `/api/chat` returned
+  `410 legacy_council_retired`, and the server/temp state were removed.
+- [x] Docker client 29.3.1 is installed, but the local Docker daemon is not
+  running, so no Docker image/runtime result is claimed. This is an external
+  environment condition; the documented direct Windows startup was exercised
+  with a real uvicorn process and passed.
+- [x] Two bounded read-only Claude Code Haiku reviews independently inspected
+  release correctness/startup safety and documentation/command usability.
+  Both returned exact `VERDICT: CLAUDE_APPROVE` with no HIGH/MEDIUM issue.
+  Neither review could write files. Kiro was intentionally not called because
+  its current contract is unavailable.
+
+### Current checkpoint and next safe action
+
+This reviewed release closeout is directly atop pushed Council-cleanup commit
+`e2e30cec209024271b49942365766498a07d2b12`. User-owned `.kiro/` and legacy
+pytest temporary directories remain untracked and untouched.
+
+The exact next action is to stage only the 1.0 release files, commit, and push.
+Then write one documentation-only terminal checkpoint that names the pushed
+release commit and records that no repository-defined 1.0 implementation work
+remains. Future dynamic-role/local-model work begins only as a separate
+post-1.0 request; Kiro support remains present for later reactivation.
+
 ## 2026-08-04 - unreachable 0.5 Council source cleanup (reviewed)
 
 ### Bounded implementation

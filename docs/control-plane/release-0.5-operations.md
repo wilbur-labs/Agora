@@ -1,5 +1,9 @@
 # Agora 0.5 — Operations and Acceptance
 
+> Archived historical document. These commands describe the 0.5 release, not
+> the Agora 1.0 startup path. Use
+> [`docs/usage/agora-1.0-tutorial.md`](../usage/agora-1.0-tutorial.md).
+
 Agora 0.5 is a local-first multi-tool AI delivery control plane. Codex, Claude Code, and Kiro CLI keep their native account and rule systems; Agora supplies shared requirements, tasks, project/workspace routing, workflow orchestration, run history, human-attention handling, and audit state.
 
 ## Start locally

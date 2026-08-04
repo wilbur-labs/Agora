@@ -1,6 +1,6 @@
 [project]
 name = "agora"
-version = "0.5.0"
+version = "1.0.0"
 description = "Local-first delivery control plane for durable AI-assisted Tasks."
 requires-python = ">=3.10"
 dependencies = [

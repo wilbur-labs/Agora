@@ -2,14 +2,14 @@
 
 # Local development
 install:
-	cd backend && uv sync --extra dev
-	cd frontend && pnpm install
+	cd backend && uv sync --locked --extra dev
+	cd frontend && corepack pnpm install --frozen-lockfile
 
 dev:
-	cd backend && uv run uvicorn agora.api.app:app --reload --host 0.0.0.0 --port 8000
+	cd backend && uv run uvicorn agora.api.app:app --host 127.0.0.1 --port 8000
 
 dev-ui:
-	cd frontend && pnpm dev --hostname 0.0.0.0
+	cd frontend && corepack pnpm dev --hostname 127.0.0.1
 
 cli:
 	cd backend && uv run python -m agora
@@ -21,7 +21,7 @@ test-all:
 	cd backend && uv run pytest tests/ -v --tb=short
 
 frontend:
-	cd frontend && pnpm build
+	cd frontend && corepack pnpm build
 
 # Docker
 up:

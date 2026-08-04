@@ -2,6 +2,30 @@
 
 All notable changes to Agora are documented here. This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.0.0] - 2026-08-04
+
+### Added
+
+- Authoritative `Project -> Task -> Stage -> Run -> Artifact/Evidence -> Gate -> Handoff/Done` protocol and matching checked-in JSON Schemas.
+- Versioned Task contracts, sealed Context/Handoff Packs, formal Gate settlement, deterministic reconciliation, protected review budgets, and restart-safe execution.
+- Source-bound AWS AI-DLC migration, eight-Stage execution, independent completion review, and artifact-bound human completion boundaries.
+- Authenticated static Task Control Plane with project/Task discovery, unified projection, Attention response, consultation candidate adopt/reject, and atomic Plan approval.
+- Deterministic no-provider end-to-end acceptance and a practical Windows usage tutorial.
+
+### Changed
+
+- Product entry points now describe the local-first Task delivery control plane rather than the legacy AI discussion product.
+- Codex, Claude Code, and Kiro remain explicit pinned runtime adapters; missing runtimes block instead of being silently substituted.
+- Python and frontend dependencies are locked to the current control-plane implementation.
+
+### Removed
+
+- The retired 0.5 autonomous Scout / Architect / Critic / Synthesizer Council, direct chat-provider stack, learned-skill/tool executor, session/chat/artifact API, runnable demo, and unreachable chat frontend.
+
+### Security
+
+- Principal-bound authenticated mutations, project/Task non-enumeration, version/hash preconditions, exact idempotent replay, redaction, atomic receipts, and fail-closed legacy route retirement.
+
 ## [0.5.0] — 2026-07-15
 
 ### Added
