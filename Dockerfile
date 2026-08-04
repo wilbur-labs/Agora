@@ -21,11 +21,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl procps && 
 
 COPY --from=frontend-build /app/frontend/out frontend/out
 COPY config.yaml .
-RUN mkdir -p \
-    /app/backend/skills/public \
-    /app/backend/skills/learned \
-    /app/backend/skills/custom \
-    /app/.agora
+RUN mkdir -p /app/.agora /app/backend/data
 
 WORKDIR /app/backend
 

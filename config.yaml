@@ -1,24 +1,4 @@
-# Agora Configuration
-
-models:
-  claude:
-    provider: anthropic
-    api_key: ${CLAUDE_API_KEY}
-    model: claude-sonnet-4-20250514
-  gpt4o:
-    provider: azure-openai
-    api_key: ${AZURE_OPENAI_API_KEY}
-    base_url: ${AZURE_OPENAI_BASE_URL}
-    deployment: gpt-4o
-    api_version: "2024-12-01-preview"
-
-council:
-  default_agents: [scout, architect, critic]
-  optional_agents: [sentinel]
-  model: gpt4o
-  executor_model: claude
-  concurrent: false
-  workspace: ~/agora-workspace  # Executor creates files here
+# Agora 1.0 Task delivery control plane configuration
 
 projects:
   # Relative paths are anchored to the Agora repository root.
@@ -59,27 +39,8 @@ research:
       args: ["chat", "--no-interactive", "--trust-all-tools"]
       workspace_key: kiro
 
-agents:
-  scout:
-    profile: scout.yaml
-    model: gpt4o
-  architect:
-    profile: architect.yaml
-    model: gpt4o
-  critic:
-    profile: critic.yaml
-    model: gpt4o
-  sentinel:
-    profile: sentinel.yaml
-    model: gpt4o
-
-utility:
-  model: gpt4o
-
+# Active storage still reads this compatibility key as its generic data root.
 memory:
-  enabled: true
-  memory_char_limit: 2200
-  user_char_limit: 1375
   data_dir: ./data
 
 # Authenticated Agora 1.0 Control Plane. The referenced bearer stays outside
@@ -98,28 +59,6 @@ control_plane:
           - control_plane.plan.approve
           - control_plane.candidate.dispose
         projects: [agora]
-
-skills:
-  enabled: true
-  paths:
-    - ./skills/public
-    - ./skills/learned
-    - ./skills/custom
-
-sandbox:
-  enabled: false
-  image: python:3.12-slim
-  timeout: 120
-  memory_limit: 512m
-  cpu_limit: 1.0
-  workspace_dir: /tmp/agora_workspace
-  network: true
-
-# Network route for Agora's HTTP web tools.
-# direct: ignore HTTP(S)_PROXY and use the external network directly.
-# system: inherit proxy settings from the process environment.
-web:
-  network_mode: direct
 
 # Network policy for native CLI planning/review runtimes.
 # direct: remove inherited proxy variables; system: preserve them.

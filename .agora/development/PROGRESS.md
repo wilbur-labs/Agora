@@ -1,5 +1,83 @@
 # Agora Control Plane Development Progress
 
+## 2026-08-04 - unreachable 0.5 Council source cleanup (reviewed)
+
+### Bounded implementation
+
+- [x] Froze `docs/architecture/legacy-council-source-cleanup-v1.md` before
+  implementation. The boundary deletes only the already-unreachable 0.5
+  autonomous Council implementation and preserves the central fail-closed
+  compatibility response, the complete Task control plane, explicit
+  single-runtime consultation, and future runtime extension points.
+- [x] Removed the Council-only agent/profile, direct model-provider, shared
+  context, memory extraction, learned-skill, tool-execution, web-tool, Docker
+  sandbox, unregistered API/session/artifact, test-mock, and runnable demo
+  source. Git history remains the recovery path; no compatibility flag can
+  reactivate autonomous AI-to-AI discussion.
+- [x] Removed unreachable chat/session/artifact React components, hook, types,
+  streaming client, markdown/highlight dependencies, and dead package-lock
+  entries. `frontend/src/lib/api.ts` now exposes only the active static-console
+  API-origin helper. The authenticated Delivery Control Plane remains the
+  exported product UI.
+- [x] Removed Council-only direct-provider, agent, skill-store, sandbox, and web
+  tool configuration plus their Python dependencies and Docker mounts. Kept
+  `memory.data_dir` as the active generic data-root fallback and regenerated
+  both locked dependency graphs.
+- [x] Preserved Codex, Claude Code, and Kiro project workspaces, research
+  workers, orchestration runtime commands/result normalization, execution
+  adapters, UI adapter choices, and capability boundaries. `.kiro/` was not
+  read, changed, staged, or removed. No Kiro process was invoked, and dynamic
+  role/local-model configuration was intentionally not implemented.
+
+### Verification and review state
+
+- [x] The complete current non-integration collection is 723 tests. The
+  methodology migration file passed 235/235 as four mutually exclusive shards
+  (214 + 7 + 8 + 6), and every other file passed 488/488. A single serial run
+  was attempted first with 4-minute and then 12-minute tool limits; both were
+  cut off without an assertion failure while repeatedly reconstructing the
+  eight-Stage methodology/completion-review chain. The exact apparent stop
+  test passed independently in 22.28 seconds. The verified shards use separate
+  temporary roots and together cover the identical 723-item collection.
+- [x] Deterministic Task acceptance passed with `provider_or_model_called=false`,
+  all three formal Stages and Gates passed, explicit human Plan approval,
+  persisted reopen verification, and runtime labels `codex`, `claude`, and
+  `kiro`. Protocol Schema check, isolated `compileall`, root config/Kiro
+  retention assertions, `git diff --check`, and post-lock-sync focused tests
+  passed.
+- [x] Frontend Control Plane tests passed 14/14, ESLint passed with zero errors
+  or warnings, and Next.js 16 production build/static export passed with the
+  eight supported routes. The old `use-chat.ts` warnings disappeared with the
+  unreachable bundle.
+- [x] Locked dependency synchronization removed `lxml`, `prompt-toolkit`,
+  `sse-starlette`, and their obsolete transitives from the Python environment;
+  the locked `dev` extra was restored immediately and the post-sync config/UI
+  shard passed 20/20.
+- [x] Two bounded read-only Claude Code Haiku reviews inspected the
+  backend/config/runtime boundary and the frontend/packaging/route boundary.
+  Both returned explicit `VERDICT: CLAUDE_APPROVE` with no HIGH/MEDIUM issue.
+  Two earlier Claude sessions requested broader Bash access and produced no
+  verdict; they are not counted. The final frontend review used only
+  Read/Grep/Glob, and the backend review used only preapproved read-only Git
+  commands.
+- [x] Kiro was intentionally not invoked because its current contract is
+  unavailable. Per the user's instruction, Claude Code is the temporary
+  auxiliary reviewer while Kiro support remains intact for later use.
+
+### Current checkpoint and next safe action
+
+This reviewed cleanup is directly atop pushed candidate-disposition commit
+`31903f4a81912c9b632dd86ff6fa88da83e1777f`. User-owned `.kiro/` and legacy
+pytest temporary directories remain untracked and untouched.
+
+The exact next action is to stage only the frozen cleanup files, commit, and
+push. Then continue the repository-defined 1.0 closure audit: repair the
+mojibake Chinese/Japanese READMEs, exercise a clean documented startup path,
+resolve only concrete remaining release/readiness gaps, and produce the
+practical end-user Agora tutorial. Do not reintroduce autonomous discussion,
+remove Kiro, or implement dynamic role/local-model configuration in that
+closeout.
+
 ## 2026-08-04 - authenticated consultation candidate disposition (reviewed)
 
 ### Bounded implementation

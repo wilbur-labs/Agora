@@ -1,21 +1,21 @@
-"""Tests for config loading and model registry."""
+"""Tests for current control-plane configuration loading."""
 import os
 import tempfile
 from pathlib import Path
 
-import pytest
 import yaml
 
 from agora.config.settings import get_config, reset_config
-from agora.models.registry import ModelRegistry, reset_registry
 
 
 class TestConfig:
     def test_loads_yaml(self):
         reset_config()
         cfg = get_config()
-        assert "models" in cfg
-        assert "council" in cfg
+        assert {"projects", "control_plane", "orchestration", "execution"} <= cfg.keys()
+        assert "council" not in cfg
+        assert "models" not in cfg
+        assert cfg["execution"]["adapters"]["kiro"]["enabled"] is True
 
     def test_env_var_substitution(self):
         reset_config()
@@ -67,52 +67,15 @@ class TestConfig:
         cli = compose["services"]["agora-cli"]
 
         expected = {
-            "./skills:/app/backend/skills",
             "./data:/app/backend/data",
             "./.agora:/app/.agora",
-            "./agora-workspace:/root/agora-workspace",
         }
         assert expected <= set(api["volumes"])
         assert expected <= set(cli["volumes"])
+        assert not any("skills" in item for item in api["volumes"] + cli["volumes"])
+        assert not any("agora-workspace" in item for item in api["volumes"] + cli["volumes"])
         assert api["healthcheck"]["test"][-1] == "http://127.0.0.1:8000/health"
 
         dockerfile = (root / "Dockerfile").read_text(encoding="utf-8")
-        assert "COPY skill[s]/" not in dockerfile
-        assert "/app/backend/skills/learned" in dockerfile
+        assert "/app/backend/skills" not in dockerfile
         assert dockerfile.index("COPY backend/ backend/") < dockerfile.index("RUN pip install")
-
-
-class TestModelRegistry:
-    def test_list_models(self):
-        reset_config()
-        reset_registry()
-        reg = ModelRegistry()
-        models = reg.list_models()
-        assert isinstance(models, list)
-        assert len(models) > 0
-
-    def test_get_known_model(self):
-        reset_config()
-        reset_registry()
-        reg = ModelRegistry()
-        models = reg.list_models()
-        if "kiro" in models:
-            provider = reg.get("kiro")
-            assert provider.name == "kiro-cli"
-
-    def test_get_unknown_model(self):
-        reset_config()
-        reset_registry()
-        reg = ModelRegistry()
-        with pytest.raises(ValueError, match="not in config"):
-            reg.get("nonexistent_model_xyz")
-
-    def test_caching(self):
-        reset_config()
-        reset_registry()
-        reg = ModelRegistry()
-        models = reg.list_models()
-        if models:
-            p1 = reg.get(models[0])
-            p2 = reg.get(models[0])
-            assert p1 is p2  # same instance

@@ -3,6 +3,7 @@
 import json
 import subprocess
 import sys
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -158,6 +159,27 @@ class TestLegacyCouncilRetirement:
 
         assert result.returncode == 0, result.stderr
         assert json.loads(result.stdout) == []
+
+    def test_legacy_council_source_files_are_removed(self):
+        package_root = Path(__file__).resolve().parents[1] / "agora"
+        removed = (
+            "agents/council.py",
+            "models/registry.py",
+            "context/shared.py",
+            "memory/store.py",
+            "skills/store.py",
+            "tools/executor.py",
+            "sandbox/docker.py",
+            "api/_state.py",
+            "api/chat.py",
+            "api/agents.py",
+            "api/artifacts.py",
+            "api/extras.py",
+            "api/sessions.py",
+            "api/sessions_db.py",
+        )
+
+        assert not [path for path in removed if (package_root / path).is_file()]
 
     def test_rejected_legacy_cli_does_not_load_legacy_modules(self):
         probe = (
