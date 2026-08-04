@@ -1,183 +1,40 @@
-# 🏛 Agora
+# Agora
 
 [English](README.md) | [中文](README_zh.md) | **日本語**
 
-**マルチエージェントAI — 議論し、決定し、タスクを実行する。**
+Agora は、Codex、Claude Code、Kiro を一つの権威あるワークフローで調整する、ローカルファーストのデリバリー・コントロールプレーンです。
 
-> 高トラフィックなバックエンドサービス（約 5k QPS、ホットデータ約 2GB）を作っています。
-> キャッシュには Redis と Memcached のどちらを使うべきでしょうか。
-> 性能、拡張性、永続化の観点でトレードオフを知りたいです。
-
-![Agora デモ](./docs/jp_result.png)
-
-オープンソースAIシステム。複数のエージェントが異なる視点から問題を議論し、実際にソリューションを構築します。
-
-## なぜ Agora？
-
-- 🏛 **チャットボットではなくカウンシル** — 複数のエージェントが異なる角度から問題を議論してから行動します。
-- 🔧 **議論 → 実行** — エージェントはアドバイスだけではありません。ファイルの作成、コマンドの実行、計画の実装が可能です。
-- 🧠 **自己進化** — 議論と実行が再利用可能なスキルに変換されます。
-- ⚙️ **カスタマイズ可能** — YAMLで独自のエージェント、プロンプト、モデルを定義できます。
-- 🔌 **モデル非依存** — OpenAI、Azure OpenAI、Claude CLI、Gemini CLI、Kiro CLI、OpenAI互換API。
-- 🐳 **セルフホスト** — Dockerで実行し、データを完全に管理できます。
-- 🚦 **デリバリー・コントロールプレーン** — Codex、Claude Code、Kiro CLI の要件、プロジェクト、分離ワークスペース、実行、要対応通知、プロジェクト横断 DAG を一元管理します。
-
-## Agora と他のツールの比較
-
-|                                  | Agora | ChatGPT | AutoGPT | LangChain |
-| -------------------------------- | :---: | :-----: | :-----: | :-------: |
-| 行動前のマルチエージェント議論   |   ✅   |    ❌    |    ❌    |    DIY    |
-| 議論の不一致から学習             |   ✅   |    ❌    |    ❌    |     ❌     |
-| 利用から実行スキルを学習         |   ✅   |    ❌    |   ⚠️    |     ❌     |
-| 人間による承認（HITL）           |   ✅   |    ❌    |   ⚠️    |    DIY    |
-| セルフホスト & オープンソース    |   ✅   |    ❌    |    ✅    |     ✅     |
-
-Agora は [DeerFlow](https://github.com/bytedance/deer-flow)（サンドボックス + メモリ）と Nous Research の [Hermes Agent](https://github.com/NousResearch/hermes-agent)（自己進化スキル）のアイデアを基にしています。独自の貢献は **カウンシル議論** モデル — スキルが実行からだけでなく、複数エージェントの不一致と解決から学習されることです。
-
-## クイックスタート
-
-### Docker
-
-```bash
-git clone https://github.com/wilbur-labs/Agora.git
-cd Agora
-cp .env.example .env  # .envを編集し、APIキーを追加
-docker compose up -d
+```text
+Project -> Task -> Stage -> Run -> Artifact/Evidence -> Gate -> Handoff/Done
 ```
 
-Ubuntu Docker のリリース検証手順は [Agora 0.5 Operations and Acceptance](docs/control-plane/release-0.5-operations.md#ubuntu-docker-acceptance) を参照してください。
+## 重要: 自律 AI Council は廃止されました
 
-### ローカル開発
+Agora 0.5 の Scout / Architect / Critic / Synthesizer による AI 間ディスカッションは Agora 1.0 の機能ではありません。既定の CLI、HTTP API、Web UI は自律的な討論を開始せず、モデルが作った「合意」を権威ある状態として保存しません。
 
-```bash
-git clone https://github.com/wilbur-labs/Agora.git
-cd Agora
-cp .env.example .env  # .envを編集し、APIキーを追加
-make install
+`agora task consult` は AI 間の会話ではありません。ユーザーが明示的に開始し、現在の Stage に固定済みの単一 runtime だけを呼び出す、範囲限定の相談です。結果は人間が採用または却下するまで助言候補に留まります。
+
+## 主な保証
+
+- runtime 間の Task、Stage、Gate 状態を書き換えられるのは Agora だけです。
+- Run はバージョン化された Context Pack を受け取り、Handoff Pack を返します。
+- process、transport、schema、semantic result は別々に記録されます。
+- Approval は repository、ref、commit、Stage、Artifact path と hash に結び付きます。
+- resume と retry は冪等で、古い権威情報に対して fail closed します。
+
+## 現在の入口
+
+```powershell
+cd backend
+.\.venv\Scripts\agora.exe task --help
+
+cd ..
 make dev
 ```
 
-## 設定例
+認証済み Task コンソールは `http://localhost:8000/control-plane` です。
+最新の実装状況は [`.agora/development/PROGRESS.md`](.agora/development/PROGRESS.md) を参照してください。Agora 1.0 への移行は継続中です。
 
-```yaml
-models:
-  gpt4o:
-    provider: azure-openai
-    api_key: ${AZURE_OPENAI_API_KEY}
-    base_url: ${AZURE_OPENAI_BASE_URL}
-    deployment: gpt-4o-0513
-
-council:
-  default_agents: [scout, architect, critic]
-  model: gpt4o
-  executor_model: gpt4o
-  concurrent: false
-```
-
-## 仕組み
-
-```
-ユーザー入力
-  → Moderator ルーティング: QUICK / DISCUSS / EXECUTE / CLARIFY
-    → QUICK: 単一エージェントが直接回答
-    → DISCUSS:
-        Scout → Architect → Critic → Synthesizer
-        → ユーザーがアクションアイテムを確認
-        → Executor がツール呼び出しループを実行
-        → 議論 + 実行スキルを学習
-    → EXECUTE:
-        → Executor がツール呼び出しループを直接実行
-        → 実行スキルを学習
-```
-
-## カウンシルエージェント
-
-| エージェント | 役割 |
-|-------------|------|
-| Moderator | リクエストのルーティング |
-| Scout | リサーチとエビデンス収集 |
-| Architect | システム設計とソリューション計画 |
-| Critic | レビューと前提の検証 |
-| Sentinel | セキュリティレビュー |
-| Synthesizer | 決定とアクションアイテムの要約 |
-| Executor | ツール実行 |
-
-## 組み込みツール
-
-| ツール | 説明 |
-|--------|------|
-| read_file | ファイル内容の読み取り |
-| write_file | ファイルの作成または上書き |
-| patch_file | ファイルの特定内容を更新 |
-| list_dir | ディレクトリ内容の一覧 |
-| shell | シェルコマンドの実行 |
-
-## 自己学習
-
-Agoraはすべてのインタラクションから学習します：
-
-- **議論スキル** — 意思決定パターンと有用な視点をキャプチャ
-- **実行スキル** — ステップバイステップの実装知識をキャプチャ
-- **メモリ** — 再利用可能なユーザーとプロジェクトのコンテキストを保存
-- **成功追跡** — 何が機能し、何が失敗したかを記録
-
-## CLIコマンド
-
-| コマンド | 説明 |
-|---------|------|
-| `/ask <質問>` | クイック回答 |
-| `/exec <タスク>` | 直接実行 |
-| `/agents` | カウンシルエージェント一覧 |
-| `/skills` | 学習済みスキル一覧 |
-| `/memory` | メモリ表示 |
-| `/profile` | ユーザープロファイルの表示/設定 |
-| `/reset` | 会話コンテキストのクリア |
-| `/quit` | 終了 |
-
-## API
-
-```bash
-curl -N -X POST http://localhost:8000/api/chat \
-  -H "Content-Type: application/json" \
-  -d '{"message": "GoプロジェクトのCI/CDパイプラインを設計してください"}'
-```
-
-## テスト
-
-```bash
-make test
-make test-all
-```
-
-## ロードマップ
-
-- [x] マルチエージェント議論
-- [x] ツール呼び出し実行
-- [x] 自己学習スキル
-- [x] Dockerサンドボックス
-- [x] 複数モデルバックエンド
-- [x] Web UI
-- [x] ヒューマンインザループ確認
-- [x] マルチプロジェクト AI デリバリー・コントロールプレーン
-- [x] プロジェクト横断ワークフロー DAG と任意の自動ディスパッチ
-- [x] Codex、Claude Code、Kiro CLI の実行ルーティング
-- [ ] MCPサーバー拡張
-- [ ] スキルマーケットプレイス
-
-## フィロソフィー
-
-古代アテネでは、Agoraは人々が集まり、議論し、討論し、決定する場所でした。AgoraはこのアイデアをAIに持ち込みます：一つのモデルがすべてを行うのではなく、複数の視点が行動する前に協力します。
-
-## ライセンス
+## License
 
 MIT
-
-## 謝辞
-
-- [DeerFlow](https://github.com/bytedance/deer-flow) — サンドボックス実行、メモリシステム、オーケストレーションのインスピレーション
-- [Hermes Agent](https://github.com/NousResearch/hermes-agent)（Nous Research 製）— 自己進化スキルと永続メモリのインスピレーション
-
-## お問い合わせ
-
-- 📧 wilbur.ai.dev@gmail.com
-- 🐛 [GitHub Issues](https://github.com/wilbur-labs/Agora/issues)

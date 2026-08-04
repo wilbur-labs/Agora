@@ -1,374 +1,197 @@
-"""Tests for Web UI API endpoints — sessions, agents CRUD, extras, chat flow."""
+"""Static UI availability and fail-closed retirement of the 0.5 council."""
+
 import json
-import pytest
+import subprocess
+import sys
+
 from fastapi.testclient import TestClient
 
 from agora import __version__
+from agora.__main__ import cli_main
 from agora.api.app import app
+
 
 client = TestClient(app)
 
 
-# === Health & Frontend ===
+class TestCurrentProductSurface:
+    def test_health_and_metadata_describe_control_plane(self):
+        response = client.get("/health")
 
-class TestFrontend:
-    def test_health(self):
-        r = client.get("/health")
-        assert r.status_code == 200
-        assert r.json()["status"] == "ok"
-        assert r.json()["version"] == __version__
+        assert response.status_code == 200
+        assert response.json() == {"status": "ok", "version": __version__}
         assert app.version == __version__
-
-    def test_index_page(self):
-        r = client.get("/")
-        assert r.status_code == 200
-
-    def test_agents_page(self):
-        r = client.get("/agents")
-        assert r.status_code == 200
-
-    def test_skills_page(self):
-        r = client.get("/skills")
-        assert r.status_code == 200
-
-    def test_settings_page(self):
-        r = client.get("/settings")
-        assert r.status_code == 200
-
-    def test_chat_page(self):
-        r = client.get("/chat")
-        assert r.status_code == 200
-
-    def test_shared_page(self):
-        r = client.get("/shared")
-        assert r.status_code == 200
-
-    def test_control_plane_page(self):
-        r = client.get("/control-plane")
-        assert r.status_code == 200
-
-    def test_nonexistent_static(self):
-        # Should fallback to index.html
-        r = client.get("/nonexistent-page")
-        assert r.status_code == 200
-
-
-# === Sessions API ===
-
-class TestSessionsAPI:
-    def test_list_empty(self):
-        r = client.get("/api/sessions")
-        assert r.status_code == 200
-        assert "sessions" in r.json()
-
-    def test_create_and_get(self):
-        r = client.post("/api/sessions", json={"title": "Test", "messages": [{"type": "user", "content": "hi"}]})
-        assert r.status_code == 200
-        sid = r.json()["id"]
-        assert sid
-
-        r = client.get(f"/api/sessions/{sid}")
-        assert r.status_code == 200
-        assert r.json()["title"] == "Test"
-        assert len(r.json()["messages"]) == 1
-
-        # Cleanup
-        client.delete(f"/api/sessions/{sid}")
-
-    def test_update_session(self):
-        r = client.post("/api/sessions", json={"title": "Old", "messages": []})
-        sid = r.json()["id"]
-
-        r = client.put(f"/api/sessions/{sid}", json={"messages": [{"type": "user", "content": "updated"}], "title": "New"})
-        assert r.status_code == 200
-
-        r = client.get(f"/api/sessions/{sid}")
-        assert r.json()["title"] == "New"
-        assert r.json()["messages"][0]["content"] == "updated"
-
-        client.delete(f"/api/sessions/{sid}")
-
-    def test_delete_session(self):
-        r = client.post("/api/sessions", json={"title": "Del", "messages": []})
-        sid = r.json()["id"]
-
-        r = client.delete(f"/api/sessions/{sid}")
-        assert r.status_code == 200
-
-        r = client.get(f"/api/sessions/{sid}")
-        assert r.status_code == 404
-
-    def test_get_nonexistent(self):
-        r = client.get("/api/sessions/nonexistent")
-        assert r.status_code == 404
-
-    def test_update_nonexistent(self):
-        r = client.put("/api/sessions/nonexistent", json={"messages": []})
-        assert r.status_code == 404
-
-
-# === Share API ===
-
-class TestShareAPI:
-    def test_create_and_get_share(self):
-        msgs = [{"type": "user", "content": "hello"}, {"type": "agent", "agent": "scout", "content": "hi"}]
-        r = client.post("/api/chat/share", json={"messages": msgs})
-        assert r.status_code == 200
-        share_id = r.json()["id"]
-        assert share_id
-
-        r = client.get(f"/api/shared/{share_id}")
-        assert r.status_code == 200
-        assert len(r.json()["messages"]) == 2
-
-    def test_get_nonexistent_share(self):
-        r = client.get("/api/shared/nonexistent")
-        assert r.status_code == 404
-
-
-# === Agents API ===
-
-class TestAgentsAPI:
-    def test_list_agents(self):
-        r = client.get("/api/agents")
-        assert r.status_code == 200
-        agents = r.json()["agents"]
-        assert len(agents) >= 1
-        assert all("name" in a for a in agents)
-
-    def test_available_agents(self):
-        r = client.get("/api/agents/available")
-        assert r.status_code == 200
-        agents = r.json()["agents"]
-        # Should not include utility agents
-        names = [a["name"] for a in agents]
-        assert "moderator" not in names
-        assert "synthesizer" not in names
-
-    def test_get_agent_detail(self):
-        r = client.get("/api/agents/scout")
-        assert r.status_code == 200
-        d = r.json()
-        assert d["name"] == "scout"
-        assert d["role"] == "Researcher"
-        assert len(d["perspective"]) > 0
-        assert "active" in d
-
-    def test_get_nonexistent_agent(self):
-        r = client.get("/api/agents/nonexistent_agent_xyz")
-        assert r.status_code == 404
-
-    def test_update_agent(self):
-        # Get original
-        r = client.get("/api/agents/scout")
-        original_role = r.json()["role"]
-
-        # Update
-        r = client.put("/api/agents/scout", json={"role": "Test Role"})
-        assert r.status_code == 200
-
-        # Verify
-        r = client.get("/api/agents/scout")
-        assert r.json()["role"] == "Test Role"
-
-        # Restore
-        client.put("/api/agents/scout", json={"role": original_role})
-
-    def test_create_and_delete_agent(self):
-        r = client.post("/api/agents", json={
-            "name": "test_agent_xyz",
-            "role": "Test Role",
-            "perspective": "You are a test agent.",
-        })
-        assert r.status_code == 200
-
-        r = client.get("/api/agents/test_agent_xyz")
-        assert r.status_code == 200
-        assert r.json()["role"] == "Test Role"
-
-        r = client.delete("/api/agents/test_agent_xyz")
-        assert r.status_code == 200
-
-        r = client.get("/api/agents/test_agent_xyz")
-        assert r.status_code == 404
-
-    def test_create_duplicate(self):
-        r = client.post("/api/agents", json={"name": "scout", "role": "X", "perspective": "X"})
-        assert r.status_code == 409
-
-    def test_delete_utility_agent(self):
-        r = client.delete("/api/agents/moderator")
-        assert r.status_code == 400
-
-    def test_delete_nonexistent(self):
-        r = client.delete("/api/agents/nonexistent_xyz")
-        assert r.status_code == 404
-
-    def test_set_active_agents(self):
-        r = client.post("/api/agents/active", json={"agents": ["scout", "critic"]})
-        assert r.status_code == 200
-        names = [a["name"] for a in r.json()["agents"]]
-        assert "scout" in names
-        assert "critic" in names
-
-        # Restore
-        client.post("/api/agents/active", json={"agents": ["scout", "architect", "critic"]})
-
-
-# === Extras API (Skills, Memory, Profile) ===
-
-class TestExtrasAPI:
-    def test_list_skills(self):
-        r = client.get("/api/skills")
-        assert r.status_code == 200
-        assert "skills" in r.json()
-
-    def test_get_memory(self):
-        r = client.get("/api/memory")
-        assert r.status_code == 200
-        assert "memory" in r.json()
-
-    def test_get_profile(self):
-        r = client.get("/api/profile")
-        assert r.status_code == 200
-        assert "profile" in r.json()
-
-    def test_update_profile(self):
-        r = client.put("/api/profile", json={"profile": {"language": "en", "test_key": "test_val"}})
-        assert r.status_code == 200
-
-        r = client.get("/api/profile")
-        p = r.json()["profile"]
-        assert p.get("test_key") == "test_val"
-
-
-# === Chat API ===
-
-class TestChatAPI:
-    def test_reset(self):
-        r = client.post("/api/chat/reset")
-        assert r.status_code == 200
-
-    def test_feedback(self):
-        r = client.post("/api/chat/feedback", json={"message_id": "msg-1", "rating": "up"})
-        assert r.status_code == 200
-        assert r.json()["rating"] == "up"
-
-    def test_feedback_down(self):
-        r = client.post("/api/chat/feedback", json={"message_id": "msg-2", "rating": "down"})
-        assert r.status_code == 200
-        assert r.json()["rating"] == "down"
-
-
-# === OpenAI Provider ===
-
-class TestOpenAIProvider:
-    def test_stream_method_exists(self):
-        from agora.models.openai_provider import OpenAIProvider
-        p = OpenAIProvider(api_key="test", base_url="http://localhost", model="test")
-        assert hasattr(p, "stream")
-        assert hasattr(p, "generate_with_tools")
-
-    def test_azure_inherits_stream(self):
-        from agora.models.openai_provider import AzureOpenAIProvider
-        p = AzureOpenAIProvider(api_key="test", base_url="http://localhost", deployment="test")
-        assert hasattr(p, "stream")
-
-    def test_headers(self):
-        from agora.models.openai_provider import OpenAIProvider, AzureOpenAIProvider
-        p1 = OpenAIProvider(api_key="sk-test", base_url="http://localhost", model="m")
-        assert "Authorization" in p1._headers()
-
-        p2 = AzureOpenAIProvider(api_key="ak-test", base_url="http://localhost", deployment="d")
-        assert "api-key" in p2._headers()
-
-    def test_url_format(self):
-        from agora.models.openai_provider import OpenAIProvider, AzureOpenAIProvider
-        p1 = OpenAIProvider(api_key="x", base_url="http://api.example.com/v1", model="m")
-        assert "chat/completions" in p1._url()
-
-        p2 = AzureOpenAIProvider(api_key="x", base_url="http://azure.example.com", deployment="gpt4", api_version="2024-01-01")
-        assert "gpt4" in p2._url()
-        assert "2024-01-01" in p2._url()
-
-    def test_body_format(self):
-        from agora.models.openai_provider import OpenAIProvider, AzureOpenAIProvider
-        p1 = OpenAIProvider(api_key="x", base_url="http://localhost", model="gpt-4")
-        body = p1._body([{"role": "user", "content": "hi"}], tools=[])
-        assert body["model"] == "gpt-4"
-        assert len(body["messages"]) == 1
-
-        p2 = AzureOpenAIProvider(api_key="x", base_url="http://localhost", deployment="d")
-        body = p2._body([{"role": "user", "content": "hi"}], tools=[])
-        assert "model" not in body  # Azure doesn't send model in body
-
-    def test_parse_response(self):
-        from agora.models.openai_provider import OpenAIProvider
-        data = {
-            "choices": [{
-                "message": {"content": "Hello!", "tool_calls": None},
-                "finish_reason": "stop",
-            }]
-        }
-        result = OpenAIProvider._parse_response(data)
-        assert result.content == "Hello!"
-        assert result.tool_calls == []
-
-    def test_parse_response_with_tools(self):
-        from agora.models.openai_provider import OpenAIProvider
-        data = {
-            "choices": [{
-                "message": {
-                    "content": "",
-                    "tool_calls": [{
-                        "id": "call_1",
-                        "function": {"name": "write_file", "arguments": '{"path": "/tmp/test.txt", "content": "hi"}'},
-                    }],
-                },
-                "finish_reason": "tool_calls",
-            }]
-        }
-        result = OpenAIProvider._parse_response(data)
-        assert len(result.tool_calls) == 1
-        assert result.tool_calls[0].function_name == "write_file"
-        assert result.tool_calls[0].arguments["path"] == "/tmp/test.txt"
-
-
-# === Sessions DB ===
-
-class TestSessionsDB:
-    def test_create_list_delete(self):
-        from agora.api.sessions_db import create_session, list_sessions, get_session, delete_session
-        sid = create_session("DB Test")
-        sessions = list_sessions()
-        assert any(s["id"] == sid for s in sessions)
-
-        s = get_session(sid)
-        assert s is not None
-        assert s["title"] == "DB Test"
-
-        delete_session(sid)
-        assert get_session(sid) is None
-
-    def test_update_messages(self):
-        from agora.api.sessions_db import create_session, update_session_messages, get_session, delete_session
-        sid = create_session("Msg Test")
-        update_session_messages(sid, [{"type": "user", "content": "hello"}])
-        s = get_session(sid)
-        assert len(s["messages"]) == 1
-        delete_session(sid)
-
-    def test_update_title(self):
-        from agora.api.sessions_db import create_session, update_session_title, get_session, delete_session
-        sid = create_session("Old Title")
-        update_session_title(sid, "New Title")
-        assert get_session(sid)["title"] == "New Title"
-        delete_session(sid)
-
-    def test_shares(self):
-        from agora.api.sessions_db import create_share, get_share
-        share_id = create_share([{"type": "user", "content": "shared"}])
-        s = get_share(share_id)
-        assert s is not None
-        assert len(s["messages"]) == 1
-        assert get_share("nonexistent") is None
+        assert app.description == "Local-first Task delivery control plane"
+
+    def test_index_and_control_plane_static_pages_exist(self):
+        index = client.get("/")
+
+        assert index.status_code == 200
+        assert "Agora - Task Delivery Control Plane" in index.text
+        assert "Multi-perspective AI council" not in index.text
+        assert client.get("/control-plane").status_code == 200
+
+    def test_unknown_api_get_is_not_frontend_success(self):
+        response = client.get("/api/definitely-not-a-route")
+
+        assert response.status_code == 404
+
+
+class TestLegacyCouncilRetirement:
+    RETIRED_API_PREFIXES = (
+        "chat",
+        "agents",
+        "artifacts",
+        "sessions",
+        "shared",
+        "skills",
+        "memory",
+        "profile",
+    )
+
+    def test_retired_api_roots_fail_closed_without_redirect(self):
+        for prefix in self.RETIRED_API_PREFIXES:
+            response = client.post(f"/api/{prefix}", json={})
+
+            assert response.status_code == 410, prefix
+            assert response.json()["detail"]["code"] == "legacy_council_retired"
+            assert response.headers.get("location") is None
+
+    def test_every_retired_api_method_is_intercepted_before_cors(self):
+        for method in ("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"):
+            headers = {}
+            if method == "OPTIONS":
+                headers = {
+                    "Origin": "https://example.test",
+                    "Access-Control-Request-Method": "POST",
+                }
+            response = client.request(method, "/api/chat/continue", headers=headers)
+
+            assert response.status_code == 410, method
+            if method != "HEAD":
+                assert response.json()["detail"]["code"] == "legacy_council_retired"
+
+    def test_retired_nested_api_paths_share_stable_result(self):
+        for path in (
+            "/api/chat/continue",
+            "/api/chat/share",
+            "/api/agents/scout",
+            "/api/artifacts/C:/private/file.txt",
+            "/api/sessions/session-1",
+            "/api/shared/share-1",
+        ):
+            response = client.get(path)
+
+            assert response.status_code == 410, path
+            assert response.json()["detail"] == {
+                "code": "legacy_council_retired",
+                "message": (
+                    "The Agora 0.5 autonomous council is retired. "
+                    "Use the authenticated Task Control Plane."
+                ),
+            }
+
+    def test_retired_ui_paths_redirect_to_control_plane(self):
+        for path in (
+            "/chat",
+            "/agents",
+            "/agents/scout",
+            "/skills/learned",
+            "/settings/providers",
+            "/shared/share-1",
+        ):
+            response = client.get(path, follow_redirects=False)
+
+            assert response.status_code == 308, path
+            assert response.headers["location"] == "/control-plane"
+
+    def test_bare_cli_reports_task_control_plane(self, capsys):
+        assert cli_main([]) == 0
+
+        output = capsys.readouterr()
+        assert "agora task <command>" in output.out
+        assert "Task delivery control plane" in output.out
+        assert output.err == ""
+
+    def test_explicit_cli_help_uses_same_task_guidance(self, capsys):
+        assert cli_main(["--help"]) == 0
+
+        output = capsys.readouterr()
+        assert "agora task <command>" in output.out
+        assert output.err == ""
+
+    def test_legacy_cli_command_is_rejected(self, capsys):
+        assert cli_main(["chat"]) == 2
+
+        output = capsys.readouterr()
+        assert output.out == ""
+        assert "autonomous 0.5 council is retired" in output.err
+
+    def test_app_import_does_not_load_legacy_council_or_provider_modules(self):
+        blocked_prefixes = (
+            "agora.agents",
+            "agora.context",
+            "agora.memory",
+            "agora.models",
+            "agora.skills",
+            "agora.tools",
+            "agora.api._state",
+            "agora.api.chat",
+            "agora.api.agents",
+            "agora.api.extras",
+            "agora.api.sessions",
+        )
+        probe = (
+            "import json, sys\n"
+            "import agora.api.app\n"
+            f"prefixes = {blocked_prefixes!r}\n"
+            "print(json.dumps(sorted(name for name in sys.modules "
+            "if name.startswith(prefixes))))\n"
+        )
+
+        result = subprocess.run(
+            [sys.executable, "-c", probe],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout) == []
+
+    def test_rejected_legacy_cli_does_not_load_legacy_modules(self):
+        probe = (
+            "import json, sys\n"
+            "from agora.__main__ import cli_main\n"
+            "code = cli_main(['chat'])\n"
+            "prefixes = ('agora.agents', 'agora.models', 'agora.api._state')\n"
+            "blocked = sorted(name for name in sys.modules if name.startswith(prefixes))\n"
+            "print(json.dumps({'code': code, 'blocked': blocked}))\n"
+        )
+
+        result = subprocess.run(
+            [sys.executable, "-c", probe],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout) == {"code": 2, "blocked": []}
+
+
+def test_openapi_excludes_retired_council_operations():
+    paths = app.openapi()["paths"]
+
+    assert not any(
+        path == "/api/chat" or path.startswith("/api/chat/")
+        for path in paths
+    )
+    assert not any(
+        path == "/api/agents" or path.startswith("/api/agents/")
+        for path in paths
+    )
+    assert not any(
+        path == "/api/artifacts" or path.startswith("/api/artifacts/")
+        for path in paths
+    )

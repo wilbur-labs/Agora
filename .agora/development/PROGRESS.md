@@ -1,5 +1,122 @@
 # Agora Control Plane Development Progress
 
+## 2026-08-04 - autonomous council entrypoint retirement (reviewed)
+
+### Bounded implementation
+
+- [x] Reconciled the user's "AI must not discuss by itself" requirement with
+  repository truth. The consensus 1.0 architecture already defines only an
+  explicit, single-pinned-runtime, candidate-only Task consultation, but the
+  0.5 default CLI, chat API, static pages, navigation, landing page, and README
+  still activated or advertised Scout / Architect / Critic / Synthesizer
+  debate. Those surfaces survived because the incremental transformation had
+  deliberately added the 1.0 Control Plane alongside the 0.5 product rather
+  than retiring compatibility entrypoints.
+- [x] Froze `docs/architecture/legacy-council-retirement-v1.md`. Agora is the
+  only cross-runtime workflow-state writer; explicit `agora task consult`
+  remains one non-authoritative advisory candidate and is not AI-to-AI
+  discussion or a formal Run/Artifact/Evidence/Approval/Gate action.
+- [x] Replaced the default interactive Council CLI with a minimal `agora task`
+  dispatcher. Bare/help invocation provides migration guidance, unsupported
+  legacy commands return exit code 2, and both paths remain provider-inert.
+- [x] Removed chat/agent/session/share/skill/memory/profile routers and the
+  chat-only caller-path Artifact preview/download router from the active
+  FastAPI app. A middleware outside CORS returns stable
+  `410 legacy_council_retired` for every method on exact or nested legacy API
+  paths before any legacy state can initialize. Exact and nested legacy UI
+  paths permanently redirect to `/control-plane`; unknown `/api/*` GETs return
+  404 rather than a successful frontend fallback.
+- [x] Removed the five Council-only Next.js pages and their primary-navigation
+  links. Replaced the public landing page, package description, environment
+  guidance, and English/Chinese/Japanese READMEs with the authoritative
+  Project -> Task -> Stage -> Run -> Artifact/Evidence -> Gate -> Handoff/Done
+  product semantics. The successful export now contains only the eight current
+  routes and no chat/agents/skills/settings/shared artifact.
+- [x] Kept existing user databases and native runtime files untouched. The now
+  unreachable 0.5 Council source modules have no supported CLI/API/UI activation
+  path. Their cleanup is deferred until the authoritative mainline runs end to
+  end and a reference audit proves each deletion is Council-only. Codex, Claude,
+  Kiro, and the future explicitly configured local-runtime boundary remain
+  product capabilities; configurable roles/local-model adapters are deferred.
+
+### Verification and review state
+
+- [x] Final focused retirement plus authenticated Control Plane API suite:
+  38 passed. Isolated subprocess regressions prove importing the application
+  and rejecting a legacy CLI command do not load Council, provider, memory,
+  skill, tool, context, or legacy API state. HTTP regressions cover all methods,
+  real CORS preflight, exact/nested prefixes (including the retired
+  caller-path Artifact reader), deep UI links, OpenAPI exclusion, unknown API
+  fallback, and bare/explicit-help/rejected CLI behavior.
+- [x] Before the final caller-path Artifact router was retired, the complete
+  non-integration backend suite (including the rebuilt static UI) passed 816
+  tests with 15 deselected in 848.11 seconds. After that narrowly scoped app
+  routing change, the focused retirement/Control Plane suite passed 38 tests.
+  A complete post-change rerun lost its pytest summary when the outer command
+  timed out and therefore is not counted as a pass. Completed follow-up shards
+  passed 233 tests with 12 deselected; the remaining slow methodology-migration
+  preview retry was stopped because it is independent of the app-router change.
+  The final post-change broad suite deliberately excluded only the unchanged,
+  previously passing methodology-migration-preview file and passed 581 tests
+  with 15 deselected in 97.75 seconds. The focused entrypoint/Control Plane
+  suite passed 38 tests, and the Kiro/runtime registration, capability,
+  preflight, usage, and Task-orchestration preservation suite passed 88 tests.
+  This separates direct product evidence from that unrelated slow file rather
+  than presenting a partial or timed-out run as full-suite success.
+- [x] Frontend Control Plane tests passed 8 tests; lint passed with zero errors
+  and 11 warnings in the now-dead 0.5 `use-chat` hook. The Next.js 16 production
+  build/static export passed and generated the eight current routes. Its output
+  contains no `AI Council`, multi-perspective-council, Council Discussion, or
+  Ask-the-council product copy. Protocol Schema export/check,
+  system-Temp-isolated `compileall`, CLI help smoke, and `git diff --check`
+  pass. A preliminary `D:\tmp` compile attempt failed only at pycache creation
+  with uniform `WinError 5`; the required system-Temp rerun passed.
+- [x] Independent Claude runtime review first returned `CHANGES_REQUESTED` for
+  missing isolated proof that app import cannot initialize Council/provider
+  modules, plus LOW method/CORS/deep-link/help gaps. All were fixed and
+  regression-pinned; targeted re-review returned `CLAUDE_APPROVE`. Its separate
+  frontend/documentation review found one PowerShell-pipeline encoding issue
+  around non-ASCII language labels; the English README now uses ASCII-safe
+  links to the UTF-8 translations, and final surface re-review returned
+  `CLAUDE_APPROVE` with no HIGH/MEDIUM.
+- [x] After the unauthenticated caller-path Artifact reader was added to the
+  retired API set, a targeted Claude re-review confirmed that the change does
+  not affect Task-scoped Control Plane Artifact routes and returned
+  `CLAUDE_APPROVE` with no HIGH/MEDIUM.
+- [x] Kiro did not review the increment. The CLI returned
+  `Authentication failed. Your session may have expired`, and
+  `kiro-cli profile` then confirmed `No profiles available`. Two subsequent
+  profile checks through 2026-08-04 returned the same administrator-access
+  error, for three consecutive blocked goal turns in total. On 2026-08-04 the
+  user explicitly suspended Kiro as a development review gate while its
+  subscription is unavailable and designated Codex review as the
+  temporary substitute for this increment. This process exception does not
+  remove Kiro from Agora, change pinned runtime semantics, or authorize runtime
+  substitution inside an active Task.
+- [x] The user-designated Codex substitute review found one active public
+  surface missed by the earlier reviews: `frontend/src/app/layout.tsx` still
+  advertised `AI Council` in global metadata. It now describes the Task
+  delivery control plane, the rebuilt export is regression-pinned, and the
+  final substantive Codex review found no remaining actionable finding:
+  `CODEX_APPROVE`. Multiple nested Codex CLI attempts (custom, native, and JSON
+  event modes) produced no review/session output and were terminated together
+  with only their own child processes; they are recorded as tool failures, not
+  verdict evidence. Claude remains the independent implementation reviewer.
+
+### Current checkpoint and next safe action
+
+The validated but uncommitted increment is directly atop clean pushed commit
+`dda74b2`. User-owned `.kiro/` and legacy pytest temporary directories remain
+untracked and untouched.
+
+The exact next action is to stage only this reviewed entrypoint-retirement diff,
+commit it, and push it. After that checkpoint, prioritize a real end-to-end
+Project -> Task -> Stage -> Run -> Artifact/Evidence -> Gate acceptance run.
+Do not begin configurable roles/local-model work yet, and do not mechanically
+remove Council-era provider/runtime files until the mainline runs and a
+separate reference audit proves active Kiro and future runtime boundaries are
+preserved.
+
 ## 2026-08-03 - authenticated idempotent Attention response console (reviewed)
 
 ### Bounded implementation

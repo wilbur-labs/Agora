@@ -2,17 +2,12 @@
 from pathlib import Path
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from agora import __version__
-from agora.api.chat import router as chat_router
-from agora.api.agents import router as agents_router
-from agora.api.sessions import router as sessions_router
-from agora.api.extras import router as extras_router
-from agora.api.artifacts import router as artifacts_router
 from agora.tasks.router import router as tasks_router
 from agora.requirements.router import router as requirements_router
 from agora.execution.router import router as execution_router
@@ -39,13 +34,13 @@ async def lifespan(_: FastAPI):
         await get_execution_dispatcher().shutdown()
 
 
-app = FastAPI(title="Agora", version=__version__, description="Multi-perspective AI council", lifespan=lifespan)
+app = FastAPI(
+    title="Agora",
+    version=__version__,
+    description="Local-first Task delivery control plane",
+    lifespan=lifespan,
+)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
-app.include_router(chat_router, prefix="/api")
-app.include_router(agents_router, prefix="/api")
-app.include_router(sessions_router, prefix="/api")
-app.include_router(extras_router, prefix="/api")
-app.include_router(artifacts_router, prefix="/api")
 app.include_router(tasks_router, prefix="/api")
 app.include_router(requirements_router, prefix="/api")
 app.include_router(execution_router, prefix="/api")
@@ -54,6 +49,86 @@ app.include_router(attention_router, prefix="/api")
 app.include_router(workflows_router, prefix="/api")
 app.include_router(control_plane_router, prefix="/api")
 app.include_router(task_discovery_router, prefix="/api")
+
+
+_RETIRED_API_PREFIXES = (
+    "chat",
+    "agents",
+    "artifacts",
+    "sessions",
+    "shared",
+    "skills",
+    "memory",
+    "profile",
+)
+_RETIRED_UI_PATHS = ("chat", "agents", "skills", "settings", "shared")
+_RETIRED_METHODS = ("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
+_RETIRED_DETAIL = {
+    "code": "legacy_council_retired",
+    "message": (
+        "The Agora 0.5 autonomous council is retired. "
+        "Use the authenticated Task Control Plane."
+    ),
+}
+
+
+def _is_retired_api_path(path: str) -> bool:
+    return any(
+        path == f"/api/{prefix}" or path.startswith(f"/api/{prefix}/")
+        for prefix in _RETIRED_API_PREFIXES
+    )
+
+
+@app.middleware("http")
+async def _retire_legacy_council_before_cors(request: Request, call_next):
+    if _is_retired_api_path(request.url.path):
+        return JSONResponse(status_code=410, content={"detail": _RETIRED_DETAIL})
+    return await call_next(request)
+
+
+async def _legacy_council_retired() -> None:
+    raise HTTPException(
+        status_code=410,
+        detail=_RETIRED_DETAIL,
+    )
+
+
+async def _redirect_retired_ui() -> RedirectResponse:
+    return RedirectResponse(url="/control-plane", status_code=308)
+
+
+for _legacy_prefix in _RETIRED_API_PREFIXES:
+    app.add_api_route(
+        f"/api/{_legacy_prefix}",
+        _legacy_council_retired,
+        methods=list(_RETIRED_METHODS),
+        include_in_schema=False,
+        name=f"retired_{_legacy_prefix}_root",
+    )
+    app.add_api_route(
+        f"/api/{_legacy_prefix}/{{legacy_path:path}}",
+        _legacy_council_retired,
+        methods=list(_RETIRED_METHODS),
+        include_in_schema=False,
+        name=f"retired_{_legacy_prefix}_nested",
+    )
+
+
+for _legacy_ui_path in _RETIRED_UI_PATHS:
+    app.add_api_route(
+        f"/{_legacy_ui_path}",
+        _redirect_retired_ui,
+        methods=["GET"],
+        include_in_schema=False,
+        name=f"retired_{_legacy_ui_path}_ui",
+    )
+    app.add_api_route(
+        f"/{_legacy_ui_path}/{{legacy_path:path}}",
+        _redirect_retired_ui,
+        methods=["GET"],
+        include_in_schema=False,
+        name=f"retired_{_legacy_ui_path}_nested_ui",
+    )
 
 # Serve Next.js static export (frontend/out/) if available
 _frontend_out = Path(__file__).resolve().parent.parent.parent.parent / "frontend" / "out"
@@ -74,7 +149,7 @@ if _frontend_out.is_dir():
     async def serve_frontend(request: Request, path: str = ""):
         # Skip API routes (handled by routers above)
         if path.startswith("api/"):
-            return
+            raise HTTPException(status_code=404, detail="API route not found")
 
         # Try exact HTML file (e.g. /agents -> agents.html)
         html_file = _frontend_out / f"{path}.html" if path else _frontend_out / "index.html"

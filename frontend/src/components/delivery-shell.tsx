@@ -5,15 +5,12 @@ import Link from "next/link";
 import { useTheme } from "next-themes";
 import {
   BellRing,
-  Bot,
   ClipboardCheck,
   Columns3,
   GitBranch,
-  MessageSquare,
   Moon,
   Network,
   Play,
-  Settings,
   ShieldCheck,
   Sun,
 } from "lucide-react";
@@ -26,9 +23,6 @@ const links = [
   { href: "/runs", label: "Runs", icon: Play },
   { href: "/workflows", label: "Workflows", icon: GitBranch },
   { href: "/attention", label: "Attention", icon: BellRing },
-  { href: "/chat", label: "Council Chat", icon: MessageSquare },
-  { href: "/agents", label: "Agents", icon: Bot },
-  { href: "/settings", label: "Settings", icon: Settings },
 ];
 
 export function DeliveryShell({ active, children }: { active: string; children: ReactNode }) {

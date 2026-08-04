@@ -3,8 +3,8 @@ import { ThemeProvider } from "@/components/theme-provider";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Agora — AI Council",
-  description: "Multi-perspective AI council — discuss, design, execute, evolve.",
+  title: "Agora - Task Delivery Control Plane",
+  description: "Durable Project, Task, Stage, Run, Evidence, and Gate coordination.",
 };
 
 export default function RootLayout({
