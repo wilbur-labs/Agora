@@ -3,8 +3,11 @@ import test from "node:test";
 
 import {
   AttentionResponseRetryKey,
+  CandidateDispositionRetryKey,
+  candidateDispositionActionReady,
   clearProtectedControlPlaneView,
   controlPlaneAttentionResponsePath,
+  controlPlaneCandidateDispositionPath,
   controlPlanePlanApprovalPath,
   controlPlaneResponseBusy,
   controlPlaneTaskIndexPath,
@@ -61,6 +64,17 @@ test("Plan approval path binds and URL encodes Project and Task", () => {
   );
 });
 
+test("candidate disposition path binds and URL encodes every authority identity", () => {
+  assert.equal(
+    controlPlaneCandidateDispositionPath(
+      "project/with space",
+      "task/with space",
+      "candidate/with space",
+    ),
+    "/api/control-plane/projects/project%2Fwith%20space/tasks/task%2Fwith%20space/consultation-candidates/candidate%2Fwith%20space/dispositions",
+  );
+});
+
 test("an unchanged Attention draft keeps its retry key after uncertainty", () => {
   const retry = new AttentionResponseRetryKey();
   const draft = {
@@ -112,10 +126,49 @@ test("an unchanged Plan approval keeps its retry key after uncertainty", () => {
   );
 });
 
+test("an unchanged candidate disposition keeps its retry key after uncertainty", () => {
+  const retry = new CandidateDispositionRetryKey();
+  const draft = {
+    candidateId: "candidate_1",
+    expectedCandidateSha256: "a".repeat(64),
+    expectedPlanVersion: 4,
+    action: "adopt" as const,
+    reason: "Reviewed the bounded advice.",
+  };
+  let nonce = 0;
+  const createNonce = () => `nonce-${++nonce}`;
+
+  assert.equal(
+    retry.forDraft(draft, createNonce),
+    "candidate-disposition:nonce-1",
+  );
+  assert.equal(
+    retry.forDraft(draft, createNonce),
+    "candidate-disposition:nonce-1",
+  );
+  assert.equal(
+    retry.forDraft({ ...draft, action: "reject" }, createNonce),
+    "candidate-disposition:nonce-2",
+  );
+  assert.equal(
+    retry.forDraft({ ...draft, reason: "Changed rationale." }, createNonce),
+    "candidate-disposition:nonce-3",
+  );
+  assert.equal(
+    retry.forDraft({ ...draft, expectedPlanVersion: 5 }, createNonce),
+    "candidate-disposition:nonce-4",
+  );
+  assert.equal(
+    retry.forDraft({ ...draft, expectedCandidateSha256: "b".repeat(64) }, createNonce),
+    "candidate-disposition:nonce-5",
+  );
+});
+
 test("projection refresh blocks Attention submission until its lease settles", () => {
   assert.equal(controlPlaneResponseBusy(true, null), true);
   assert.equal(controlPlaneResponseBusy(false, "attn_1"), true);
   assert.equal(controlPlaneResponseBusy(false, null, true), true);
+  assert.equal(controlPlaneResponseBusy(false, null, false, "candidate_1"), true);
   assert.equal(controlPlaneResponseBusy(false, null), false);
 });
 
@@ -131,6 +184,16 @@ test("Plan approval is actionable only as the sole matching human action", () =>
     ),
     false,
   );
+});
+
+test("candidate disposition is actionable only for the matching projected action", () => {
+  const actions = [
+    { kind: "attention", source_id: "attention_1" },
+    { kind: "candidate_disposition", source_id: "candidate_1" },
+  ];
+
+  assert.equal(candidateDispositionActionReady(actions, "candidate_1"), true);
+  assert.equal(candidateDispositionActionReady(actions, "candidate_other"), false);
 });
 
 test("starting even an invalid reconnect attempt retires the older lease", () => {

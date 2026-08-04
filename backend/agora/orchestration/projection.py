@@ -1071,9 +1071,14 @@ class TaskProjectionStore:
 
     def _consultation_candidates(self, db, plan_id, limit, offset):
         rows = db.execute(
-            """SELECT * FROM orchestration_consultation_candidates
-               WHERE plan_id = ?
-               ORDER BY created_at, candidate_id LIMIT ? OFFSET ?""",
+            """SELECT candidate.*
+               FROM orchestration_consultation_candidates AS candidate
+               LEFT JOIN orchestration_candidate_dispositions AS disposition
+                 ON disposition.candidate_id = candidate.candidate_id
+               WHERE candidate.plan_id = ?
+               ORDER BY disposition.candidate_id IS NOT NULL,
+                        candidate.created_at, candidate.candidate_id
+               LIMIT ? OFFSET ?""",
             (plan_id, limit, offset),
         ).fetchall()
         total = db.execute(

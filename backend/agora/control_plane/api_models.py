@@ -8,7 +8,14 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from agora.attention.models import AttentionItem, ResponseAction
 from agora.control_plane.models import ControlEvent, GateRecord, StageRecord
-from agora.protocol.models import Approval, Artifact, Evidence, GateRequirement, StableId
+from agora.protocol.models import (
+    Approval,
+    Artifact,
+    Evidence,
+    GateRequirement,
+    Sha256Hex,
+    StableId,
+)
 from agora.tasks.models import TaskManifest
 from agora.tasks.models import TaskBudget
 
@@ -65,6 +72,18 @@ class ControlPlanePlanApprovalRequest(ApiModel):
     operation_key: str = Field(
         min_length=1,
         max_length=200,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+    )
+
+
+class ControlPlaneCandidateDispositionRequest(ApiModel):
+    action: Literal["adopt", "reject"]
+    reason: str = Field(min_length=1, max_length=500)
+    expected_candidate_sha256: Sha256Hex
+    expected_plan_version: int = Field(ge=1)
+    operation_key: str = Field(
+        min_length=1,
+        max_length=128,
         pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
     )
 

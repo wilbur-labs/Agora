@@ -27,6 +27,8 @@ import { Button } from "@/components/ui/button";
 import { ApiError } from "@/lib/control-plane";
 import {
   AttentionResponseRetryKey,
+  CandidateDispositionRetryKey,
+  candidateDispositionActionReady,
   clearProtectedControlPlaneView,
   controlPlaneResponseBusy,
   PlanApprovalRetryKey,
@@ -36,10 +38,13 @@ import {
 } from "@/lib/control-plane-view";
 import {
   approveControlPlanePlan,
+  disposeControlPlaneConsultationCandidate,
   getUnifiedTaskProjection,
   getControlPlaneTaskIndex,
   respondToControlPlaneAttention,
   type AttentionResponseAction,
+  type CandidateDispositionAction,
+  type UnifiedConsultationCandidate,
   type UnifiedAttentionItem,
   type UnifiedRunProjection,
   type UnifiedStageProjection,
@@ -61,6 +66,7 @@ export default function ControlPlanePage() {
   const [discovering, setDiscovering] = useState(false);
   const [respondingItemId, setRespondingItemId] = useState<string | null>(null);
   const [approvingPlan, setApprovingPlan] = useState(false);
+  const [disposingCandidateId, setDisposingCandidateId] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const lifecycleRef = useRef<ProjectionRequestLifecycle | null>(null);
@@ -159,6 +165,7 @@ export default function ControlPlanePage() {
     setLoading(false);
     const lease = responseLifecycle.begin();
     setApprovingPlan(false);
+    setDisposingCandidateId(null);
     const project = projectId.trim();
     const task = taskId.trim();
     if (
@@ -219,6 +226,7 @@ export default function ControlPlanePage() {
     setLoading(false);
     const lease = responseLifecycle.begin();
     setRespondingItemId(null);
+    setDisposingCandidateId(null);
     const project = projectId.trim();
     const task = taskId.trim();
     const visible = projection;
@@ -282,6 +290,81 @@ export default function ControlPlanePage() {
     }
   }, [lifecycle, projectId, projection, responseLifecycle, taskId, token]);
 
+  const disposeCandidate = useCallback(async (
+    candidate: UnifiedConsultationCandidate,
+    action: CandidateDispositionAction,
+    reason: string,
+    operationKey: string,
+  ) => {
+    lifecycle.invalidate();
+    setLoading(false);
+    const lease = responseLifecycle.begin();
+    setRespondingItemId(null);
+    setApprovingPlan(false);
+    const project = projectId.trim();
+    const task = taskId.trim();
+    const visible = projection;
+    const dispositionAction = visible && candidateDispositionActionReady(
+      visible.required_human_actions,
+      candidate.candidate_id,
+    );
+    if (
+      !project
+      || !task
+      || !token
+      || !visible
+      || candidate.project_id !== project
+      || candidate.task_id !== task
+      || candidate.plan_id !== visible.plan.plan_id
+      || candidate.plan_version_observed !== visible.plan.version
+      || candidate.advisory_authority !== false
+      || candidate.formal_artifact !== false
+      || !dispositionAction
+    ) {
+      setDisposingCandidateId(null);
+      setError("The visible candidate is no longer bound to this Project, Task, Plan, and human action.");
+      responseLifecycle.finish(lease.requestId);
+      return;
+    }
+    setDisposingCandidateId(candidate.candidate_id);
+    setError(null);
+    try {
+      await disposeControlPlaneConsultationCandidate(
+        project,
+        task,
+        candidate.candidate_id,
+        token,
+        {
+          action,
+          reason,
+          expected_candidate_sha256: candidate.content_sha256,
+          expected_plan_version: visible.plan.version,
+          operation_key: operationKey,
+        },
+        lease.signal,
+      );
+      const next = await getUnifiedTaskProjection(
+        project,
+        task,
+        token,
+        lease.signal,
+      );
+      if (!responseLifecycle.isCurrent(lease.requestId)) return;
+      setProjection(next);
+    } catch (err) {
+      if (
+        (err as Error).name === "AbortError"
+        || !responseLifecycle.isCurrent(lease.requestId)
+      ) return;
+      setError(messageFor(err));
+    } finally {
+      if (responseLifecycle.isCurrent(lease.requestId)) {
+        setDisposingCandidateId(null);
+        responseLifecycle.finish(lease.requestId);
+      }
+    }
+  }, [lifecycle, projectId, projection, responseLifecycle, taskId, token]);
+
   useEffect(() => {
     const query = new URLSearchParams(window.location.search);
     const project = query.get("project") ?? "";
@@ -320,7 +403,7 @@ export default function ControlPlanePage() {
           </div>
           <div className="flex items-center gap-2">
             <Badge variant="outline" className="h-7 gap-1.5 border-emerald-500/30 bg-emerald-500/5 text-emerald-700 dark:text-emerald-300"><DatabaseZap /> Authenticated Task scope</Badge>
-            {projection && <Button variant="outline" size="lg" onClick={() => void load()} disabled={loading || respondingItemId !== null || approvingPlan}><RefreshCw className={cn(loading && "animate-spin")} /> Refresh</Button>}
+            {projection && <Button variant="outline" size="lg" onClick={() => void load()} disabled={loading || respondingItemId !== null || approvingPlan || disposingCandidateId !== null}><RefreshCw className={cn(loading && "animate-spin")} /> Refresh</Button>}
           </div>
         </div>
       </header>
@@ -334,7 +417,7 @@ export default function ControlPlanePage() {
           taskTotal={taskTotal}
           loading={loading}
           discovering={discovering}
-          responding={respondingItemId !== null || approvingPlan}
+          responding={respondingItemId !== null || approvingPlan || disposingCandidateId !== null}
           ready={ready}
           onProject={(value) => {
             lifecycle.invalidate();
@@ -348,6 +431,7 @@ export default function ControlPlanePage() {
             setDiscovering(false);
             setRespondingItemId(null);
             setApprovingPlan(false);
+            setDisposingCandidateId(null);
           }}
           onTask={(value) => {
             lifecycle.invalidate();
@@ -357,6 +441,7 @@ export default function ControlPlanePage() {
             setLoading(false);
             setRespondingItemId(null);
             setApprovingPlan(false);
+            setDisposingCandidateId(null);
           }}
           onToken={(value) => {
             lifecycle.invalidate();
@@ -378,6 +463,7 @@ export default function ControlPlanePage() {
             setDiscovering(false);
             setRespondingItemId(null);
             setApprovingPlan(false);
+            setDisposingCandidateId(null);
           }}
           onConnect={() => void load()}
           onDiscover={() => void discoverTasks(projectId, token, taskId)}
@@ -394,6 +480,7 @@ export default function ControlPlanePage() {
             setDiscovering(false);
             setRespondingItemId(null);
             setApprovingPlan(false);
+            setDisposingCandidateId(null);
             setError(null);
           }}
         />
@@ -411,13 +498,16 @@ export default function ControlPlanePage() {
             projection={projection}
             respondingItemId={respondingItemId}
             approvingPlan={approvingPlan}
+            disposingCandidateId={disposingCandidateId}
             responseBusy={controlPlaneResponseBusy(
               loading,
               respondingItemId,
               approvingPlan,
+              disposingCandidateId,
             )}
             onRespond={respondToAttention}
             onApprovePlan={approvePlan}
+            onDisposeCandidate={disposeCandidate}
           />
         )}
       </main>
@@ -452,10 +542,11 @@ function ConnectionPanel({ projectId, taskId, token, tasks, taskTotal, loading, 
   );
 }
 
-function ProjectionDashboard({ projection, respondingItemId, approvingPlan, responseBusy, onRespond, onApprovePlan }: {
+function ProjectionDashboard({ projection, respondingItemId, approvingPlan, disposingCandidateId, responseBusy, onRespond, onApprovePlan, onDisposeCandidate }: {
   projection: UnifiedTaskProjection;
   respondingItemId: string | null;
   approvingPlan: boolean;
+  disposingCandidateId: string | null;
   responseBusy: boolean;
   onRespond: (
     item: UnifiedAttentionItem,
@@ -464,6 +555,12 @@ function ProjectionDashboard({ projection, respondingItemId, approvingPlan, resp
     operationKey: string,
   ) => Promise<void>;
   onApprovePlan: (reason: string, operationKey: string) => Promise<void>;
+  onDisposeCandidate: (
+    candidate: UnifiedConsultationCandidate,
+    action: CandidateDispositionAction,
+    reason: string,
+    operationKey: string,
+  ) => Promise<void>;
 }) {
   const state = projection.task_state;
   const progressPercent = projection.progress.total_stages ? Math.round(((projection.progress.completed_stages ?? 0) / projection.progress.total_stages) * 100) : null;
@@ -504,7 +601,7 @@ function ProjectionDashboard({ projection, respondingItemId, approvingPlan, resp
         <Metric icon={UserRoundCheck} label="Human actions" value={String(projection.required_human_actions.length)} detail={`${projection.collection_totals.attention ?? 0} attention items`} />
       </section>
 
-      <section className="grid items-start gap-5 xl:grid-cols-[minmax(0,1.35fr)_minmax(330px,0.65fr)]"><StageLedger stages={projection.stages} currentStageSource={projection.progress.current_stage_source} /><HumanActions projection={projection} respondingItemId={respondingItemId} approvingPlan={approvingPlan} responseBusy={responseBusy} onRespond={onRespond} onApprovePlan={onApprovePlan} /></section>
+      <section className="grid items-start gap-5 xl:grid-cols-[minmax(0,1.35fr)_minmax(330px,0.65fr)]"><StageLedger stages={projection.stages} currentStageSource={projection.progress.current_stage_source} /><HumanActions projection={projection} respondingItemId={respondingItemId} approvingPlan={approvingPlan} disposingCandidateId={disposingCandidateId} responseBusy={responseBusy} onRespond={onRespond} onApprovePlan={onApprovePlan} onDisposeCandidate={onDisposeCandidate} /></section>
       <RunLedger runs={projection.runs} />
       <section className="grid items-start gap-5 xl:grid-cols-2 2xl:grid-cols-4"><ArtifactLedger projection={projection} /><EvidenceLedger projection={projection} /><ApprovalLedger projection={projection} /><AuditLedger projection={projection} /></section>
     </div>
@@ -516,10 +613,11 @@ function StageLedger({ stages, currentStageSource }: { stages: UnifiedStageProje
   return <section className="overflow-hidden rounded-xl border bg-card"><SectionHeader icon={Route} title="Stage ledger" meta={`${stages.length} stages · ${sourceLabel}`} /><div className="divide-y">{stages.map((stage, index) => <article key={stage.stage_key} className={cn("grid gap-3 p-4 sm:grid-cols-[36px_minmax(0,1fr)_auto]", stage.current && "bg-primary/5")}><div className={cn("grid size-9 place-items-center rounded-full border font-mono text-xs", stage.current && currentStageSource === "control_plane_route" && "border-primary bg-primary text-primary-foreground")}>{stage.sequence ?? index + 1}</div><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><h3 className="font-medium">{stage.title ?? stage.stage_key}</h3>{stage.current && currentStageSource === "control_plane_route" && <Badge>authority current</Badge>}{stage.current && currentStageSource === "compatibility_plan" && <Badge variant="outline" className="border-amber-500/40 text-amber-700 dark:text-amber-300">compatibility cursor</Badge>}</div><p className="mt-1 font-mono text-xs text-muted-foreground">{stage.stage_key} · {stage.runtime ?? "runtime unassigned"}</p>{stage.semantic_summary && <p className="mt-2 text-xs leading-5 text-muted-foreground">{stage.semantic_summary}</p>}{stage.blockers.length > 0 && <p className="mt-2 text-xs text-destructive">{stage.blockers.join(" · ")}</p>}</div><div className="flex items-start gap-2 sm:justify-end"><StatusBadge value={stage.authoritative_stage?.status ?? "not initialized"} /><StatusBadge value={stage.gate?.status ? `gate ${stage.gate.status}` : "no gate"} muted /></div></article>)}{stages.length === 0 && <EmptyState text="No stages are present in the projection." />}</div></section>;
 }
 
-function HumanActions({ projection, respondingItemId, approvingPlan, responseBusy, onRespond, onApprovePlan }: {
+function HumanActions({ projection, respondingItemId, approvingPlan, disposingCandidateId, responseBusy, onRespond, onApprovePlan, onDisposeCandidate }: {
   projection: UnifiedTaskProjection;
   respondingItemId: string | null;
   approvingPlan: boolean;
+  disposingCandidateId: string | null;
   responseBusy: boolean;
   onRespond: (
     item: UnifiedAttentionItem,
@@ -528,9 +626,18 @@ function HumanActions({ projection, respondingItemId, approvingPlan, responseBus
     operationKey: string,
   ) => Promise<void>;
   onApprovePlan: (reason: string, operationKey: string) => Promise<void>;
+  onDisposeCandidate: (
+    candidate: UnifiedConsultationCandidate,
+    action: CandidateDispositionAction,
+    reason: string,
+    operationKey: string,
+  ) => Promise<void>;
 }) {
   const attention = new Map(
     projection.attention.map((item) => [item.item_id, item]),
+  );
+  const candidates = new Map(
+    projection.consultation_candidates.map((candidate) => [candidate.candidate_id, candidate]),
   );
   return (
     <section className="overflow-hidden rounded-xl border bg-card">
@@ -538,6 +645,9 @@ function HumanActions({ projection, respondingItemId, approvingPlan, responseBus
       <div className="divide-y">
         {projection.required_human_actions.map((action) => {
           const item = action.kind === "attention" ? attention.get(action.source_id) : undefined;
+          const candidate = action.kind === "candidate_disposition"
+            ? candidates.get(action.source_id)
+            : undefined;
           return (
             <article key={action.action_id} className="p-4">
               <div className="flex items-start gap-3">
@@ -553,6 +663,25 @@ function HumanActions({ projection, respondingItemId, approvingPlan, responseBus
                       onRespond={onRespond}
                     />
                   )}
+                  {candidate
+                    && candidate.project_id === projection.task.project_id
+                    && candidate.task_id === projection.task.task_id
+                    && candidate.plan_id === projection.plan.plan_id
+                    && candidate.plan_version_observed === projection.plan.version
+                    && candidate.advisory_authority === false
+                    && candidate.formal_artifact === false
+                    && candidateDispositionActionReady(
+                      projection.required_human_actions,
+                      candidate.candidate_id,
+                    )
+                    && (
+                      <CandidateDispositionForm
+                        candidate={candidate}
+                        busy={responseBusy}
+                        active={disposingCandidateId === candidate.candidate_id}
+                        onDispose={onDisposeCandidate}
+                      />
+                    )}
                   {action.kind === "plan_approval"
                     && action.source_id === projection.plan.plan_id
                     && projection.task_state === "needs_review"
@@ -579,6 +708,93 @@ function HumanActions({ projection, respondingItemId, approvingPlan, responseBus
       </div>
       <div className="border-t bg-muted/25 p-4"><p className="text-xs font-medium text-muted-foreground">Methodology</p><p className="mt-1 text-sm">{projection.plan.methodology_id} <span className="text-muted-foreground">v{projection.plan.methodology_version}{projection.plan.provisional ? " · provisional" : ""}</span></p></div>
     </section>
+  );
+}
+
+function CandidateDispositionForm({ candidate, busy, active, onDispose }: {
+  candidate: UnifiedConsultationCandidate;
+  busy: boolean;
+  active: boolean;
+  onDispose: (
+    candidate: UnifiedConsultationCandidate,
+    action: CandidateDispositionAction,
+    reason: string,
+    operationKey: string,
+  ) => Promise<void>;
+}) {
+  const [action, setAction] = useState<CandidateDispositionAction>("adopt");
+  const [reason, setReason] = useState("");
+  const retryKeyRef = useRef<CandidateDispositionRetryKey | null>(null);
+  if (retryKeyRef.current === null) {
+    retryKeyRef.current = new CandidateDispositionRetryKey();
+  }
+  const retryKey = retryKeyRef.current;
+  return (
+    <form
+      className="mt-4 space-y-3 rounded-lg border bg-background/70 p-3"
+      aria-label={`Dispose consultation candidate ${candidate.title}`}
+      onSubmit={(event) => {
+        event.preventDefault();
+        const operationKey = retryKey.forDraft(
+          {
+            candidateId: candidate.candidate_id,
+            expectedCandidateSha256: candidate.content_sha256,
+            expectedPlanVersion: candidate.plan_version_observed,
+            action,
+            reason,
+          },
+          () => window.crypto.randomUUID(),
+        );
+        void onDispose(candidate, action, reason, operationKey);
+      }}
+    >
+      <div className="flex flex-wrap gap-2 text-[11px] text-muted-foreground">
+        <Badge variant="outline">advisory only</Badge>
+        <Badge variant="outline">not a formal artifact</Badge>
+        <Badge variant="outline">{candidate.runtime}</Badge>
+        <Badge variant="outline">Plan v{candidate.plan_version_observed}</Badge>
+      </div>
+      <div className="space-y-2 rounded-md border bg-muted/20 p-3 text-xs leading-5">
+        <p><span className="font-medium text-muted-foreground">Decision key</span><span className="ml-2 font-mono">{candidate.decision_key}</span></p>
+        <p className="font-medium">{candidate.decision_value}</p>
+        <p className="whitespace-pre-wrap text-muted-foreground">{candidate.analysis}</p>
+        {candidate.source_refs.length > 0 && (
+          <p className="text-[11px] text-muted-foreground">Sources: {candidate.source_refs.join(", ")}</p>
+        )}
+        <p className="break-all font-mono text-[10px] text-muted-foreground">sha256 {candidate.content_sha256}</p>
+      </div>
+      <Field label="Human disposition">
+        <select
+          className="field capitalize"
+          value={action}
+          onChange={(event) => setAction(event.target.value as CandidateDispositionAction)}
+          disabled={busy}
+        >
+          <option value="adopt">adopt</option>
+          <option value="reject">reject</option>
+        </select>
+      </Field>
+      <Field label="Rationale (required)">
+        <textarea
+          className="field min-h-24 resize-y"
+          value={reason}
+          onChange={(event) => setReason(event.target.value)}
+          maxLength={500}
+          disabled={busy}
+        />
+      </Field>
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-[11px] leading-4 text-muted-foreground">
+          Adopt binds one TaskDecision and increments the Plan version; reject records only the disposition. Neither advances a Stage or Gate or calls a runtime.
+        </p>
+        <Button type="submit" size="sm" disabled={busy || !reason.trim()}>
+          {active
+            ? <RefreshCw className="animate-spin" />
+            : (action === "adopt" ? <CheckCircle2 /> : <X />)}
+          {active ? "Saving" : action}
+        </Button>
+      </div>
+    </form>
   );
 }
 

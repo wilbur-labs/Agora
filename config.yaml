@@ -96,6 +96,7 @@ control_plane:
           - control_plane.approve
           - control_plane.attention.respond
           - control_plane.plan.approve
+          - control_plane.candidate.dispose
         projects: [agora]
 
 skills:

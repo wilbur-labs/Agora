@@ -173,6 +173,39 @@ class ControlPlanePlanApprovalReceipt(StrictModel):
     replayed: bool = False
 
 
+class ControlPlaneCandidateDispositionReceipt(StrictModel):
+    schema_version: Literal["1.0"] = "1.0"
+    operation_key: Annotated[
+        str,
+        Field(
+            min_length=1,
+            max_length=128,
+            pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+        ),
+    ]
+    disposition: ConsultationCandidateDisposition
+    candidate_authority: Literal[False] = False
+    task_decision_bound: bool
+    plan_version_changed: bool
+    task_state_mutated: Literal[False] = False
+    stage_state_mutated: Literal[False] = False
+    gate_state_mutated: Literal[False] = False
+    formal_approval_created: Literal[False] = False
+    runtime_called: Literal[False] = False
+    replayed: bool = False
+
+    @model_validator(mode="after")
+    def validate_disposition_effects(self):
+        adopted = self.disposition.action == "adopted"
+        if self.task_decision_bound != adopted:
+            raise ValueError("Only candidate adoption may bind a Task decision")
+        if self.plan_version_changed != adopted:
+            raise ValueError("Only candidate adoption may change the Plan version")
+        if self.operation_key != self.disposition.operation_key:
+            raise ValueError("Candidate disposition receipt operation key drifted")
+        return self
+
+
 class OrchestrationStage(StrictModel):
     stage_id: str
     plan_id: str

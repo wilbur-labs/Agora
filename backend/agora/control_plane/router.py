@@ -16,6 +16,7 @@ from agora.attention.store import (
 )
 from agora.protocol.models import Approval, Artifact, Evidence
 from agora.orchestration.models import (
+    ControlPlaneCandidateDispositionReceipt,
     ControlPlanePlanApprovalReceipt,
     UnifiedTaskIndexPage,
     UnifiedTaskProjection,
@@ -32,6 +33,7 @@ from agora.tasks.router import get_task_store
 from .api_models import (
     ControlPlaneAttentionResponseReceipt,
     ControlPlaneAttentionResponseRequest,
+    ControlPlaneCandidateDispositionRequest,
     ControlPlanePlanApprovalRequest,
     ConfigureGateRequest,
     ControlEventPage,
@@ -368,6 +370,44 @@ async def approve_control_plane_plan(
         expected_plan_version=request.expected_plan_version,
         actor=principal.principal_id,
         reason=request.reason,
+        operation_key=request.operation_key,
+        control_plane=store,
+    )
+
+
+@router.post(
+    "/consultation-candidates/{candidate_id}/dispositions",
+    response_model=ControlPlaneCandidateDispositionReceipt,
+)
+async def dispose_control_plane_consultation_candidate(
+    project_id: str,
+    task_id: str,
+    candidate_id: str = Path(max_length=128),
+    request: ControlPlaneCandidateDispositionRequest = ...,
+    principal: ControlPrincipal = Depends(authenticate_control_plane),
+    store: ControlPlaneStore = Depends(get_control_plane_store),
+    orchestration: OrchestrationStore = Depends(
+        get_control_plane_orchestration_store
+    ),
+):
+    await _call(
+        _scope,
+        project_id,
+        task_id,
+        "control_plane.candidate.dispose",
+        principal,
+        store,
+    )
+    return await _call(
+        orchestration.dispose_control_plane_consultation_candidate,
+        task_id,
+        candidate_id,
+        project_id=project_id,
+        action="adopted" if request.action == "adopt" else "rejected",
+        expected_candidate_sha256=request.expected_candidate_sha256,
+        expected_plan_version=request.expected_plan_version,
+        reason=request.reason,
+        actor=principal.principal_id,
         operation_key=request.operation_key,
         control_plane=store,
     )

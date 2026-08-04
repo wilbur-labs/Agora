@@ -1,5 +1,100 @@
 # Agora Control Plane Development Progress
 
+## 2026-08-04 - authenticated consultation candidate disposition (reviewed)
+
+### Bounded implementation
+
+- [x] Froze
+  `docs/architecture/control-plane-ui-candidate-disposition-v1.md` before
+  implementation. The boundary exposes only explicit human `adopt`/`reject`
+  of an already-registered immutable advisory candidate; it does not expose
+  consultation dispatch, AI discussion, voting, runtime substitution, or
+  lifecycle authority.
+- [x] Added the distinct `control_plane.candidate.dispose` permission and the
+  authenticated project/Task/candidate-scoped
+  `POST /api/control-plane/projects/{project_id}/tasks/{task_id}/consultation-candidates/{candidate_id}/dispositions`
+  command. Its actor comes only from the bearer principal. Action, bounded
+  redacted rationale, exact candidate content hash, expected Plan version, and
+  stable operation key are mandatory; caller-supplied actor/decision/approval
+  fields are rejected.
+- [x] Reused the frozen candidate-domain semantics in one `BEGIN IMMEDIATE`
+  transaction. Adoption creates or reuses the exact versioned TaskDecision,
+  records a hash-sealed disposition, and increments the Plan version once;
+  rejection records only the disposition. Both append bounded Task audit and
+  the shared authenticated exact-replay receipt atomically. The receipt makes
+  candidate authority, frozen Task/Stage/Gate mutation, formal Approval
+  creation, and runtime invocation explicitly false.
+- [x] Added global `control_operations` collision protection in both
+  directions with Attention/other authenticated commands, exact replay of the
+  original receipt, project/candidate non-enumeration, candidate hash and Plan
+  concurrency checks, authoritative inventory/Stage/role/runtime route
+  revalidation, and guards against both an active operational Run and an
+  unsettled formal protocol Run. Raw rationale is redacted before hashing or
+  persistence; injected receipt-write failure rolls back decision,
+  disposition, Plan version, audit, and receipt together.
+- [x] Ordered pending candidates ahead of disposed history in the paginated
+  projection and made the console request the bounded 200-record snapshot, so
+  every permitted pending human action can expose its matching immutable body.
+  The UI shows advisory/non-formal markers, pinned runtime, bounded decision,
+  analysis, sources, Plan version, and candidate hash; binds the visible hash
+  and version; preserves one retry key across an unchanged uncertain attempt;
+  aborts stale mutation/projection leases; refreshes authority after success;
+  and keeps Plan approval hidden until all candidates are disposed.
+- [x] Preserved `.kiro/`, Kiro runtime pins, configuration, workspaces, and the
+  future configurable-role/local-model boundary. No Kiro command was invoked,
+  no Kiro support was removed, and no role/local-model configurability was
+  implemented in this increment.
+
+### Verification and review state
+
+- [x] New candidate disposition API regressions passed 8 tests. They cover
+  atomic adoption and rejection, principal actor binding, redaction and secret
+  absence, exact replay, permission whitelist, project/Task/candidate
+  non-enumeration, strict request shape, stale hash/Plan conflicts, active
+  operational and unsettled formal Runs, second action/conflicting replay,
+  shared Attention operation-key collisions in both directions, transaction
+  rollback, no formal Approval/lifecycle mutation, and pending-first projection
+  behavior after 100 disposed historical candidates.
+- [x] The candidate domain/API focus passed 13 tests and the related Control
+  Plane, lifecycle, routing, protocol, orchestration, and Plan approval shard
+  passed 147 tests. The complete non-integration suite including Web UI ran all
+  tests: 833 passed and 15 were deselected. Its only two failures were the same
+  retired Council/executor tests whose literal Linux `/tmp/...` paths resolve
+  to sandbox-denied `D:\tmp` on Windows; those exact two tests passed 2/2 in
+  0.26 seconds outside the filesystem sandbox. No Agora assertion or semantic
+  behavior failed.
+- [x] Frontend Control Plane tests passed 14 tests. ESLint completed with zero
+  errors and the same 11 warnings in retired `use-chat.ts`; Next.js 16
+  TypeScript production build and static export passed with the eight supported
+  routes. Protocol Schema check, isolated `compileall`, root YAML/config load,
+  permission resolution, and `git diff --check` pass.
+- [x] Two bounded read-only Claude Code Haiku reviews independently inspected
+  the backend/transaction/test boundary and the frontend/config/lease boundary.
+  Both returned explicit `VERDICT: CLAUDE_APPROVE` with no HIGH/MEDIUM issue.
+  A broad Codex CLI review was initially started from a mistaken interpretation
+  of the user's replacement instruction, produced no verdict, and timed out; a
+  later bounded Codex attempt was stopped immediately after the user clarified
+  that Claude Code, not another Codex process, is the current auxiliary
+  reviewer. Neither Codex CLI attempt is counted as a gate.
+- [x] Kiro was intentionally not invoked because its current contract is
+  unavailable. Per the user's clarification, implementation remains with
+  Codex and the currently available auxiliary review surface is Claude Code;
+  Kiro remains intact for later use.
+
+### Current checkpoint and next safe action
+
+This reviewed increment is directly atop pushed Plan approval commit
+`fe21feee6e8d969cc9e03ba137eb2fd6cd7675ce`. User-owned `.kiro/` and legacy
+pytest temporary directories remain untracked and untouched.
+
+The exact next action is to stage only this candidate-disposition increment,
+commit, and push. Then audit the repository-defined Agora 1.0 closure criteria
+from the protocol freeze, active architecture documents, executable acceptance,
+current README/CLI startup path, and remaining progress entries. Exercise the
+clean local end-user startup path and close only concrete mainline gaps before
+writing the practical Agora tutorial. Do not reintroduce autonomous discussion,
+remove Kiro, or begin dynamic role/local-model configuration during that audit.
+
 ## 2026-08-04 - authenticated atomic Plan approval and live service closeout (reviewed)
 
 ### Bounded implementation

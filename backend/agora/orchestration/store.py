@@ -144,6 +144,7 @@ from .models import (
     BudgetAmendment,
     ConsultationRun,
     ConsultationState,
+    ControlPlaneCandidateDispositionReceipt,
     ControlPlanePlanApprovalReceipt,
     LedgerEntryType,
     Measurement,
@@ -1299,7 +1300,10 @@ class OrchestrationStore:
         reason: str,
         actor: str,
         operation_key: str | None,
-    ) -> ConsultationCandidateDisposition:
+        expected_candidate_sha256: str | None = None,
+        project_id: str | None = None,
+        control_plane: ControlPlaneStore | None = None,
+    ) -> ConsultationCandidateDisposition | ControlPlaneCandidateDispositionReceipt:
         """Adopt a candidate into Task decisions or reject it without formal mutation."""
 
         if action not in {"adopted", "rejected"}:
@@ -1343,9 +1347,63 @@ class OrchestrationStore:
                 "Candidate disposition reason must contain 1 to 500 characters"
             )
 
+        authenticated_control_write = any(
+            value is not None
+            for value in (expected_candidate_sha256, project_id, control_plane)
+        )
+        if authenticated_control_write and (
+            expected_candidate_sha256 is None
+            or project_id is None
+            or control_plane is None
+            or operation_key is None
+        ):
+            raise OrchestrationValidationError(
+                "Authenticated candidate disposition requires project, candidate "
+                "hash, operation key, and Control Plane store"
+            )
+        control_fingerprint = None
+        if authenticated_control_write:
+            assert expected_candidate_sha256 is not None
+            assert project_id is not None
+            assert control_plane is not None
+            assert operation_key is not None
+            control_plane._validate_operation_key(operation_key)
+            control_plane._validate_actor(actor)
+            if re.fullmatch(r"[0-9a-f]{64}", expected_candidate_sha256) is None:
+                raise OrchestrationValidationError(
+                    "Expected consultation candidate hash must be lowercase SHA-256"
+                )
+            control_fingerprint = canonical_sha256(
+                {
+                    "operation": "control_plane.candidate.dispose@1.0",
+                    "project_id": project_id,
+                    "task_id": task_id,
+                    "candidate_id": candidate_id,
+                    "expected_candidate_sha256": expected_candidate_sha256,
+                    "action": action,
+                    "expected_plan_version": expected_plan_version,
+                    "reason": safe_reason,
+                    "actor": actor,
+                }
+            )
+
         disposition_id = self._id("disposition")
         now = utc_now()
         with self._transaction() as db:
+            if authenticated_control_write:
+                assert control_plane is not None
+                assert control_fingerprint is not None
+                replay_result = control_plane._operation_result(
+                    db,
+                    operation_key,
+                    control_fingerprint,
+                )
+                if replay_result is not None:
+                    receipt = ControlPlaneCandidateDispositionReceipt.model_validate(
+                        replay_result["receipt"]
+                    )
+                    return receipt.model_copy(update={"replayed": True})
+
             replay_row = db.execute(
                 """SELECT * FROM orchestration_candidate_dispositions
                    WHERE operation_key = ?""",
@@ -1360,11 +1418,33 @@ class OrchestrationStore:
                     and replay.plan_version_before == expected_plan_version
                     and replay.actor == actor
                     and replay.reason == safe_reason
+                    and (
+                        expected_candidate_sha256 is None
+                        or replay.candidate_sha256 == expected_candidate_sha256
+                    )
+                    and (project_id is None or replay.project_id == project_id)
                 ):
                     raise OrchestrationConflictError(
                         "Candidate disposition operation_key was already used "
                         "for different inputs"
                     )
+                if authenticated_control_write:
+                    assert control_plane is not None
+                    assert control_fingerprint is not None
+                    receipt = ControlPlaneCandidateDispositionReceipt(
+                        operation_key=operation_key,
+                        disposition=replay,
+                        task_decision_bound=replay.action == "adopted",
+                        plan_version_changed=replay.action == "adopted",
+                    )
+                    control_plane._complete_operation(
+                        db,
+                        operation_key,
+                        control_fingerprint,
+                        {"receipt": receipt.model_dump(mode="json")},
+                        now,
+                    )
+                    return receipt.model_copy(update={"replayed": True})
                 return replay
 
             candidate_row = db.execute(
@@ -1375,9 +1455,21 @@ class OrchestrationStore:
             if candidate_row is None:
                 raise OrchestrationNotFoundError(candidate_id)
             candidate = self._consultation_candidate(candidate_row)
+            if authenticated_control_write and (
+                candidate.task_id != task_id
+                or candidate.project_id != project_id
+            ):
+                raise OrchestrationNotFoundError("Control Plane resource not found")
             if candidate.task_id != task_id:
                 raise OrchestrationConflictError(
                     "Consultation candidate belongs to a different Task"
+                )
+            if (
+                expected_candidate_sha256 is not None
+                and candidate.content_sha256 != expected_candidate_sha256
+            ):
+                raise OrchestrationConflictError(
+                    "Consultation candidate content hash changed"
                 )
             prior_disposition = db.execute(
                 """SELECT disposition_id
@@ -1395,6 +1487,8 @@ class OrchestrationStore:
             ).fetchone()
             if plan is None:
                 raise OrchestrationNotFoundError(task_id)
+            if authenticated_control_write and plan["project_id"] != project_id:
+                raise OrchestrationNotFoundError("Control Plane resource not found")
             running = db.execute(
                 """SELECT run_id FROM orchestration_runs
                    WHERE plan_id = ? AND state = ? LIMIT 1""",
@@ -1403,6 +1497,15 @@ class OrchestrationStore:
             if running is not None:
                 raise OrchestrationConflictError(
                     "Candidate disposition cannot race an active Run"
+                )
+            unsettled_protocol_run = db.execute(
+                """SELECT run_id FROM protocol_runs
+                   WHERE task_id = ? AND settled_at IS NULL LIMIT 1""",
+                (task_id,),
+            ).fetchone()
+            if unsettled_protocol_run is not None:
+                raise OrchestrationConflictError(
+                    "Candidate disposition cannot race an unsettled formal Run"
                 )
             if (
                 plan["plan_id"] != candidate.plan_id
@@ -1619,7 +1722,54 @@ class OrchestrationStore:
                 },
                 created_at=now,
             )
+            if authenticated_control_write:
+                assert control_plane is not None
+                assert control_fingerprint is not None
+                receipt = ControlPlaneCandidateDispositionReceipt(
+                    operation_key=operation_key,
+                    disposition=disposition,
+                    task_decision_bound=action == "adopted",
+                    plan_version_changed=action == "adopted",
+                )
+                control_plane._complete_operation(
+                    db,
+                    operation_key,
+                    control_fingerprint,
+                    {"receipt": receipt.model_dump(mode="json")},
+                    now,
+                )
+                return receipt
         return self.require_consultation_candidate_disposition(disposition_id)
+
+    def dispose_control_plane_consultation_candidate(
+        self,
+        task_id: str,
+        candidate_id: str,
+        *,
+        project_id: str,
+        action: str,
+        expected_candidate_sha256: str,
+        expected_plan_version: int,
+        reason: str,
+        actor: str,
+        operation_key: str,
+        control_plane: ControlPlaneStore,
+    ) -> ControlPlaneCandidateDispositionReceipt:
+        result = self.dispose_consultation_candidate(
+            task_id,
+            candidate_id,
+            action=action,
+            expected_plan_version=expected_plan_version,
+            reason=reason,
+            actor=actor,
+            operation_key=operation_key,
+            expected_candidate_sha256=expected_candidate_sha256,
+            project_id=project_id,
+            control_plane=control_plane,
+        )
+        if not isinstance(result, ControlPlaneCandidateDispositionReceipt):
+            raise RuntimeError("Authenticated candidate disposition receipt missing")
+        return result
 
     def require_consultation_candidate(
         self,

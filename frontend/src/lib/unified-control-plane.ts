@@ -2,6 +2,7 @@ import { getApiBase } from "@/lib/api";
 import { ApiError, type TaskManifest } from "@/lib/control-plane";
 import {
   controlPlaneAttentionResponsePath,
+  controlPlaneCandidateDispositionPath,
   controlPlanePlanApprovalPath,
   controlPlaneTaskIndexPath,
 } from "@/lib/control-plane-view";
@@ -149,6 +150,8 @@ export interface UnifiedTaskProjection {
     approved_at: string;
     stale_reason: string | null;
   }>;
+  consultation_candidates: UnifiedConsultationCandidate[];
+  consultation_candidate_dispositions: UnifiedConsultationCandidateDisposition[];
   attention: UnifiedAttentionItem[];
   required_human_actions: Array<{
     action_id: string;
@@ -186,6 +189,56 @@ export interface UnifiedTaskProjection {
 }
 
 export type AttentionResponseAction = "answer" | "approve" | "reject";
+export type CandidateDispositionAction = "adopt" | "reject";
+
+export interface UnifiedConsultationCandidate {
+  schema_version: "1.0";
+  candidate_id: string;
+  consultation_id: string;
+  operation_key: string;
+  project_id: string;
+  task_id: string;
+  plan_id: string;
+  plan_version_observed: number;
+  inventory_id: string;
+  inventory_sha256: string;
+  stage_key: string;
+  role: string;
+  runtime: string;
+  title: string;
+  decision_key: string;
+  decision_value: string;
+  analysis: string;
+  source_refs: string[];
+  registered_by: string;
+  advisory_authority: false;
+  formal_artifact: false;
+  created_at: string;
+  content_sha256: string;
+}
+
+export interface UnifiedConsultationCandidateDisposition {
+  schema_version: "1.0";
+  disposition_id: string;
+  operation_key: string;
+  candidate_id: string;
+  candidate_sha256: string;
+  project_id: string;
+  task_id: string;
+  plan_id: string;
+  stage_key: string;
+  action: "adopted" | "rejected";
+  plan_version_before: number;
+  plan_version_after: number;
+  claim_invalidated: boolean;
+  decision_id: string | null;
+  decision_sha256: string | null;
+  decision_version: number | null;
+  actor: string;
+  reason: string;
+  created_at: string;
+  content_sha256: string;
+}
 
 export interface UnifiedAttentionItem {
   item_id: string;
@@ -247,6 +300,21 @@ export interface ControlPlanePlanApprovalReceipt {
   replayed: boolean;
 }
 
+export interface ControlPlaneCandidateDispositionReceipt {
+  schema_version: "1.0";
+  operation_key: string;
+  disposition: UnifiedConsultationCandidateDisposition;
+  candidate_authority: false;
+  task_decision_bound: boolean;
+  plan_version_changed: boolean;
+  task_state_mutated: false;
+  stage_state_mutated: false;
+  gate_state_mutated: false;
+  formal_approval_created: false;
+  runtime_called: false;
+  replayed: boolean;
+}
+
 export interface UnifiedTaskIndexItem {
   task_id: string;
   project_id: string;
@@ -302,7 +370,7 @@ export async function getUnifiedTaskProjection(
     encodeURIComponent(taskId),
     "unified-projection",
   ].join("/");
-  const response = await fetch(`${getApiBase()}${path}`, {
+  const response = await fetch(`${getApiBase()}${path}?limit=200&offset=0`, {
     signal,
     headers: { Authorization: `Bearer ${bearerToken}` },
   });
@@ -365,6 +433,40 @@ export async function approveControlPlanePlan(
   );
   if (!response.ok) throw await apiError(response);
   return response.json() as Promise<ControlPlanePlanApprovalReceipt>;
+}
+
+export async function disposeControlPlaneConsultationCandidate(
+  projectId: string,
+  taskId: string,
+  candidateId: string,
+  bearerToken: string,
+  input: {
+    action: CandidateDispositionAction;
+    reason: string;
+    expected_candidate_sha256: string;
+    expected_plan_version: number;
+    operation_key: string;
+  },
+  signal?: AbortSignal,
+): Promise<ControlPlaneCandidateDispositionReceipt> {
+  const response = await fetch(
+    `${getApiBase()}${controlPlaneCandidateDispositionPath(
+      projectId,
+      taskId,
+      candidateId,
+    )}`,
+    {
+      method: "POST",
+      signal,
+      headers: {
+        Authorization: `Bearer ${bearerToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(input),
+    },
+  );
+  if (!response.ok) throw await apiError(response);
+  return response.json() as Promise<ControlPlaneCandidateDispositionReceipt>;
 }
 
 async function apiError(response: Response): Promise<ApiError> {

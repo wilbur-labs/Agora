@@ -90,6 +90,22 @@ export function controlPlanePlanApprovalPath(
   ].join("/");
 }
 
+export function controlPlaneCandidateDispositionPath(
+  projectId: string,
+  taskId: string,
+  candidateId: string,
+): string {
+  return [
+    "/api/control-plane/projects",
+    encodeURIComponent(projectId),
+    "tasks",
+    encodeURIComponent(taskId),
+    "consultation-candidates",
+    encodeURIComponent(candidateId),
+    "dispositions",
+  ].join("/");
+}
+
 export interface AttentionResponseDraft {
   itemId: string;
   expectedVersion: number;
@@ -158,12 +174,51 @@ export class PlanApprovalRetryKey {
   }
 }
 
+export interface CandidateDispositionDraft {
+  candidateId: string;
+  expectedCandidateSha256: string;
+  expectedPlanVersion: number;
+  action: "adopt" | "reject";
+  reason: string;
+}
+
+export class CandidateDispositionRetryKey {
+  private fingerprint: string | null = null;
+  private operationKey: string | null = null;
+
+  forDraft(draft: CandidateDispositionDraft, createNonce: () => string): string {
+    const fingerprint = JSON.stringify([
+      draft.candidateId,
+      draft.expectedCandidateSha256,
+      draft.expectedPlanVersion,
+      draft.action,
+      draft.reason,
+    ]);
+    if (this.fingerprint !== fingerprint || this.operationKey === null) {
+      const nonce = createNonce().replace(/[^A-Za-z0-9_.:-]/g, "-").slice(0, 96);
+      if (!nonce) throw new Error("Could not create a candidate disposition retry key.");
+      this.fingerprint = fingerprint;
+      this.operationKey = `candidate-disposition:${nonce}`;
+    }
+    return this.operationKey;
+  }
+
+  clear(): void {
+    this.fingerprint = null;
+    this.operationKey = null;
+  }
+}
+
 export function controlPlaneResponseBusy(
   projectionLoading: boolean,
   respondingItemId: string | null,
   approvingPlan = false,
+  disposingCandidateId: string | null = null,
 ): boolean {
-  return projectionLoading || respondingItemId !== null || approvingPlan;
+  return projectionLoading
+    || respondingItemId !== null
+    || approvingPlan
+    || disposingCandidateId !== null;
 }
 
 export function planApprovalActionReady(
@@ -173,6 +228,16 @@ export function planApprovalActionReady(
   return actions.length === 1
     && actions[0].kind === "plan_approval"
     && actions[0].source_id === planId;
+}
+
+export function candidateDispositionActionReady(
+  actions: Array<{ kind: string; source_id: string }>,
+  candidateId: string,
+): boolean {
+  return actions.some(
+    (action) => action.kind === "candidate_disposition"
+      && action.source_id === candidateId,
+  );
 }
 
 export interface ProtectedControlPlaneView<TProjection, TTask> {
