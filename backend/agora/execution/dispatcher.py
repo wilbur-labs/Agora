@@ -164,7 +164,7 @@ class ExecutionDispatcher:
             except RuntimeLaunchError as exc:
                 return self.store.finish(
                     run_id, RunState.FAILED, expected_version=running.version, exit_code=None,
-                    stdout_tail="", stderr_tail="", error_message=f"process start failed: {exc}",
+                    stdout_tail="", stderr_tail="", error_message=redact_text(f"process start failed: {exc}"),
                 )
             try:
                 proc = await asyncio.create_subprocess_exec(

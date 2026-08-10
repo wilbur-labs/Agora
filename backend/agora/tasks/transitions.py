@@ -4,8 +4,10 @@ from __future__ import annotations
 from .models import TaskState
 
 
-# States whose work is finished. `done`/`failed` may still be retired to
-# `cancelled`; only `cancelled` has no outgoing transitions.
+# Documentation constants derived from ALLOWED_TRANSITIONS (the single source
+# of truth, which `can_transition` consumes). A graph-consistency test asserts
+# they stay in sync. `done`/`failed` may still be retired to `cancelled`; only
+# `cancelled` has no outgoing transitions.
 FINISHED_STATES = {TaskState.DONE, TaskState.FAILED, TaskState.CANCELLED}
 TERMINAL_STATES = {TaskState.CANCELLED}
 
@@ -55,4 +57,5 @@ ALLOWED_TRANSITIONS: dict[TaskState, set[TaskState]] = {
 
 
 def can_transition(current: TaskState, target: TaskState) -> bool:
-    return target in ALLOWED_TRANSITIONS[current]
+    # Fail closed: an unregistered current state has no permitted transitions.
+    return target in ALLOWED_TRANSITIONS.get(current, set())

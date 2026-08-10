@@ -1,5 +1,66 @@
 # Agora Control Plane Development Progress
 
+## 2026-08-10 - Chinese UI, control-plane refactor, task retire, Windows Codex launch (review gate: CHANGES_REQUESTED)
+
+Branch `feature/frontend-i18n`, PR #6. NOT merged to main — both review gates
+returned CHANGES_REQUESTED; the frontend is mergeable on its own, the backend
+retire change is blocked pending a design decision (item 2 below).
+
+Frontend (self-contained; no backend contract change):
+- Client-side i18n under `frontend/src/lib/i18n/` (EN/ZH dictionaries, 545 keys,
+  fully paired; language toggle; enum/status localization; pre-paint guard that
+  removes the locale flash).
+- `control-plane/page.tsx` split into `shared` / `ledgers` / `human-actions` /
+  `projection-dashboard` components; retired-council `welcome.tsx` removed.
+- Portfolio task-card lifecycle advance controls and a cancel/retire control,
+  each behind an explicit confirm step; deep-link dispatch into the New Run panel.
+- Verified: `pnpm build` (10 static pages), `pnpm lint` (0 errors), `tsc`, and an
+  EN==ZH dictionary key-parity check.
+
+Backend increments (MUST NOT merge to main until item 2 is resolved):
+1. `tasks/transitions.py`: allow `done`/`failed` -> `cancelled` so a finished
+   compatibility Task can be retired from the board; `cancelled` stays terminal.
+   `FINISHED_STATES`/`TERMINAL_STATES` are documentation constants derived from
+   `ALLOWED_TRANSITIONS` and asserted by a graph-consistency test; `can_transition`
+   now fails closed via `.get(current, set())`.
+2. `execution/dispatcher.py`: route the CLI spawn (non-bridge path only) and the
+   Codex app-server spawn through `resolve_runtime_command()` (PATHEXT + npm
+   `.cmd` unwrap) so Codex launches on Windows; `RuntimeLaunchError` fails the run
+   (redacted) before any child starts.
+
+Tests: transition-graph invariant test + store cancel/retire test.
+`tests/test_tasks_controlplane.py` + `tests/test_execution.py`: 29 passed (run
+with `--basetemp=<clean dir>` to avoid the environment's `pytest-of-wuche`
+temp-dir permission error). End-to-end: a dispatched Codex run reached running
+(real pid) and succeeded (exit 0), writing its output file in the worktree.
+
+Review gates (both independent, read-only):
+- Codex: CHANGES_REQUESTED. Applied fixes: bridge-path resolution scope,
+  TERMINAL_STATES/graph consistency, regression tests.
+- Kiro: CHANGES_REQUESTED. Applied fixes: `can_transition` fail-closed `.get`,
+  redact the CLI launch-failure message, clarify the derived-constants comment,
+  and this PROGRESS entry (Kiro flagged it was missing/misplaced).
+- No formal APPROVE from either gate yet.
+
+Open (block merge to main):
+2a. HIGH (both gates): retiring a finished compatibility Task to `cancelled`
+   leaves the authoritative `control_tasks` state unchanged, creating a silent
+   compat-vs-authoritative divergence (board hides it while authority still says
+   done/active). Fix before merge: use a display-only `retired/archived`
+   attribute, or an authoritative `ControlPlaneStore` cancel; do not overload
+   `cancelled` for board hiding. (Acceptable for local feature-branch use; not
+   for main.)
+2b. MEDIUM: persist the redacted resolved launcher argv + hash to the run record
+   for audit provenance.
+2c. MEDIUM/LOW: require `expected_version` on the cancel API and make a repeated
+   cancel idempotent (return current `cancelled`) rather than 409.
+
+### Current next safe action (this increment)
+
+The frontend can merge independently. Before merging the backend: resolve 2a
+(retire design), then add 2b (launcher audit) and 2c (cancel CAS/idempotency),
+re-run both review gates for a formal APPROVE.
+
 ## 2026-08-04 - Agora 1.0 release closeout (reviewed)
 
 ### Release boundary
@@ -5271,53 +5332,3 @@ user-owned `frontend/pnpm-workspace.yaml` change. The next safe product action
 is to write a concrete Task contract (roles, workflow, Context/Handoff
 expectations, and acceptance criteria) and run the CLI-first three-runtime loop
 before returning to UI work.
-
-## Increment: Chinese UI, control-plane refactor, task retire, Windows Codex launch (2026-08-10)
-
-Frontend (self-contained; no backend contract change) — branch
-`feature/frontend-i18n`, PR #6:
-- Client-side i18n under `frontend/src/lib/i18n/` (EN/ZH dictionaries, 545 keys,
-  fully paired; language toggle; enum/status localization; pre-paint guard that
-  removes the locale flash).
-- `control-plane/page.tsx` split into `shared` / `ledgers` / `human-actions` /
-  `projection-dashboard` components; retired-council `welcome.tsx` removed.
-- Portfolio task-card lifecycle advance controls and a cancel/retire control,
-  each behind an explicit confirm step; deep-link dispatch into the New Run panel.
-- Verified: `pnpm build` (10 static pages), `pnpm lint` (0 errors), `tsc`, and an
-  EN==ZH dictionary key-parity check.
-
-Backend increments (need the formal Kiro gate before merge to main):
-1. `tasks/transitions.py`: allow `done`/`failed` -> `cancelled` so a finished
-   compatibility Task can be retired from the board; `cancelled` stays terminal.
-   Added `FINISHED_STATES`; `TERMINAL_STATES` now equals states with no out-edges.
-2. `execution/dispatcher.py`: route both the CLI and the Codex app-server spawn
-   through `resolve_runtime_command()` (PATHEXT + npm `.cmd` unwrap) so Codex
-   launches on Windows; the CLI command is now resolved only in the non-bridge
-   path.
-
-Tests: added a transition-graph invariant test and a store cancel/retire test.
-`tests/test_tasks_controlplane.py` + `tests/test_execution.py`: 29 passed (run
-with `--basetemp=<clean dir>` to avoid the environment's `pytest-of-wuche`
-temp-dir permission error). End-to-end: a dispatched Codex run reached running
-(real pid) and succeeded (exit 0), writing its output file in the worktree.
-
-Review status:
-- Independent Codex read-only review: initial `CHANGES_REQUESTED`. Applied fixes
-  for the bridge-path resolution scope (#6), the `TERMINAL_STATES`/graph
-  consistency (#5), and the missing regression tests (#4).
-- Deferred with recommendations (open before merge): compatibility-vs-authoritative
-  dual state on retire (#2 — prefer a display-only `retired/archived` attribute
-  or an authoritative `ControlPlaneStore` cancel), persist the redacted resolved
-  launcher + hash for audit (#3), require `expected_version` + idempotent replay
-  on the cancel API (#7).
-- NOT yet obtained: a Kiro CLI review and a formal Claude APPROVE. This increment
-  is committed and pushed on `feature/frontend-i18n` but MUST NOT be merged to
-  main until the Kiro gate and the deferred items are resolved.
-
-### Current next safe action (this increment)
-
-Before merging `feature/frontend-i18n`: obtain the Kiro CLI review of the two
-backend changes; decide the retire design (display-only archive vs. authoritative
-cancel) per Codex #2; and add the launcher-audit (#3) and cancel-API idempotency
-(#7) improvements. The frontend is independent and can be split out to merge on
-its own if the backend changes need more review time.
