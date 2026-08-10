@@ -5271,3 +5271,53 @@ user-owned `frontend/pnpm-workspace.yaml` change. The next safe product action
 is to write a concrete Task contract (roles, workflow, Context/Handoff
 expectations, and acceptance criteria) and run the CLI-first three-runtime loop
 before returning to UI work.
+
+## Increment: Chinese UI, control-plane refactor, task retire, Windows Codex launch (2026-08-10)
+
+Frontend (self-contained; no backend contract change) — branch
+`feature/frontend-i18n`, PR #6:
+- Client-side i18n under `frontend/src/lib/i18n/` (EN/ZH dictionaries, 545 keys,
+  fully paired; language toggle; enum/status localization; pre-paint guard that
+  removes the locale flash).
+- `control-plane/page.tsx` split into `shared` / `ledgers` / `human-actions` /
+  `projection-dashboard` components; retired-council `welcome.tsx` removed.
+- Portfolio task-card lifecycle advance controls and a cancel/retire control,
+  each behind an explicit confirm step; deep-link dispatch into the New Run panel.
+- Verified: `pnpm build` (10 static pages), `pnpm lint` (0 errors), `tsc`, and an
+  EN==ZH dictionary key-parity check.
+
+Backend increments (need the formal Kiro gate before merge to main):
+1. `tasks/transitions.py`: allow `done`/`failed` -> `cancelled` so a finished
+   compatibility Task can be retired from the board; `cancelled` stays terminal.
+   Added `FINISHED_STATES`; `TERMINAL_STATES` now equals states with no out-edges.
+2. `execution/dispatcher.py`: route both the CLI and the Codex app-server spawn
+   through `resolve_runtime_command()` (PATHEXT + npm `.cmd` unwrap) so Codex
+   launches on Windows; the CLI command is now resolved only in the non-bridge
+   path.
+
+Tests: added a transition-graph invariant test and a store cancel/retire test.
+`tests/test_tasks_controlplane.py` + `tests/test_execution.py`: 29 passed (run
+with `--basetemp=<clean dir>` to avoid the environment's `pytest-of-wuche`
+temp-dir permission error). End-to-end: a dispatched Codex run reached running
+(real pid) and succeeded (exit 0), writing its output file in the worktree.
+
+Review status:
+- Independent Codex read-only review: initial `CHANGES_REQUESTED`. Applied fixes
+  for the bridge-path resolution scope (#6), the `TERMINAL_STATES`/graph
+  consistency (#5), and the missing regression tests (#4).
+- Deferred with recommendations (open before merge): compatibility-vs-authoritative
+  dual state on retire (#2 — prefer a display-only `retired/archived` attribute
+  or an authoritative `ControlPlaneStore` cancel), persist the redacted resolved
+  launcher + hash for audit (#3), require `expected_version` + idempotent replay
+  on the cancel API (#7).
+- NOT yet obtained: a Kiro CLI review and a formal Claude APPROVE. This increment
+  is committed and pushed on `feature/frontend-i18n` but MUST NOT be merged to
+  main until the Kiro gate and the deferred items are resolved.
+
+### Current next safe action (this increment)
+
+Before merging `feature/frontend-i18n`: obtain the Kiro CLI review of the two
+backend changes; decide the retire design (display-only archive vs. authoritative
+cancel) per Codex #2; and add the launcher-audit (#3) and cancel-API idempotency
+(#7) improvements. The frontend is independent and can be split out to merge on
+its own if the backend changes need more review time.

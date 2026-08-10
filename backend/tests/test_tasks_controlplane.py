@@ -95,6 +95,42 @@ def test_store_rejects_invalid_and_stale_transitions(tmp_path):
         pass
 
 
+def test_finished_tasks_retire_to_cancelled_and_cancelled_stays_terminal():
+    from agora.tasks.transitions import (
+        ALLOWED_TRANSITIONS,
+        FINISHED_STATES,
+        TERMINAL_STATES,
+        can_transition,
+    )
+
+    # A finished task can be retired to `cancelled`...
+    assert can_transition(TaskState.DONE, TaskState.CANCELLED)
+    assert can_transition(TaskState.FAILED, TaskState.CANCELLED)
+    # ...but cannot reopen to active work.
+    for target in (TaskState.RUNNING, TaskState.REVIEW, TaskState.PLANNED, TaskState.DESIGN):
+        assert not can_transition(TaskState.DONE, target)
+        assert not can_transition(TaskState.FAILED, target)
+    # `cancelled` is fully terminal.
+    assert ALLOWED_TRANSITIONS[TaskState.CANCELLED] == set()
+    # The exported invariants match the actual graph.
+    assert TERMINAL_STATES == {state for state, outs in ALLOWED_TRANSITIONS.items() if not outs}
+    assert TERMINAL_STATES == {TaskState.CANCELLED}
+    assert FINISHED_STATES == {TaskState.DONE, TaskState.FAILED, TaskState.CANCELLED}
+
+
+def test_store_cancel_retires_a_task_and_rejects_recancel(tmp_path):
+    store = TaskStore(tmp_path / "retire.db")
+    task = store.create(_request())
+    cancelled = store.cancel(task.task_id, actor="user", reason="retire")
+    assert cancelled.state == TaskState.CANCELLED
+    # `cancelled` is terminal: cancelling it again fails closed.
+    try:
+        store.cancel(cancelled.task_id, actor="user", expected_version=cancelled.version)
+        raise AssertionError("re-cancelling a cancelled task was accepted")
+    except InvalidTransitionError:
+        pass
+
+
 def test_task_api_lifecycle_and_validation(tmp_path):
     store = TaskStore(tmp_path / "api.db")
     projects = _projects(tmp_path)

@@ -139,15 +139,6 @@ class ExecutionDispatcher:
                     stdout_tail="", stderr_tail="", error_message="workspace not found",
                 )
 
-            # Resolve the executable via PATHEXT and unwrap Windows .cmd/.bat
-            # shims (e.g. npm's codex.cmd) into a form CreateProcess can launch.
-            try:
-                command = resolve_runtime_command(list(adapter.build_command(run.prompt)))
-            except RuntimeLaunchError as exc:
-                return self.store.finish(
-                    run_id, RunState.FAILED, expected_version=run.version, exit_code=None,
-                    stdout_tail="", stderr_tail="", error_message=f"process start failed: {exc}",
-                )
             try:
                 running = self.store.start(run_id, expected_version=run.version)
             except RunConflictError:
@@ -164,6 +155,16 @@ class ExecutionDispatcher:
             if adapter.bridge_mode == "codex_app_server":
                 return await self._execute_codex_app_server(
                     running, adapter, workspace,
+                )
+            # CLI adapters only: resolve the executable via PATHEXT and unwrap
+            # Windows .cmd/.bat shims (npm's codex.cmd) into a CreateProcess-
+            # launchable form. Only the command that will actually run is resolved.
+            try:
+                command = resolve_runtime_command(list(adapter.build_command(run.prompt)))
+            except RuntimeLaunchError as exc:
+                return self.store.finish(
+                    run_id, RunState.FAILED, expected_version=running.version, exit_code=None,
+                    stdout_tail="", stderr_tail="", error_message=f"process start failed: {exc}",
                 )
             try:
                 proc = await asyncio.create_subprocess_exec(

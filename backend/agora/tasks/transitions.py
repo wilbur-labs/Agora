@@ -4,7 +4,10 @@ from __future__ import annotations
 from .models import TaskState
 
 
-TERMINAL_STATES = {TaskState.DONE, TaskState.FAILED, TaskState.CANCELLED}
+# States whose work is finished. `done`/`failed` may still be retired to
+# `cancelled`; only `cancelled` has no outgoing transitions.
+FINISHED_STATES = {TaskState.DONE, TaskState.FAILED, TaskState.CANCELLED}
+TERMINAL_STATES = {TaskState.CANCELLED}
 
 ALLOWED_TRANSITIONS: dict[TaskState, set[TaskState]] = {
     TaskState.BACKLOG: {TaskState.REQUIREMENTS, TaskState.CANCELLED},
