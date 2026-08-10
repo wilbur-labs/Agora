@@ -7,10 +7,11 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   ApiError,
-  cancelTask,
+  archiveTask,
   createTask,
   listTasks,
   transitionTask,
+  unarchiveTask,
   type TaskManifest,
   type TaskRisk,
   type TaskState,
@@ -35,6 +36,7 @@ export default function PortfolioPage() {
   const [error, setError] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [projectFilter, setProjectFilter] = useState("all");
+  const [showArchived, setShowArchived] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -57,8 +59,10 @@ export default function PortfolioPage() {
     () => Array.from(new Set(tasks.map((task) => task.project_id))).sort(),
     [tasks],
   );
-  const visible = projectFilter === "all" ? tasks : tasks.filter((task) => task.project_id === projectFilter);
-  const attention = visible.filter((task) => attentionStates.includes(task.state));
+  const scoped = projectFilter === "all" ? tasks : tasks.filter((task) => task.project_id === projectFilter);
+  const archivedCount = scoped.filter((task) => task.archived_at).length;
+  const visible = showArchived ? scoped : scoped.filter((task) => !task.archived_at);
+  const attention = visible.filter((task) => !task.archived_at && attentionStates.includes(task.state));
 
   const replaceTask = (updated: TaskManifest) => {
     setTasks((current) => current.map((task) => (task.task_id === updated.task_id ? updated : task)));
@@ -82,6 +86,11 @@ export default function PortfolioPage() {
               <option value="all">{t("portfolio.filter.allProjects")}</option>
               {projects.map((project) => <option key={project}>{project}</option>)}
             </select>
+            {(archivedCount > 0 || showArchived) && (
+              <Button variant={showArchived ? "secondary" : "outline"} size="lg" onClick={() => setShowArchived((value) => !value)} aria-pressed={showArchived}>
+                {showArchived ? t("portfolio.archived.hide") : t("portfolio.archived.show", { count: archivedCount })}
+              </Button>
+            )}
             <Button variant="outline" size="lg" onClick={load} disabled={loading} aria-label={t("portfolio.actions.refresh")}>
               <RefreshCw className={cn("size-4", loading && "animate-spin")} />
             </Button>
@@ -156,12 +165,10 @@ const ADVANCE: Partial<Record<TaskState, { to: TaskState; labelKey: string }>> =
 function TaskCard({ task, onAdvanced, onConflict }: { task: TaskManifest; onAdvanced: (updated: TaskManifest) => void; onConflict: () => Promise<void> }) {
   const { t, te } = useI18n();
   const [busy, setBusy] = useState(false);
-  const [pending, setPending] = useState<null | "advance" | "cancel">(null);
+  const [pending, setPending] = useState<null | "advance" | "archive">(null);
   const [error, setError] = useState<string | null>(null);
   const advance = ADVANCE[task.state];
-  // Any task except an already-cancelled one can be cancelled/retired — the
-  // backend now allows terminal (done/failed) → cancelled too.
-  const cancellable = task.state !== "cancelled";
+  const isArchived = task.archived_at !== null;
 
   const run = async (op: () => Promise<TaskManifest>) => {
     setBusy(true); setError(null);
@@ -175,40 +182,54 @@ function TaskCard({ task, onAdvanced, onConflict }: { task: TaskManifest; onAdva
   };
 
   return (
-    <article className="rounded-xl border bg-card p-4 shadow-sm">
+    <article className={cn("rounded-xl border bg-card p-4 shadow-sm", isArchived && "opacity-60")}>
       <div className="flex items-start justify-between gap-2">
         <Badge variant="outline">{task.project_id}</Badge>
-        <span className={cn("text-xs font-medium", riskColor(task.risk))}>{te("risk", task.risk)}</span>
+        {isArchived
+          ? <Badge variant="secondary">{t("portfolio.card.archivedBadge")}</Badge>
+          : <span className={cn("text-xs font-medium", riskColor(task.risk))}>{te("risk", task.risk)}</span>}
       </div>
       <h3 className="mt-3 font-semibold leading-snug">{task.title}</h3>
       {task.description && <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-muted-foreground">{task.description}</p>}
       <div className="mt-4 flex items-center justify-between gap-2">
         <span className="text-xs capitalize text-muted-foreground">{te("taskState", task.state)} · P{task.priority}</span>
         <span className="flex items-center gap-3">
-          {advance && !pending && (
+          {isArchived ? (
             <button
               disabled={busy}
-              onClick={() => { setError(null); setPending("advance"); }}
+              onClick={() => void run(() => unarchiveTask(task))}
               className="flex items-center gap-1 text-xs font-medium hover:underline disabled:opacity-50"
             >
-              {t(advance.labelKey)} <ArrowRight className="size-3" />
+              {busy ? <RefreshCw className="size-3 animate-spin" /> : null}{t("portfolio.card.restore")}
             </button>
-          )}
-          {(task.state === "requirements" || task.state === "design") && (
-            <a href={`/requirements?task=${task.task_id}`} className="text-xs font-medium hover:underline">{t("portfolio.card.requirements")}</a>
-          )}
-          {task.state === "planned" && (
-            <a href={`/runs?new=${encodeURIComponent(task.task_id)}`} className="text-xs font-medium hover:underline">{t("portfolio.card.dispatchRun")}</a>
-          )}
-          <a href={`/control-plane?project=${encodeURIComponent(task.project_id)}&task=${encodeURIComponent(task.task_id)}`} className="text-xs font-medium hover:underline">{t("portfolio.card.authority")}</a>
-          {cancellable && !pending && (
-            <button
-              disabled={busy}
-              onClick={() => { setError(null); setPending("cancel"); }}
-              className="text-xs font-medium text-muted-foreground hover:text-destructive hover:underline disabled:opacity-50"
-            >
-              {t("portfolio.card.cancel")}
-            </button>
+          ) : (
+            <>
+              {advance && !pending && (
+                <button
+                  disabled={busy}
+                  onClick={() => { setError(null); setPending("advance"); }}
+                  className="flex items-center gap-1 text-xs font-medium hover:underline disabled:opacity-50"
+                >
+                  {t(advance.labelKey)} <ArrowRight className="size-3" />
+                </button>
+              )}
+              {(task.state === "requirements" || task.state === "design") && (
+                <a href={`/requirements?task=${task.task_id}`} className="text-xs font-medium hover:underline">{t("portfolio.card.requirements")}</a>
+              )}
+              {task.state === "planned" && (
+                <a href={`/runs?new=${encodeURIComponent(task.task_id)}`} className="text-xs font-medium hover:underline">{t("portfolio.card.dispatchRun")}</a>
+              )}
+              <a href={`/control-plane?project=${encodeURIComponent(task.project_id)}&task=${encodeURIComponent(task.task_id)}`} className="text-xs font-medium hover:underline">{t("portfolio.card.authority")}</a>
+              {!pending && (
+                <button
+                  disabled={busy}
+                  onClick={() => { setError(null); setPending("archive"); }}
+                  className="text-xs font-medium text-muted-foreground hover:text-destructive hover:underline disabled:opacity-50"
+                >
+                  {t("portfolio.card.archive")}
+                </button>
+              )}
+            </>
           )}
         </span>
       </div>
@@ -227,13 +248,13 @@ function TaskCard({ task, onAdvanced, onConflict }: { task: TaskManifest; onAdva
         </div>
       )}
 
-      {pending === "cancel" && (
-        <div className="mt-3 space-y-2 rounded-lg border border-destructive/30 bg-destructive/5 p-3">
-          <p className="text-xs font-medium">{t("portfolio.card.confirmCancel.question", { title: task.title })}</p>
-          <p className="text-[11px] leading-4 text-muted-foreground">{t("portfolio.card.confirmCancel.hint")}</p>
+      {pending === "archive" && (
+        <div className="mt-3 space-y-2 rounded-lg border bg-muted/40 p-3">
+          <p className="text-xs font-medium">{t("portfolio.card.confirmArchive.question", { title: task.title })}</p>
+          <p className="text-[11px] leading-4 text-muted-foreground">{t("portfolio.card.confirmArchive.hint")}</p>
           <div className="flex items-center justify-end gap-2 pt-1">
-            <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => { setPending(null); setError(null); }}>{t("portfolio.card.confirmCancel.keep")}</Button>
-            <Button type="button" size="sm" variant="destructive" disabled={busy} onClick={() => void run(() => cancelTask(task))}>{busy ? <RefreshCw className="animate-spin" /> : null}{t("portfolio.card.confirmCancel.confirm")}</Button>
+            <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => { setPending(null); setError(null); }}>{t("portfolio.card.confirmArchive.keep")}</Button>
+            <Button type="button" size="sm" disabled={busy} onClick={() => void run(() => archiveTask(task))}>{busy ? <RefreshCw className="animate-spin" /> : null}{t("portfolio.card.confirmArchive.confirm")}</Button>
           </div>
         </div>
       )}

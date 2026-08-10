@@ -4,12 +4,12 @@ from __future__ import annotations
 from .models import TaskState
 
 
-# Documentation constants derived from ALLOWED_TRANSITIONS (the single source
-# of truth, which `can_transition` consumes). A graph-consistency test asserts
-# they stay in sync. `done`/`failed` may still be retired to `cancelled`; only
-# `cancelled` has no outgoing transitions.
-FINISHED_STATES = {TaskState.DONE, TaskState.FAILED, TaskState.CANCELLED}
-TERMINAL_STATES = {TaskState.CANCELLED}
+# States with no outgoing transitions. Removing a finished task from the board
+# is a display-only `archived_at` flag (see TaskStore.set_archived), NOT a
+# lifecycle transition, so these stay terminal and the authoritative and
+# compatibility states never diverge. A graph-consistency test asserts this set
+# matches ALLOWED_TRANSITIONS.
+TERMINAL_STATES = {TaskState.DONE, TaskState.FAILED, TaskState.CANCELLED}
 
 ALLOWED_TRANSITIONS: dict[TaskState, set[TaskState]] = {
     TaskState.BACKLOG: {TaskState.REQUIREMENTS, TaskState.CANCELLED},
@@ -47,11 +47,8 @@ ALLOWED_TRANSITIONS: dict[TaskState, set[TaskState]] = {
         TaskState.CANCELLED,
     },
     TaskState.VERIFIED: {TaskState.RUNNING, TaskState.DONE, TaskState.CANCELLED},
-    # Finished tasks may be cancelled to remove/retire them from the active
-    # board (a soft, audited transition — the record is retained). `cancelled`
-    # itself remains fully terminal.
-    TaskState.DONE: {TaskState.CANCELLED},
-    TaskState.FAILED: {TaskState.CANCELLED},
+    TaskState.DONE: set(),
+    TaskState.FAILED: set(),
     TaskState.CANCELLED: set(),
 }
 

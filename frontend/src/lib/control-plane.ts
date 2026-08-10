@@ -33,6 +33,7 @@ export interface TaskManifest {
   created_by: string;
   created_at: string;
   updated_at: string;
+  archived_at: string | null;
 }
 
 export interface CreateTaskInput {
@@ -142,14 +143,20 @@ export function transitionTask(task: TaskManifest, targetState: TaskState): Prom
   });
 }
 
-// Soft-cancels/retires a task (backend DELETE = transition to `cancelled`).
-// Allowed from any state except `cancelled` itself; the server fails closed
-// with 409 on a version conflict or a disallowed transition.
-export function cancelTask(task: TaskManifest, reason?: string): Promise<TaskManifest> {
+// Display-only board archive: hide a task from the active board without
+// changing its lifecycle state (avoids compat/authoritative divergence).
+// Version-checked and idempotent on the server.
+export function archiveTask(task: TaskManifest): Promise<TaskManifest> {
   const params = new URLSearchParams({ expected_version: String(task.version) });
-  if (reason?.trim()) params.set("reason", reason.trim());
-  return request(`/api/tasks/${encodeURIComponent(task.task_id)}?${params.toString()}`, {
-    method: "DELETE",
+  return request(`/api/tasks/${encodeURIComponent(task.task_id)}/archive?${params.toString()}`, {
+    method: "POST",
+  });
+}
+
+export function unarchiveTask(task: TaskManifest): Promise<TaskManifest> {
+  const params = new URLSearchParams({ expected_version: String(task.version) });
+  return request(`/api/tasks/${encodeURIComponent(task.task_id)}/unarchive?${params.toString()}`, {
+    method: "POST",
   });
 }
 

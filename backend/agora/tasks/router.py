@@ -134,3 +134,37 @@ def cancel_task(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Task not found") from None
     except (InvalidTransitionError, StaleTaskVersionError) as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from None
+
+
+@router.post("/{task_id}/archive", response_model=TaskManifest)
+def archive_task(
+    task_id: str,
+    expected_version: int | None = Query(default=None, ge=1),
+    store: TaskStore = Depends(get_task_store),
+):
+    """Hide a task from the active board (display-only; lifecycle state is unchanged)."""
+    try:
+        return store.set_archived(
+            task_id, archived=True, actor="user", expected_version=expected_version
+        )
+    except TaskNotFoundError:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Task not found") from None
+    except StaleTaskVersionError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from None
+
+
+@router.post("/{task_id}/unarchive", response_model=TaskManifest)
+def unarchive_task(
+    task_id: str,
+    expected_version: int | None = Query(default=None, ge=1),
+    store: TaskStore = Depends(get_task_store),
+):
+    """Restore an archived task to the active board (display-only)."""
+    try:
+        return store.set_archived(
+            task_id, archived=False, actor="user", expected_version=expected_version
+        )
+    except TaskNotFoundError:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Task not found") from None
+    except StaleTaskVersionError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from None

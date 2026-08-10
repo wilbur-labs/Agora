@@ -42,24 +42,24 @@ Review gates (both independent, read-only):
   and this PROGRESS entry (Kiro flagged it was missing/misplaced).
 - No formal APPROVE from either gate yet.
 
-Open (block merge to main):
-2a. HIGH (both gates): retiring a finished compatibility Task to `cancelled`
-   leaves the authoritative `control_tasks` state unchanged, creating a silent
-   compat-vs-authoritative divergence (board hides it while authority still says
-   done/active). Fix before merge: use a display-only `retired/archived`
-   attribute, or an authoritative `ControlPlaneStore` cancel; do not overload
-   `cancelled` for board hiding. (Acceptable for local feature-branch use; not
-   for main.)
-2b. MEDIUM: persist the redacted resolved launcher argv + hash to the run record
-   for audit provenance.
-2c. MEDIUM/LOW: require `expected_version` on the cancel API and make a repeated
-   cancel idempotent (return current `cancelled`) rather than 409.
+Resolved / open:
+2a. RESOLVED (both gates' HIGH): removing a finished task from the board is now a
+   display-only `archived_at` flag (`TaskStore.set_archived`, version-checked +
+   idempotent, does NOT change lifecycle state) with `POST /tasks/{id}/archive|
+   unarchive` and a board "Show archived" toggle. The `done`/`failed` -> `cancelled`
+   overload was reverted; `cancelled` is terminal again. No compat-vs-authoritative
+   divergence — the authoritative state is never touched.
+2c. RESOLVED for archive: the archive API is version-checked and idempotent. (The
+   legacy cancel API's optional-version behavior is unchanged and now unused by
+   the UI.)
+2b. MEDIUM (still open): persist the redacted resolved launcher argv + hash to the
+   run record for audit provenance.
 
 ### Current next safe action (this increment)
 
-The frontend can merge independently. Before merging the backend: resolve 2a
-(retire design), then add 2b (launcher audit) and 2c (cancel CAS/idempotency),
-re-run both review gates for a formal APPROVE.
+The frontend can merge independently. Backend: 2a/2c resolved; 2b (launcher audit)
+is the remaining backend item. Re-run both review gates for a formal APPROVE
+before merging the backend to main.
 
 ## 2026-08-04 - Agora 1.0 release closeout (reviewed)
 

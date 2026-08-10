@@ -105,6 +105,10 @@ class TaskManifest(BaseModel):
     created_by: str
     created_at: str
     updated_at: str
+    # Display-only board attribute. Set to hide a task from the active board
+    # without changing its lifecycle state or the authoritative control-plane
+    # state. Null means not archived.
+    archived_at: str | None = None
 
 
 class TaskEvent(BaseModel):

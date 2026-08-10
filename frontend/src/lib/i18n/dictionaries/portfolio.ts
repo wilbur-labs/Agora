@@ -53,13 +53,19 @@ export const portfolio = {
           done: "Mark the task complete. This is final — a done task cannot be reopened.",
         },
       },
-      cancel: "Cancel task",
-      confirmCancel: {
-        question: "Cancel task “{title}”?",
-        hint: "The task is marked cancelled and leaves the delivery flow. This cannot be undone.",
+      archive: "Remove",
+      restore: "Restore",
+      archivedBadge: "Archived",
+      confirmArchive: {
+        question: "Remove “{title}” from the board?",
+        hint: "The task is hidden from the board. Its lifecycle state is unchanged and it can be restored from “Show archived”.",
         keep: "Keep",
-        confirm: "Confirm cancel",
+        confirm: "Remove",
       },
+    },
+    archived: {
+      show: "Show archived ({count})",
+      hide: "Hide archived",
     },
     create: {
       eyebrow: "Control plane",
@@ -130,13 +136,19 @@ export const portfolio = {
           done: "标记任务完成。此操作最终生效——done 状态无法重开。",
         },
       },
-      cancel: "取消任务",
-      confirmCancel: {
-        question: "取消任务「{title}」?",
-        hint: "任务将被标记为已取消并退出交付流程。此操作无法撤销。",
+      archive: "移除",
+      restore: "恢复",
+      archivedBadge: "已归档",
+      confirmArchive: {
+        question: "把「{title}」从看板移除?",
+        hint: "任务将从看板隐藏。其生命周期状态不变,可通过「显示已归档」恢复。",
         keep: "保留",
-        confirm: "确认取消",
+        confirm: "移除",
       },
+    },
+    archived: {
+      show: "显示已归档（{count}）",
+      hide: "隐藏已归档",
     },
     create: {
       eyebrow: "控制平面（Control Plane）",
