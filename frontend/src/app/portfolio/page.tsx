@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   ApiError,
+  cancelTask,
   createTask,
   listTasks,
   transitionTask,
@@ -155,19 +156,21 @@ const ADVANCE: Partial<Record<TaskState, { to: TaskState; labelKey: string }>> =
 function TaskCard({ task, onAdvanced, onConflict }: { task: TaskManifest; onAdvanced: (updated: TaskManifest) => void; onConflict: () => Promise<void> }) {
   const { t, te } = useI18n();
   const [busy, setBusy] = useState(false);
-  const [confirming, setConfirming] = useState(false);
+  const [pending, setPending] = useState<null | "advance" | "cancel">(null);
   const [error, setError] = useState<string | null>(null);
   const advance = ADVANCE[task.state];
+  // Any task except an already-cancelled one can be cancelled/retired — the
+  // backend now allows terminal (done/failed) → cancelled too.
+  const cancellable = task.state !== "cancelled";
 
-  const doAdvance = async () => {
-    if (!advance) return;
+  const run = async (op: () => Promise<TaskManifest>) => {
     setBusy(true); setError(null);
     try {
-      onAdvanced(await transitionTask(task, advance.to));
-      setConfirming(false);
+      onAdvanced(await op());
+      setPending(null);
     } catch (err) {
       setError(err instanceof ApiError && err.status === 409 ? t("portfolio.errors.conflict") : (err as Error).message);
-      if (err instanceof ApiError && err.status === 409) { setConfirming(false); await onConflict(); }
+      if (err instanceof ApiError && err.status === 409) { setPending(null); await onConflict(); }
     } finally { setBusy(false); }
   };
 
@@ -182,10 +185,10 @@ function TaskCard({ task, onAdvanced, onConflict }: { task: TaskManifest; onAdva
       <div className="mt-4 flex items-center justify-between gap-2">
         <span className="text-xs capitalize text-muted-foreground">{te("taskState", task.state)} · P{task.priority}</span>
         <span className="flex items-center gap-3">
-          {advance && !confirming && (
+          {advance && !pending && (
             <button
               disabled={busy}
-              onClick={() => { setError(null); setConfirming(true); }}
+              onClick={() => { setError(null); setPending("advance"); }}
               className="flex items-center gap-1 text-xs font-medium hover:underline disabled:opacity-50"
             >
               {t(advance.labelKey)} <ArrowRight className="size-3" />
@@ -198,10 +201,19 @@ function TaskCard({ task, onAdvanced, onConflict }: { task: TaskManifest; onAdva
             <a href={`/runs?new=${encodeURIComponent(task.task_id)}`} className="text-xs font-medium hover:underline">{t("portfolio.card.dispatchRun")}</a>
           )}
           <a href={`/control-plane?project=${encodeURIComponent(task.project_id)}&task=${encodeURIComponent(task.task_id)}`} className="text-xs font-medium hover:underline">{t("portfolio.card.authority")}</a>
+          {cancellable && !pending && (
+            <button
+              disabled={busy}
+              onClick={() => { setError(null); setPending("cancel"); }}
+              className="text-xs font-medium text-muted-foreground hover:text-destructive hover:underline disabled:opacity-50"
+            >
+              {t("portfolio.card.cancel")}
+            </button>
+          )}
         </span>
       </div>
 
-      {advance && confirming && (
+      {pending === "advance" && advance && (
         <div className="mt-3 space-y-2 rounded-lg border bg-muted/30 p-3">
           <p className="text-xs font-medium">{t("portfolio.card.confirm.question", { from: te("taskState", task.state), to: te("taskState", advance.to) })}</p>
           <p className="text-[11px] leading-4 text-muted-foreground">{t(`portfolio.card.confirm.hint.${advance.to}`)}</p>
@@ -209,8 +221,19 @@ function TaskCard({ task, onAdvanced, onConflict }: { task: TaskManifest; onAdva
             <a href={`/runs?project=${encodeURIComponent(task.project_id)}`} className="inline-block text-[11px] font-medium text-primary hover:underline">{t("portfolio.card.confirm.viewRuns")}</a>
           )}
           <div className="flex items-center justify-end gap-2 pt-1">
-            <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => { setConfirming(false); setError(null); }}>{t("portfolio.card.confirm.cancel")}</Button>
-            <Button type="button" size="sm" variant={advance.to === "done" ? "destructive" : "default"} disabled={busy} onClick={() => void doAdvance()}>{busy ? <RefreshCw className="animate-spin" /> : null}{t("portfolio.card.confirm.confirm")}</Button>
+            <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => { setPending(null); setError(null); }}>{t("portfolio.card.confirm.cancel")}</Button>
+            <Button type="button" size="sm" variant={advance.to === "done" ? "destructive" : "default"} disabled={busy} onClick={() => void run(() => transitionTask(task, advance.to))}>{busy ? <RefreshCw className="animate-spin" /> : null}{t("portfolio.card.confirm.confirm")}</Button>
+          </div>
+        </div>
+      )}
+
+      {pending === "cancel" && (
+        <div className="mt-3 space-y-2 rounded-lg border border-destructive/30 bg-destructive/5 p-3">
+          <p className="text-xs font-medium">{t("portfolio.card.confirmCancel.question", { title: task.title })}</p>
+          <p className="text-[11px] leading-4 text-muted-foreground">{t("portfolio.card.confirmCancel.hint")}</p>
+          <div className="flex items-center justify-end gap-2 pt-1">
+            <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => { setPending(null); setError(null); }}>{t("portfolio.card.confirmCancel.keep")}</Button>
+            <Button type="button" size="sm" variant="destructive" disabled={busy} onClick={() => void run(() => cancelTask(task))}>{busy ? <RefreshCw className="animate-spin" /> : null}{t("portfolio.card.confirmCancel.confirm")}</Button>
           </div>
         </div>
       )}

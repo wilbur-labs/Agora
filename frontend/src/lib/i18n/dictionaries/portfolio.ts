@@ -53,6 +53,13 @@ export const portfolio = {
           done: "Mark the task complete. This is final — a done task cannot be reopened.",
         },
       },
+      cancel: "Cancel task",
+      confirmCancel: {
+        question: "Cancel task “{title}”?",
+        hint: "The task is marked cancelled and leaves the delivery flow. This cannot be undone.",
+        keep: "Keep",
+        confirm: "Confirm cancel",
+      },
     },
     create: {
       eyebrow: "Control plane",
@@ -122,6 +129,13 @@ export const portfolio = {
           verified: "确认评审通过。",
           done: "标记任务完成。此操作最终生效——done 状态无法重开。",
         },
+      },
+      cancel: "取消任务",
+      confirmCancel: {
+        question: "取消任务「{title}」?",
+        hint: "任务将被标记为已取消并退出交付流程。此操作无法撤销。",
+        keep: "保留",
+        confirm: "确认取消",
       },
     },
     create: {

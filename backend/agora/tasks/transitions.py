@@ -42,8 +42,11 @@ ALLOWED_TRANSITIONS: dict[TaskState, set[TaskState]] = {
         TaskState.CANCELLED,
     },
     TaskState.VERIFIED: {TaskState.RUNNING, TaskState.DONE, TaskState.CANCELLED},
-    TaskState.DONE: set(),
-    TaskState.FAILED: set(),
+    # Finished tasks may be cancelled to remove/retire them from the active
+    # board (a soft, audited transition — the record is retained). `cancelled`
+    # itself remains fully terminal.
+    TaskState.DONE: {TaskState.CANCELLED},
+    TaskState.FAILED: {TaskState.CANCELLED},
     TaskState.CANCELLED: set(),
 }
 

@@ -142,6 +142,17 @@ export function transitionTask(task: TaskManifest, targetState: TaskState): Prom
   });
 }
 
+// Soft-cancels/retires a task (backend DELETE = transition to `cancelled`).
+// Allowed from any state except `cancelled` itself; the server fails closed
+// with 409 on a version conflict or a disallowed transition.
+export function cancelTask(task: TaskManifest, reason?: string): Promise<TaskManifest> {
+  const params = new URLSearchParams({ expected_version: String(task.version) });
+  if (reason?.trim()) params.set("reason", reason.trim());
+  return request(`/api/tasks/${encodeURIComponent(task.task_id)}?${params.toString()}`, {
+    method: "DELETE",
+  });
+}
+
 export function listSpecs(taskId: string): Promise<RequirementSpec[]> {
   return request(`/api/tasks/${encodeURIComponent(taskId)}/specs`);
 }
