@@ -70,6 +70,14 @@ export const runs = {
         keep: "Keep running",
         cancelling: "Cancelling…",
       },
+      deliverables: {
+        title: "Deliverables",
+        loading: "Loading deliverables…",
+        empty: "No file changes in the workspace.",
+        opening: "Opening…",
+        truncated: "Preview truncated.",
+        loadError: "Could not open file: {error}",
+      },
     },
     createPanel: {
       capabilityWarning: "Live adapter capabilities are unavailable; showing conservative defaults.",
@@ -172,6 +180,14 @@ export const runs = {
         reason: "原因（可选）",
         keep: "继续运行",
         cancelling: "正在取消…",
+      },
+      deliverables: {
+        title: "交付物",
+        loading: "正在加载交付物…",
+        empty: "工作区没有文件改动。",
+        opening: "正在打开…",
+        truncated: "预览已截断。",
+        loadError: "无法打开文件：{error}",
       },
     },
     createPanel: {

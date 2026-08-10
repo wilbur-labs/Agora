@@ -12,8 +12,11 @@ import {
   TERMINAL_RUN_STATES,
   asRunSummary,
   cancelRun,
+  getDeliverableContent,
   getRun,
+  getRunDeliverables,
   listRuns,
+  type Deliverable,
   type ExecutionAdapter,
   type ExecutionRun,
   type RunState,
@@ -278,10 +281,87 @@ function RunDetail({ run, loading, taskTitle, onCancel }: { run: ExecutionRun | 
       <DataBlock title={t("runs.page.detail.prompt")} value={run.prompt} />
       <DataBlock title={t("runs.page.detail.stdout")} value={run.stdout_tail || t("runs.page.detail.noStdout")} />
       <DataBlock title={t("runs.page.detail.stderr")} value={run.stderr_tail || t("runs.page.detail.noStderr")} tone={Boolean(run.stderr_tail)} />
+      <RunDeliverables run={run} />
       <details className="rounded-lg border p-3 text-xs"><summary className="cursor-pointer font-medium">{t("runs.page.detail.metadata")}</summary><div className="mt-3 space-y-2 text-muted-foreground"><p className="break-all"><strong>{t("runs.page.detail.workspace")}</strong> {run.workspace}</p><p className="break-all"><strong>{t("runs.page.detail.command")}</strong> {run.command.join(" ")}</p><pre className="max-h-48 overflow-auto whitespace-pre-wrap">{JSON.stringify(maskMetadata(run.result_metadata), null, 2)}</pre></div></details>
       {isCancellable(run) && <Button variant="destructive" className="w-full" onClick={() => onCancel(run)}><CircleStop /> {t("runs.common.cancelRun")}</Button>}
     </aside>
   );
+}
+
+function RunDeliverables({ run }: { run: ExecutionRun }) {
+  const { t } = useI18n();
+  const [files, setFiles] = useState<Deliverable[] | null>(null);
+  const [openPath, setOpenPath] = useState<string | null>(null);
+  const [content, setContent] = useState<string>("");
+  const [contentTruncated, setContentTruncated] = useState(false);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setFiles(null); setOpenPath(null); setContent("");
+    getRunDeliverables(run.run_id, controller.signal)
+      .then((data) => setFiles(data.files))
+      .catch((err) => { if ((err as Error).name !== "AbortError") setFiles([]); });
+    return () => controller.abort();
+  }, [run.run_id]);
+
+  const openFile = async (path: string) => {
+    if (openPath === path) { setOpenPath(null); return; }
+    setOpenPath(path); setLoading(true); setContent("");
+    try {
+      const data = await getDeliverableContent(run.run_id, path);
+      setContent(data.content); setContentTruncated(data.truncated);
+    } catch (err) {
+      setContent(t("runs.page.deliverables.loadError", { error: (err as Error).message }));
+      setContentTruncated(false);
+    } finally { setLoading(false); }
+  };
+
+  return (
+    <section>
+      <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+        {t("runs.page.deliverables.title")}{files ? ` (${files.length})` : ""}
+      </h3>
+      {files === null && <p className="text-xs text-muted-foreground">{t("runs.page.deliverables.loading")}</p>}
+      {files !== null && files.length === 0 && <p className="text-xs text-muted-foreground">{t("runs.page.deliverables.empty")}</p>}
+      {files !== null && files.length > 0 && (
+        <ul className="divide-y rounded-lg border">
+          {files.map((file) => (
+            <li key={file.path}>
+              <button
+                type="button"
+                onClick={() => void openFile(file.path)}
+                className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-xs hover:bg-accent/50"
+                aria-expanded={openPath === file.path}
+              >
+                <span className="min-w-0 flex-1 truncate font-mono">{file.path}</span>
+                <span className="shrink-0 rounded-full border px-2 py-0.5 text-[10px] capitalize text-muted-foreground">{file.status}</span>
+                {file.size !== null && <span className="shrink-0 text-[10px] text-muted-foreground">{formatBytes(file.size)}</span>}
+              </button>
+              {openPath === file.path && (
+                <div className="border-t bg-muted/30 p-3">
+                  {loading ? (
+                    <p className="text-xs text-muted-foreground">{t("runs.page.deliverables.opening")}</p>
+                  ) : (
+                    <>
+                      <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-relaxed">{content}</pre>
+                      {contentTruncated && <p className="mt-1 text-[10px] text-amber-600">{t("runs.page.deliverables.truncated")}</p>}
+                    </>
+                  )}
+                </div>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+function formatBytes(size: number): string {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function CancelDialog({ run, onClose, onConfirm }: { run: RunSummary; onClose: () => void; onConfirm: (reason: string) => Promise<void> }) {

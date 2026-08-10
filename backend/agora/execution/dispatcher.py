@@ -322,6 +322,16 @@ class ExecutionDispatcher:
         allowed_roots = [project_root.expanduser().resolve(), *self.allowed_workspace_roots]
         return any(workspace.is_relative_to(root) for root in allowed_roots)
 
+    def is_workspace_readable(self, project_id: str, workspace: Path) -> bool:
+        """Read-only confinement check for a run's workspace (delivery viewing)."""
+        try:
+            project = self.projects.get(project_id)
+        except KeyError:
+            return False
+        if project is None:
+            return False
+        return self._workspace_is_allowed(workspace.expanduser().resolve(), project.root)
+
     @staticmethod
     async def _stop(proc: asyncio.subprocess.Process) -> None:
         if proc.returncode is not None:

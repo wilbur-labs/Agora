@@ -14,6 +14,7 @@ from agora.tasks.router import get_project_registry, get_task_store
 from agora.tasks.store import TaskNotFoundError
 
 from .adapters import build_adapter_registry
+from .deliverables import list_changes, read_file
 from .dispatcher import ExecutionDispatcher
 from .models import AdapterCapability, CancelRunRequest, CreateRunRequest, ExecutionRun, RunState, RunSummary
 from .store import ExecutionStore, RunConflictError, RunNotFoundError, RunValidationError
@@ -99,6 +100,46 @@ def get_run(
         return store.require(run_id)
     except RunNotFoundError:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Run not found") from None
+
+
+@router.get("/runs/{run_id}/deliverables")
+def run_deliverables(
+    run_id: Annotated[str, PathParam(max_length=128)],
+    store: ExecutionStore = Depends(get_execution_store),
+    dispatcher: ExecutionDispatcher = Depends(get_execution_dispatcher),
+):
+    """List the files this run produced in its Git worktree (read-only)."""
+    try:
+        run = store.require(run_id)
+    except RunNotFoundError:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Run not found") from None
+    workspace = Path(run.workspace).expanduser().resolve()
+    if not dispatcher.is_workspace_readable(run.project_id, workspace):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Workspace is not readable")
+    if not workspace.is_dir():
+        return {"run_id": run_id, "workspace": str(workspace), "files": [], "unavailable": "workspace not found"}
+    return {"run_id": run_id, "workspace": str(workspace), "files": list_changes(workspace)}
+
+
+@router.get("/runs/{run_id}/deliverables/content")
+def run_deliverable_content(
+    run_id: Annotated[str, PathParam(max_length=128)],
+    path: str = Query(..., max_length=1024),
+    store: ExecutionStore = Depends(get_execution_store),
+    dispatcher: ExecutionDispatcher = Depends(get_execution_dispatcher),
+):
+    """Return a bounded, redacted text preview of one deliverable file."""
+    try:
+        run = store.require(run_id)
+    except RunNotFoundError:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Run not found") from None
+    workspace = Path(run.workspace).expanduser().resolve()
+    if not dispatcher.is_workspace_readable(run.project_id, workspace):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Workspace is not readable")
+    try:
+        return read_file(workspace, path)
+    except (FileNotFoundError, PermissionError):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Deliverable not found") from None
 
 
 @router.post("/runs/{run_id}/cancel", response_model=ExecutionRun)
