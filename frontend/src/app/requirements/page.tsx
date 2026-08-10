@@ -9,9 +9,11 @@ import {
   ApiError,
   approveSpec,
   createSpec,
+  generateClarifications,
   listSpecs,
   listTasks,
   rejectSpec,
+  saveClarificationAnswers,
   transitionTask,
   type RequirementSpec,
   type TaskManifest,
@@ -96,6 +98,9 @@ export default function RequirementsPage() {
 
         <section className="min-w-0 space-y-5">
           {error && <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{error}</div>}
+          {selectedTask && selectedTask.state === "requirements" && (
+            <ClarifyPanel key={`clarify-${selectedTask.task_id}`} task={selectedTask} onUpdated={replaceTask} onError={setError} />
+          )}
           {!selectedTask ? (
             <Empty title={t("requirements.empty.selectTitle")} detail={t("requirements.empty.selectDetail")} />
           ) : selectedTask.state === "backlog" ? (
@@ -132,6 +137,85 @@ export default function RequirementsPage() {
         </section>
       </div>
     </DeliveryShell>
+  );
+}
+
+function ClarifyPanel({ task, onUpdated, onError }: { task: TaskManifest; onUpdated: (task: TaskManifest) => void; onError: (msg: string | null) => void }) {
+  const { t } = useI18n();
+  const questions = task.clarifications?.questions ?? [];
+  const [answers, setAnswers] = useState<Record<string, string>>(task.clarifications?.answers ?? {});
+  const [generating, setGenerating] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    setAnswers(task.clarifications?.answers ?? {});
+    setSaved(false);
+  }, [task.task_id, task.clarifications]);
+
+  const generate = async () => {
+    setGenerating(true); onError(null);
+    try { onUpdated(await generateClarifications(task.task_id)); }
+    catch (err) { onError((err as Error).message); }
+    finally { setGenerating(false); }
+  };
+  const save = async () => {
+    setSaving(true); onError(null);
+    try { onUpdated(await saveClarificationAnswers(task.task_id, answers)); setSaved(true); }
+    catch (err) { onError((err as Error).message); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <section className="rounded-xl border bg-card p-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="flex items-center gap-2 text-sm font-semibold"><FileCheck2 className="size-4" /> {t("requirements.clarify.title")}</h2>
+          <p className="mt-1 max-w-xl text-xs leading-5 text-muted-foreground">{t("requirements.clarify.intro")}</p>
+        </div>
+        <Button variant="outline" size="sm" onClick={() => void generate()} disabled={generating || saving}>
+          {generating ? <RefreshCw className="animate-spin" /> : null}
+          {questions.length ? t("requirements.clarify.regenerate") : t("requirements.clarify.generate")}
+        </Button>
+      </div>
+      {generating && <p className="mt-3 text-xs text-muted-foreground">{t("requirements.clarify.generating")}</p>}
+      {questions.length > 0 && (
+        <div className="mt-4 space-y-4">
+          {questions.map((question, index) => (
+            <div key={question.id} className="rounded-lg border bg-muted/20 p-3">
+              <p className="text-sm font-medium">{index + 1}. {question.question}</p>
+              {question.why && <p className="mt-0.5 text-[11px] text-muted-foreground">{question.why}</p>}
+              {question.suggestions && question.suggestions.length > 0 && (
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {question.suggestions.map((suggestion) => (
+                    <button
+                      key={suggestion}
+                      type="button"
+                      onClick={() => { setAnswers((prev) => ({ ...prev, [question.id]: suggestion })); setSaved(false); }}
+                      className="rounded-full border px-2 py-0.5 text-[11px] text-muted-foreground transition-colors hover:border-primary hover:text-primary"
+                    >
+                      {suggestion}
+                    </button>
+                  ))}
+                </div>
+              )}
+              <textarea
+                className="field mt-2 min-h-16 resize-y"
+                value={answers[question.id] ?? ""}
+                onChange={(event) => { setAnswers((prev) => ({ ...prev, [question.id]: event.target.value })); setSaved(false); }}
+                placeholder={t("requirements.clarify.answerPlaceholder")}
+              />
+            </div>
+          ))}
+          <div className="flex items-center justify-end gap-3">
+            {saved && <span className="text-xs text-emerald-600 dark:text-emerald-400">{t("requirements.clarify.saved")}</span>}
+            <Button size="sm" onClick={() => void save()} disabled={saving || generating}>
+              {saving ? <RefreshCw className="animate-spin" /> : null}{t("requirements.clarify.save")}
+            </Button>
+          </div>
+        </div>
+      )}
+    </section>
   );
 }
 

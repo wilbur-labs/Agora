@@ -34,6 +34,20 @@ export interface TaskManifest {
   created_at: string;
   updated_at: string;
   archived_at: string | null;
+  clarifications: TaskClarifications | null;
+}
+
+export interface ClarifyQuestion {
+  id: string;
+  question: string;
+  why?: string;
+  suggestions?: string[];
+}
+
+export interface TaskClarifications {
+  status?: string;
+  questions: ClarifyQuestion[];
+  answers?: Record<string, string>;
 }
 
 export interface CreateTaskInput {
@@ -157,6 +171,19 @@ export function unarchiveTask(task: TaskManifest): Promise<TaskManifest> {
   const params = new URLSearchParams({ expected_version: String(task.version) });
   return request(`/api/tasks/${encodeURIComponent(task.task_id)}/unarchive?${params.toString()}`, {
     method: "POST",
+  });
+}
+
+// Ask the agent to propose requirement-clarifying questions (slow — an agent
+// call runs server-side). Returns the task with `clarifications.questions`.
+export function generateClarifications(taskId: string): Promise<TaskManifest> {
+  return request(`/api/tasks/${encodeURIComponent(taskId)}/clarifications/generate`, { method: "POST" });
+}
+
+export function saveClarificationAnswers(taskId: string, answers: Record<string, string>): Promise<TaskManifest> {
+  return request(`/api/tasks/${encodeURIComponent(taskId)}/clarifications/answers`, {
+    method: "POST",
+    body: JSON.stringify({ answers }),
   });
 }
 

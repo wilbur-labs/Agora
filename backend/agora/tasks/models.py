@@ -109,6 +109,9 @@ class TaskManifest(BaseModel):
     # without changing its lifecycle state or the authoritative control-plane
     # state. Null means not archived.
     archived_at: str | None = None
+    # In-app requirements interview state: agent-proposed questions + the user's
+    # answers. Working data, not lifecycle/authoritative state. Null until started.
+    clarifications: dict[str, Any] | None = None
 
 
 class TaskEvent(BaseModel):

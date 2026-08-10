@@ -70,7 +70,8 @@ class TaskStore:
                     created_by TEXT NOT NULL,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
-                    archived_at TEXT
+                    archived_at TEXT,
+                    clarifications TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_tasks_project_created
                     ON tasks(project_id, created_at DESC);
@@ -89,10 +90,12 @@ class TaskStore:
                     ON task_events(task_id, created_at, event_id);
                 """
             )
-            # Additive migration for databases created before `archived_at`.
+            # Additive migrations for columns added after initial release.
             columns = {row["name"] for row in db.execute("PRAGMA table_info(tasks)")}
             if "archived_at" not in columns:
                 db.execute("ALTER TABLE tasks ADD COLUMN archived_at TEXT")
+            if "clarifications" not in columns:
+                db.execute("ALTER TABLE tasks ADD COLUMN clarifications TEXT")
 
             from agora.requirements.schema import initialize_requirement_schema
             from agora.execution.schema import initialize_execution_schema
@@ -327,6 +330,24 @@ class TaskStore:
         assert task is not None
         return task
 
+    def set_clarifications(self, task_id: str, data: dict[str, Any]) -> TaskManifest:
+        """Store the requirements-interview questions/answers (working aux data).
+
+        Does not change lifecycle state or bump the task version.
+        """
+        now = utc_now()
+        with self._transaction() as db:
+            row = db.execute("SELECT task_id FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
+            if not row:
+                raise TaskNotFoundError(task_id)
+            db.execute(
+                "UPDATE tasks SET clarifications = ?, updated_at = ? WHERE task_id = ?",
+                (self._json(data), now, task_id),
+            )
+        task = self.get(task_id)
+        assert task is not None
+        return task
+
     def append_event(self, task_id: str, request: AppendEventRequest) -> TaskEvent:
         if self.get(task_id) is None:
             raise TaskNotFoundError(task_id)
@@ -408,6 +429,11 @@ class TaskStore:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             archived_at=row["archived_at"] if "archived_at" in row.keys() else None,
+            clarifications=(
+                json.loads(row["clarifications"])
+                if "clarifications" in row.keys() and row["clarifications"]
+                else None
+            ),
         )
 
     @staticmethod

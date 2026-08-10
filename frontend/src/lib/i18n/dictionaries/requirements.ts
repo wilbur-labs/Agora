@@ -72,6 +72,16 @@ export const requirements = {
       conflict:
         "This item changed elsewhere. Fresh data has been loaded; review it and try again.",
     },
+    clarify: {
+      title: "Requirements clarification",
+      intro: "Let the agent ask a few questions to pin down the requirements before drafting the spec. Answer them here.",
+      generate: "Ask the agent",
+      regenerate: "Regenerate questions",
+      generating: "The agent is drafting questions… (this runs a model, ~30–60s)",
+      answerPlaceholder: "Your answer…",
+      save: "Save answers",
+      saved: "Saved",
+    },
   },
   zh: {
     header: {
@@ -136,6 +146,16 @@ export const requirements = {
     },
     error: {
       conflict: "该条目已在别处发生变更。已加载最新数据，请查看后重试。",
+    },
+    clarify: {
+      title: "需求澄清",
+      intro: "在起草规格说明前，先让 agent 提几个问题把需求问清楚，你在这里逐题作答。",
+      generate: "让 agent 提问",
+      regenerate: "重新生成问题",
+      generating: "agent 正在生成问题…（会调用模型，约 30–60 秒）",
+      answerPlaceholder: "你的回答…",
+      save: "保存答案",
+      saved: "已保存",
     },
   },
 } as const;
