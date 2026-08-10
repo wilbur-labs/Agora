@@ -21,12 +21,14 @@ import {
 } from "@/lib/execution";
 import { usePoll } from "@/hooks/use-poll";
 import { useRunNotifications } from "@/hooks/use-run-notifications";
+import { useI18n } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 const states: RunState[] = ["queued", "running", "succeeded", "failed", "timed_out", "cancelled", "abandoned"];
 const adapters: ExecutionAdapter[] = ["codex", "claude", "kiro"];
 
 export default function RunsPage() {
+  const { t } = useI18n();
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [tasks, setTasks] = useState<TaskManifest[]>([]);
   const [selectedId, setSelectedId] = useState("");
@@ -36,6 +38,7 @@ export default function RunsPage() {
   const [error, setError] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState("");
   const [showCreate, setShowCreate] = useState(false);
+  const [createTaskId, setCreateTaskId] = useState("");
   const [cancelTarget, setCancelTarget] = useState<RunSummary | null>(null);
   const [projectFilter, setProjectFilter] = useState("all");
   const [stateFilter, setStateFilter] = useState("all");
@@ -116,6 +119,8 @@ export default function RunsPage() {
     const requestedAdapter = query.get("adapter");
     setStateFilter(requestedState && states.includes(requestedState as RunState) ? requestedState : "all");
     setAdapterFilter(requestedAdapter && adapters.includes(requestedAdapter as ExecutionAdapter) ? requestedAdapter : "all");
+    const newTask = query.get("new");
+    if (newTask !== null) { setCreateTaskId(newTask); setShowCreate(true); }
     setFiltersReady(true);
     const stored = window.localStorage.getItem("agora.runNotifications") === "enabled";
     if (stored && typeof Notification !== "undefined" && Notification.permission === "granted") setNotificationsEnabled(true);
@@ -139,6 +144,7 @@ export default function RunsPage() {
   useEffect(() => {
     if (!filtersReady) return;
     const query = new URLSearchParams(window.location.search);
+    query.delete("new"); // one-shot deep-link trigger; drop it once consumed
     setQuery(query, "project", projectFilter);
     setQuery(query, "state", stateFilter);
     setQuery(query, "adapter", adapterFilter);
@@ -174,50 +180,50 @@ export default function RunsPage() {
     <DeliveryShell active="Runs">
       <header className="border-b bg-background/85 px-5 py-5 backdrop-blur md:px-8">
         <div className="mx-auto flex max-w-[1500px] flex-wrap items-center justify-between gap-4">
-          <div><p className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">Agent lifecycle</p><h1 className="mt-1 text-2xl font-bold">Execution Run Center</h1></div>
+          <div><p className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">{t("runs.page.eyebrow")}</p><h1 className="mt-1 text-2xl font-bold">{t("runs.page.title")}</h1></div>
           <div className="flex items-center gap-2">
             <Button
               variant="outline"
               size="lg"
               aria-pressed={notificationsEnabled}
-              aria-label={notificationsEnabled ? "Disable browser notifications for run completions" : "Enable browser notifications for run completions"}
+              aria-label={notificationsEnabled ? t("runs.page.alerts.disable") : t("runs.page.alerts.enable")}
               onClick={async () => {
                 if (notificationsEnabled) {
                   setNotificationsEnabled(false); window.localStorage.removeItem("agora.runNotifications"); return;
                 }
-                if (typeof Notification === "undefined") { setError("This browser does not support desktop notifications."); return; }
+                if (typeof Notification === "undefined") { setError(t("runs.page.alerts.unsupported")); return; }
                 const permission = Notification.permission === "granted" ? "granted" : await Notification.requestPermission();
                 if (permission === "granted") {
-                  setNotificationsEnabled(true); window.localStorage.setItem("agora.runNotifications", "enabled"); setActionMessage("Run notifications enabled.");
-                } else setError("Notification permission was not granted. You can change it in browser settings.");
+                  setNotificationsEnabled(true); window.localStorage.setItem("agora.runNotifications", "enabled"); setActionMessage(t("runs.page.alerts.enabled"));
+                } else setError(t("runs.page.alerts.denied"));
               }}
             >
               {notificationsEnabled ? <Bell className="size-4" /> : <BellOff className="size-4" />}
-              <span className="hidden sm:inline">{notificationsEnabled ? "Alerts on" : "Alerts off"}</span>
+              <span className="hidden sm:inline">{notificationsEnabled ? t("runs.page.alerts.on") : t("runs.page.alerts.off")}</span>
             </Button>
-            <Button variant="outline" size="lg" onClick={() => void loadRuns(false)} disabled={loading} aria-label="Refresh execution runs"><RefreshCw className={cn("size-4", loading && "animate-spin")} /></Button>
-            <Button size="lg" onClick={() => setShowCreate(true)}><Play /> New run</Button>
+            <Button variant="outline" size="lg" onClick={() => void loadRuns(false)} disabled={loading} aria-label={t("runs.page.refresh")}><RefreshCw className={cn("size-4", loading && "animate-spin")} /></Button>
+            <Button size="lg" onClick={() => { setCreateTaskId(""); setShowCreate(true); }}><Play /> {t("runs.page.newRun")}</Button>
           </div>
         </div>
       </header>
 
       <div className="mx-auto max-w-[1500px] space-y-5 p-5 md:p-8">
         <div className="sr-only" aria-live="polite">{actionMessage}</div>
-        {error && <div className="flex items-center justify-between gap-3 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive" role="alert"><span>{error}</span><Button variant="ghost" size="icon-sm" onClick={() => setError(null)} aria-label="Dismiss error"><X /></Button></div>}
+        {error && <div className="flex items-center justify-between gap-3 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive" role="alert"><span>{error}</span><Button variant="ghost" size="icon-sm" onClick={() => setError(null)} aria-label={t("runs.page.dismissError")}><X /></Button></div>}
 
-        <section className="grid gap-3 rounded-xl border bg-card p-4 sm:grid-cols-3" aria-label="Run filters">
-          <Filter label="Project" value={projectFilter} onChange={setProjectFilter}><option value="all">All projects</option>{projects.map((project) => <option key={project}>{project}</option>)}</Filter>
-          <Filter label="State" value={stateFilter} onChange={setStateFilter}><option value="all">All states</option>{states.map((state) => <option key={state} value={state}>{state.replace("_", " ")}</option>)}</Filter>
-          <Filter label="Adapter" value={adapterFilter} onChange={setAdapterFilter}><option value="all">All adapters</option>{adapters.map((adapter) => <option key={adapter}>{adapter}</option>)}</Filter>
+        <section className="grid gap-3 rounded-xl border bg-card p-4 sm:grid-cols-3" aria-label={t("runs.page.filters.aria")}>
+          <Filter label={t("runs.page.filters.project")} value={projectFilter} onChange={setProjectFilter}><option value="all">{t("runs.page.filters.allProjects")}</option>{projects.map((project) => <option key={project}>{project}</option>)}</Filter>
+          <Filter label={t("runs.page.filters.state")} value={stateFilter} onChange={setStateFilter}><option value="all">{t("runs.page.filters.allStates")}</option>{states.map((state) => <option key={state} value={state}>{state.replace("_", " ")}</option>)}</Filter>
+          <Filter label={t("runs.page.filters.adapter")} value={adapterFilter} onChange={setAdapterFilter}><option value="all">{t("runs.page.filters.allAdapters")}</option>{adapters.map((adapter) => <option key={adapter}>{adapter}</option>)}</Filter>
         </section>
 
         <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,1fr)_440px]">
           <section className="min-w-0 overflow-hidden rounded-xl border bg-card">
-            <div className="flex items-center justify-between border-b px-4 py-3"><h2 className="text-sm font-semibold">Recent runs</h2><span className="text-xs text-muted-foreground">{visible.length} shown · polling every 5s</span></div>
+            <div className="flex items-center justify-between border-b px-4 py-3"><h2 className="text-sm font-semibold">{t("runs.page.list.title")}</h2><span className="text-xs text-muted-foreground">{t("runs.page.list.meta", { count: visible.length })}</span></div>
             <div className="overflow-x-auto">
               <table className="w-full min-w-[780px] text-left text-sm">
-                <caption className="sr-only">Execution runs across registered projects</caption>
-                <thead className="bg-muted/50 text-xs text-muted-foreground"><tr><th scope="col" className="px-4 py-3">Run</th><th scope="col" className="px-3 py-3">Task</th><th scope="col" className="px-3 py-3">Adapter</th><th scope="col" className="px-3 py-3">State</th><th scope="col" className="px-3 py-3">Timing</th><th scope="col" className="px-3 py-3"><span className="sr-only">Actions</span></th></tr></thead>
+                <caption className="sr-only">{t("runs.page.list.caption")}</caption>
+                <thead className="bg-muted/50 text-xs text-muted-foreground"><tr><th scope="col" className="px-4 py-3">{t("runs.page.list.colRun")}</th><th scope="col" className="px-3 py-3">{t("runs.page.list.colTask")}</th><th scope="col" className="px-3 py-3">{t("runs.page.list.colAdapter")}</th><th scope="col" className="px-3 py-3">{t("runs.page.list.colState")}</th><th scope="col" className="px-3 py-3">{t("runs.page.list.colTiming")}</th><th scope="col" className="px-3 py-3"><span className="sr-only">{t("runs.page.list.colActions")}</span></th></tr></thead>
                 <tbody aria-busy={loading}>
                   {visible.map((run) => (
                     <tr key={run.run_id} className={cn("border-t", selectedId === run.run_id && "bg-primary/5")}>
@@ -226,20 +232,20 @@ export default function RunsPage() {
                       <td className="px-3 py-3 capitalize">{run.adapter}</td>
                       <td className="px-3 py-3"><StateBadge state={run.state} /></td>
                       <td className="px-3 py-3 text-xs text-muted-foreground"><span className="block">{formatDate(run.queued_at)}</span><span className="block">{duration(run)}</span></td>
-                      <td className="px-3 py-3 text-right">{isCancellable(run) && <Button variant="destructive" size="sm" onClick={() => setCancelTarget(run)}><CircleStop /> Cancel</Button>}</td>
+                      <td className="px-3 py-3 text-right">{isCancellable(run) && <Button variant="destructive" size="sm" onClick={() => setCancelTarget(run)}><CircleStop /> {t("runs.common.cancel")}</Button>}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
-            {!loading && visible.length === 0 && <div className="p-10 text-center text-sm text-muted-foreground"><Play className="mx-auto mb-3 size-8 opacity-40" /><p className="font-medium text-foreground">No runs match these filters</p><p className="mt-1">Queue a planned task or adjust the filters.</p></div>}
+            {!loading && visible.length === 0 && <div className="p-10 text-center text-sm text-muted-foreground"><Play className="mx-auto mb-3 size-8 opacity-40" /><p className="font-medium text-foreground">{t("runs.page.list.emptyTitle")}</p><p className="mt-1">{t("runs.page.list.emptyBody")}</p></div>}
           </section>
 
           <RunDetail run={detail?.run_id === selectedId ? detail : null} loading={detailLoading} taskTitle={detail ? taskNames.get(detail.task_id) : undefined} onCancel={(run) => setCancelTarget(asRunSummary(run))} />
         </div>
       </div>
 
-      {showCreate && <RunCreatePanel tasks={tasks} onClose={() => setShowCreate(false)} onRefreshTasks={loadTasks} onCreated={(run) => { upsertRun(run, false); setShowCreate(false); setActionMessage(`${run.adapter} run queued.`); }} />}
+      {showCreate && <RunCreatePanel tasks={tasks} initialTaskId={createTaskId} onClose={() => { setShowCreate(false); setCreateTaskId(""); }} onRefreshTasks={loadTasks} onCreated={(run) => { upsertRun(run, false); setShowCreate(false); setCreateTaskId(""); setActionMessage(t("runs.page.runQueued", { adapter: run.adapter })); }} />}
       {cancelTarget && (
         <CancelDialog
           run={cancelTarget}
@@ -247,10 +253,10 @@ export default function RunsPage() {
           onConfirm={async (reason) => {
             try {
               const cancelled = await cancelRun(cancelTarget.run_id, { expected_version: cancelTarget.version, actor: "user", reason: reason || null });
-              upsertRun(cancelled, false); setCancelTarget(null); setActionMessage("Run cancelled.");
+              upsertRun(cancelled, false); setCancelTarget(null); setActionMessage(t("runs.page.cancelled"));
             } catch (err) {
               if (err instanceof ApiError && err.status === 409) {
-                setError("The run changed before cancellation. Authoritative state was refreshed.");
+                setError(t("runs.page.cancelConflict"));
                 await loadRuns(false); await loadDetail(); setCancelTarget(null);
               } else setError((err as Error).message);
             }
@@ -262,22 +268,24 @@ export default function RunsPage() {
 }
 
 function RunDetail({ run, loading, taskTitle, onCancel }: { run: ExecutionRun | null; loading: boolean; taskTitle?: string; onCancel: (run: ExecutionRun) => void }) {
-  if (!run) return <aside className="rounded-xl border border-dashed bg-card p-8 text-center text-sm text-muted-foreground" aria-busy={loading}>{loading ? "Loading run details…" : "Select a run to inspect its prompt, output, and lifecycle details."}</aside>;
+  const { t } = useI18n();
+  if (!run) return <aside className="rounded-xl border border-dashed bg-card p-8 text-center text-sm text-muted-foreground" aria-busy={loading}>{loading ? t("runs.page.detail.loading") : t("runs.page.detail.empty")}</aside>;
   return (
     <aside className="min-w-0 space-y-4 rounded-xl border bg-card p-5" aria-busy={loading}>
       <div className="flex items-start justify-between gap-3"><div><p className="font-mono text-xs text-muted-foreground">{run.run_id}</p><h2 className="mt-1 font-semibold">{taskTitle ?? run.task_id}</h2></div><StateBadge state={run.state} /></div>
-      <dl className="grid grid-cols-2 gap-3 text-xs"><Fact label="Adapter" value={run.adapter} /><Fact label="Version" value={String(run.version)} /><Fact label="Exit code" value={run.exit_code === null ? "—" : String(run.exit_code)} /><Fact label="PID" value={run.pid === null ? "—" : String(run.pid)} /><Fact label="Timeout" value={`${run.timeout_seconds}s`} /><Fact label="Duration" value={duration(run)} /></dl>
+      <dl className="grid grid-cols-2 gap-3 text-xs"><Fact label={t("runs.page.detail.adapter")} value={run.adapter} /><Fact label={t("runs.page.detail.version")} value={String(run.version)} /><Fact label={t("runs.page.detail.exitCode")} value={run.exit_code === null ? "—" : String(run.exit_code)} /><Fact label={t("runs.page.detail.pid")} value={run.pid === null ? "—" : String(run.pid)} /><Fact label={t("runs.page.detail.timeout")} value={`${run.timeout_seconds}s`} /><Fact label={t("runs.page.detail.duration")} value={duration(run)} /></dl>
       {run.error_message && <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-xs text-destructive" role="alert">{run.error_message}</div>}
-      <DataBlock title="Prompt" value={run.prompt} />
-      <DataBlock title="stdout tail" value={run.stdout_tail || "No stdout captured."} />
-      <DataBlock title="stderr tail" value={run.stderr_tail || "No stderr captured."} tone={Boolean(run.stderr_tail)} />
-      <details className="rounded-lg border p-3 text-xs"><summary className="cursor-pointer font-medium">Process metadata</summary><div className="mt-3 space-y-2 text-muted-foreground"><p className="break-all"><strong>Workspace:</strong> {run.workspace}</p><p className="break-all"><strong>Command:</strong> {run.command.join(" ")}</p><pre className="max-h-48 overflow-auto whitespace-pre-wrap">{JSON.stringify(maskMetadata(run.result_metadata), null, 2)}</pre></div></details>
-      {isCancellable(run) && <Button variant="destructive" className="w-full" onClick={() => onCancel(run)}><CircleStop /> Cancel run</Button>}
+      <DataBlock title={t("runs.page.detail.prompt")} value={run.prompt} />
+      <DataBlock title={t("runs.page.detail.stdout")} value={run.stdout_tail || t("runs.page.detail.noStdout")} />
+      <DataBlock title={t("runs.page.detail.stderr")} value={run.stderr_tail || t("runs.page.detail.noStderr")} tone={Boolean(run.stderr_tail)} />
+      <details className="rounded-lg border p-3 text-xs"><summary className="cursor-pointer font-medium">{t("runs.page.detail.metadata")}</summary><div className="mt-3 space-y-2 text-muted-foreground"><p className="break-all"><strong>{t("runs.page.detail.workspace")}</strong> {run.workspace}</p><p className="break-all"><strong>{t("runs.page.detail.command")}</strong> {run.command.join(" ")}</p><pre className="max-h-48 overflow-auto whitespace-pre-wrap">{JSON.stringify(maskMetadata(run.result_metadata), null, 2)}</pre></div></details>
+      {isCancellable(run) && <Button variant="destructive" className="w-full" onClick={() => onCancel(run)}><CircleStop /> {t("runs.common.cancelRun")}</Button>}
     </aside>
   );
 }
 
 function CancelDialog({ run, onClose, onConfirm }: { run: RunSummary; onClose: () => void; onConfirm: (reason: string) => Promise<void> }) {
+  const { t } = useI18n();
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
   const dialogRef = useRef<HTMLFormElement>(null);
@@ -312,9 +320,9 @@ function CancelDialog({ run, onClose, onConfirm }: { run: RunSummary; onClose: (
   return createPortal(
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/45 p-4" onMouseDown={(event) => event.target === event.currentTarget && !busy && onClose()}>
       <form ref={dialogRef} role="alertdialog" aria-modal="true" aria-labelledby="cancel-title" aria-describedby="cancel-description" className="w-full max-w-md space-y-4 rounded-xl bg-background p-6 shadow-2xl" onSubmit={async (event) => { event.preventDefault(); setBusy(true); try { await onConfirm(reason.trim()); } finally { if (mountedRef.current) setBusy(false); } }}>
-        <div><h2 id="cancel-title" className="text-lg font-bold">Cancel this run?</h2><p id="cancel-description" className="mt-1 text-sm text-muted-foreground">Agora will terminate the {run.adapter} process. Partial workspace changes are not reverted.</p></div>
-        <label className="block space-y-2 text-sm font-medium"><span>Reason (optional)</span><textarea className="field min-h-24 resize-y" maxLength={4000} value={reason} onChange={(event) => setReason(event.target.value)} /></label>
-        <div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={onClose} disabled={busy}>Keep running</Button><Button type="submit" variant="destructive" disabled={busy}>{busy ? "Cancelling…" : "Cancel run"}</Button></div>
+        <div><h2 id="cancel-title" className="text-lg font-bold">{t("runs.page.cancelDialog.title")}</h2><p id="cancel-description" className="mt-1 text-sm text-muted-foreground">{t("runs.page.cancelDialog.description", { adapter: run.adapter })}</p></div>
+        <label className="block space-y-2 text-sm font-medium"><span>{t("runs.page.cancelDialog.reason")}</span><textarea className="field min-h-24 resize-y" maxLength={4000} value={reason} onChange={(event) => setReason(event.target.value)} /></label>
+        <div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={onClose} disabled={busy}>{t("runs.page.cancelDialog.keep")}</Button><Button type="submit" variant="destructive" disabled={busy}>{busy ? t("runs.page.cancelDialog.cancelling") : t("runs.common.cancelRun")}</Button></div>
       </form>
     </div>,
     document.body,
@@ -326,8 +334,9 @@ function Filter({ label, value, onChange, children }: { label: string; value: st
 }
 
 function StateBadge({ state }: { state: RunState }) {
+  const { te } = useI18n();
   const variant = state === "succeeded" ? "secondary" : ["failed", "timed_out", "abandoned"].includes(state) ? "destructive" : "outline";
-  return <Badge variant={variant} className={cn(state === "running" && "border-blue-500/40 text-blue-600 dark:text-blue-300", state === "queued" && "border-amber-500/40 text-amber-700 dark:text-amber-300")}>{state.replace("_", " ")}</Badge>;
+  return <Badge variant={variant} className={cn(state === "running" && "border-blue-500/40 text-blue-600 dark:text-blue-300", state === "queued" && "border-amber-500/40 text-amber-700 dark:text-amber-300")}>{te("runState", state)}</Badge>;
 }
 
 function Fact({ label, value }: { label: string; value: string }) { return <div><dt className="text-muted-foreground">{label}</dt><dd className="mt-0.5 font-medium capitalize">{value}</dd></div>; }

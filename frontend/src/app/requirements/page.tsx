@@ -17,8 +17,10 @@ import {
   type TaskManifest,
 } from "@/lib/control-plane";
 import { cn } from "@/lib/utils";
+import { useI18n } from "@/lib/i18n";
 
 export default function RequirementsPage() {
+  const { t } = useI18n();
   const [tasks, setTasks] = useState<TaskManifest[]>([]);
   const [selectedId, setSelectedId] = useState("");
   const [specs, setSpecs] = useState<RequirementSpec[]>([]);
@@ -75,35 +77,35 @@ export default function RequirementsPage() {
     <DeliveryShell active="Requirements">
       <header className="border-b bg-background px-5 py-5 md:px-8">
         <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-4">
-          <div><p className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">Human approval gate</p><h1 className="mt-1 text-2xl font-bold">Requirements Studio</h1></div>
-          <Button variant="outline" size="lg" onClick={() => void loadTasks(false)} disabled={loading}><RefreshCw className={cn(loading && "animate-spin")} /> Refresh</Button>
+          <div><p className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">{t("requirements.header.eyebrow")}</p><h1 className="mt-1 text-2xl font-bold">{t("requirements.header.title")}</h1></div>
+          <Button variant="outline" size="lg" onClick={() => void loadTasks(false)} disabled={loading}><RefreshCw className={cn(loading && "animate-spin")} /> {t("requirements.header.refresh")}</Button>
         </div>
       </header>
 
       <div className="mx-auto grid max-w-7xl gap-6 p-5 md:p-8 lg:grid-cols-[300px_minmax(0,1fr)]">
         <aside className="space-y-3">
-          <h2 className="px-1 text-xs font-semibold uppercase tracking-widest text-muted-foreground">Delivery tasks</h2>
+          <h2 className="px-1 text-xs font-semibold uppercase tracking-widest text-muted-foreground">{t("requirements.tasks.heading")}</h2>
           {tasks.map((task) => (
             <button key={task.task_id} onClick={() => { if (task.task_id !== selectedId) { setSpecsLoading(true); setSelectedId(task.task_id); } }} className={cn("w-full rounded-xl border p-4 text-left transition-colors", selectedId === task.task_id ? "border-primary bg-primary/5" : "bg-card hover:bg-accent/50")}>
               <div className="flex items-center justify-between gap-2"><Badge variant="outline">{task.project_id}</Badge><span className="text-xs capitalize text-muted-foreground">{task.state}</span></div>
               <p className="mt-3 text-sm font-semibold">{task.title}</p>
             </button>
           ))}
-          {!loading && tasks.length === 0 && <div className="rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground">Create a task in Portfolio first.</div>}
+          {!loading && tasks.length === 0 && <div className="rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground">{t("requirements.tasks.emptyPortfolio")}</div>}
         </aside>
 
         <section className="min-w-0 space-y-5">
           {error && <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{error}</div>}
           {!selectedTask ? (
-            <Empty title="Select a delivery task" detail="The structured specification and its approval history will appear here." />
+            <Empty title={t("requirements.empty.selectTitle")} detail={t("requirements.empty.selectDetail")} />
           ) : selectedTask.state === "backlog" ? (
-            <Empty title="Requirements have not started" detail="Move this task into the requirements lifecycle before drafting its spec.">
-              <Button onClick={async () => { try { replaceTask(await transitionTask(selectedTask, "requirements")); } catch (err) { setError(conflictMessage(err)); if (err instanceof ApiError && err.status === 409) await loadTasks(false); } }}>Start requirements <ChevronRight /></Button>
+            <Empty title={t("requirements.empty.notStartedTitle")} detail={t("requirements.empty.notStartedDetail")}>
+              <Button onClick={async () => { try { replaceTask(await transitionTask(selectedTask, "requirements")); } catch (err) { setError(conflictMessage(err, t)); if (err instanceof ApiError && err.status === 409) await loadTasks(false); } }}>{t("requirements.empty.startRequirements")} <ChevronRight /></Button>
             </Empty>
           ) : specsLoading ? (
-            <Empty title="Loading specification" detail="Fetching the latest requirement versions and approval state." />
+            <Empty title={t("requirements.empty.loadingTitle")} detail={t("requirements.empty.loadingDetail")} />
           ) : drafting || specs.length === 0 ? (
-            selectedTask.state === "requirements" ? <SpecComposer key={selectedTask.task_id} task={selectedTask} onCreated={(spec) => { setSpecs([spec, ...specs]); setSelectedSpecId(spec.spec_id); setDrafting(false); }} /> : <Empty title="No requirement specification" detail={`This task is already in ${selectedTask.state}; return it to requirements through the lifecycle before authoring a spec.`} />
+            selectedTask.state === "requirements" ? <SpecComposer key={selectedTask.task_id} task={selectedTask} onCreated={(spec) => { setSpecs([spec, ...specs]); setSelectedSpecId(spec.spec_id); setDrafting(false); }} /> : <Empty title={t("requirements.empty.noSpecTitle")} detail={t("requirements.empty.noSpecDetail", { state: selectedTask.state })} />
           ) : (
             <>
               <div className="flex flex-wrap items-start justify-between gap-3 rounded-xl border bg-card p-5">
@@ -134,6 +136,7 @@ export default function RequirementsPage() {
 }
 
 function SpecComposer({ task, onCreated }: { task: TaskManifest; onCreated: (spec: RequirementSpec) => void }) {
+  const { t } = useI18n();
   const [title, setTitle] = useState(task.title);
   const [summary, setSummary] = useState(task.description);
   const [requirement, setRequirement] = useState("");
@@ -158,14 +161,14 @@ function SpecComposer({ task, onCreated }: { task: TaskManifest; onCreated: (spe
         onCreated(spec);
       } catch (err) { setError((err as Error).message); setSubmitting(false); }
     }}>
-      <div><p className="text-xs uppercase tracking-widest text-muted-foreground">New draft · {task.project_id}</p><h2 className="mt-1 text-xl font-bold">Define the outcome</h2><p className="mt-1 text-sm text-muted-foreground">This creates version 1. Approval remains a separate human action.</p></div>
-      <Field label="Specification title"><input className="field" required value={title} onChange={(e) => setTitle(e.target.value)} /></Field>
-      <Field label="Summary"><textarea className="field min-h-24 resize-y" value={summary} onChange={(e) => setSummary(e.target.value)} /></Field>
-      <Field label="Functional requirement (FR-001)"><textarea className="field min-h-24 resize-y" required value={requirement} onChange={(e) => setRequirement(e.target.value)} placeholder="The system shall…" /></Field>
-      <div className="rounded-xl bg-muted/50 p-4"><h3 className="mb-3 text-sm font-semibold">Acceptance scenario (AC-001)</h3><div className="grid gap-3 md:grid-cols-3"><Field label="Given"><textarea className="field min-h-20" required value={given} onChange={(e) => setGiven(e.target.value)} /></Field><Field label="When"><textarea className="field min-h-20" required value={when} onChange={(e) => setWhen(e.target.value)} /></Field><Field label="Then"><textarea className="field min-h-20" required value={then} onChange={(e) => setThen(e.target.value)} /></Field></div></div>
-      <Field label="Constraints (one per line)"><textarea className="field min-h-20 resize-y" value={constraints} onChange={(e) => setConstraints(e.target.value)} /></Field>
+      <div><p className="text-xs uppercase tracking-widest text-muted-foreground">{t("requirements.composer.newDraft", { project: task.project_id })}</p><h2 className="mt-1 text-xl font-bold">{t("requirements.composer.title")}</h2><p className="mt-1 text-sm text-muted-foreground">{t("requirements.composer.subtitle")}</p></div>
+      <Field label={t("requirements.composer.specTitleLabel")}><input className="field" required value={title} onChange={(e) => setTitle(e.target.value)} /></Field>
+      <Field label={t("requirements.composer.summaryLabel")}><textarea className="field min-h-24 resize-y" value={summary} onChange={(e) => setSummary(e.target.value)} /></Field>
+      <Field label={t("requirements.composer.functionalLabel")}><textarea className="field min-h-24 resize-y" required value={requirement} onChange={(e) => setRequirement(e.target.value)} placeholder={t("requirements.composer.functionalPlaceholder")} /></Field>
+      <div className="rounded-xl bg-muted/50 p-4"><h3 className="mb-3 text-sm font-semibold">{t("requirements.composer.scenarioHeading")}</h3><div className="grid gap-3 md:grid-cols-3"><Field label={t("requirements.composer.given")}><textarea className="field min-h-20" required value={given} onChange={(e) => setGiven(e.target.value)} /></Field><Field label={t("requirements.composer.when")}><textarea className="field min-h-20" required value={when} onChange={(e) => setWhen(e.target.value)} /></Field><Field label={t("requirements.composer.then")}><textarea className="field min-h-20" required value={then} onChange={(e) => setThen(e.target.value)} /></Field></div></div>
+      <Field label={t("requirements.composer.constraintsLabel")}><textarea className="field min-h-20 resize-y" value={constraints} onChange={(e) => setConstraints(e.target.value)} /></Field>
       {error && <p className="text-sm text-destructive">{error}</p>}
-      <Button type="submit" size="lg" disabled={submitting}>{submitting ? "Creating draft…" : "Create draft"}</Button>
+      <Button type="submit" size="lg" disabled={submitting}>{submitting ? t("requirements.composer.creating") : t("requirements.composer.create")}</Button>
     </form>
   );
 }
@@ -179,6 +182,7 @@ function SpecViewer({ task, spec, onSpecUpdated, onTaskUpdated, onDraftAgain, on
   onConflict: () => Promise<void>;
   onError: (error: string | null) => void;
 }) {
+  const { t } = useI18n();
   const [reason, setReason] = useState("");
   const [rejectReason, setRejectReason] = useState("");
   const [busy, setBusy] = useState(false);
@@ -186,51 +190,51 @@ function SpecViewer({ task, spec, onSpecUpdated, onTaskUpdated, onDraftAgain, on
   return (
     <article className="space-y-6 rounded-xl border bg-card p-5 md:p-7">
       <div className="flex flex-wrap items-start justify-between gap-4">
-        <div><div className="flex items-center gap-2"><Badge variant={spec.state === "approved" ? "default" : "secondary"}>{spec.state}</Badge><span className="text-xs text-muted-foreground">Version {spec.version}, revision {spec.revision}</span></div><h2 className="mt-3 text-2xl font-bold">{spec.title}</h2><p className="mt-2 max-w-3xl text-sm leading-relaxed text-muted-foreground">{spec.summary || "No summary provided."}</p></div>
+        <div><div className="flex items-center gap-2"><Badge variant={spec.state === "approved" ? "default" : "secondary"}>{spec.state}</Badge><span className="text-xs text-muted-foreground">{t("requirements.viewer.versionRevision", { version: spec.version, revision: spec.revision })}</span></div><h2 className="mt-3 text-2xl font-bold">{spec.title}</h2><p className="mt-2 max-w-3xl text-sm leading-relaxed text-muted-foreground">{spec.summary || t("requirements.viewer.noSummary")}</p></div>
         {spec.state === "approved" && <FileCheck2 className="size-8 text-emerald-500" />}
       </div>
-      <SpecSection title="Functional requirements">{spec.functional.map((item) => <div key={item.requirement_id} className="rounded-lg border p-4"><Badge variant="outline">{item.requirement_id}</Badge><p className="mt-2 text-sm leading-relaxed">{item.statement}</p></div>)}</SpecSection>
-      <SpecSection title="Acceptance scenarios">{spec.acceptance_scenarios.map((scenario) => <div key={scenario.scenario_id} className="rounded-lg bg-muted/50 p-4 text-sm"><p className="font-semibold">{scenario.scenario_id}</p><dl className="mt-2 grid gap-2 md:grid-cols-[60px_1fr]"><dt className="text-muted-foreground">Given</dt><dd>{scenario.given}</dd><dt className="text-muted-foreground">When</dt><dd>{scenario.when}</dd><dt className="text-muted-foreground">Then</dt><dd>{scenario.then}</dd></dl></div>)}</SpecSection>
-      {spec.constraints.length > 0 && <SpecSection title="Constraints"><ul className="list-disc space-y-1 pl-5 text-sm">{spec.constraints.map((item) => <li key={item}>{item}</li>)}</ul></SpecSection>}
-      {unresolved.length > 0 && <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-4 text-sm text-amber-700 dark:text-amber-300">{unresolved.length} open question(s) remain. Review them before approval.</div>}
+      <SpecSection title={t("requirements.viewer.functionalSection")}>{spec.functional.map((item) => <div key={item.requirement_id} className="rounded-lg border p-4"><Badge variant="outline">{item.requirement_id}</Badge><p className="mt-2 text-sm leading-relaxed">{item.statement}</p></div>)}</SpecSection>
+      <SpecSection title={t("requirements.viewer.scenariosSection")}>{spec.acceptance_scenarios.map((scenario) => <div key={scenario.scenario_id} className="rounded-lg bg-muted/50 p-4 text-sm"><p className="font-semibold">{scenario.scenario_id}</p><dl className="mt-2 grid gap-2 md:grid-cols-[60px_1fr]"><dt className="text-muted-foreground">{t("requirements.viewer.given")}</dt><dd>{scenario.given}</dd><dt className="text-muted-foreground">{t("requirements.viewer.when")}</dt><dd>{scenario.when}</dd><dt className="text-muted-foreground">{t("requirements.viewer.then")}</dt><dd>{scenario.then}</dd></dl></div>)}</SpecSection>
+      {spec.constraints.length > 0 && <SpecSection title={t("requirements.viewer.constraintsSection")}><ul className="list-disc space-y-1 pl-5 text-sm">{spec.constraints.map((item) => <li key={item}>{item}</li>)}</ul></SpecSection>}
+      {unresolved.length > 0 && <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-4 text-sm text-amber-700 dark:text-amber-300">{t("requirements.viewer.openQuestions", { count: unresolved.length })}</div>}
       {spec.state === "draft" && (
         <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-4">
-          <h3 className="font-semibold">Human approval gate</h3><p className="mt-1 text-sm text-muted-foreground">Approval unlocks the task&apos;s transition into design.</p>
+          <h3 className="font-semibold">{t("requirements.viewer.approvalGateTitle")}</h3><p className="mt-1 text-sm text-muted-foreground">{t("requirements.viewer.approvalGateDetail")}</p>
           <div className="mt-3 flex flex-col gap-2 sm:flex-row">
-            <input value={reason} onChange={(e) => setReason(e.target.value)} className="field flex-1" placeholder="Approval note (optional)" />
+            <input value={reason} onChange={(e) => setReason(e.target.value)} className="field flex-1" placeholder={t("requirements.viewer.approvalNotePlaceholder")} />
             <Button disabled={busy} onClick={async () => {
               setBusy(true); onError(null);
               try { onSpecUpdated(await approveSpec(spec, reason)); }
-              catch (err) { onError(conflictMessage(err)); if (err instanceof ApiError && err.status === 409) await onConflict(); }
+              catch (err) { onError(conflictMessage(err, t)); if (err instanceof ApiError && err.status === 409) await onConflict(); }
               finally { setBusy(false); }
-            }}><Check /> {busy ? "Approving…" : "Approve spec"}</Button>
+            }}><Check /> {busy ? t("requirements.viewer.approving") : t("requirements.viewer.approve")}</Button>
           </div>
           <div className="mt-4 border-t pt-4">
-            <p className="mb-2 text-sm font-medium">Needs revision?</p>
+            <p className="mb-2 text-sm font-medium">{t("requirements.viewer.needsRevision")}</p>
             <div className="flex flex-col gap-2 sm:flex-row">
-              <input value={rejectReason} onChange={(e) => setRejectReason(e.target.value)} className="field flex-1" placeholder="Required rejection reason" />
+              <input value={rejectReason} onChange={(e) => setRejectReason(e.target.value)} className="field flex-1" placeholder={t("requirements.viewer.rejectPlaceholder")} />
               <Button variant="destructive" disabled={busy || !rejectReason.trim()} onClick={async () => {
                 setBusy(true); onError(null);
                 try { onSpecUpdated(await rejectSpec(spec, rejectReason.trim())); onDraftAgain(); }
-                catch (err) { onError(conflictMessage(err)); if (err instanceof ApiError && err.status === 409) await onConflict(); }
+                catch (err) { onError(conflictMessage(err, t)); if (err instanceof ApiError && err.status === 409) await onConflict(); }
                 finally { setBusy(false); }
-              }}><X /> Reject</Button>
+              }}><X /> {t("requirements.viewer.reject")}</Button>
             </div>
           </div>
         </div>
       )}
       {spec.state === "approved" && task.state === "requirements" && (
         <div className="rounded-xl border border-blue-500/30 bg-blue-500/5 p-4">
-          <h3 className="font-semibold">Ready for design</h3><p className="mt-1 text-sm text-muted-foreground">The approved specification satisfies the lifecycle gate.</p>
+          <h3 className="font-semibold">{t("requirements.viewer.readyTitle")}</h3><p className="mt-1 text-sm text-muted-foreground">{t("requirements.viewer.readyDetail")}</p>
           <Button className="mt-3" disabled={busy} onClick={async () => {
             setBusy(true); onError(null);
             try { onTaskUpdated(await transitionTask(task, "design")); }
-            catch (err) { onError(conflictMessage(err)); if (err instanceof ApiError && err.status === 409) await onConflict(); }
+            catch (err) { onError(conflictMessage(err, t)); if (err instanceof ApiError && err.status === 409) await onConflict(); }
             finally { setBusy(false); }
-          }}>Advance to design <ChevronRight /></Button>
+          }}>{t("requirements.viewer.advance")} <ChevronRight /></Button>
         </div>
       )}
-      {spec.state === "rejected" && task.state === "requirements" && <Button onClick={onDraftAgain}>Create revised draft</Button>}
+      {spec.state === "rejected" && task.state === "requirements" && <Button onClick={onDraftAgain}>{t("requirements.viewer.createRevised")}</Button>}
     </article>
   );
 }
@@ -239,4 +243,4 @@ function Empty({ title, detail, children }: { title: string; detail: string; chi
 function Field({ label, children }: { label: string; children: React.ReactNode }) { return <label className="block space-y-2 text-sm font-medium"><span>{label}</span>{children}</label>; }
 function SpecSection({ title, children }: { title: string; children: React.ReactNode }) { return <section><h3 className="mb-3 text-sm font-semibold uppercase tracking-wider text-muted-foreground">{title}</h3><div className="space-y-3">{children}</div></section>; }
 function lines(value: string): string[] { return value.split("\n").map((item) => item.trim()).filter(Boolean); }
-function conflictMessage(error: unknown): string { return error instanceof ApiError && error.status === 409 ? "This item changed elsewhere. Fresh data has been loaded; review it and try again." : (error as Error).message; }
+function conflictMessage(error: unknown, t: (key: string) => string): string { return error instanceof ApiError && error.status === 409 ? t("requirements.error.conflict") : (error as Error).message; }

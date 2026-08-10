@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { useAttentionNotifications } from "@/hooks/use-attention-notifications";
 import { usePoll } from "@/hooks/use-poll";
 import { ApiError } from "@/lib/control-plane";
+import { useI18n } from "@/lib/i18n";
 import {
   cancelAttention, listAttention, respondAttention,
   type AttentionItem, type AttentionKind, type AttentionState, type ResponseAction,
@@ -18,6 +19,7 @@ const states: Array<AttentionState | "all"> = ["open", "responded", "cancelled",
 const kinds: Array<AttentionKind | "all"> = ["all", "question", "approval", "blocker"];
 
 export default function AttentionPage() {
+  const { t, te } = useI18n();
   const [items, setItems] = useState<AttentionItem[]>([]);
   const [selectedId, setSelectedId] = useState("");
   const [stateFilter, setStateFilter] = useState<AttentionState | "all">("open");
@@ -103,11 +105,11 @@ export default function AttentionPage() {
       });
       if (!mounted.current) return;
       updateItem(updated); setMessage(captureOnly
-        ? "Response recorded in Agora. This capture-only bridge cannot deliver it to the vendor process."
-        : "Response recorded. The bidirectional bridge can deliver it to the waiting agent.");
+        ? t("attention.messages.recordedCaptureOnly")
+        : t("attention.messages.recordedBidirectional"));
     } catch (err) {
       if (!mounted.current) return;
-      if (err instanceof ApiError && err.status === 409) { setMessage("This item changed in another session; refreshed the authoritative state."); void load(false); }
+      if (err instanceof ApiError && err.status === 409) { setMessage(t("attention.messages.conflictRefreshed")); void load(false); }
       else setError((err as Error).message);
     } finally { if (mounted.current) setActing(false); }
   }
@@ -116,10 +118,10 @@ export default function AttentionPage() {
     if (!selected || selected.state !== "open") return;
     setActing(true); setMessage("");
     try {
-      const updated = await cancelAttention(selected.item_id, { actor: "user", reason: "Cancelled from Attention Center", expected_version: selected.version });
-      if (mounted.current) { updateItem(updated); setMessage("Attention item cancelled."); }
+      const updated = await cancelAttention(selected.item_id, { actor: "user", reason: t("attention.messages.cancelReason"), expected_version: selected.version });
+      if (mounted.current) { updateItem(updated); setMessage(t("attention.messages.cancelled")); }
     } catch (err) {
-      if (mounted.current && err instanceof ApiError && err.status === 409) { setMessage("This item changed in another session; refreshed."); void load(false); }
+      if (mounted.current && err instanceof ApiError && err.status === 409) { setMessage(t("attention.messages.conflictRefreshedShort")); void load(false); }
       else if (mounted.current) setError((err as Error).message);
     } finally { if (mounted.current) setActing(false); }
   }
@@ -136,42 +138,42 @@ export default function AttentionPage() {
     <DeliveryShell active="Attention">
       <header className="border-b bg-background/85 px-5 py-5 backdrop-blur md:px-8">
         <div className="mx-auto flex max-w-[1500px] flex-wrap items-center justify-between gap-4">
-          <div><p className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">Human intervention</p><h1 className="mt-1 text-2xl font-bold">Attention Center</h1></div>
-          <div className="flex items-center gap-2"><Badge variant={openCount ? "destructive" : "secondary"}>{openCount} open</Badge><Button variant="outline" onClick={() => void load(false)}><RefreshCw />Refresh</Button></div>
+          <div><p className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">{t("attention.header.eyebrow")}</p><h1 className="mt-1 text-2xl font-bold">{t("attention.header.title")}</h1></div>
+          <div className="flex items-center gap-2"><Badge variant={openCount ? "destructive" : "secondary"}>{t("attention.header.openCount", { count: openCount })}</Badge><Button variant="outline" onClick={() => void load(false)}><RefreshCw />{t("attention.header.refresh")}</Button></div>
         </div>
       </header>
       <main className="mx-auto max-w-[1500px] space-y-5 p-5 md:p-8">
         {!notificationsEnabled && typeof window !== "undefined" && typeof Notification !== "undefined" && Notification.permission === "default" && (
-          <section className="flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-card p-4"><div className="flex items-center gap-3"><Bell className="size-5 text-primary" /><div><p className="font-medium">Get alerted when an agent is waiting</p><p className="text-sm text-muted-foreground">Permission is requested only after you click.</p></div></div><Button onClick={() => void enableNotifications()}>Enable notifications</Button></section>
+          <section className="flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-card p-4"><div className="flex items-center gap-3"><Bell className="size-5 text-primary" /><div><p className="font-medium">{t("attention.notifications.title")}</p><p className="text-sm text-muted-foreground">{t("attention.notifications.hint")}</p></div></div><Button onClick={() => void enableNotifications()}>{t("attention.notifications.enable")}</Button></section>
         )}
         {error && <p role="alert" className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">{error}</p>}
         <p aria-live="polite" className="text-sm text-muted-foreground">{message}</p>
         <section className="grid gap-5 xl:grid-cols-[minmax(0,1.15fr)_minmax(380px,.85fr)]">
           <div className="space-y-4">
             <div className="flex flex-wrap gap-2 rounded-xl border bg-card p-3">
-              <label className="text-sm">State <select className="ml-2 rounded-md border bg-background px-2 py-1" value={stateFilter} onChange={(e) => setStateFilter(e.target.value as AttentionState | "all")}>{states.map((value) => <option key={value}>{value}</option>)}</select></label>
-              <label className="text-sm">Kind <select className="ml-2 rounded-md border bg-background px-2 py-1" value={kindFilter} onChange={(e) => setKindFilter(e.target.value as AttentionKind | "all")}>{kinds.map((value) => <option key={value}>{value}</option>)}</select></label>
-              <label className="text-sm">Project <select className="ml-2 rounded-md border bg-background px-2 py-1" value={projectFilter} onChange={(e) => setProjectFilter(e.target.value)}><option value="all">all</option>{projects.map((value) => <option key={value}>{value}</option>)}</select></label>
+              <label className="text-sm">{t("attention.filters.state")} <select className="ml-2 rounded-md border bg-background px-2 py-1" value={stateFilter} onChange={(e) => setStateFilter(e.target.value as AttentionState | "all")}>{states.map((value) => <option key={value} value={value}>{te("attentionState", value)}</option>)}</select></label>
+              <label className="text-sm">{t("attention.filters.kind")} <select className="ml-2 rounded-md border bg-background px-2 py-1" value={kindFilter} onChange={(e) => setKindFilter(e.target.value as AttentionKind | "all")}>{kinds.map((value) => <option key={value} value={value}>{te("attentionKind", value)}</option>)}</select></label>
+              <label className="text-sm">{t("attention.filters.project")} <select className="ml-2 rounded-md border bg-background px-2 py-1" value={projectFilter} onChange={(e) => setProjectFilter(e.target.value)}><option value="all">all</option>{projects.map((value) => <option key={value}>{value}</option>)}</select></label>
             </div>
-            {loading ? <p className="p-8 text-center text-muted-foreground">Loading attention inbox…</p> : visible.length === 0 ? <p className="rounded-xl border border-dashed p-10 text-center text-muted-foreground">No matching attention items.</p> : visible.map((item) => (
+            {loading ? <p className="p-8 text-center text-muted-foreground">{t("attention.list.loading")}</p> : visible.length === 0 ? <p className="rounded-xl border border-dashed p-10 text-center text-muted-foreground">{t("attention.list.empty")}</p> : visible.map((item) => (
               <button key={item.item_id} onClick={() => setSelectedId(item.item_id)} className={cn("w-full rounded-xl border bg-card p-4 text-left transition hover:border-primary/50", selectedId === item.item_id && "border-primary ring-2 ring-primary/15")}>
-                <div className="flex flex-wrap items-start justify-between gap-2"><div className="flex items-center gap-2"><Badge variant={item.state === "open" ? "default" : "secondary"}>{item.state}</Badge><Badge variant="outline">{item.kind}</Badge><Badge variant={item.urgency === "critical" ? "destructive" : "outline"}>{item.urgency}</Badge></div><time className="text-xs text-muted-foreground">{new Date(item.created_at).toLocaleString()}</time></div>
-                <h2 className="mt-3 font-semibold">{item.title}</h2><p className="mt-1 line-clamp-2 text-sm text-muted-foreground">{item.body || "No additional details"}</p><p className="mt-3 text-xs text-muted-foreground">{item.project_id} · {item.task_id} · requested by {item.requester}</p>
+                <div className="flex flex-wrap items-start justify-between gap-2"><div className="flex items-center gap-2"><Badge variant={item.state === "open" ? "default" : "secondary"}>{te("attentionState", item.state)}</Badge><Badge variant="outline">{te("attentionKind", item.kind)}</Badge><Badge variant={item.urgency === "critical" ? "destructive" : "outline"}>{te("urgency", item.urgency)}</Badge></div><time className="text-xs text-muted-foreground">{new Date(item.created_at).toLocaleString()}</time></div>
+                <h2 className="mt-3 font-semibold">{item.title}</h2><p className="mt-1 line-clamp-2 text-sm text-muted-foreground">{item.body || t("attention.list.noBody")}</p><p className="mt-3 text-xs text-muted-foreground">{item.project_id} · {item.task_id} · {t("attention.list.requestedBy", { requester: item.requester })}</p>
               </button>
             ))}
           </div>
           <aside className="rounded-xl border bg-card p-5 xl:sticky xl:top-5 xl:self-start">
-            {!selected ? <div className="grid min-h-64 place-items-center text-center text-muted-foreground"><div><ShieldAlert className="mx-auto mb-3 size-8" /><p>Select an item to inspect and respond.</p></div></div> : <div className="space-y-5">
-              <div><div className="flex gap-2"><Badge>{selected.kind}</Badge><Badge variant="outline">v{selected.version}</Badge></div><h2 className="mt-3 text-xl font-semibold">{selected.title}</h2><p className="mt-2 whitespace-pre-wrap text-sm">{selected.body}</p></div>
-              <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm"><dt className="text-muted-foreground">Project</dt><dd>{selected.project_id}</dd><dt className="text-muted-foreground">Task</dt><dd className="break-all">{selected.task_id}</dd>{selected.run_id && <><dt className="text-muted-foreground">Run</dt><dd className="break-all">{selected.run_id}</dd></>}<dt className="text-muted-foreground">Requester</dt><dd>{selected.requester}</dd></dl>
-              {selectedBridge && <div className={cn("rounded-lg border p-3 text-sm", captureOnly ? "border-amber-500/40 bg-amber-500/10" : "border-emerald-500/40 bg-emerald-500/10")}><p className="font-medium">{String(selectedBridge.vendor)} bridge · {String(selectedBridge.delivery_mode)}</p><p className="mt-1 text-muted-foreground">{captureOnly ? "Agora captured this wait, but cannot send your answer back automatically. Resolve it in the vendor UI or cancel the run." : "Responses can be delivered over the verified structured channel."}</p></div>}
+            {!selected ? <div className="grid min-h-64 place-items-center text-center text-muted-foreground"><div><ShieldAlert className="mx-auto mb-3 size-8" /><p>{t("attention.detail.emptyState")}</p></div></div> : <div className="space-y-5">
+              <div><div className="flex gap-2"><Badge>{te("attentionKind", selected.kind)}</Badge><Badge variant="outline">v{selected.version}</Badge></div><h2 className="mt-3 text-xl font-semibold">{selected.title}</h2><p className="mt-2 whitespace-pre-wrap text-sm">{selected.body}</p></div>
+              <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm"><dt className="text-muted-foreground">{t("attention.detail.project")}</dt><dd>{selected.project_id}</dd><dt className="text-muted-foreground">{t("attention.detail.task")}</dt><dd className="break-all">{selected.task_id}</dd>{selected.run_id && <><dt className="text-muted-foreground">{t("attention.detail.run")}</dt><dd className="break-all">{selected.run_id}</dd></>}<dt className="text-muted-foreground">{t("attention.detail.requester")}</dt><dd>{selected.requester}</dd></dl>
+              {selectedBridge && <div className={cn("rounded-lg border p-3 text-sm", captureOnly ? "border-amber-500/40 bg-amber-500/10" : "border-emerald-500/40 bg-emerald-500/10")}><p className="font-medium">{t("attention.bridge.heading", { vendor: String(selectedBridge.vendor), mode: String(selectedBridge.delivery_mode) })}</p><p className="mt-1 text-muted-foreground">{captureOnly ? t("attention.bridge.captureOnly") : t("attention.bridge.bidirectional")}</p></div>}
               {selected.state === "open" ? <div className="space-y-3 border-t pt-4">
-                {selected.kind === "approval" && <div className="flex gap-2"><Button variant={action === "approve" ? "default" : "outline"} onClick={() => setAction("approve")}><Check />Approve</Button><Button variant={action === "reject" ? "destructive" : "outline"} onClick={() => setAction("reject")}><X />Reject</Button></div>}
+                {selected.kind === "approval" && <div className="flex gap-2"><Button variant={action === "approve" ? "default" : "outline"} onClick={() => setAction("approve")}><Check />{t("attention.form.approve")}</Button><Button variant={action === "reject" ? "destructive" : "outline"} onClick={() => setAction("reject")}><X />{t("attention.form.reject")}</Button></div>}
                 {selected.kind !== "approval" && <input type="hidden" value="answer" />}
-                {selected.kind !== "approval" && selected.options.length > 0 && <label className="block text-sm">Suggested answer<select className="mt-1 block w-full rounded-md border bg-background p-2" value={response} onChange={(e) => { setResponse(e.target.value); setAction("answer"); }}>{selected.options.map((value) => <option key={value}>{value}</option>)}</select></label>}
-                <label className="block text-sm">Response<textarea className="mt-1 min-h-28 w-full rounded-md border bg-background p-3" value={response} onChange={(e) => setResponse(e.target.value)} placeholder="Provide context for the waiting agent" /></label>
-                <div className="flex flex-wrap gap-2"><Button disabled={acting || (action === "answer" && !response.trim())} onClick={() => void submitResponse()}>Submit response</Button><Button variant="outline" disabled={acting} onClick={() => void cancelSelected()}>Cancel item</Button></div>
-              </div> : <div className="border-t pt-4"><p className="text-sm font-medium">Resolution</p><p className="mt-1 whitespace-pre-wrap text-sm text-muted-foreground">{selected.response_action ? `${selected.response_action}: ` : ""}{selected.response || selected.cancellation_reason || selected.state}</p></div>}
+                {selected.kind !== "approval" && selected.options.length > 0 && <label className="block text-sm">{t("attention.form.suggestedAnswer")}<select className="mt-1 block w-full rounded-md border bg-background p-2" value={response} onChange={(e) => { setResponse(e.target.value); setAction("answer"); }}>{selected.options.map((value) => <option key={value}>{value}</option>)}</select></label>}
+                <label className="block text-sm">{t("attention.form.response")}<textarea className="mt-1 min-h-28 w-full rounded-md border bg-background p-3" value={response} onChange={(e) => setResponse(e.target.value)} placeholder={t("attention.form.responsePlaceholder")} /></label>
+                <div className="flex flex-wrap gap-2"><Button disabled={acting || (action === "answer" && !response.trim())} onClick={() => void submitResponse()}>{t("attention.form.submit")}</Button><Button variant="outline" disabled={acting} onClick={() => void cancelSelected()}>{t("attention.form.cancel")}</Button></div>
+              </div> : <div className="border-t pt-4"><p className="text-sm font-medium">{t("attention.detail.resolution")}</p><p className="mt-1 whitespace-pre-wrap text-sm text-muted-foreground">{selected.response_action ? `${selected.response_action}: ` : ""}{selected.response || selected.cancellation_reason || selected.state}</p></div>}
             </div>}
           </aside>
         </section>

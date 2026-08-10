@@ -14,19 +14,21 @@ import {
   type TaskRisk,
   type TaskState,
 } from "@/lib/control-plane";
+import { useI18n } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
-const columns: Array<{ label: string; states: TaskState[] }> = [
-  { label: "Intake", states: ["backlog"] },
-  { label: "Define", states: ["requirements", "design"] },
-  { label: "Build", states: ["planned", "running"] },
-  { label: "Verify", states: ["review", "verified"] },
-  { label: "Complete", states: ["done"] },
+const columns: Array<{ id: string; states: TaskState[] }> = [
+  { id: "intake", states: ["backlog"] },
+  { id: "define", states: ["requirements", "design"] },
+  { id: "build", states: ["planned", "running"] },
+  { id: "verify", states: ["review", "verified"] },
+  { id: "complete", states: ["done"] },
 ];
 
 const attentionStates: TaskState[] = ["blocked", "failed"];
 
 export default function PortfolioPage() {
+  const { t, te } = useI18n();
   const [tasks, setTasks] = useState<TaskManifest[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -66,39 +68,39 @@ export default function PortfolioPage() {
       <header className="border-b bg-background/80 px-5 py-5 backdrop-blur md:px-8">
         <div className="mx-auto flex max-w-[1600px] flex-wrap items-center justify-between gap-4">
           <div>
-            <p className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">All projects</p>
-            <h1 className="mt-1 text-2xl font-bold">Delivery Portfolio</h1>
+            <p className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">{t("portfolio.header.eyebrow")}</p>
+            <h1 className="mt-1 text-2xl font-bold">{t("portfolio.header.title")}</h1>
           </div>
           <div className="flex items-center gap-2">
             <select
               value={projectFilter}
               onChange={(event) => setProjectFilter(event.target.value)}
               className="h-9 rounded-lg border bg-background px-3 text-sm"
-              aria-label="Filter by project"
+              aria-label={t("portfolio.filter.label")}
             >
-              <option value="all">All projects</option>
+              <option value="all">{t("portfolio.filter.allProjects")}</option>
               {projects.map((project) => <option key={project}>{project}</option>)}
             </select>
-            <Button variant="outline" size="lg" onClick={load} disabled={loading} aria-label="Refresh tasks">
+            <Button variant="outline" size="lg" onClick={load} disabled={loading} aria-label={t("portfolio.actions.refresh")}>
               <RefreshCw className={cn("size-4", loading && "animate-spin")} />
             </Button>
-            <Button size="lg" onClick={() => setShowCreate(true)}><Plus /> New task</Button>
+            <Button size="lg" onClick={() => setShowCreate(true)}><Plus /> {t("portfolio.actions.newTask")}</Button>
           </div>
         </div>
       </header>
 
       <div className="mx-auto max-w-[1600px] space-y-6 p-5 md:p-8">
-        {error && <Notice tone="error">Could not load control plane: {error}</Notice>}
+        {error && <Notice tone="error">{t("portfolio.errors.loadFailed", { error })}</Notice>}
         {attention.length > 0 && (
           <section className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-4">
             <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-amber-700 dark:text-amber-300">
-              <AlertTriangle className="size-4" /> Needs attention ({attention.length})
+              <AlertTriangle className="size-4" /> {t("portfolio.attention.heading", { count: attention.length })}
             </div>
             <div className="flex flex-wrap gap-2">
               {attention.map((task) => (
                 <a key={task.task_id} href={`/requirements?task=${task.task_id}`} className="rounded-lg border bg-background px-3 py-2 text-sm hover:bg-accent">
                   <span className="font-medium">{task.title}</span>
-                  <span className="ml-2 text-xs text-muted-foreground">{task.project_id} · {task.state}</span>
+                  <span className="ml-2 text-xs text-muted-foreground">{task.project_id} · {te("taskState", task.state)}</span>
                 </a>
               ))}
             </div>
@@ -109,16 +111,16 @@ export default function PortfolioPage() {
           {columns.map((column) => {
             const cards = visible.filter((task) => column.states.includes(task.state));
             return (
-              <div key={column.label} className="min-h-64 rounded-xl border bg-muted/25 p-3">
+              <div key={column.id} className="min-h-64 rounded-xl border bg-muted/25 p-3">
                 <div className="mb-3 flex items-center justify-between px-1">
-                  <h2 className="text-sm font-semibold">{column.label}</h2>
+                  <h2 className="text-sm font-semibold">{t(`portfolio.columns.${column.id}`)}</h2>
                   <Badge variant="secondary">{cards.length}</Badge>
                 </div>
                 <div className="space-y-3">
                   {cards.map((task) => (
-                    <TaskCard key={task.task_id} task={task} onConflict={load} onTransition={async () => replaceTask(await transitionTask(task, "requirements"))} />
+                    <TaskCard key={task.task_id} task={task} onConflict={load} onAdvanced={replaceTask} />
                   ))}
-                  {!loading && cards.length === 0 && <p className="px-1 py-8 text-center text-xs text-muted-foreground">No tasks</p>}
+                  {!loading && cards.length === 0 && <p className="px-1 py-8 text-center text-xs text-muted-foreground">{t("portfolio.empty")}</p>}
                 </div>
               </div>
             );
@@ -137,47 +139,88 @@ export default function PortfolioPage() {
   );
 }
 
-function TaskCard({ task, onTransition, onConflict }: { task: TaskManifest; onTransition: () => Promise<void>; onConflict: () => Promise<void> }) {
+// Manual lifecycle advances the UI drives directly. Transitions handled
+// elsewhere are intentionally absent: requirements→design lives on the
+// Requirements page (needs an approved spec), and planned→running happens
+// automatically when a Run is dispatched. `backlog` keeps its own "Define"
+// label; the rest read from portfolio.card.advance.*.
+const ADVANCE: Partial<Record<TaskState, { to: TaskState; labelKey: string }>> = {
+  backlog: { to: "requirements", labelKey: "portfolio.card.define" },
+  design: { to: "planned", labelKey: "portfolio.card.advance.toPlanned" },
+  running: { to: "review", labelKey: "portfolio.card.advance.toReview" },
+  review: { to: "verified", labelKey: "portfolio.card.advance.toVerified" },
+  verified: { to: "done", labelKey: "portfolio.card.advance.toDone" },
+};
+
+function TaskCard({ task, onAdvanced, onConflict }: { task: TaskManifest; onAdvanced: (updated: TaskManifest) => void; onConflict: () => Promise<void> }) {
+  const { t, te } = useI18n();
   const [busy, setBusy] = useState(false);
+  const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const advance = ADVANCE[task.state];
+
+  const doAdvance = async () => {
+    if (!advance) return;
+    setBusy(true); setError(null);
+    try {
+      onAdvanced(await transitionTask(task, advance.to));
+      setConfirming(false);
+    } catch (err) {
+      setError(err instanceof ApiError && err.status === 409 ? t("portfolio.errors.conflict") : (err as Error).message);
+      if (err instanceof ApiError && err.status === 409) { setConfirming(false); await onConflict(); }
+    } finally { setBusy(false); }
+  };
+
   return (
     <article className="rounded-xl border bg-card p-4 shadow-sm">
       <div className="flex items-start justify-between gap-2">
         <Badge variant="outline">{task.project_id}</Badge>
-        <span className={cn("text-xs font-medium", riskColor(task.risk))}>{task.risk}</span>
+        <span className={cn("text-xs font-medium", riskColor(task.risk))}>{te("risk", task.risk)}</span>
       </div>
       <h3 className="mt-3 font-semibold leading-snug">{task.title}</h3>
       {task.description && <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-muted-foreground">{task.description}</p>}
       <div className="mt-4 flex items-center justify-between gap-2">
-        <span className="text-xs capitalize text-muted-foreground">{task.state} · P{task.priority}</span>
-        {task.state === "backlog" ? (
-          <button
-            disabled={busy}
-            onClick={async () => {
-              setBusy(true); setError(null);
-              try { await onTransition(); } catch (err) {
-                setError(err instanceof ApiError && err.status === 409 ? "Task changed elsewhere. The board was refreshed; try again." : (err as Error).message);
-                if (err instanceof ApiError && err.status === 409) await onConflict();
-              }
-              finally { setBusy(false); }
-            }}
-            className="flex items-center gap-1 text-xs font-medium hover:underline disabled:opacity-50"
-          >
-            Define <ArrowRight className="size-3" />
-          </button>
-        ) : (
-          <span className="flex items-center gap-3">
-            <a href={`/requirements?task=${task.task_id}`} className="text-xs font-medium hover:underline">Requirements</a>
-            <a href={`/control-plane?project=${encodeURIComponent(task.project_id)}&task=${encodeURIComponent(task.task_id)}`} className="text-xs font-medium hover:underline">Authority</a>
-          </span>
-        )}
+        <span className="text-xs capitalize text-muted-foreground">{te("taskState", task.state)} · P{task.priority}</span>
+        <span className="flex items-center gap-3">
+          {advance && !confirming && (
+            <button
+              disabled={busy}
+              onClick={() => { setError(null); setConfirming(true); }}
+              className="flex items-center gap-1 text-xs font-medium hover:underline disabled:opacity-50"
+            >
+              {t(advance.labelKey)} <ArrowRight className="size-3" />
+            </button>
+          )}
+          {(task.state === "requirements" || task.state === "design") && (
+            <a href={`/requirements?task=${task.task_id}`} className="text-xs font-medium hover:underline">{t("portfolio.card.requirements")}</a>
+          )}
+          {task.state === "planned" && (
+            <a href={`/runs?new=${encodeURIComponent(task.task_id)}`} className="text-xs font-medium hover:underline">{t("portfolio.card.dispatchRun")}</a>
+          )}
+          <a href={`/control-plane?project=${encodeURIComponent(task.project_id)}&task=${encodeURIComponent(task.task_id)}`} className="text-xs font-medium hover:underline">{t("portfolio.card.authority")}</a>
+        </span>
       </div>
+
+      {advance && confirming && (
+        <div className="mt-3 space-y-2 rounded-lg border bg-muted/30 p-3">
+          <p className="text-xs font-medium">{t("portfolio.card.confirm.question", { from: te("taskState", task.state), to: te("taskState", advance.to) })}</p>
+          <p className="text-[11px] leading-4 text-muted-foreground">{t(`portfolio.card.confirm.hint.${advance.to}`)}</p>
+          {advance.to === "review" && (
+            <a href={`/runs?project=${encodeURIComponent(task.project_id)}`} className="inline-block text-[11px] font-medium text-primary hover:underline">{t("portfolio.card.confirm.viewRuns")}</a>
+          )}
+          <div className="flex items-center justify-end gap-2 pt-1">
+            <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => { setConfirming(false); setError(null); }}>{t("portfolio.card.confirm.cancel")}</Button>
+            <Button type="button" size="sm" variant={advance.to === "done" ? "destructive" : "default"} disabled={busy} onClick={() => void doAdvance()}>{busy ? <RefreshCw className="animate-spin" /> : null}{t("portfolio.card.confirm.confirm")}</Button>
+          </div>
+        </div>
+      )}
       {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
     </article>
   );
 }
 
 function CreateTaskPanel({ projects, onClose, onCreated }: { projects: string[]; onClose: () => void; onCreated: (task: TaskManifest) => void }) {
+  const { t, te } = useI18n();
   const [projectId, setProjectId] = useState(projects[0] ?? "");
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
@@ -219,15 +262,15 @@ function CreateTaskPanel({ projects, onClose, onCreated }: { projects: string[];
         }}
       >
         <div className="flex items-center justify-between">
-          <div><p className="text-xs uppercase tracking-widest text-muted-foreground">Control plane</p><h2 id="create-task-title" className="text-xl font-bold">Create task</h2></div>
-          <Button type="button" variant="ghost" size="icon" onClick={onClose} aria-label="Close create task dialog"><X /></Button>
+          <div><p className="text-xs uppercase tracking-widest text-muted-foreground">{t("portfolio.create.eyebrow")}</p><h2 id="create-task-title" className="text-xl font-bold">{t("portfolio.create.title")}</h2></div>
+          <Button type="button" variant="ghost" size="icon" onClick={onClose} aria-label={t("portfolio.create.close")}><X /></Button>
         </div>
-        <Field label="Project ID"><input list="project-ids" required value={projectId} onChange={(e) => setProjectId(e.target.value)} className="field" placeholder="my-project" /><datalist id="project-ids">{projects.map((project) => <option key={project}>{project}</option>)}</datalist></Field>
-        <Field label="Title"><input required value={title} onChange={(e) => setTitle(e.target.value)} className="field" placeholder="What should the agents deliver?" /></Field>
-        <Field label="Description"><textarea value={description} onChange={(e) => setDescription(e.target.value)} className="field min-h-32 resize-y" placeholder="Context, desired outcome, and important constraints" /></Field>
-        <Field label="Risk"><select value={risk} onChange={(e) => setRisk(e.target.value as TaskRisk)} className="field"><option>low</option><option>medium</option><option>high</option><option>critical</option></select></Field>
+        <Field label={t("portfolio.create.fields.projectId")}><input list="project-ids" required value={projectId} onChange={(e) => setProjectId(e.target.value)} className="field" placeholder={t("portfolio.create.fields.projectIdPlaceholder")} /><datalist id="project-ids">{projects.map((project) => <option key={project}>{project}</option>)}</datalist></Field>
+        <Field label={t("portfolio.create.fields.title")}><input required value={title} onChange={(e) => setTitle(e.target.value)} className="field" placeholder={t("portfolio.create.fields.titlePlaceholder")} /></Field>
+        <Field label={t("portfolio.create.fields.description")}><textarea value={description} onChange={(e) => setDescription(e.target.value)} className="field min-h-32 resize-y" placeholder={t("portfolio.create.fields.descriptionPlaceholder")} /></Field>
+        <Field label={t("portfolio.create.fields.risk")}><select value={risk} onChange={(e) => setRisk(e.target.value as TaskRisk)} className="field"><option value="low">{te("risk", "low")}</option><option value="medium">{te("risk", "medium")}</option><option value="high">{te("risk", "high")}</option><option value="critical">{te("risk", "critical")}</option></select></Field>
         {error && <Notice tone="error">{error}</Notice>}
-        <Button type="submit" size="lg" className="w-full" disabled={submitting || !projectId.trim() || !title.trim()}>{submitting ? "Creating…" : "Create in backlog"}</Button>
+        <Button type="submit" size="lg" className="w-full" disabled={submitting || !projectId.trim() || !title.trim()}>{submitting ? t("portfolio.create.submitting") : t("portfolio.create.submit")}</Button>
       </form>
     </div>
   );
