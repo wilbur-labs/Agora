@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from agora.projects import ProjectRegistry
+from agora.orchestration.runtime import RuntimeLaunchError, resolve_runtime_command
 from agora.tasks.store import TaskNotFoundError, TaskStore
 from agora.attention.store import AttentionStore
 from agora.attention.bridges.codex_app_server import CodexAppServerError, CodexAppServerRunner
@@ -138,7 +139,15 @@ class ExecutionDispatcher:
                     stdout_tail="", stderr_tail="", error_message="workspace not found",
                 )
 
-            command = adapter.build_command(run.prompt)
+            # Resolve the executable via PATHEXT and unwrap Windows .cmd/.bat
+            # shims (e.g. npm's codex.cmd) into a form CreateProcess can launch.
+            try:
+                command = resolve_runtime_command(list(adapter.build_command(run.prompt)))
+            except RuntimeLaunchError as exc:
+                return self.store.finish(
+                    run_id, RunState.FAILED, expected_version=run.version, exit_code=None,
+                    stdout_tail="", stderr_tail="", error_message=f"process start failed: {exc}",
+                )
             try:
                 running = self.store.start(run_id, expected_version=run.version)
             except RunConflictError:
@@ -261,8 +270,11 @@ class ExecutionDispatcher:
         timed_out = False
         failure: str | None = None
         try:
+            # Resolve the executable via PATHEXT and unwrap Windows .cmd/.bat
+            # shims (npm's codex.cmd) so the app-server launches on Windows.
+            resolved = tuple(resolve_runtime_command(list(adapter.app_server_command)))
             result = await runner.run(
-                command=adapter.app_server_command, prompt=running.prompt, cwd=workspace,
+                command=resolved, prompt=running.prompt, cwd=workspace,
                 timeout_seconds=running.timeout_seconds, env=env, on_process=on_process,
             )
             out, err = result.stdout, result.stderr
@@ -271,7 +283,7 @@ class ExecutionDispatcher:
                 f"timeout after {running.timeout_seconds}s" if timed_out
                 else (redact_text(f"app-server error: {result.error}") if result.error else None)
             )
-        except (CodexAppServerError, RunConflictError, FileNotFoundError, OSError) as exc:
+        except (CodexAppServerError, RunConflictError, FileNotFoundError, OSError, RuntimeLaunchError) as exc:
             failure = redact_text(f"app-server error: {type(exc).__name__}: {exc}")
         finally:
             self._active.pop(running.run_id, None)
