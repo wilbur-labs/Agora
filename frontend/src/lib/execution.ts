@@ -142,6 +142,12 @@ export function getDeliverableContent(runId: string, path: string, signal?: Abor
   return request(`/api/runs/${encodeURIComponent(runId)}/deliverables/content?path=${encodeURIComponent(path)}`, { signal });
 }
 
+// Absolute URL to open/render a deliverable file in a new tab. The server
+// serves it sandboxed via CSP so a rendered page cannot touch the app origin.
+export function deliverableRawUrl(runId: string, path: string): string {
+  return `${getApiBase()}/api/runs/${encodeURIComponent(runId)}/deliverables/raw?path=${encodeURIComponent(path)}`;
+}
+
 export function createRun(input: CreateRunInput): Promise<ExecutionRun> {
   return request("/api/runs", { method: "POST", body: JSON.stringify(input) });
 }

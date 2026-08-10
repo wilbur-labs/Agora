@@ -12,6 +12,7 @@ import {
   TERMINAL_RUN_STATES,
   asRunSummary,
   cancelRun,
+  deliverableRawUrl,
   getDeliverableContent,
   getRun,
   getRunDeliverables,
@@ -328,16 +329,26 @@ function RunDeliverables({ run }: { run: ExecutionRun }) {
         <ul className="divide-y rounded-lg border">
           {files.map((file) => (
             <li key={file.path}>
-              <button
-                type="button"
-                onClick={() => void openFile(file.path)}
-                className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-xs hover:bg-accent/50"
-                aria-expanded={openPath === file.path}
-              >
-                <span className="min-w-0 flex-1 truncate font-mono">{file.path}</span>
-                <span className="shrink-0 rounded-full border px-2 py-0.5 text-[10px] capitalize text-muted-foreground">{file.status}</span>
-                {file.size !== null && <span className="shrink-0 text-[10px] text-muted-foreground">{formatBytes(file.size)}</span>}
-              </button>
+              <div className="flex items-center gap-2 px-3 py-2 text-xs hover:bg-accent/50">
+                <button
+                  type="button"
+                  onClick={() => void openFile(file.path)}
+                  className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                  aria-expanded={openPath === file.path}
+                >
+                  <span className="min-w-0 flex-1 truncate font-mono">{file.path}</span>
+                  <span className="shrink-0 rounded-full border px-2 py-0.5 text-[10px] capitalize text-muted-foreground">{file.status}</span>
+                  {file.size !== null && <span className="shrink-0 text-[10px] text-muted-foreground">{formatBytes(file.size)}</span>}
+                </button>
+                <a
+                  href={deliverableRawUrl(run.run_id, file.path)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="shrink-0 rounded-md border px-2 py-1 text-[11px] font-medium text-primary hover:bg-accent"
+                >
+                  {t("runs.page.deliverables.open")}
+                </a>
+              </div>
               {openPath === file.path && (
                 <div className="border-t bg-muted/30 p-3">
                   {loading ? (

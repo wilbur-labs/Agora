@@ -62,14 +62,20 @@ def list_changes(workspace: Path) -> list[dict]:
     return files
 
 
-def read_file(workspace: Path, rel_path: str) -> dict:
-    """Return a bounded, redacted text preview of a file confined to `workspace`."""
+def resolve_confined(workspace: Path, rel_path: str) -> Path:
+    """Resolve `rel_path` to an existing file strictly confined to `workspace`."""
     base = workspace.resolve()
     target = (base / rel_path).resolve()
     if not target.is_relative_to(base):
         raise PermissionError("path escapes the workspace")
     if not target.is_file():
         raise FileNotFoundError(rel_path)
+    return target
+
+
+def read_file(workspace: Path, rel_path: str) -> dict:
+    """Return a bounded, redacted text preview of a file confined to `workspace`."""
+    target = resolve_confined(workspace, rel_path)
     raw = target.read_bytes()[: MAX_FILE_BYTES + 1]
     truncated = len(raw) > MAX_FILE_BYTES
     text = redact_text(raw[:MAX_FILE_BYTES].decode("utf-8", errors="replace"))

@@ -7,6 +7,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Path as PathParam, Query, status
 from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import FileResponse
 
 from agora.config.settings import get_config
 from agora.projects import ProjectRegistry
@@ -14,7 +15,7 @@ from agora.tasks.router import get_project_registry, get_task_store
 from agora.tasks.store import TaskNotFoundError
 
 from .adapters import build_adapter_registry
-from .deliverables import list_changes, read_file
+from .deliverables import list_changes, read_file, resolve_confined
 from .dispatcher import ExecutionDispatcher
 from .models import AdapterCapability, CancelRunRequest, CreateRunRequest, ExecutionRun, RunState, RunSummary
 from .store import ExecutionStore, RunConflictError, RunNotFoundError, RunValidationError
@@ -140,6 +141,38 @@ def run_deliverable_content(
         return read_file(workspace, path)
     except (FileNotFoundError, PermissionError):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Deliverable not found") from None
+
+
+@router.get("/runs/{run_id}/deliverables/raw")
+def run_deliverable_raw(
+    run_id: Annotated[str, PathParam(max_length=128)],
+    path: str = Query(..., max_length=1024),
+    store: ExecutionStore = Depends(get_execution_store),
+    dispatcher: ExecutionDispatcher = Depends(get_execution_dispatcher),
+):
+    """Serve a deliverable file so the UI can open/render it (e.g. an HTML page).
+
+    Sandboxed via CSP so a rendered deliverable runs in an opaque origin and
+    cannot touch the app's own origin, cookies, or storage.
+    """
+    try:
+        run = store.require(run_id)
+    except RunNotFoundError:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Run not found") from None
+    workspace = Path(run.workspace).expanduser().resolve()
+    if not dispatcher.is_workspace_readable(run.project_id, workspace):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Workspace is not readable")
+    try:
+        target = resolve_confined(workspace, path)
+    except (FileNotFoundError, PermissionError):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Deliverable not found") from None
+    return FileResponse(
+        str(target),
+        headers={
+            "Content-Security-Policy": "sandbox allow-scripts allow-forms allow-popups allow-modals;",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @router.post("/runs/{run_id}/cancel", response_model=ExecutionRun)
