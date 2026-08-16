@@ -8,6 +8,12 @@ from typing import Any
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 
+# Requester tag stamped on the approval/blocker raised by the auto cross-review.
+# Shared so the dispatcher (which raises it) and the review gate (which advances
+# the task when a human settles it) agree on how to recognise a review item.
+REVIEW_REQUESTER = "agora-review"
+
+
 class AttentionKind(str, Enum):
     QUESTION = "question"
     APPROVAL = "approval"

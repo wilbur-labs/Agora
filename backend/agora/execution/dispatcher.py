@@ -12,7 +12,7 @@ from agora.orchestration.runtime import RuntimeLaunchError, resolve_runtime_comm
 from agora.orchestration.provider_usage import RuntimeResultFormat, normalize_native_output
 from agora.tasks.store import TaskNotFoundError, TaskStore
 from agora.attention.store import AttentionStore
-from agora.attention.models import AttentionKind, AttentionUrgency, CreateAttentionRequest
+from agora.attention.models import AttentionKind, AttentionUrgency, CreateAttentionRequest, REVIEW_REQUESTER
 from agora.attention.bridges.codex_app_server import CodexAppServerError, CodexAppServerRunner
 from agora.attention.bridges.codex_broker import CodexApprovalBroker
 
@@ -428,7 +428,7 @@ class ExecutionDispatcher:
             adapter=reviewer,
             prompt=prompt,
             timeout_seconds=worker_run.timeout_seconds,
-            actor="agora-review",
+            actor=REVIEW_REQUESTER,
             expected_task_version=task.version,
             metadata={ROLE_KEY: ROLE_REVIEW, REVIEWS_RUN_KEY: worker_run.run_id},
         )
@@ -479,7 +479,7 @@ class ExecutionDispatcher:
                 urgency=AttentionUrgency.NORMAL,
                 title=title[:500],
                 body=body[:32_000],
-                requester="agora-review",
+                requester=REVIEW_REQUESTER,
             )
         )
 

@@ -8,11 +8,13 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, sta
 from fastapi.concurrency import run_in_threadpool
 
 from agora.tasks.router import get_task_store
+from agora.tasks.store import TaskStore
 
 from .models import (
     AttentionCount, AttentionItem, AttentionKind, AttentionState,
     CancelAttentionRequest, CreateAttentionRequest, RespondAttentionRequest,
 )
+from .review_gate import settle_review_approval
 from .store import AttentionConflictError, AttentionNotFoundError, AttentionStore, AttentionValidationError
 from .bridges.models import BridgeEventReceipt, BridgeEventRequest
 
@@ -92,15 +94,23 @@ async def get_attention(
 async def respond_attention(
     item_id: Annotated[str, Path(max_length=128)], request: RespondAttentionRequest,
     store: AttentionStore = Depends(get_attention_store),
+    tasks: TaskStore = Depends(get_task_store),
 ):
     try:
-        return await run_in_threadpool(store.respond, item_id, request)
+        item = await run_in_threadpool(store.respond, item_id, request)
     except AttentionNotFoundError:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Attention item not found") from None
     except AttentionConflictError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from None
     except AttentionValidationError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from None
+    # Best-effort: settling a cross-review approval advances the reviewed task.
+    # Never let a lifecycle hiccup undo the human's committed response.
+    try:
+        await run_in_threadpool(settle_review_approval, tasks, item, request.action, actor=request.actor)
+    except Exception:
+        pass
+    return item
 
 @router.post("/attention/{item_id}/cancel", response_model=AttentionItem)
 async def cancel_attention(
