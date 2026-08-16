@@ -7,6 +7,12 @@ from typing import Any
 
 import yaml
 
+# Default cross-review pairing: an implementer works, a different agent reviews.
+# codex declares code_change; claude declares correctness/safety review.
+DEFAULT_WORKER_AGENT = "codex"
+DEFAULT_REVIEWER_AGENT = "claude"
+KNOWN_AGENTS = ("codex", "claude", "kiro")
+
 
 @dataclass(frozen=True)
 class Project:
@@ -14,6 +20,8 @@ class Project:
     name: str
     root: Path
     workspaces: dict[str, Path]
+    worker_agent: str = DEFAULT_WORKER_AGENT
+    reviewer_agent: str = DEFAULT_REVIEWER_AGENT
 
     @property
     def agora_dir(self) -> Path:
@@ -75,9 +83,60 @@ class ProjectRegistry:
         self._write(data)
         return self.get(project_id)
 
-    def add(self, project_id: str, root: str | Path, name: str | None = None) -> Project:
+    def projects_base(self) -> Path:
+        """Single root under which new projects get their own subfolder."""
+        raw = self._read().get("projects_base")
+        if raw:
+            return self._resolve_path(raw, self.project_root)
+        return (self.project_root / "projects").resolve()
+
+    def set_projects_base(self, path: str | Path) -> Path:
+        """Persist the projects root; create it if missing. Returns the resolved path."""
+        resolved = Path(path).expanduser()
+        if not resolved.is_absolute():
+            resolved = self.project_root / resolved
+        resolved = resolved.resolve()
+        if resolved.exists() and not resolved.is_dir():
+            raise ValueError("Projects root must be a directory")
+        resolved.mkdir(parents=True, exist_ok=True)
+        data = self._read()
+        data["projects_base"] = str(resolved)
+        self._write(data)
+        return resolved
+
+    def create_project(
+        self,
+        project_id: str,
+        name: str | None = None,
+        *,
+        worker_agent: str | None = None,
+        reviewer_agent: str | None = None,
+    ) -> Project:
+        """Create a new project as a subfolder of the configured projects root."""
+        return self.add(
+            project_id,
+            self.projects_base() / project_id,
+            name,
+            worker_agent=worker_agent,
+            reviewer_agent=reviewer_agent,
+        )
+
+    def add(
+        self,
+        project_id: str,
+        root: str | Path,
+        name: str | None = None,
+        *,
+        worker_agent: str | None = None,
+        reviewer_agent: str | None = None,
+    ) -> Project:
         if not project_id.replace("-", "").replace("_", "").isalnum():
             raise ValueError("Project id must contain only letters, numbers, dashes, or underscores")
+        worker = worker_agent or DEFAULT_WORKER_AGENT
+        reviewer = reviewer_agent or DEFAULT_REVIEWER_AGENT
+        for role, value in (("worker_agent", worker), ("reviewer_agent", reviewer)):
+            if value not in KNOWN_AGENTS:
+                raise ValueError(f"{role} must be one of: {', '.join(KNOWN_AGENTS)}")
         project_root = Path(root).expanduser().resolve()
         data = self._read()
         projects = data.setdefault("projects", {})
@@ -87,8 +146,26 @@ class ProjectRegistry:
             "name": name or project_id,
             "root": str(project_root),
             "workspaces": self._default_workspaces(project_root),
+            "worker_agent": worker,
+            "reviewer_agent": reviewer,
         }
         self._ensure_project_dirs(projects[project_id])
+        self._write(data)
+        return self._project(project_id, projects[project_id])
+
+    def set_project_agents(
+        self, project_id: str, *, worker_agent: str, reviewer_agent: str
+    ) -> Project:
+        """Update a project's worker/reviewer agent assignment."""
+        for role, value in (("worker_agent", worker_agent), ("reviewer_agent", reviewer_agent)):
+            if value not in KNOWN_AGENTS:
+                raise ValueError(f"{role} must be one of: {', '.join(KNOWN_AGENTS)}")
+        data = self._read()
+        projects = data.get("projects", {})
+        if project_id not in projects:
+            raise KeyError(f"Unknown project: {project_id}")
+        projects[project_id]["worker_agent"] = worker_agent
+        projects[project_id]["reviewer_agent"] = reviewer_agent
         self._write(data)
         return self._project(project_id, projects[project_id])
 
@@ -114,6 +191,8 @@ class ProjectRegistry:
             name=data.get("name", project_id),
             root=root,
             workspaces={k: self._resolve_path(v, root) for k, v in data.get("workspaces", {}).items()},
+            worker_agent=data.get("worker_agent", DEFAULT_WORKER_AGENT),
+            reviewer_agent=data.get("reviewer_agent", DEFAULT_REVIEWER_AGENT),
         )
 
     def _default_projects(self) -> dict[str, Any]:

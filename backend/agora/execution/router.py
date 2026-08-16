@@ -49,6 +49,7 @@ def get_execution_dispatcher() -> ExecutionDispatcher:
         max_concurrent_global=int(limits.get("max_concurrent_global", 4)),
         max_concurrent_per_project=int(limits.get("max_concurrent_per_project", 2)),
         allowed_workspace_roots=allowed_roots,
+        auto_review=bool(limits.get("auto_review", False)),
     )
 
 

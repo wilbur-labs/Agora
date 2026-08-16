@@ -21,6 +21,7 @@ from agora.control_plane.router import (
     router as control_plane_router,
     task_discovery_router,
 )
+from agora.api.settings_router import router as settings_router
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
@@ -49,6 +50,7 @@ app.include_router(attention_router, prefix="/api")
 app.include_router(workflows_router, prefix="/api")
 app.include_router(control_plane_router, prefix="/api")
 app.include_router(task_discovery_router, prefix="/api")
+app.include_router(settings_router, prefix="/api")
 
 
 _RETIRED_API_PREFIXES = (
@@ -61,7 +63,7 @@ _RETIRED_API_PREFIXES = (
     "memory",
     "profile",
 )
-_RETIRED_UI_PATHS = ("chat", "agents", "skills", "settings", "shared")
+_RETIRED_UI_PATHS = ("chat", "agents", "skills", "shared")
 _RETIRED_METHODS = ("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
 _RETIRED_DETAIL = {
     "code": "legacy_council_retired",

@@ -74,6 +74,9 @@ workflow_scheduler:
 execution:
   max_concurrent_global: 4
   max_concurrent_per_project: 2
+  # When true, a succeeded developer run auto-dispatches an independent review
+  # run by the project's reviewer agent; the review surfaces as an approval.
+  auto_review: true
   adapters:
     codex:
       enabled: true
@@ -83,7 +86,7 @@ execution:
       app_server_command: [codex, app-server, --listen, "stdio://"]
     claude:
       enabled: true
-      command: [claude, -p, "{prompt}", --output-format, text, --permission-mode, auto, --no-session-persistence]
+      command: [claude, -p, "{prompt}", --output-format, json, --permission-mode, auto, --no-session-persistence]
       workspace_key: claude
     kiro:
       enabled: true
