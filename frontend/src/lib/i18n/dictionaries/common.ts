@@ -15,6 +15,7 @@ export const common = {
       runs: "Runs",
       workflows: "Workflows",
       attention: "Attention",
+      settings: "Settings",
     },
     action: {
       toggleTheme: "Toggle theme",
@@ -44,6 +45,7 @@ export const common = {
       runs: "运行记录",
       workflows: "工作流",
       attention: "关注事项",
+      settings: "设置",
     },
     action: {
       toggleTheme: "切换主题",

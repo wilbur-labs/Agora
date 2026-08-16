@@ -74,15 +74,15 @@ export function LocaleProvider({ children }: { children: ReactNode }) {
     // shown flipping to Chinese — the swap happens while content is hidden.
     const bootstrapped = window.__AGORA_LOCALE__;
     const stored = window.localStorage.getItem(STORAGE_KEY);
-    const next: Locale | null =
+    // No stored/bootstrapped preference → default to Chinese (this deployment's
+    // primary audience). A stored "en" is still honored so the toggle sticks.
+    const next: Locale =
       bootstrapped === "en" || bootstrapped === "zh"
         ? bootstrapped
         : stored === "en" || stored === "zh"
           ? stored
-          : window.navigator.language.toLowerCase().startsWith("zh")
-            ? "zh"
-            : null;
-    if (next && next !== DEFAULT_LOCALE) {
+          : "zh";
+    if (next !== DEFAULT_LOCALE) {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- hydration-only sync from an external store; see comment above.
       setLocaleState(next);
     }

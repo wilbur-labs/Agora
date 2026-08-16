@@ -235,21 +235,30 @@ function SpecComposer({ task, onCreated }: { task: TaskManifest; onCreated: (spe
     <form className="space-y-5 rounded-xl border bg-card p-5 md:p-7" onSubmit={async (event) => {
       event.preventDefault(); setSubmitting(true); setError(null);
       try {
+        const statement = requirement.trim();
+        const functional = statement ? [{ requirement_id: "FR-001", statement }] : [];
+        const g = given.trim(), w = when.trim(), th = then.trim();
+        // The backend requires given/when/then to be all-present or the whole scenario absent,
+        // and a scenario may only reference a requirement that exists. Emit the scenario only
+        // when all three are filled, and link it to FR-001 only when that requirement is present.
+        const acceptance_scenarios = g && w && th
+          ? [{ scenario_id: "AC-001", requirement_ids: functional.length ? ["FR-001"] : [], given: g, when: w, then: th }]
+          : [];
         const spec = await createSpec(task.task_id, {
-          title: title.trim(), summary: summary.trim(),
-          functional: [{ requirement_id: "FR-001", statement: requirement.trim() }],
+          title: title.trim() || task.title, summary: summary.trim(),
+          functional,
           constraints: lines(constraints),
-          acceptance_scenarios: [{ scenario_id: "AC-001", requirement_ids: ["FR-001"], given: given.trim(), when: when.trim(), then: then.trim() }],
+          acceptance_scenarios,
           created_by: "user",
         });
         onCreated(spec);
       } catch (err) { setError((err as Error).message); setSubmitting(false); }
     }}>
-      <div><p className="text-xs uppercase tracking-widest text-muted-foreground">{t("requirements.composer.newDraft", { project: task.project_id })}</p><h2 className="mt-1 text-xl font-bold">{t("requirements.composer.title")}</h2><p className="mt-1 text-sm text-muted-foreground">{t("requirements.composer.subtitle")}</p></div>
-      <Field label={t("requirements.composer.specTitleLabel")}><input className="field" required value={title} onChange={(e) => setTitle(e.target.value)} /></Field>
+      <div><p className="text-xs uppercase tracking-widest text-muted-foreground">{t("requirements.composer.newDraft", { project: task.project_id })}</p><h2 className="mt-1 text-xl font-bold">{t("requirements.composer.title")}</h2><p className="mt-1 text-sm text-muted-foreground">{t("requirements.composer.subtitle")}</p><p className="mt-2 rounded-lg bg-muted/50 px-3 py-2 text-xs leading-5 text-muted-foreground">{t("requirements.composer.optionalHint")}</p></div>
+      <Field label={t("requirements.composer.specTitleLabel")}><input className="field" value={title} onChange={(e) => setTitle(e.target.value)} placeholder={task.title} /></Field>
       <Field label={t("requirements.composer.summaryLabel")}><textarea className="field min-h-24 resize-y" value={summary} onChange={(e) => setSummary(e.target.value)} /></Field>
-      <Field label={t("requirements.composer.functionalLabel")}><textarea className="field min-h-24 resize-y" required value={requirement} onChange={(e) => setRequirement(e.target.value)} placeholder={t("requirements.composer.functionalPlaceholder")} /></Field>
-      <div className="rounded-xl bg-muted/50 p-4"><h3 className="mb-3 text-sm font-semibold">{t("requirements.composer.scenarioHeading")}</h3><div className="grid gap-3 md:grid-cols-3"><Field label={t("requirements.composer.given")}><textarea className="field min-h-20" required value={given} onChange={(e) => setGiven(e.target.value)} /></Field><Field label={t("requirements.composer.when")}><textarea className="field min-h-20" required value={when} onChange={(e) => setWhen(e.target.value)} /></Field><Field label={t("requirements.composer.then")}><textarea className="field min-h-20" required value={then} onChange={(e) => setThen(e.target.value)} /></Field></div></div>
+      <Field label={t("requirements.composer.functionalLabel")}><textarea className="field min-h-24 resize-y" value={requirement} onChange={(e) => setRequirement(e.target.value)} placeholder={t("requirements.composer.functionalPlaceholder")} /></Field>
+      <div className="rounded-xl bg-muted/50 p-4"><h3 className="text-sm font-semibold">{t("requirements.composer.scenarioHeading")}</h3><p className="mb-3 mt-1 text-xs text-muted-foreground">{t("requirements.composer.scenarioOptionalHint")}</p><div className="grid gap-3 md:grid-cols-3"><Field label={t("requirements.composer.given")}><textarea className="field min-h-20" value={given} onChange={(e) => setGiven(e.target.value)} /></Field><Field label={t("requirements.composer.when")}><textarea className="field min-h-20" value={when} onChange={(e) => setWhen(e.target.value)} /></Field><Field label={t("requirements.composer.then")}><textarea className="field min-h-20" value={then} onChange={(e) => setThen(e.target.value)} /></Field></div></div>
       <Field label={t("requirements.composer.constraintsLabel")}><textarea className="field min-h-20 resize-y" value={constraints} onChange={(e) => setConstraints(e.target.value)} /></Field>
       {error && <p className="text-sm text-destructive">{error}</p>}
       <Button type="submit" size="lg" disabled={submitting}>{submitting ? t("requirements.composer.creating") : t("requirements.composer.create")}</Button>

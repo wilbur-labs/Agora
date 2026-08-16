@@ -12,6 +12,7 @@ import {
   Moon,
   Network,
   Play,
+  Settings,
   ShieldCheck,
   Sun,
 } from "lucide-react";
@@ -25,6 +26,7 @@ const links = [
   { href: "/runs", key: "runs", label: "Runs", icon: Play },
   { href: "/workflows", key: "workflows", label: "Workflows", icon: GitBranch },
   { href: "/attention", key: "attention", label: "Attention", icon: BellRing },
+  { href: "/settings", key: "settings", label: "Settings", icon: Settings },
 ] as const;
 
 // `active` is matched against the stable English label so callers stay simple.

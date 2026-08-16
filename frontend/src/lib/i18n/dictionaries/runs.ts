@@ -20,6 +20,10 @@ export const runs = {
       refresh: "Refresh execution runs",
       newRun: "New run",
       dismissError: "Dismiss error",
+      taskFilter: {
+        label: "Showing runs for: {title}",
+        clear: "Clear",
+      },
       filters: {
         aria: "Run filters",
         project: "Project",
@@ -59,6 +63,9 @@ export const runs = {
         stderr: "stderr tail",
         noStdout: "No stdout captured.",
         noStderr: "No stderr captured.",
+        summary: "What this run did",
+        summaryEmpty: "This run produced no summary text (e.g. a trivial or failed run).",
+        technical: "Technical details",
         metadata: "Process metadata",
         workspace: "Workspace:",
         command: "Command:",
@@ -132,6 +139,10 @@ export const runs = {
       refresh: "刷新运行",
       newRun: "新建运行",
       dismissError: "关闭错误提示",
+      taskFilter: {
+        label: "仅显示任务:{title}",
+        clear: "清除",
+      },
       filters: {
         aria: "运行筛选",
         project: "项目",
@@ -171,6 +182,9 @@ export const runs = {
         stderr: "stderr 末尾",
         noStdout: "未捕获 stdout。",
         noStderr: "未捕获 stderr。",
+        summary: "本次运行做了什么",
+        summaryEmpty: "本次运行没有产出说明文字(可能是无意义或失败的运行)。",
+        technical: "技术细节",
         metadata: "进程元数据",
         workspace: "工作区：",
         command: "命令：",

@@ -45,6 +45,7 @@ export default function RunsPage() {
   const [createTaskId, setCreateTaskId] = useState("");
   const [cancelTarget, setCancelTarget] = useState<RunSummary | null>(null);
   const [projectFilter, setProjectFilter] = useState("all");
+  const [taskFilter, setTaskFilter] = useState("all");
   const [stateFilter, setStateFilter] = useState("all");
   const [adapterFilter, setAdapterFilter] = useState("all");
   const [filtersReady, setFiltersReady] = useState(false);
@@ -119,6 +120,7 @@ export default function RunsPage() {
     const query = new URLSearchParams(window.location.search);
     setSelectedId(query.get("run") || "");
     setProjectFilter(query.get("project") || "all");
+    setTaskFilter(query.get("task") || "all");
     const requestedState = query.get("state");
     const requestedAdapter = query.get("adapter");
     setStateFilter(requestedState && states.includes(requestedState as RunState) ? requestedState : "all");
@@ -150,10 +152,11 @@ export default function RunsPage() {
     const query = new URLSearchParams(window.location.search);
     query.delete("new"); // one-shot deep-link trigger; drop it once consumed
     setQuery(query, "project", projectFilter);
+    setQuery(query, "task", taskFilter);
     setQuery(query, "state", stateFilter);
     setQuery(query, "adapter", adapterFilter);
     window.history.replaceState(null, "", `${window.location.pathname}${query.size ? `?${query}` : ""}`);
-  }, [adapterFilter, filtersReady, projectFilter, stateFilter]);
+  }, [adapterFilter, filtersReady, projectFilter, taskFilter, stateFilter]);
 
   usePoll(() => loadRuns(false), 5_000, true);
   const selectedSummary = runs.find((run) => run.run_id === selectedId) ?? null;
@@ -167,6 +170,7 @@ export default function RunsPage() {
   }, [filtersReady, loading, projectFilter, projects]);
   const visible = runs.filter((run) =>
     (projectFilter === "all" || run.project_id === projectFilter)
+    && (taskFilter === "all" || run.task_id === taskFilter)
     && (stateFilter === "all" || run.state === stateFilter)
     && (adapterFilter === "all" || run.adapter === adapterFilter));
 
@@ -214,6 +218,13 @@ export default function RunsPage() {
       <div className="mx-auto max-w-[1500px] space-y-5 p-5 md:p-8">
         <div className="sr-only" aria-live="polite">{actionMessage}</div>
         {error && <div className="flex items-center justify-between gap-3 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive" role="alert"><span>{error}</span><Button variant="ghost" size="icon-sm" onClick={() => setError(null)} aria-label={t("runs.page.dismissError")}><X /></Button></div>}
+
+        {taskFilter !== "all" && (
+          <div className="flex items-center justify-between gap-3 rounded-lg border border-primary/30 bg-primary/5 p-3 text-sm">
+            <span className="font-medium">{t("runs.page.taskFilter.label", { title: taskNames.get(taskFilter) ?? taskFilter })}</span>
+            <Button variant="ghost" size="sm" onClick={() => setTaskFilter("all")}>{t("runs.page.taskFilter.clear")}</Button>
+          </div>
+        )}
 
         <section className="grid gap-3 rounded-xl border bg-card p-4 sm:grid-cols-3" aria-label={t("runs.page.filters.aria")}>
           <Filter label={t("runs.page.filters.project")} value={projectFilter} onChange={setProjectFilter}><option value="all">{t("runs.page.filters.allProjects")}</option>{projects.map((project) => <option key={project}>{project}</option>)}</Filter>
@@ -279,11 +290,18 @@ function RunDetail({ run, loading, taskTitle, onCancel }: { run: ExecutionRun | 
       <div className="flex items-start justify-between gap-3"><div><p className="font-mono text-xs text-muted-foreground">{run.run_id}</p><h2 className="mt-1 font-semibold">{taskTitle ?? run.task_id}</h2></div><StateBadge state={run.state} /></div>
       <dl className="grid grid-cols-2 gap-3 text-xs"><Fact label={t("runs.page.detail.adapter")} value={run.adapter} /><Fact label={t("runs.page.detail.version")} value={String(run.version)} /><Fact label={t("runs.page.detail.exitCode")} value={run.exit_code === null ? "—" : String(run.exit_code)} /><Fact label={t("runs.page.detail.pid")} value={run.pid === null ? "—" : String(run.pid)} /><Fact label={t("runs.page.detail.timeout")} value={`${run.timeout_seconds}s`} /><Fact label={t("runs.page.detail.duration")} value={duration(run)} /></dl>
       {run.error_message && <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-xs text-destructive" role="alert">{run.error_message}</div>}
-      <DataBlock title={t("runs.page.detail.prompt")} value={run.prompt} />
-      <DataBlock title={t("runs.page.detail.stdout")} value={run.stdout_tail || t("runs.page.detail.noStdout")} />
-      <DataBlock title={t("runs.page.detail.stderr")} value={run.stderr_tail || t("runs.page.detail.noStderr")} tone={Boolean(run.stderr_tail)} />
+      <section>
+        <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">{t("runs.page.detail.summary")}</h3>
+        {run.stdout_tail
+          ? <div className="max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-lg border bg-muted/30 p-4 text-sm leading-relaxed">{run.stdout_tail}</div>
+          : <p className="rounded-lg border border-dashed bg-muted/20 p-4 text-sm text-muted-foreground">{t("runs.page.detail.summaryEmpty")}</p>}
+      </section>
       <RunDeliverables run={run} />
-      <details className="rounded-lg border p-3 text-xs"><summary className="cursor-pointer font-medium">{t("runs.page.detail.metadata")}</summary><div className="mt-3 space-y-2 text-muted-foreground"><p className="break-all"><strong>{t("runs.page.detail.workspace")}</strong> {run.workspace}</p><p className="break-all"><strong>{t("runs.page.detail.command")}</strong> {run.command.join(" ")}</p><pre className="max-h-48 overflow-auto whitespace-pre-wrap">{JSON.stringify(maskMetadata(run.result_metadata), null, 2)}</pre></div></details>
+      <details className="rounded-lg border p-3 text-xs"><summary className="cursor-pointer font-medium">{t("runs.page.detail.technical")}</summary><div className="mt-3 space-y-3">
+        <DataBlock title={t("runs.page.detail.prompt")} value={run.prompt} />
+        {run.stderr_tail && <DataBlock title={t("runs.page.detail.stderr")} value={run.stderr_tail} tone />}
+        <div className="space-y-2 text-muted-foreground"><p className="break-all"><strong>{t("runs.page.detail.workspace")}</strong> {run.workspace}</p><p className="break-all"><strong>{t("runs.page.detail.command")}</strong> {run.command.join(" ")}</p><pre className="max-h-48 overflow-auto whitespace-pre-wrap">{JSON.stringify(maskMetadata(run.result_metadata), null, 2)}</pre></div>
+      </div></details>
       {isCancellable(run) && <Button variant="destructive" className="w-full" onClick={() => onCancel(run)}><CircleStop /> {t("runs.common.cancelRun")}</Button>}
     </aside>
   );

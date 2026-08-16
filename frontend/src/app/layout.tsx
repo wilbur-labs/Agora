@@ -14,7 +14,7 @@ export const metadata: Metadata = {
 // until the provider marks the tree ready, so users never see the English
 // static HTML flip to Chinese, even on a full page reload. A timeout reveals
 // the page as a safety net if hydration never runs.
-const localeBootstrap = `(function(){try{var l=localStorage.getItem("agora.locale");if(l!=="en"&&l!=="zh"){l=(navigator.language||"").toLowerCase().indexOf("zh")===0?"zh":"en";}window.__AGORA_LOCALE__=l;document.documentElement.lang=l==="zh"?"zh-Hans":"en";}catch(e){}setTimeout(function(){try{document.documentElement.setAttribute("data-i18n-ready","");}catch(e){}},1500);})();`;
+const localeBootstrap = `(function(){try{var l=localStorage.getItem("agora.locale");if(l!=="en"&&l!=="zh"){l="zh";}window.__AGORA_LOCALE__=l;document.documentElement.lang=l==="zh"?"zh-Hans":"en";}catch(e){}setTimeout(function(){try{document.documentElement.setAttribute("data-i18n-ready","");}catch(e){}},1500);})();`;
 
 export default function RootLayout({
   children,
