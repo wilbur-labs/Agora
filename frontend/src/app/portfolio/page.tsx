@@ -10,6 +10,7 @@ import {
   archiveTask,
   createProject,
   createTask,
+  handoffTask,
   listOpenAttention,
   listProjects,
   listTasks,
@@ -337,7 +338,7 @@ function TaskCard({ task, bucket, ask, latestRun, onAdvanced, onConflict }: { ta
           )}
           <div className="flex items-center justify-end gap-2 pt-1">
             <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => { setPending(null); setError(null); }}>{t("portfolio.card.confirm.cancel")}</Button>
-            <Button type="button" size="sm" variant={advance.to === "done" ? "destructive" : "default"} disabled={busy} onClick={() => void run(() => transitionTask(task, advance.to))}>{busy ? <RefreshCw className="animate-spin" /> : null}{t("portfolio.card.confirm.confirm")}</Button>
+            <Button type="button" size="sm" variant={advance.to === "done" ? "destructive" : "default"} disabled={busy} onClick={() => void run(() => advance.to === "done" ? handoffTask(task).then((r) => r.task) : transitionTask(task, advance.to))}>{busy ? <RefreshCw className="animate-spin" /> : null}{t("portfolio.card.confirm.confirm")}</Button>
           </div>
         </div>
       )}

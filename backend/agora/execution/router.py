@@ -9,16 +9,35 @@ from fastapi import APIRouter, Depends, HTTPException, Path as PathParam, Query,
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 
+from pydantic import BaseModel
+
 from agora.config.settings import get_config
 from agora.projects import ProjectRegistry
+from agora.tasks.models import TaskManifest
 from agora.tasks.router import get_project_registry, get_task_store
-from agora.tasks.store import TaskNotFoundError
+from agora.tasks.store import (
+    InvalidTransitionError,
+    StaleTaskVersionError,
+    TaskNotFoundError,
+    TaskStore,
+)
 
 from .adapters import build_adapter_registry
 from .deliverables import list_changes, read_file, resolve_confined
 from .dispatcher import ExecutionDispatcher
+from .handoff import HandoffError, hand_off
 from .models import AdapterCapability, CancelRunRequest, CreateRunRequest, ExecutionRun, RunState, RunSummary
 from .store import ExecutionStore, RunConflictError, RunNotFoundError, RunValidationError
+
+
+class HandoffResponse(BaseModel):
+    task: TaskManifest
+    run_id: str | None = None
+    workspace: str | None = None
+    commit: str | None = None
+    committed: bool = False
+    files: list[dict] = []
+    note: str | None = None
 
 
 router = APIRouter(tags=["execution"])
@@ -200,3 +219,28 @@ def list_task_runs(
     if store.tasks.get(task_id) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Task not found")
     return store.list(task_id=task_id, limit=limit, offset=offset)
+
+
+@router.post("/tasks/{task_id}/handoff", response_model=HandoffResponse)
+async def handoff_task(
+    task_id: Annotated[str, PathParam(max_length=128)],
+    actor: str = Query(default="user", min_length=1, max_length=128),
+    store: ExecutionStore = Depends(get_execution_store),
+    task_store: TaskStore = Depends(get_task_store),
+):
+    """Commit a verified task's deliverable, bind the commit, and mark it done."""
+    try:
+        result = await run_in_threadpool(
+            hand_off, task_store, store, task_id, actor=actor,
+        )
+    except HandoffError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from None
+    except TaskNotFoundError:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Task not found") from None
+    except (InvalidTransitionError, StaleTaskVersionError) as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from None
+    return HandoffResponse(
+        task=result.task, run_id=result.run_id, workspace=result.workspace,
+        commit=result.commit, committed=result.committed, files=result.files,
+        note=result.note,
+    )

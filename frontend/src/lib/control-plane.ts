@@ -173,6 +173,24 @@ export function transitionTask(task: TaskManifest, targetState: TaskState): Prom
   });
 }
 
+export interface HandoffResult {
+  task: TaskManifest;
+  run_id: string | null;
+  workspace: string | null;
+  commit: string | null;
+  committed: boolean;
+  files: { path: string; status: string; size: number | null }[];
+  note: string | null;
+}
+
+// Box 8: complete a verified task by committing the worker's deliverable in its
+// isolated workspace repo, binding the commit to the task, and advancing to done.
+export function handoffTask(task: TaskManifest): Promise<HandoffResult> {
+  return request(`/api/tasks/${encodeURIComponent(task.task_id)}/handoff?actor=user`, {
+    method: "POST",
+  });
+}
+
 // Display-only board archive: hide a task from the active board without
 // changing its lifecycle state (avoids compat/authoritative divergence).
 // Version-checked and idempotent on the server.
