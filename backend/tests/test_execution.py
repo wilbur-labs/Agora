@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
 import sys
 from dataclasses import replace
 
@@ -391,7 +392,7 @@ def test_dispatch_failure_missing_workspace_and_recovery(tmp_path):
     assert current
     queued = dispatcher.queue(_request(task.task_id, version=current.version))
     workspace = dispatcher.projects.get("alpha").workspaces["codex"]
-    workspace.rmdir()
+    shutil.rmtree(workspace)  # workspace is now an initialized git repo, not empty
     missing = asyncio.run(dispatcher.execute(queued.run_id))
     assert missing.state == RunState.FAILED
     assert missing.error_message == "workspace not found"

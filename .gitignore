@@ -41,6 +41,14 @@ agora-workspace/
 nohup.out
 *.log
 
+# Runtime project workspaces (created under projects_base, e.g. <repo>/projects).
+# Anchored to the repo root so it never matches source dirs like backend/agora/projects.
+/projects/
+
+# Test artifacts (pytest basetemp workarounds on Windows)
+backend/.pytest-*
+.kiro/
+
 # Agora control-plane runtime state
 .agora/projects.yaml
 .agora/audit.log
