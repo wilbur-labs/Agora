@@ -2,11 +2,11 @@
 
 All notable changes to Agora are documented here. This project follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.1.0] - 2026-08-22
 
 Shifts Agora's day-to-day surface toward supervising several coding agents at
 once — a per-project worker plus a different reviewer, automatic cross-review,
-and approve-to-advance — on top of the existing 1.0 control plane.
+approve-to-advance, and handoff — on top of the existing 1.0 control plane.
 
 ### Added
 
@@ -20,9 +20,12 @@ and approve-to-advance — on top of the existing 1.0 control plane.
 - **Attention-first Portfolio.** Tasks grouped into Needs you / In progress /
   Done and colored by open attention (question, approval, blocker, running),
   with per-task latest run status and a deep link to its runs.
-- **Project creation with isolated workspaces.** Create a project under a
-  configurable root; each agent workspace is initialized as its own git
-  repository so deliverable detection is scoped to that run's output.
+- **Handoff.** Completing a verified task commits the worker's deliverable in
+  its workspace and binds the commit hash and file list to the task before it
+  moves to done, so "done" points at an immutable deliverable.
+- **Project creation with provisioned worktrees.** Creating a project git-inits
+  its root and provisions each agent workspace as an isolated linked Git
+  worktree on a per-adapter branch.
 - **Settings page.** Runtime install/version/login detection (no token spend),
   Claude per-agent token usage, project-root and execution-limit configuration.
 - **In-app requirements interview.** The agent asks clarifying questions in the
@@ -31,8 +34,10 @@ and approve-to-advance — on top of the existing 1.0 control plane.
 
 ### Changed
 
-- Deliverable and cross-review scanning read a run's own workspace repository
-  instead of whatever outer repo the project happens to sit inside.
+- Agent workspaces are provisioned linked worktrees. Execution, deliverable
+  discovery, file serving, and handoff all fail closed unless a run's workspace
+  is exactly its project/adapter's provisioned worktree — so an agent can never
+  read, write, or commit a repository it does not own.
 
 ## [1.0.0] - 2026-08-04
 
