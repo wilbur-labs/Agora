@@ -21,7 +21,10 @@ from pathlib import Path
 from agora.tasks.models import AppendEventRequest, TaskManifest, TaskState
 from agora.tasks.store import TaskStore
 
-from .deliverables import list_changes
+from agora.projects import ProjectRegistry
+from agora.workspaces.naming import worktree_branch
+
+from .deliverables import _is_provisioned_worktree, is_ready_worktree, list_changes
 from .dispatcher import ROLE_KEY, ROLE_WORKER
 from .models import RunState
 from .store import ExecutionStore
@@ -65,12 +68,18 @@ def _run_git(git: str, workspace: Path, *args: str) -> subprocess.CompletedProce
 
 
 def _commit_workspace(workspace: Path, message: str, actor: str) -> tuple[str | None, bool, str | None]:
-    """Commit everything in the workspace repo. Returns (commit, committed, note)."""
+    """Commit everything in the workspace worktree. Returns (commit, committed,
+    note). The caller must have already confirmed the workspace is this run's
+    provisioned worktree (see hand_off), so `git -C` here operates only on that
+    isolated worktree, never a surrounding repository."""
     git = shutil.which("git")
     if git is None:
         return None, False, "git is not available"
-    if not (workspace / ".git").exists():
-        return None, False, "workspace is not a git repository"
+    # Defense in depth: hand_off has already confirmed full provenance, but this
+    # shape guard ensures we never `git add -A` a repo root / project root even if
+    # called directly on an unexpected workspace.
+    if not _is_provisioned_worktree(git, workspace):
+        return None, False, "workspace is not a provisioned worktree"
     try:
         _run_git(git, workspace, "add", "-A")
         status = _run_git(git, workspace, "status", "--porcelain")
@@ -95,6 +104,7 @@ def _commit_workspace(workspace: Path, message: str, actor: str) -> tuple[str | 
 def hand_off(
     task_store: TaskStore,
     exec_store: ExecutionStore,
+    projects: ProjectRegistry,
     task_id: str,
     *,
     actor: str,
@@ -116,9 +126,20 @@ def hand_off(
         run_id = worker.run_id
         workspace = Path(worker.workspace).expanduser().resolve()
         workspace_str = str(workspace)
-        files = list_changes(workspace)
-        message = f"Deliver: {task.title}"[:500]
-        commit, committed, note = _commit_workspace(workspace, message, actor)
+        # Fail closed: only read/commit the worker run's own provisioned worktree
+        # (same repo as its project, expected branch), never a surrounding or
+        # unrelated repository.
+        expected_branch = worktree_branch(worker.project_id, worker.adapter)
+        try:
+            project_root = projects.get(worker.project_id).root
+        except (KeyError, LookupError):
+            project_root = None
+        if project_root is not None and is_ready_worktree(workspace, project_root, expected_branch):
+            files = list_changes(workspace)
+            message = f"Deliver: {task.title}"[:500]
+            commit, committed, note = _commit_workspace(workspace, message, actor)
+        else:
+            note = "worker workspace is not a provisioned worktree; nothing committed"
     else:
         note = "no succeeded worker run; nothing to commit"
 

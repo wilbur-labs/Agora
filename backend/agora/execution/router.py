@@ -22,8 +22,10 @@ from agora.tasks.store import (
     TaskStore,
 )
 
+from agora.workspaces.naming import worktree_branch
+
 from .adapters import build_adapter_registry
-from .deliverables import list_changes, read_file, resolve_confined
+from .deliverables import is_ready_worktree, list_changes, read_file, resolve_confined
 from .dispatcher import ExecutionDispatcher
 from .handoff import HandoffError, hand_off
 from .models import AdapterCapability, CancelRunRequest, CreateRunRequest, ExecutionRun, RunState, RunSummary
@@ -41,6 +43,25 @@ class HandoffResponse(BaseModel):
 
 
 router = APIRouter(tags=["execution"])
+
+
+def _ready_worktree_for_run(registry: ProjectRegistry, run: ExecutionRun) -> bool:
+    """Whether a run's workspace is exactly its project/adapter's provisioned
+    worktree (own top-level, linked, same repo as the project, expected branch,
+    HEAD). Fail closed on anything else."""
+    try:
+        project = registry.get(run.project_id)
+    except (KeyError, LookupError):
+        return False
+    workspace = Path(run.workspace).expanduser().resolve()
+    return is_ready_worktree(workspace, project.root, worktree_branch(run.project_id, run.adapter))
+
+
+def _require_ready_worktree(registry: ProjectRegistry, run: ExecutionRun) -> None:
+    """Fail closed: only serve deliverable content from a run's own provisioned
+    worktree, never from a repo root, an unrelated worktree, or a plain dir."""
+    if not _ready_worktree_for_run(registry, run):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Deliverable not found")
 
 
 @lru_cache(maxsize=1)
@@ -128,6 +149,7 @@ def run_deliverables(
     run_id: Annotated[str, PathParam(max_length=128)],
     store: ExecutionStore = Depends(get_execution_store),
     dispatcher: ExecutionDispatcher = Depends(get_execution_dispatcher),
+    registry: ProjectRegistry = Depends(get_project_registry),
 ):
     """List the files this run produced in its Git worktree (read-only)."""
     try:
@@ -139,6 +161,8 @@ def run_deliverables(
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Workspace is not readable")
     if not workspace.is_dir():
         return {"run_id": run_id, "workspace": str(workspace), "files": [], "unavailable": "workspace not found"}
+    if not _ready_worktree_for_run(registry, run):
+        return {"run_id": run_id, "workspace": str(workspace), "files": [], "unavailable": "workspace is not a provisioned worktree"}
     return {"run_id": run_id, "workspace": str(workspace), "files": list_changes(workspace)}
 
 
@@ -148,6 +172,7 @@ def run_deliverable_content(
     path: str = Query(..., max_length=1024),
     store: ExecutionStore = Depends(get_execution_store),
     dispatcher: ExecutionDispatcher = Depends(get_execution_dispatcher),
+    registry: ProjectRegistry = Depends(get_project_registry),
 ):
     """Return a bounded, redacted text preview of one deliverable file."""
     try:
@@ -157,6 +182,7 @@ def run_deliverable_content(
     workspace = Path(run.workspace).expanduser().resolve()
     if not dispatcher.is_workspace_readable(run.project_id, workspace):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Workspace is not readable")
+    _require_ready_worktree(registry, run)
     try:
         return read_file(workspace, path)
     except (FileNotFoundError, PermissionError):
@@ -169,6 +195,7 @@ def run_deliverable_raw(
     path: str = Query(..., max_length=1024),
     store: ExecutionStore = Depends(get_execution_store),
     dispatcher: ExecutionDispatcher = Depends(get_execution_dispatcher),
+    registry: ProjectRegistry = Depends(get_project_registry),
 ):
     """Serve a deliverable file so the UI can open/render it (e.g. an HTML page).
 
@@ -182,6 +209,7 @@ def run_deliverable_raw(
     workspace = Path(run.workspace).expanduser().resolve()
     if not dispatcher.is_workspace_readable(run.project_id, workspace):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Workspace is not readable")
+    _require_ready_worktree(registry, run)
     try:
         target = resolve_confined(workspace, path)
     except (FileNotFoundError, PermissionError):
@@ -227,11 +255,12 @@ async def handoff_task(
     actor: str = Query(default="user", min_length=1, max_length=128),
     store: ExecutionStore = Depends(get_execution_store),
     task_store: TaskStore = Depends(get_task_store),
+    registry: ProjectRegistry = Depends(get_project_registry),
 ):
     """Commit a verified task's deliverable, bind the commit, and mark it done."""
     try:
         result = await run_in_threadpool(
-            hand_off, task_store, store, task_id, actor=actor,
+            hand_off, task_store, store, registry, task_id, actor=actor,
         )
     except HandoffError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from None

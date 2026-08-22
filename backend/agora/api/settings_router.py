@@ -32,8 +32,45 @@ from agora.orchestration.runtime_capabilities import (
     collect_native_runtime_capabilities,
 )
 from agora.projects import ProjectRegistry
+from agora.workspaces.models import ProvisionRequest
+from agora.workspaces.provisioner import WorkspaceProvisioner
 
 router = APIRouter(tags=["settings"])
+
+
+def _provisioner_for(registry: ProjectRegistry) -> WorkspaceProvisioner:
+    """A provisioner sharing the caller's registry view (so a just-created
+    project is visible) and the configured workspace allowlist."""
+    execution = get_config().get("execution", {})
+    roots = []
+    for value in execution.get("allowed_workspace_roots", []):
+        root = Path(value).expanduser()
+        roots.append((root if root.is_absolute() else registry.project_root / root).resolve())
+    return WorkspaceProvisioner(registry, allowed_workspace_roots=roots)
+
+
+async def _provision_project_workspaces(
+    registry: ProjectRegistry, project: Any
+) -> dict[str, Any]:
+    """Provision every adapter workspace as a linked worktree at project
+    creation (the spec's explicit provisioning action). Best-effort: report per
+    workspace; nothing here (including provisioner construction) rolls back the
+    already-created project or turns into a 500."""
+    try:
+        provisioner = _provisioner_for(registry)
+        await provisioner.ensure_source_repo(project.project_id)
+    except Exception as exc:  # bad config, git unavailable, permission, etc.
+        return {"ok": False, "error": type(exc).__name__, "workspaces": {}}
+    workspaces: dict[str, str] = {}
+    for adapter in sorted(project.workspaces):
+        try:
+            result = await provisioner.provision(
+                ProvisionRequest(project_id=project.project_id, adapter=adapter)
+            )
+            workspaces[adapter] = result.status.state.value
+        except Exception as exc:  # any provisioning failure is per-workspace, never a 500
+            workspaces[adapter] = f"error:{type(exc).__name__}"
+    return {"ok": all(v == "ready" for v in workspaces.values()), "workspaces": workspaces}
 
 
 class SetProjectsBaseRequest(BaseModel):
@@ -213,15 +250,17 @@ def list_projects(
 
 
 @router.post("/projects", status_code=status.HTTP_201_CREATED)
-def create_project(
+async def create_project(
     request: CreateProjectRequest,
     registry: ProjectRegistry = Depends(get_project_registry),
 ) -> dict[str, Any]:
-    """Create a new project as a subfolder of the configured projects root."""
+    """Create a new project as a subfolder of the configured projects root, then
+    provision its agent workspaces as isolated linked Git worktrees."""
     if request.project_id in registry.list_projects():
         raise HTTPException(status.HTTP_409_CONFLICT, f"Project already exists: {request.project_id}")
     try:
-        project = registry.create_project(
+        project = await run_in_threadpool(
+            registry.create_project,
             request.project_id,
             request.name,
             worker_agent=request.worker_agent,
@@ -231,7 +270,9 @@ def create_project(
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from None
     except OSError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"Could not create project folder: {type(exc).__name__}") from None
-    return _project_summary(project)
+    summary = _project_summary(project)
+    summary["provisioning"] = await _provision_project_workspaces(registry, project)
+    return summary
 
 
 @router.put("/projects/{project_id}/agents")

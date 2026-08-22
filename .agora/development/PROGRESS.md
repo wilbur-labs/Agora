@@ -5332,3 +5332,81 @@ user-owned `frontend/pnpm-workspace.yaml` change. The next safe product action
 is to write a concrete Task contract (roles, workflow, Context/Handoff
 expectations, and acceptance criteria) and run the CLI-first three-runtime loop
 before returning to UI work.
+
+## Increment: workspace isolation via provisioned linked worktrees (2026-08-22)
+
+Context: an earlier increment tried to isolate agent workspaces by `git init`ing
+each one inside `ProjectRegistry` (commit 9e8b84d). Independent Codex review
+found this violated the Phase 5 workspace contract (provisioning is explicit and
+never at queue/run time) and broke the provisioner; a follow-up that moved the
+`git init` into `dispatcher.queue()` was also rejected (contract violation,
+event-loop-blocking Git in the async path, and — critically — a workspace mapped
+to a repo root could have the whole repository staged and committed).
+
+Resolution (reviewed across three Codex rounds):
+
+- Removed all automatic `git init` from the registry and the dispatcher; queueing
+  no longer touches the workspace.
+- Deliverable discovery, content/raw serving, and handoff commit now fail closed
+  unless the workspace is a *linked worktree* whose own top-level is exactly the
+  workspace (`deliverables._is_provisioned_worktree`). A bare repo root — a
+  project root or the outer Agora checkout — is rejected, so a run can never
+  list, read, or commit the surrounding repository. Verified: the guard rejects
+  the Agora repo root and independent repo roots, accepts a real linked worktree,
+  and a repo-root handoff leaves the outer HEAD and index untouched.
+- `POST /api/projects` now provisions the new project's workspaces as linked
+  worktrees at creation (the explicit Phase 5 action) via
+  `WorkspaceProvisioner.ensure_source_repo` + `provision`. `ensure_source_repo`
+  makes the root its own repo only when it is its own `--show-toplevel` (so a
+  root nested in Agora is `git init`ed rather than sourcing worktrees from
+  Agora), seeds an unborn HEAD, and ignores `.agora/`. `source_is_git` now
+  requires the root's own top-level, closing the ancestor-sourcing hole on the
+  direct `POST /api/workspaces/provision` path too. Pre-existing non-empty
+  project directories are rejected before any Git operation.
+
+Tests: linked-worktree happy path and fail-closed cases (nested dir, repo root,
+non-repo) for discovery; a handoff safety regression (repo-root workspace leaves
+the outer index empty and HEAD unchanged); create-project provisioning inside an
+outer repo leaves that outer repo's HEAD and worktree list unchanged; direct
+provision on a nested non-repo root is rejected without adding an outer worktree;
+unborn-HEAD seeding; pre-existing-non-empty-dir rejection; and a content/raw
+guard test. Focused suite (workspaces, execution, handoff, deliverables,
+projects, settings, provisioning) passed.
+
+Full provenance is now enforced. `deliverables.is_ready_worktree` positively
+proves a workspace is exactly a run's provisioned worktree — its own
+`--show-toplevel`, a linked worktree, sharing the project root's Git common
+directory, on `worktree_branch(project_id, adapter)`, with a HEAD — and fails
+closed on anything indeterminate (git missing/timeout/nonzero, unexpected
+output, empty HEAD). The project root must itself be a repository's own main
+worktree root (`_is_repo_root`: its `--show-toplevel` is itself AND its git dir
+equals its common dir), closing both the ancestor-nesting bypass and the
+linked-worktree-as-root bypass — otherwise a sibling worktree of some other repo
+could be trusted as the source. Every consumer gates on the same predicate:
+`dispatcher.execute` before launch, the deliverable list/content/raw endpoints,
+`handoff` commit, and the review-prompt's reading of worker deliverables. So an
+agent can never execute in, and deliverables can never be read from or committed
+to, a repo root, the project/Agora checkout, an ancestor repo, or an unrelated
+or wrong-branch worktree.
+
+Off the event loop: the launch gate, the git-heavy review-prompt build
+(`_dispatch_review` is async and offloads `_review_prompt`), and every
+create-project provisioning inspection (`provision`'s `_inspect` calls and
+`ensure_source_repo`'s `_git_sync` calls all via `asyncio.to_thread`).
+Provisioning locks are shared process-wide across all provisioner instances
+(Invariant 6); the create-time provisioner is built inside the best-effort
+boundary (never a 500 after the project is created); unborn-HEAD seeding fails
+closed on a non-empty OR an indeterminate index inspection rather than committing
+pre-existing staged files.
+
+Reviewed across seven independent Codex rounds. Regressions cover the predicate
+(wrong-branch, unrelated-repo, ancestor-root, linked-root, repo-root, plain dir),
+the launch gate, the real list/content/raw HTTP endpoints, handoff (repo-root and
+wrong-branch), the auto-review chain, and provisioning (nested-root reject,
+unborn-HEAD seed, pre-existing-dir reject). Full backend suite: 759 passed with
+one unrelated pre-existing failure (`test_web_ui` expects a retired `/settings`
+path to redirect; that path was un-retired earlier when the Settings page
+shipped) — untouched by this increment and tracked separately.
+
+Next safe action: commit this workspace-isolation increment; fix the stale
+`test_web_ui` retired-path expectation separately.

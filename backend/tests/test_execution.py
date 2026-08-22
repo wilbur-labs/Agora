@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import shutil
+import subprocess
 import sys
 from dataclasses import replace
 
@@ -19,11 +20,33 @@ from agora.tasks.models import AppendEventRequest, CreateTaskRequest, TaskState
 from agora.tasks.store import TaskStore
 from agora.attention.store import AttentionStore
 from agora.attention.models import RespondAttentionRequest
+from agora.workspaces.naming import worktree_branch
+
+GIT = shutil.which("git")
+pytestmark = pytest.mark.skipif(GIT is None, reason="git is required to provision run worktrees")
+
+
+def _provision_codex_worktree(tmp_path):
+    """Set up alpha as its own repo and its codex workspace as a provisioned
+    linked worktree on the expected branch — the shape execution now requires."""
+    root = tmp_path / "alpha"
+    root.mkdir(parents=True, exist_ok=True)
+    subprocess.run([GIT, "-C", str(root), "init", "-q"], check=True, timeout=15)
+    (root / "seed.txt").write_text("seed", encoding="utf-8")
+    subprocess.run([GIT, "-C", str(root), "-c", "user.email=t@t", "-c", "user.name=t",
+                    "add", "-A"], check=True, timeout=15)
+    subprocess.run([GIT, "-C", str(root), "-c", "user.email=t@t", "-c", "user.name=t",
+                    "commit", "-q", "-m", "seed"], check=True, timeout=15)
+    (tmp_path / "workspaces").mkdir(parents=True, exist_ok=True)
+    workspace = tmp_path / "workspaces" / "codex"
+    branch = worktree_branch("alpha", "codex")
+    subprocess.run([GIT, "-C", str(root), "worktree", "add", "-q", "-b", branch,
+                    str(workspace), "HEAD"], check=True, timeout=15)
+    return workspace
 
 
 def _config(tmp_path, command: list[str]) -> dict:
-    workspace = tmp_path / "workspaces" / "codex"
-    workspace.mkdir(parents=True)
+    workspace = _provision_codex_worktree(tmp_path)
     return {
         "projects": {
             "registry_path": str(tmp_path / "projects.yaml"),
@@ -379,6 +402,144 @@ def test_store_enforces_output_redaction_and_tail_limit(tmp_path):
     assert result.stderr_tail == "api_key=[REDACTED]"
 
 
+def test_auto_review_dispatches_review_run_after_worker(tmp_path):
+    """A succeeded worker run drives _after_run -> await _dispatch_review, which
+    queues an independent review run by the project's reviewer agent."""
+    root = tmp_path / "alpha"
+    _provision_codex_worktree(tmp_path)  # alpha repo + codex worktree
+    claude_ws = tmp_path / "workspaces" / "claude"
+    subprocess.run([GIT, "-C", str(root), "worktree", "add", "-q", "-b",
+                    worktree_branch("alpha", "claude"), str(claude_ws), "HEAD"],
+                   check=True, timeout=15)
+    ok = [sys.executable, "-c", "print('ok')", "{prompt}"]
+    config = {
+        "projects": {"registry_path": str(tmp_path / "projects.yaml"), "default": "alpha", "projects": {
+            "alpha": {"name": "Alpha", "root": str(root), "worker_agent": "codex", "reviewer_agent": "claude",
+                      "workspaces": {"codex": str(tmp_path / "workspaces" / "codex"), "claude": str(claude_ws)}}}},
+        "execution": {"adapters": {
+            "codex": {"command": ok, "workspace_key": "codex"},
+            "claude": {"command": ok, "workspace_key": "claude"},
+            "kiro": {"enabled": False}}},
+    }
+    tasks = TaskStore(tmp_path / "agora.db")
+    store = ExecutionStore(tasks)
+    dispatcher = ExecutionDispatcher(
+        store, ProjectRegistry(config), build_adapter_registry(config),
+        allowed_workspace_roots=[tmp_path / "workspaces"], auto_review=True,
+    )
+    task = _planned_task(tasks)
+    worker = dispatcher.queue(_request(task.task_id))
+
+    async def run_and_drain():
+        await dispatcher.execute(worker.run_id)
+        for _ in range(50):
+            pending = list(dispatcher._scheduled)
+            if not pending:
+                break
+            await asyncio.gather(*pending, return_exceptions=True)
+
+    asyncio.run(run_and_drain())
+
+    roles = {r.run_id: store.require(r.run_id).result_metadata.get("agora_role")
+             for r in store.list(task_id=task.task_id)}
+    reviews = [rid for rid, role in roles.items() if role == "review"]
+    assert len(reviews) == 1
+    assert store.require(reviews[0]).adapter == "claude"
+
+
+def test_deliverable_endpoints_gate_on_provisioned_worktree(tmp_path):
+    """The list/content/raw HTTP endpoints serve a run's deliverables only from
+    its provisioned worktree, and fail closed once it is torn down."""
+    from agora.tasks.router import get_project_registry
+
+    tasks, store, dispatcher = _system(
+        tmp_path, [sys.executable, "-c", "open('out.txt', 'w').write('hi there')"]
+    )
+    task = _planned_task(tasks)
+    run = dispatcher.queue(_request(task.task_id))
+    asyncio.run(dispatcher.execute(run.run_id))
+
+    app.dependency_overrides[get_execution_store] = lambda: store
+    app.dependency_overrides[get_execution_dispatcher] = lambda: dispatcher
+    app.dependency_overrides[get_project_registry] = lambda: dispatcher.projects
+    client = TestClient(app)
+    try:
+        listing = client.get(f"/api/runs/{run.run_id}/deliverables")
+        assert listing.status_code == 200
+        assert any(f["path"] == "out.txt" for f in listing.json()["files"])
+        content = client.get(f"/api/runs/{run.run_id}/deliverables/content", params={"path": "out.txt"})
+        assert content.status_code == 200 and "hi there" in content.json()["content"]
+        assert client.get(f"/api/runs/{run.run_id}/deliverables/raw", params={"path": "out.txt"}).status_code == 200
+
+        # Tear down the worktree -> a plain dir -> every deliverable path fails closed.
+        workspace = dispatcher.projects.get("alpha").workspaces["codex"]
+        shutil.rmtree(workspace)
+        workspace.mkdir(parents=True)
+        (workspace / "out.txt").write_text("resurrected", encoding="utf-8")
+        relisting = client.get(f"/api/runs/{run.run_id}/deliverables")
+        assert relisting.json()["files"] == [] and "unavailable" in relisting.json()
+        assert client.get(f"/api/runs/{run.run_id}/deliverables/content", params={"path": "out.txt"}).status_code == 404
+        assert client.get(f"/api/runs/{run.run_id}/deliverables/raw", params={"path": "out.txt"}).status_code == 404
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_review_prompt_ignores_non_ready_worker_workspace(tmp_path):
+    """The review prompt reads the worker's deliverables only from its own
+    provisioned worktree; on a wrong-branch worktree it reads nothing."""
+    tasks, store, dispatcher = _system(
+        tmp_path, [sys.executable, "-c", "open('d.txt', 'w').write('x')"]
+    )
+    task = _planned_task(tasks)
+    run = dispatcher.queue(_request(task.task_id))
+    asyncio.run(dispatcher.execute(run.run_id))
+    worker = store.require(run.run_id)
+
+    assert "d.txt" in dispatcher._review_prompt(worker)  # ready worktree
+
+    workspace = dispatcher.projects.get("alpha").workspaces["codex"]
+    subprocess.run([GIT, "-C", str(workspace), "checkout", "-q", "-b", "other"],
+                   check=True, timeout=15)
+    assert "No changed files" in dispatcher._review_prompt(worker)  # not ready -> nothing
+
+
+def test_ready_worktree_for_run_gates_deliverable_endpoints(tmp_path):
+    """The provenance gate the content/raw/list endpoints call accepts a run's
+    own worktree and rejects a torn-down (plain-dir) workspace."""
+    from agora.execution.router import _ready_worktree_for_run
+
+    tasks, store, dispatcher = _system(tmp_path, [sys.executable, "-c", "print('ok')"])
+    task = _planned_task(tasks)
+    run = dispatcher.queue(_request(task.task_id))
+    worker = store.require(run.run_id)
+    assert _ready_worktree_for_run(dispatcher.projects, worker) is True
+
+    workspace = dispatcher.projects.get("alpha").workspaces["codex"]
+    shutil.rmtree(workspace)
+    workspace.mkdir(parents=True)
+    assert _ready_worktree_for_run(dispatcher.projects, store.require(run.run_id)) is False
+
+
+def test_run_refused_when_workspace_is_not_a_provisioned_worktree(tmp_path):
+    """An agent is never launched unless its workspace is the provisioned
+    worktree; here we replace it with a plain directory."""
+    tasks, store, dispatcher = _system(
+        tmp_path, [sys.executable, "-c", "open('leak.txt', 'w').write('should not run')"]
+    )
+    workspace = dispatcher.projects.get("alpha").workspaces["codex"]
+    # Tear down the worktree and leave a plain (non-worktree) directory behind.
+    shutil.rmtree(workspace)
+    workspace.mkdir(parents=True)
+
+    task = _planned_task(tasks)
+    run = dispatcher.queue(_request(task.task_id))
+    finished = asyncio.run(dispatcher.execute(run.run_id))
+
+    assert finished.state == RunState.FAILED
+    assert "provisioned worktree" in (finished.error_message or "")
+    assert not (workspace / "leak.txt").exists()  # process never launched
+
+
 def test_dispatch_failure_missing_workspace_and_recovery(tmp_path):
     tasks, store, dispatcher = _system(
         tmp_path, [sys.executable, "-c", "import sys; print('bad', file=sys.stderr); sys.exit(3)"]
@@ -392,7 +553,7 @@ def test_dispatch_failure_missing_workspace_and_recovery(tmp_path):
     assert current
     queued = dispatcher.queue(_request(task.task_id, version=current.version))
     workspace = dispatcher.projects.get("alpha").workspaces["codex"]
-    shutil.rmtree(workspace)  # workspace is now an initialized git repo, not empty
+    shutil.rmtree(workspace)  # a provisioned worktree is non-empty (holds .git)
     missing = asyncio.run(dispatcher.execute(queued.run_id))
     assert missing.state == RunState.FAILED
     assert missing.error_message == "workspace not found"

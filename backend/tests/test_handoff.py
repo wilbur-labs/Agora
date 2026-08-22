@@ -17,15 +17,27 @@ from agora.execution.store import ExecutionStore
 from agora.projects import ProjectRegistry
 from agora.tasks.models import CreateTaskRequest, TaskState
 from agora.tasks.store import TaskStore
+from agora.workspaces.naming import worktree_branch
 
 GIT = shutil.which("git")
 pytestmark = pytest.mark.skipif(GIT is None, reason="git is required for handoff")
 
 
+def _git(*args, cwd) -> None:
+    subprocess.run([GIT, "-C", str(cwd), *args], check=True, capture_output=True, timeout=15)
+
+
 def _config(tmp_path: Path, command: list[str]) -> dict:
+    # The project root is a real repo; the codex workspace is a linked worktree of
+    # it — the shape the provisioner produces and that handoff/deliverables require.
+    root = tmp_path / "alpha"
+    root.mkdir(parents=True)
+    _git("init", "-q", cwd=root)
+    (root / "seed.txt").write_text("seed", encoding="utf-8")
+    _git("-c", "user.email=t@t", "-c", "user.name=t", "add", "-A", cwd=root)
+    _git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "seed", cwd=root)
     workspace = tmp_path / "workspaces" / "codex"
-    workspace.mkdir(parents=True)
-    subprocess.run([GIT, "-C", str(workspace), "init", "--quiet"], check=True)
+    _git("worktree", "add", "-q", "-b", worktree_branch("alpha", "codex"), str(workspace), "HEAD", cwd=root)
     return {
         "projects": {
             "registry_path": str(tmp_path / "projects.yaml"),
@@ -92,13 +104,13 @@ def _verified_task_with_worker(tmp_path: Path):
     current = tasks.get(task.task_id)
     current = tasks.transition(task.task_id, TaskState.REVIEW, actor="t", expected_version=current.version)
     current = tasks.transition(task.task_id, TaskState.VERIFIED, actor="t", expected_version=current.version)
-    return tasks, store, current
+    return tasks, store, dispatcher.projects, current
 
 
 def test_handoff_commits_deliverable_and_completes(tmp_path):
-    tasks, store, task = _verified_task_with_worker(tmp_path)
+    tasks, store, projects, task = _verified_task_with_worker(tmp_path)
 
-    result = hand_off(tasks, store, task.task_id, actor="wilbur")
+    result = hand_off(tasks, store, projects, task.task_id, actor="wilbur")
 
     assert result.task.state == TaskState.DONE
     assert result.committed is True
@@ -122,11 +134,11 @@ def test_handoff_commits_deliverable_and_completes(tmp_path):
 
 
 def test_handoff_requires_verified_task(tmp_path):
-    tasks, store, task = _verified_task_with_worker(tmp_path)
-    hand_off(tasks, store, task.task_id, actor="wilbur")  # now DONE
+    tasks, store, projects, task = _verified_task_with_worker(tmp_path)
+    hand_off(tasks, store, projects, task.task_id, actor="wilbur")  # now DONE
 
     with pytest.raises(HandoffError, match="verified"):
-        hand_off(tasks, store, task.task_id, actor="wilbur")
+        hand_off(tasks, store, projects, task.task_id, actor="wilbur")
 
 
 def test_handoff_without_worker_run_still_completes(tmp_path):
@@ -137,8 +149,52 @@ def test_handoff_without_worker_run_still_completes(tmp_path):
         db.execute("UPDATE tasks SET state = ?, version = 2 WHERE task_id = ?",
                    (TaskState.VERIFIED.value, task.task_id))
 
-    result = hand_off(tasks, store, task.task_id, actor="wilbur")
+    result = hand_off(tasks, store, dispatcher.projects, task.task_id, actor="wilbur")
 
     assert result.task.state == TaskState.DONE
     assert result.commit is None and result.committed is False
     assert result.note and "no succeeded worker run" in result.note
+
+
+def test_handoff_skips_commit_when_worker_worktree_is_wrong_branch(tmp_path):
+    """If the worker's workspace is not this project/adapter's provisioned
+    worktree (here: right repo, wrong branch), handoff commits nothing."""
+    tasks, store, projects, task = _verified_task_with_worker(tmp_path)
+    workspace = projects.get("alpha").workspaces["codex"]
+    _git("checkout", "-q", "-b", "some/wrong-branch", cwd=workspace)
+
+    result = hand_off(tasks, store, projects, task.task_id, actor="wilbur")
+
+    assert result.task.state == TaskState.DONE
+    assert result.commit is None and result.committed is False
+    assert result.note and "provisioned worktree" in result.note
+
+
+def test_commit_workspace_never_touches_a_repo_root(tmp_path):
+    """Safety: a workspace that is a repo root / project root (not a linked
+    worktree) must never be staged or committed, so an outer repository can
+    never be swept into a handoff commit."""
+    from agora.execution.handoff import _commit_workspace
+
+    repo = tmp_path / "outer"
+    repo.mkdir()
+    _git("init", "-q", cwd=repo)
+    (repo / "seed.txt").write_text("seed", encoding="utf-8")
+    _git("-c", "user.email=t@t", "-c", "user.name=t", "add", "-A", cwd=repo)
+    _git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "seed", cwd=repo)
+    (repo / "unmanaged.txt").write_text("must not be committed", encoding="utf-8")
+    before = subprocess.run([GIT, "-C", str(repo), "rev-parse", "HEAD"],
+                            capture_output=True, text=True, check=True).stdout.strip()
+
+    commit, committed, note = _commit_workspace(repo, "should not happen", "wilbur")
+
+    assert commit is None and committed is False
+    assert note and "worktree" in note
+    after = subprocess.run([GIT, "-C", str(repo), "rev-parse", "HEAD"],
+                           capture_output=True, text=True, check=True).stdout.strip()
+    assert after == before  # outer repo HEAD untouched
+    # The index is empty — nothing was staged — and the file is still untracked.
+    assert subprocess.run([GIT, "-C", str(repo), "diff", "--cached", "--quiet"]).returncode == 0
+    status = subprocess.run([GIT, "-C", str(repo), "status", "--porcelain"],
+                            capture_output=True, text=True, check=True).stdout.strip()
+    assert status == "?? unmanaged.txt"

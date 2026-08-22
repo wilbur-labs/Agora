@@ -1,8 +1,6 @@
 """Multi-project registry for Agora control-plane state."""
 from __future__ import annotations
 
-import shutil
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -115,9 +113,14 @@ class ProjectRegistry:
         reviewer_agent: str | None = None,
     ) -> Project:
         """Create a new project as a subfolder of the configured projects root."""
+        root = self.projects_base() / project_id
+        # Never adopt (and later git-init) a pre-existing non-empty directory:
+        # it may hold unmanaged files the control plane must not touch.
+        if root.exists() and root.is_dir() and any(root.iterdir()):
+            raise ValueError(f"Project directory already exists and is not empty: {root}")
         return self.add(
             project_id,
-            self.projects_base() / project_id,
+            root,
             name,
             worker_agent=worker_agent,
             reviewer_agent=reviewer_agent,
@@ -224,7 +227,6 @@ class ProjectRegistry:
         (root / ".agora" / "specs").mkdir(parents=True, exist_ok=True)
         for path in project.workspaces.values():
             path.mkdir(parents=True, exist_ok=True)
-            _init_workspace_repo(path)
 
     @staticmethod
     def _resolve_path(value: str | Path, base: Path) -> Path:
@@ -232,30 +234,3 @@ class ProjectRegistry:
         if not path.is_absolute():
             path = base / path
         return path.resolve()
-
-
-def _init_workspace_repo(workspace: Path) -> None:
-    """Make each agent workspace its own git repo so deliverable detection is
-    scoped to that run's output.
-
-    ``list_changes`` reports a run's deliverables via ``git status`` in the
-    workspace. Without a repo of its own, git discovery climbs to whatever
-    outer repository the project happens to sit inside (e.g. the Agora repo
-    when projects live under ``<repo>/projects``), so ``git status`` would
-    report repo-wide noise instead of just this run's files. A private ``.git``
-    stops that discovery at the workspace boundary and also isolates the
-    workspace as a single nested entry to any outer repo. Best-effort: a
-    missing git binary or an init failure must not block project creation.
-    """
-    git = shutil.which("git")
-    if git is None or (workspace / ".git").exists():
-        return
-    try:
-        subprocess.run(
-            [git, "-C", str(workspace), "init", "--quiet"],
-            check=True,
-            capture_output=True,
-            timeout=30,
-        )
-    except (OSError, subprocess.SubprocessError):
-        pass

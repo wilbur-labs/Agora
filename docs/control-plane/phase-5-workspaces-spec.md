@@ -28,6 +28,26 @@ worktrees so parallel agents operate on real project code without sharing a chec
 - `GET /api/workspaces/{project_id}/{adapter}`
 - `POST /api/workspaces/provision`
 
+## Create-project provisioning (2026-08-22)
+
+`POST /api/projects` provisions the new project's adapter workspaces as linked
+worktrees at creation — the explicit action of Invariant 1. It first calls
+`WorkspaceProvisioner.ensure_source_repo`, which makes the project root its own
+Git repository *only when it is its own `--show-toplevel`*: a root nested inside
+an outer checkout (e.g. `<agora>/projects/<id>`) is `git init`ed so worktrees are
+never sourced from the outer repository. It also guarantees a HEAD (seeding an
+unborn one) and ignores `.agora/`. A pre-existing non-empty project directory is
+rejected before any Git operation (Invariant 4). Per-workspace provisioning is
+best-effort and reported in the response; a failure never rolls back the created
+project. `source_is_git` requires the project root's own top-level, so the
+provisioner never `worktree add`s against an ancestor repository.
+
+Deliverable discovery, file content/raw serving, and handoff commit all fail
+closed unless the run's workspace is a linked worktree whose own top-level is
+exactly the workspace (a bare repo root — including a project root or the outer
+Agora checkout — is rejected), so a run can never list, read, or commit the
+surrounding repository's files.
+
 ## Deferred
 
 Worktree removal, update/rebase/pull, branch merge/push, cross-process distributed

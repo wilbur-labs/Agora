@@ -16,8 +16,10 @@ from agora.attention.models import AttentionKind, AttentionUrgency, CreateAttent
 from agora.attention.bridges.codex_app_server import CodexAppServerError, CodexAppServerRunner
 from agora.attention.bridges.codex_broker import CodexApprovalBroker
 
+from agora.workspaces.naming import worktree_branch
+
 from .adapters import ExecutionAdapter
-from .deliverables import list_changes, read_file
+from .deliverables import is_ready_worktree, list_changes, read_file
 from .models import CancelRunRequest, CreateRunRequest, ExecutionRun, RunState, OUTPUT_TAIL_LIMIT
 from .store import ExecutionStore, RunConflictError, RunValidationError
 from .security import redact_text
@@ -179,6 +181,23 @@ class ExecutionDispatcher:
                 return self.store.finish(
                     run_id, RunState.FAILED, expected_version=running.version, exit_code=None,
                     stdout_tail="", stderr_tail="", error_message="workspace changed before process start",
+                )
+            # Never launch an agent unless the workspace is exactly this project/
+            # adapter's provisioned linked worktree: its own top-level, a linked
+            # worktree sharing the project repo, on the expected branch, with a
+            # HEAD. This binds execution to a provisioned workspace, so an agent
+            # can never write into a repo it does not own (a repo root, the
+            # project root, the outer Agora checkout) nor an unrelated worktree.
+            # Off the event loop: the check shells out to git. Fail closed.
+            expected_branch = worktree_branch(run.project_id, run.adapter)
+            ready = await asyncio.to_thread(
+                is_ready_worktree, workspace, project.root, expected_branch
+            )
+            if not ready:
+                return self.store.finish(
+                    run_id, RunState.FAILED, expected_version=running.version, exit_code=None,
+                    stdout_tail="", stderr_tail="",
+                    error_message="workspace is not a provisioned worktree for this project/adapter; provision it before running",
                 )
             if adapter.bridge_mode == "codex_app_server":
                 return await self._execute_codex_app_server(
@@ -400,7 +419,7 @@ class ExecutionDispatcher:
         try:
             if role == ROLE_WORKER and finished.state == RunState.SUCCEEDED:
                 if self.auto_review:
-                    self._dispatch_review(finished)
+                    await self._dispatch_review(finished)
             elif role == ROLE_REVIEW and finished.state == RunState.SUCCEEDED:
                 self._raise_review_attention(finished, reviews_run_id, AttentionKind.APPROVAL)
             elif role == ROLE_REVIEW and finished.state in {RunState.FAILED, RunState.TIMED_OUT}:
@@ -410,7 +429,7 @@ class ExecutionDispatcher:
             # change the outcome of the run that just completed.
             pass
 
-    def _dispatch_review(self, worker_run: ExecutionRun) -> None:
+    async def _dispatch_review(self, worker_run: ExecutionRun) -> None:
         """Queue an independent review run by the project's reviewer agent."""
         try:
             project = self.projects.get(worker_run.project_id)
@@ -422,7 +441,9 @@ class ExecutionDispatcher:
         task = self.store.tasks.get(worker_run.task_id)
         if task is None:
             return
-        prompt = self._review_prompt(worker_run)
+        # The prompt build shells out to git (readiness + list_changes + reads);
+        # keep it off the event loop.
+        prompt = await asyncio.to_thread(self._review_prompt, worker_run)
         request = CreateRunRequest(
             task_id=worker_run.task_id,
             adapter=reviewer,
@@ -445,7 +466,15 @@ class ExecutionDispatcher:
             f"\n## Developer's own summary\n{worker_run.stdout_tail[:_REVIEW_FILE_CHARS]}",
         ]
         budget = _REVIEW_PROMPT_BUDGET
-        files = list_changes(workspace)
+        # Only read the worker run's own provisioned worktree, never a surrounding
+        # or unrelated repository.
+        try:
+            project_root = self.projects.get(worker_run.project_id).root
+        except (KeyError, LookupError):
+            project_root = None
+        expected_branch = worktree_branch(worker_run.project_id, worker_run.adapter)
+        ready = project_root is not None and is_ready_worktree(workspace, project_root, expected_branch)
+        files = list_changes(workspace) if ready else []
         if not files:
             parts.append("\n## Changes\n(No changed files detected in the workspace.)")
         for entry in files:
