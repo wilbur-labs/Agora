@@ -33,6 +33,21 @@ export interface TaskManifest {
   created_by: string;
   created_at: string;
   updated_at: string;
+  archived_at: string | null;
+  clarifications: TaskClarifications | null;
+}
+
+export interface ClarifyQuestion {
+  id: string;
+  question: string;
+  why?: string;
+  suggestions?: string[];
+}
+
+export interface TaskClarifications {
+  status?: string;
+  questions: ClarifyQuestion[];
+  answers?: Record<string, string>;
 }
 
 export interface CreateTaskInput {
@@ -127,6 +142,22 @@ export function listTasks(): Promise<TaskManifest[]> {
   return request("/api/tasks");
 }
 
+export type AttentionKind = "question" | "approval" | "blocker";
+
+export interface AttentionItem {
+  item_id: string;
+  project_id: string;
+  task_id: string;
+  kind: AttentionKind;
+  state: string;
+  urgency: string;
+  title: string;
+}
+
+export function listOpenAttention(): Promise<AttentionItem[]> {
+  return request("/api/attention?state=open&limit=500");
+}
+
 export function createTask(input: CreateTaskInput): Promise<TaskManifest> {
   return request("/api/tasks", { method: "POST", body: JSON.stringify(input) });
 }
@@ -139,6 +170,54 @@ export function transitionTask(task: TaskManifest, targetState: TaskState): Prom
       actor: "user",
       expected_version: task.version,
     }),
+  });
+}
+
+export interface HandoffResult {
+  task: TaskManifest;
+  run_id: string | null;
+  workspace: string | null;
+  commit: string | null;
+  committed: boolean;
+  files: { path: string; status: string; size: number | null }[];
+  note: string | null;
+}
+
+// Box 8: complete a verified task by committing the worker's deliverable in its
+// isolated workspace repo, binding the commit to the task, and advancing to done.
+export function handoffTask(task: TaskManifest): Promise<HandoffResult> {
+  return request(`/api/tasks/${encodeURIComponent(task.task_id)}/handoff?actor=user`, {
+    method: "POST",
+  });
+}
+
+// Display-only board archive: hide a task from the active board without
+// changing its lifecycle state (avoids compat/authoritative divergence).
+// Version-checked and idempotent on the server.
+export function archiveTask(task: TaskManifest): Promise<TaskManifest> {
+  const params = new URLSearchParams({ expected_version: String(task.version) });
+  return request(`/api/tasks/${encodeURIComponent(task.task_id)}/archive?${params.toString()}`, {
+    method: "POST",
+  });
+}
+
+export function unarchiveTask(task: TaskManifest): Promise<TaskManifest> {
+  const params = new URLSearchParams({ expected_version: String(task.version) });
+  return request(`/api/tasks/${encodeURIComponent(task.task_id)}/unarchive?${params.toString()}`, {
+    method: "POST",
+  });
+}
+
+// Ask the agent to propose requirement-clarifying questions (slow — an agent
+// call runs server-side). Returns the task with `clarifications.questions`.
+export function generateClarifications(taskId: string): Promise<TaskManifest> {
+  return request(`/api/tasks/${encodeURIComponent(taskId)}/clarifications/generate`, { method: "POST" });
+}
+
+export function saveClarificationAnswers(taskId: string, answers: Record<string, string>): Promise<TaskManifest> {
+  return request(`/api/tasks/${encodeURIComponent(taskId)}/clarifications/answers`, {
+    method: "POST",
+    body: JSON.stringify({ answers }),
   });
 }
 
@@ -165,4 +244,134 @@ export function rejectSpec(spec: RequirementSpec, reason: string): Promise<Requi
     method: "POST",
     body: JSON.stringify({ actor: "user", expected_revision: spec.revision, reason }),
   });
+}
+
+// --- Settings (read-only observations) ---
+
+export interface RuntimeCapability {
+  adapter: string;
+  provider: string;
+  installation_status: "installed" | "not_found" | "uninspectable";
+  version: string | null;
+  version_status: string;
+  declared_capabilities: string[];
+  execution_mode: string | null;
+  attention_mode: string | null;
+  supports_tool_approval: boolean | null;
+  detail: string | null;
+  authenticated: boolean | null;
+  auth_method: string | null;
+  auth_check_status: "checked" | "not_configured" | "probe_failed" | "timed_out";
+  token_capture: "supported" | "unsupported";
+  tokens_used: number;
+}
+
+export interface RuntimeCapabilities {
+  platform: string;
+  collected_at: string;
+  adapters: RuntimeCapability[];
+}
+
+export interface WorkspaceInfo {
+  adapter: string;
+  path: string;
+  exists: boolean;
+  writable: boolean;
+}
+
+export interface ProjectSettings {
+  project_id: string;
+  name: string;
+  root: string;
+  root_exists: boolean;
+  root_is_git: boolean;
+  worker_agent: string;
+  reviewer_agent: string;
+  workspaces: WorkspaceInfo[];
+}
+
+export interface SettingsOverview {
+  projects: { current: string; projects_base: string; items: ProjectSettings[] };
+  execution: {
+    max_concurrent_global: number;
+    max_concurrent_per_project: number;
+    network_mode: string;
+    default_timeout_seconds: number;
+  };
+  runs: {
+    total: number;
+    truncated: boolean;
+    by_state: Record<string, number>;
+    by_adapter: Record<string, number>;
+    running: number;
+    queued: number;
+    tokens_by_adapter: Record<string, number>;
+    total_tokens: number;
+    token_usage_recorded: boolean;
+  };
+  control_plane: {
+    auth_configured: boolean;
+    principals: number;
+    principals_with_secret: number;
+  };
+}
+
+export function getRuntimeCapabilities(): Promise<RuntimeCapabilities> {
+  return request("/api/runtime-capabilities");
+}
+
+export function getSettingsOverview(): Promise<SettingsOverview> {
+  return request("/api/settings/overview");
+}
+
+// --- Projects (registry) ---
+
+export type AdapterName = "codex" | "claude" | "kiro";
+
+export interface ProjectListItem {
+  project_id: string;
+  name: string;
+  root: string;
+  worker_agent: AdapterName;
+  reviewer_agent: AdapterName;
+}
+
+export interface ProjectList {
+  current: string;
+  projects_base: string;
+  items: ProjectListItem[];
+}
+
+export function listProjects(): Promise<ProjectList> {
+  return request("/api/projects");
+}
+
+export function createProject(
+  projectId: string,
+  name?: string,
+  agents?: { worker_agent: AdapterName; reviewer_agent: AdapterName },
+): Promise<ProjectListItem> {
+  return request("/api/projects", {
+    method: "POST",
+    body: JSON.stringify({ project_id: projectId, name: name || null, ...agents }),
+  });
+}
+
+export function setProjectAgents(projectId: string, worker_agent: AdapterName, reviewer_agent: AdapterName): Promise<ProjectListItem> {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/agents`, {
+    method: "PUT",
+    body: JSON.stringify({ worker_agent, reviewer_agent }),
+  });
+}
+
+export function setProjectsBase(path: string): Promise<{ projects_base: string }> {
+  return request("/api/settings/projects-base", {
+    method: "PUT",
+    body: JSON.stringify({ path }),
+  });
+}
+
+// Opens a native OS folder picker on the server host (local desktop only).
+export function pickProjectsFolder(): Promise<{ path: string | null; available: boolean }> {
+  return request("/api/settings/pick-folder", { method: "POST" });
 }

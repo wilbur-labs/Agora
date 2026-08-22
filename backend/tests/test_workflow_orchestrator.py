@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
+import subprocess
 import sys
 from dataclasses import replace
 from types import SimpleNamespace
@@ -18,12 +20,31 @@ from agora.workflows.models import CreateWorkflowRequest, WorkflowActionRequest,
 from agora.workflows.orchestrator import WorkflowOrchestrator
 from agora.workflows.store import WorkflowStore
 from agora.workflows.supervisor import WorkflowSupervisor
+from agora.workspaces.naming import worktree_branch
+
+_GIT = shutil.which("git")
+pytestmark = pytest.mark.skipif(_GIT is None, reason="git is required to provision run worktrees")
+
+
+def _provision(project_root, workspace, project_id):
+    """project_root as its own repo; workspace as its codex worktree on the
+    expected branch — the shape execution now requires."""
+    project_root.mkdir(parents=True, exist_ok=True)
+    subprocess.run([_GIT, "-C", str(project_root), "init", "-q"], check=True, timeout=15)
+    (project_root / "seed.txt").write_text("seed", encoding="utf-8")
+    subprocess.run([_GIT, "-C", str(project_root), "-c", "user.email=t@t", "-c", "user.name=t",
+                    "add", "-A"], check=True, timeout=15)
+    subprocess.run([_GIT, "-C", str(project_root), "-c", "user.email=t@t", "-c", "user.name=t",
+                    "commit", "-q", "-m", "seed"], check=True, timeout=15)
+    workspace.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run([_GIT, "-C", str(project_root), "worktree", "add", "-q", "-b",
+                    worktree_branch(project_id, "codex"), str(workspace), "HEAD"], check=True, timeout=15)
 
 
 def _system(tmp_path):
     roots = tmp_path / "workspaces"
     for project in ("alpha", "beta"):
-        (roots / project).mkdir(parents=True)
+        _provision(tmp_path / project, roots / project, project)
     command = [sys.executable, "-c", "print('workflow-ok')", "{prompt}"]
     config = {
         "projects": {"registry_path": str(tmp_path / "projects.yaml"), "default": "alpha", "projects": {

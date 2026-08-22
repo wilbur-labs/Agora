@@ -197,6 +197,34 @@ class ExecutionStore:
             ).fetchall()
         return [self._summary(row) for row in rows]
 
+    def token_usage_by_adapter(self, *, project_id: str | None = None) -> dict[str, dict[str, int]]:
+        """Sum captured per-run token usage per adapter (0 where none was recorded)."""
+        clauses: list[str] = []
+        values: list[Any] = []
+        if project_id:
+            clauses.append("project_id = ?")
+            values.append(project_id)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        with closing(self._connect()) as db:
+            rows = db.execute(
+                f"""
+                SELECT adapter,
+                       SUM(COALESCE(json_extract(result_metadata, '$.usage.total'), 0)) AS total,
+                       SUM(CASE WHEN json_extract(result_metadata, '$.usage.total') IS NOT NULL
+                                THEN 1 ELSE 0 END) AS runs_with_usage
+                FROM execution_runs{where}
+                GROUP BY adapter
+                """,
+                values,
+            ).fetchall()
+        return {
+            row["adapter"]: {
+                "total_tokens": int(row["total"] or 0),
+                "runs_with_usage": int(row["runs_with_usage"] or 0),
+            }
+            for row in rows
+        }
+
     def start(self, run_id: str, *, expected_version: int, pid: int | None = None) -> ExecutionRun:
         return self._transition(
             run_id,

@@ -98,7 +98,6 @@ class TestLegacyCouncilRetirement:
             "/agents",
             "/agents/scout",
             "/skills/learned",
-            "/settings/providers",
             "/shared/share-1",
         ):
             response = client.get(path, follow_redirects=False)

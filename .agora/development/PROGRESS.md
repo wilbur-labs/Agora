@@ -1,5 +1,66 @@
 # Agora Control Plane Development Progress
 
+## 2026-08-10 - Chinese UI, control-plane refactor, task retire, Windows Codex launch (review gate: CHANGES_REQUESTED)
+
+Branch `feature/frontend-i18n`, PR #6. NOT merged to main — both review gates
+returned CHANGES_REQUESTED; the frontend is mergeable on its own, the backend
+retire change is blocked pending a design decision (item 2 below).
+
+Frontend (self-contained; no backend contract change):
+- Client-side i18n under `frontend/src/lib/i18n/` (EN/ZH dictionaries, 545 keys,
+  fully paired; language toggle; enum/status localization; pre-paint guard that
+  removes the locale flash).
+- `control-plane/page.tsx` split into `shared` / `ledgers` / `human-actions` /
+  `projection-dashboard` components; retired-council `welcome.tsx` removed.
+- Portfolio task-card lifecycle advance controls and a cancel/retire control,
+  each behind an explicit confirm step; deep-link dispatch into the New Run panel.
+- Verified: `pnpm build` (10 static pages), `pnpm lint` (0 errors), `tsc`, and an
+  EN==ZH dictionary key-parity check.
+
+Backend increments (MUST NOT merge to main until item 2 is resolved):
+1. `tasks/transitions.py`: allow `done`/`failed` -> `cancelled` so a finished
+   compatibility Task can be retired from the board; `cancelled` stays terminal.
+   `FINISHED_STATES`/`TERMINAL_STATES` are documentation constants derived from
+   `ALLOWED_TRANSITIONS` and asserted by a graph-consistency test; `can_transition`
+   now fails closed via `.get(current, set())`.
+2. `execution/dispatcher.py`: route the CLI spawn (non-bridge path only) and the
+   Codex app-server spawn through `resolve_runtime_command()` (PATHEXT + npm
+   `.cmd` unwrap) so Codex launches on Windows; `RuntimeLaunchError` fails the run
+   (redacted) before any child starts.
+
+Tests: transition-graph invariant test + store cancel/retire test.
+`tests/test_tasks_controlplane.py` + `tests/test_execution.py`: 29 passed (run
+with `--basetemp=<clean dir>` to avoid the environment's `pytest-of-wuche`
+temp-dir permission error). End-to-end: a dispatched Codex run reached running
+(real pid) and succeeded (exit 0), writing its output file in the worktree.
+
+Review gates (both independent, read-only):
+- Codex: CHANGES_REQUESTED. Applied fixes: bridge-path resolution scope,
+  TERMINAL_STATES/graph consistency, regression tests.
+- Kiro: CHANGES_REQUESTED. Applied fixes: `can_transition` fail-closed `.get`,
+  redact the CLI launch-failure message, clarify the derived-constants comment,
+  and this PROGRESS entry (Kiro flagged it was missing/misplaced).
+- No formal APPROVE from either gate yet.
+
+Resolved / open:
+2a. RESOLVED (both gates' HIGH): removing a finished task from the board is now a
+   display-only `archived_at` flag (`TaskStore.set_archived`, version-checked +
+   idempotent, does NOT change lifecycle state) with `POST /tasks/{id}/archive|
+   unarchive` and a board "Show archived" toggle. The `done`/`failed` -> `cancelled`
+   overload was reverted; `cancelled` is terminal again. No compat-vs-authoritative
+   divergence — the authoritative state is never touched.
+2c. RESOLVED for archive: the archive API is version-checked and idempotent. (The
+   legacy cancel API's optional-version behavior is unchanged and now unused by
+   the UI.)
+2b. MEDIUM (still open): persist the redacted resolved launcher argv + hash to the
+   run record for audit provenance.
+
+### Current next safe action (this increment)
+
+The frontend can merge independently. Backend: 2a/2c resolved; 2b (launcher audit)
+is the remaining backend item. Re-run both review gates for a formal APPROVE
+before merging the backend to main.
+
 ## 2026-08-04 - Agora 1.0 release closeout (reviewed)
 
 ### Release boundary
@@ -5271,3 +5332,81 @@ user-owned `frontend/pnpm-workspace.yaml` change. The next safe product action
 is to write a concrete Task contract (roles, workflow, Context/Handoff
 expectations, and acceptance criteria) and run the CLI-first three-runtime loop
 before returning to UI work.
+
+## Increment: workspace isolation via provisioned linked worktrees (2026-08-22)
+
+Context: an earlier increment tried to isolate agent workspaces by `git init`ing
+each one inside `ProjectRegistry` (commit 9e8b84d). Independent Codex review
+found this violated the Phase 5 workspace contract (provisioning is explicit and
+never at queue/run time) and broke the provisioner; a follow-up that moved the
+`git init` into `dispatcher.queue()` was also rejected (contract violation,
+event-loop-blocking Git in the async path, and — critically — a workspace mapped
+to a repo root could have the whole repository staged and committed).
+
+Resolution (reviewed across three Codex rounds):
+
+- Removed all automatic `git init` from the registry and the dispatcher; queueing
+  no longer touches the workspace.
+- Deliverable discovery, content/raw serving, and handoff commit now fail closed
+  unless the workspace is a *linked worktree* whose own top-level is exactly the
+  workspace (`deliverables._is_provisioned_worktree`). A bare repo root — a
+  project root or the outer Agora checkout — is rejected, so a run can never
+  list, read, or commit the surrounding repository. Verified: the guard rejects
+  the Agora repo root and independent repo roots, accepts a real linked worktree,
+  and a repo-root handoff leaves the outer HEAD and index untouched.
+- `POST /api/projects` now provisions the new project's workspaces as linked
+  worktrees at creation (the explicit Phase 5 action) via
+  `WorkspaceProvisioner.ensure_source_repo` + `provision`. `ensure_source_repo`
+  makes the root its own repo only when it is its own `--show-toplevel` (so a
+  root nested in Agora is `git init`ed rather than sourcing worktrees from
+  Agora), seeds an unborn HEAD, and ignores `.agora/`. `source_is_git` now
+  requires the root's own top-level, closing the ancestor-sourcing hole on the
+  direct `POST /api/workspaces/provision` path too. Pre-existing non-empty
+  project directories are rejected before any Git operation.
+
+Tests: linked-worktree happy path and fail-closed cases (nested dir, repo root,
+non-repo) for discovery; a handoff safety regression (repo-root workspace leaves
+the outer index empty and HEAD unchanged); create-project provisioning inside an
+outer repo leaves that outer repo's HEAD and worktree list unchanged; direct
+provision on a nested non-repo root is rejected without adding an outer worktree;
+unborn-HEAD seeding; pre-existing-non-empty-dir rejection; and a content/raw
+guard test. Focused suite (workspaces, execution, handoff, deliverables,
+projects, settings, provisioning) passed.
+
+Full provenance is now enforced. `deliverables.is_ready_worktree` positively
+proves a workspace is exactly a run's provisioned worktree — its own
+`--show-toplevel`, a linked worktree, sharing the project root's Git common
+directory, on `worktree_branch(project_id, adapter)`, with a HEAD — and fails
+closed on anything indeterminate (git missing/timeout/nonzero, unexpected
+output, empty HEAD). The project root must itself be a repository's own main
+worktree root (`_is_repo_root`: its `--show-toplevel` is itself AND its git dir
+equals its common dir), closing both the ancestor-nesting bypass and the
+linked-worktree-as-root bypass — otherwise a sibling worktree of some other repo
+could be trusted as the source. Every consumer gates on the same predicate:
+`dispatcher.execute` before launch, the deliverable list/content/raw endpoints,
+`handoff` commit, and the review-prompt's reading of worker deliverables. So an
+agent can never execute in, and deliverables can never be read from or committed
+to, a repo root, the project/Agora checkout, an ancestor repo, or an unrelated
+or wrong-branch worktree.
+
+Off the event loop: the launch gate, the git-heavy review-prompt build
+(`_dispatch_review` is async and offloads `_review_prompt`), and every
+create-project provisioning inspection (`provision`'s `_inspect` calls and
+`ensure_source_repo`'s `_git_sync` calls all via `asyncio.to_thread`).
+Provisioning locks are shared process-wide across all provisioner instances
+(Invariant 6); the create-time provisioner is built inside the best-effort
+boundary (never a 500 after the project is created); unborn-HEAD seeding fails
+closed on a non-empty OR an indeterminate index inspection rather than committing
+pre-existing staged files.
+
+Reviewed across seven independent Codex rounds. Regressions cover the predicate
+(wrong-branch, unrelated-repo, ancestor-root, linked-root, repo-root, plain dir),
+the launch gate, the real list/content/raw HTTP endpoints, handoff (repo-root and
+wrong-branch), the auto-review chain, and provisioning (nested-root reject,
+unborn-HEAD seed, pre-existing-dir reject). Full backend suite: 759 passed with
+one unrelated pre-existing failure (`test_web_ui` expects a retired `/settings`
+path to redirect; that path was un-retired earlier when the Settings page
+shipped) — untouched by this increment and tracked separately.
+
+Next safe action: commit this workspace-isolation increment; fix the stale
+`test_web_ui` retired-path expectation separately.

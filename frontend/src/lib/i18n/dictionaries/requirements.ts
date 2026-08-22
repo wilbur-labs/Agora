@@ -1,0 +1,168 @@
+// Requirements page copy.
+// Core protocol nouns carry their English original in parentheses on first
+// section use; later body text uses Chinese only.
+
+export const requirements = {
+  en: {
+    header: {
+      eyebrow: "Human approval gate",
+      title: "Requirements Studio",
+      refresh: "Refresh",
+    },
+    tasks: {
+      heading: "Delivery tasks",
+      emptyPortfolio: "Create a task in Portfolio first.",
+    },
+    empty: {
+      selectTitle: "Select a delivery task",
+      selectDetail:
+        "The structured specification and its approval history will appear here.",
+      notStartedTitle: "Requirements have not started",
+      notStartedDetail:
+        "Move this task into the requirements lifecycle before drafting its spec.",
+      startRequirements: "Start requirements",
+      loadingTitle: "Loading specification",
+      loadingDetail:
+        "Fetching the latest requirement versions and approval state.",
+      noSpecTitle: "No requirement specification",
+      noSpecDetail:
+        "This task is already in {state}; return it to requirements through the lifecycle before authoring a spec.",
+    },
+    composer: {
+      newDraft: "New draft · {project}",
+      title: "Define the outcome",
+      subtitle: "This creates version 1. Approval remains a separate human action.",
+      optionalHint:
+        "Every field is optional. Save a blank or partial draft now — the clarification interview and later revisions fill in the details step by step.",
+      specTitleLabel: "Specification title",
+      summaryLabel: "Summary",
+      functionalLabel: "Functional requirement (FR-001)",
+      functionalPlaceholder: "The system shall…",
+      scenarioHeading: "Acceptance scenario (AC-001)",
+      scenarioOptionalHint:
+        "Fill in all three to record the scenario; leave them blank to skip it for now.",
+      given: "Given",
+      when: "When",
+      then: "Then",
+      constraintsLabel: "Constraints (one per line)",
+      creating: "Creating draft…",
+      create: "Create draft",
+    },
+    viewer: {
+      versionRevision: "Version {version}, revision {revision}",
+      noSummary: "No summary provided.",
+      functionalSection: "Functional requirements",
+      scenariosSection: "Acceptance scenarios",
+      given: "Given",
+      when: "When",
+      then: "Then",
+      constraintsSection: "Constraints",
+      openQuestions:
+        "{count} open question(s) remain. Review them before approval.",
+      approvalGateTitle: "Human approval gate",
+      approvalGateDetail: "Approval unlocks the task's transition into design.",
+      approvalNotePlaceholder: "Approval note (optional)",
+      approving: "Approving…",
+      approve: "Approve spec",
+      needsRevision: "Needs revision?",
+      rejectPlaceholder: "Required rejection reason",
+      reject: "Reject",
+      readyTitle: "Ready for design",
+      readyDetail: "The approved specification satisfies the lifecycle gate.",
+      advance: "Advance to design",
+      createRevised: "Create revised draft",
+    },
+    error: {
+      conflict:
+        "This item changed elsewhere. Fresh data has been loaded; review it and try again.",
+    },
+    clarify: {
+      title: "Requirements clarification",
+      intro: "Let the agent ask a few questions to pin down the requirements before drafting the spec. Answer them here.",
+      generate: "Ask the agent",
+      regenerate: "Regenerate questions",
+      generating: "The agent is drafting questions… (this runs a model, ~30–60s)",
+      answerPlaceholder: "Your answer…",
+      save: "Save answers",
+      saved: "Saved",
+    },
+  },
+  zh: {
+    header: {
+      eyebrow: "人工审批门禁（Human Approval Gate）",
+      title: "需求工作台",
+      refresh: "刷新",
+    },
+    tasks: {
+      heading: "交付任务",
+      emptyPortfolio: "请先在项目全景中创建任务。",
+    },
+    empty: {
+      selectTitle: "选择一个交付任务",
+      selectDetail: "结构化的规格说明及其审批历史将显示在这里。",
+      notStartedTitle: "需求尚未开始",
+      notStartedDetail: "在起草规格说明前，先将该任务纳入需求生命周期。",
+      startRequirements: "启动需求",
+      loadingTitle: "正在加载规格说明",
+      loadingDetail: "正在获取最新的需求版本与审批状态。",
+      noSpecTitle: "暂无需求规格说明",
+      noSpecDetail:
+        "该任务已处于 {state} 阶段；请先通过生命周期将其退回需求，再编写规格说明。",
+    },
+    composer: {
+      newDraft: "新建草稿 · {project}",
+      title: "定义目标成果",
+      subtitle: "这将创建版本 1。审批仍是一项独立的人工动作。",
+      optionalHint:
+        "所有字段均为选填。现在可以先保存一份空白或不完整的草稿——之后由澄清访谈和多次修订逐步补全细节。",
+      specTitleLabel: "规格说明标题",
+      summaryLabel: "摘要",
+      functionalLabel: "功能需求（FR-001）",
+      functionalPlaceholder: "系统应……",
+      scenarioHeading: "验收场景（AC-001）",
+      scenarioOptionalHint: "三项全部填写才会记录该场景；全部留空则本次跳过。",
+      given: "前提（Given）",
+      when: "操作（When）",
+      then: "预期（Then）",
+      constraintsLabel: "约束条件（每行一条）",
+      creating: "正在创建草稿…",
+      create: "创建草稿",
+    },
+    viewer: {
+      versionRevision: "版本 {version}，修订 {revision}",
+      noSummary: "未提供摘要。",
+      functionalSection: "功能需求",
+      scenariosSection: "验收场景",
+      given: "前提",
+      when: "操作",
+      then: "预期",
+      constraintsSection: "约束条件",
+      openQuestions: "仍有 {count} 个未决问题。请在审批前先行处理。",
+      approvalGateTitle: "人工审批门禁",
+      approvalGateDetail: "审批将解锁任务向设计阶段的推进。",
+      approvalNotePlaceholder: "审批备注（可选）",
+      approving: "正在审批…",
+      approve: "批准规格说明",
+      needsRevision: "需要修订？",
+      rejectPlaceholder: "驳回理由（必填）",
+      reject: "驳回",
+      readyTitle: "可进入设计阶段",
+      readyDetail: "已批准的规格说明满足生命周期门禁要求。",
+      advance: "推进到设计阶段",
+      createRevised: "创建修订草稿",
+    },
+    error: {
+      conflict: "该条目已在别处发生变更。已加载最新数据，请查看后重试。",
+    },
+    clarify: {
+      title: "需求澄清",
+      intro: "在起草规格说明前，先让 agent 提几个问题把需求问清楚，你在这里逐题作答。",
+      generate: "让 agent 提问",
+      regenerate: "重新生成问题",
+      generating: "agent 正在生成问题…（会调用模型，约 30–60 秒）",
+      answerPlaceholder: "你的回答…",
+      save: "保存答案",
+      saved: "已保存",
+    },
+  },
+} as const;

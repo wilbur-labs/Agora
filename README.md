@@ -2,79 +2,104 @@
 
 **English** | [Chinese](README_zh.md) | [Japanese](README_ja.md)
 
-Agora is a local-first delivery control plane for durable AI-assisted work.
-It coordinates Codex, Claude Code, and Kiro through one authoritative workflow:
+**Agora is a local-first console for supervising several coding agents at once.**
+You give a project a folder, a *worker* agent, and a *different reviewer* agent.
+The worker builds, the reviewer independently cross-reviews its work, and nothing
+advances until you approve. Agora is the single authority that records every
+task, run, and decision across Codex, Claude Code, and Kiro.
 
 ```text
-Project -> Task -> Stage -> Run -> Artifact/Evidence -> Gate -> Handoff/Done
+Project (folder + worker agent + reviewer agent)
+   -> Task
+   -> Worker run (isolated git worktree)
+   -> Automatic cross-review by a different agent
+   -> Your approval
+   -> Verified
 ```
 
-## Important: the autonomous council is retired
+The point is triage: one person watching many agents, seeing at a glance what
+needs a reply, what needs approval, and what is blocked — instead of babysitting
+each agent in its own terminal.
 
-The Agora 0.5 Scout / Architect / Critic / Synthesizer discussion council is
-not part of the Agora 1.0 product. The default CLI, HTTP API, and web UI no
-longer start AI-to-AI debate or allow model-generated consensus to advance
-workflow state.
+## What you get
 
-`agora task consult` is different: it is an explicit, bounded request to the
-single runtime already pinned to the current Stage. Its output is only an
-advisory candidate until a human explicitly adopts or rejects it.
+- **Attention-first Portfolio.** Tasks are grouped into *Needs you* / *In
+  progress* / *Done*, colored by the one signal that matters — a question to
+  answer, an approval to give, or a blocker — so the work that needs a human
+  surfaces first.
+- **Per-project worker + reviewer.** Each project pins a default implementer and
+  a *different* review agent (e.g. Codex builds, Claude reviews). Self-review is
+  worthless, so the reviewer is always another agent.
+- **Automatic cross-review.** When a worker run succeeds, Agora dispatches an
+  independent review run by the project's reviewer agent, feeds it the worker's
+  deliverables, and raises the result as an approval for you. Approve and the
+  task advances to *verified*; the review has real teeth — it reports concrete
+  findings, not a rubber stamp.
+- **Isolated deliverables.** Every agent workspace is its own git repository, so
+  a run's output is exactly the files it produced — cleanly shown in the UI and
+  reviewed without noise from the surrounding repo.
+- **In-app requirements interview.** The agent asks clarifying questions on the
+  page and your answers become the spec — clarification is a product step, not
+  something done in a chat window on the side.
+- **Settings that tell the truth.** The Settings page probes each runtime's
+  install, version, and login status (without spending tokens), reports Claude
+  token usage per agent, and lets you set the project root and execution limits.
+- **A durable control plane underneath.** Agora is the only writer of
+  cross-agent task and gate state; approvals bind to repo, ref, commit, and
+  artifact; resume and retry are idempotent and fail closed on stale authority.
+  Pinned runtimes are never silently substituted — a missing one blocks its work
+  instead.
 
-## Core guarantees
+> The Agora 0.5 autonomous Scout / Architect / Critic / Synthesizer debate
+> council is retired and is not part of this product; model output never
+> advances state on its own.
 
-- Agora is the only writer of cross-runtime Task, Stage, and Gate state.
-- Every native runtime receives a versioned Context Pack and returns a
-  versioned Handoff Pack.
-- Process, transport, schema, and semantic success are recorded separately.
-- Approvals bind to the repository, ref, commit, Stage, Artifact path, and
-  Artifact hash.
-- Review budget cannot be silently spent on implementation or consultation.
-- Resume and retry are idempotent and fail closed on stale authority.
-
-## Current entry points
+## Quick start (Windows)
 
 ```powershell
-# Show the authoritative Task command family
 cd backend
-.\.venv\Scripts\agora.exe task --help
+uv sync --locked --extra dev
 
-# Start the API and the built static Control Plane UI
+cd ..\frontend
+corepack pnpm install --frozen-lockfile
+corepack pnpm build
+
+cd ..\backend
 $env:AGORA_CONTROL_PLANE_TOKEN = "replace-with-a-long-random-secret"
 uv run uvicorn agora.api.app:app --host 127.0.0.1 --port 8000
 ```
 
-Open `http://localhost:8000/control-plane` for the authenticated Task console.
-The console reads one authoritative projection and exposes only separately
-reviewed, Task-scoped human actions.
+Open `http://127.0.0.1:8000/portfolio` for the attention-first board, or
+`http://127.0.0.1:8000/control-plane` for the authenticated task console. Use
+project `agora` and the same bearer token. From there you can create a project
+(it gets its own folder and isolated agent workspaces), assign its worker and
+reviewer agents, and run tasks.
 
-For locked installation, frontend build, first Task, explicit consultation,
-human adopt/reject, recovery, and shutdown, follow the
-[Agora 1.0 practical tutorial](docs/usage/agora-1.0-tutorial.md).
-
-To verify the complete formal control path without calling any AI/provider or
-touching the configured Agora database:
+To verify the whole formal control path without calling any AI provider or
+touching the configured database:
 
 ```powershell
 .\backend\.venv\Scripts\python.exe scripts\run_task_acceptance.py
 ```
 
-The command launches deterministic local child processes in a temporary Git
-project, runs all formal Stages and Gates, records explicit human approval,
-reopens SQLite, prints one JSON receipt, and removes the temporary workspace.
-It is control-plane acceptance, not native Codex/Claude/Kiro quality evidence.
+It launches deterministic local child processes in a temporary Git project, runs
+every stage and gate, records an explicit human approval, reopens SQLite, prints
+one JSON receipt, and removes the workspace. That is control-plane acceptance,
+not evidence of native Codex/Claude/Kiro output quality.
 
-For architecture and current implementation status, see:
+## Runtimes
 
-- [`AGENTS.md`](AGENTS.md)
-- [`docs/architecture/protocol-domain-freeze-v1.md`](docs/architecture/protocol-domain-freeze-v1.md)
-- [`docs/requirements/latest-transformation-requirements.md`](docs/requirements/latest-transformation-requirements.md)
-- [`.agora/development/PROGRESS.md`](.agora/development/PROGRESS.md)
+Codex, Claude Code, and Kiro are explicit, pinned CLI adapters. Their
+subscriptions and availability are external dependencies: a missing or
+logged-out runtime blocks its work and is never silently replaced. Detection and
+login status are surfaced on the Settings page.
 
-Agora 1.0 is the reviewed local control-plane baseline. Native CLI
-subscriptions and service availability remain external dependencies; a missing
-pinned runtime blocks its Stage and is never silently replaced. Dynamic roles,
-arbitrary local-model adapters, and runtime substitution are post-1.0
-enhancements.
+## Learn more
+
+- [`AGENTS.md`](AGENTS.md) — architecture and conventions
+- [Agora practical tutorial](docs/usage/agora-1.0-tutorial.md) — install, first task, approval, recovery, shutdown
+- [`docs/architecture/protocol-domain-freeze-v1.md`](docs/architecture/protocol-domain-freeze-v1.md) — the control-plane protocol
+- [`.agora/development/PROGRESS.md`](.agora/development/PROGRESS.md) — implementation status
 
 ## Development
 

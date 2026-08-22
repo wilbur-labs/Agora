@@ -2,6 +2,43 @@
 
 All notable changes to Agora are documented here. This project follows [Semantic Versioning](https://semver.org/).
 
+## [1.1.0] - 2026-08-22
+
+Shifts Agora's day-to-day surface toward supervising several coding agents at
+once — a per-project worker plus a different reviewer, automatic cross-review,
+approve-to-advance, and handoff — on top of the existing 1.0 control plane.
+
+### Added
+
+- **Automatic cross-review.** A succeeded worker run auto-dispatches an
+  independent review run by the project's reviewer agent, feeds it the worker's
+  deliverables, and raises the result as an approval; approving advances the
+  task through review to verified. Opt-in via `execution.auto_review`.
+- **Per-project worker and reviewer agents.** Each project pins a default
+  implementer and a distinct reviewer (default: Codex builds, Claude reviews),
+  editable from project creation and Settings.
+- **Attention-first Portfolio.** Tasks grouped into Needs you / In progress /
+  Done and colored by open attention (question, approval, blocker, running),
+  with per-task latest run status and a deep link to its runs.
+- **Handoff.** Completing a verified task commits the worker's deliverable in
+  its workspace and binds the commit hash and file list to the task before it
+  moves to done, so "done" points at an immutable deliverable.
+- **Project creation with provisioned worktrees.** Creating a project git-inits
+  its root and provisions each agent workspace as an isolated linked Git
+  worktree on a per-adapter branch.
+- **Settings page.** Runtime install/version/login detection (no token spend),
+  Claude per-agent token usage, project-root and execution-limit configuration.
+- **In-app requirements interview.** The agent asks clarifying questions in the
+  UI and answers form the requirement spec.
+- **Chinese/English UI (i18n)** for the control-plane frontend.
+
+### Changed
+
+- Agent workspaces are provisioned linked worktrees. Execution, deliverable
+  discovery, file serving, and handoff all fail closed unless a run's workspace
+  is exactly its project/adapter's provisioned worktree — so an agent can never
+  read, write, or commit a repository it does not own.
+
 ## [1.0.0] - 2026-08-04
 
 ### Added

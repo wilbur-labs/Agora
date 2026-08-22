@@ -58,7 +58,7 @@ DEFAULT_ADAPTERS: dict[str, dict[str, Any]] = {
     },
     "claude": {
         "command": [
-            "claude", "-p", "{prompt}", "--output-format", "text",
+            "claude", "-p", "{prompt}", "--output-format", "json",
             "--permission-mode", "auto", "--no-session-persistence",
         ],
         "workspace_key": "claude",

@@ -8,6 +8,7 @@ import { WorkflowComposer } from "@/components/workflow-composer";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { usePoll } from "@/hooks/use-poll";
+import { useI18n } from "@/lib/i18n";
 import { ApiError } from "@/lib/control-plane";
 import { listTasks, type TaskManifest } from "@/lib/control-plane";
 import { cn } from "@/lib/utils";
@@ -20,6 +21,7 @@ import {
 const terminal = new Set<WorkflowState>(["completed", "failed", "cancelled"]);
 
 export default function WorkflowsPage() {
+  const { t } = useI18n();
   const [items, setItems] = useState<WorkflowSummary[]>([]);
   const [selectedId, setSelectedId] = useState("");
   const [detail, setDetail] = useState<WorkflowManifest | null>(null);
@@ -73,7 +75,7 @@ export default function WorkflowsPage() {
   const refreshAll = async () => { await loadList(false); await loadDetail(); };
   const resyncConflict = async (err: unknown) => {
     if (err instanceof ApiError && err.status === 409) {
-      setError("Workflow changed elsewhere. Current state was refreshed; review before retrying.");
+      setError(t("workflows.page.error.conflict"));
       await refreshAll(); return true;
     }
     return false;
@@ -83,35 +85,35 @@ export default function WorkflowsPage() {
     <DeliveryShell active="Workflows">
       <header className="border-b bg-background/85 px-5 py-5 backdrop-blur md:px-8">
         <div className="mx-auto flex max-w-[1600px] flex-wrap items-center justify-between gap-4">
-          <div><p className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">Cross-project orchestration</p><h1 className="mt-1 text-2xl font-bold">Workflow Operations</h1></div>
-          <div className="flex gap-2"><Button variant="outline" size="lg" onClick={() => void refreshAll()} disabled={loading || acting}><RefreshCw className={cn("size-4", loading && "animate-spin")} /> Refresh</Button><Button size="lg" onClick={async () => { try { const loaded = await listTasks(); if (!mounted.current) return; setTasks(loaded); setShowComposer(true); } catch (err) { if (mounted.current) setError((err as Error).message); } }}><Plus /> New workflow</Button></div>
+          <div><p className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">{t("workflows.page.eyebrow")}</p><h1 className="mt-1 text-2xl font-bold">{t("workflows.page.title")}</h1></div>
+          <div className="flex gap-2"><Button variant="outline" size="lg" onClick={() => void refreshAll()} disabled={loading || acting}><RefreshCw className={cn("size-4", loading && "animate-spin")} /> {t("workflows.page.refresh")}</Button><Button size="lg" onClick={async () => { try { const loaded = await listTasks(); if (!mounted.current) return; setTasks(loaded); setShowComposer(true); } catch (err) { if (mounted.current) setError((err as Error).message); } }}><Plus /> {t("workflows.page.newWorkflow")}</Button></div>
         </div>
       </header>
       <div className="mx-auto grid max-w-[1600px] gap-5 p-5 md:p-8 xl:grid-cols-[340px_minmax(0,1fr)]">
-        {error && <div className="xl:col-span-2 flex items-center justify-between rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive" role="alert"><span>{error}</span><button onClick={() => setError(null)} aria-label="Dismiss error"><X className="size-4" /></button></div>}
+        {error && <div className="xl:col-span-2 flex items-center justify-between rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive" role="alert"><span>{error}</span><button onClick={() => setError(null)} aria-label={t("workflows.page.error.dismiss")}><X className="size-4" /></button></div>}
         <section className="overflow-hidden rounded-xl border bg-card">
-          <div className="border-b px-4 py-3"><h2 className="text-sm font-semibold">Workflows</h2><p className="text-xs text-muted-foreground">{items.length} plans · read polling every 5s</p></div>
+          <div className="border-b px-4 py-3"><h2 className="text-sm font-semibold">{t("workflows.page.list.heading")}</h2><p className="text-xs text-muted-foreground">{t("workflows.page.list.meta", { count: items.length })}</p></div>
           <div className="max-h-[72vh] overflow-y-auto" aria-busy={loading}>
             {items.map((item) => <button key={item.workflow_id} disabled={acting} aria-pressed={selectedId === item.workflow_id} onClick={() => { selectedRef.current = item.workflow_id; setSelectedId(item.workflow_id); setDispatchResult(null); }} className={cn("block w-full border-b p-4 text-left hover:bg-accent/50 disabled:opacity-60", selectedId === item.workflow_id && "bg-primary/5")}>
               <span className="flex items-start justify-between gap-2"><strong className="text-sm">{item.title}</strong><StateBadge state={item.state} /></span>
               <span className="mt-2 block font-mono text-[11px] text-muted-foreground">{shortId(item.workflow_id)}</span>
-              <span className="mt-1 block text-xs text-muted-foreground">{item.step_count} steps · {item.ready_count} ready · {item.auto_dispatch ? `auto ≤${item.max_concurrent_runs}` : "manual"} · v{item.version}</span>
+              <span className="mt-1 block text-xs text-muted-foreground">{t("workflows.page.list.summary", { steps: item.step_count, ready: item.ready_count, mode: item.auto_dispatch ? t("workflows.page.list.autoMode", { max: item.max_concurrent_runs }) : t("workflows.page.list.manualMode"), version: item.version })}</span>
             </button>)}
-            {!loading && !items.length && <div className="p-10 text-center text-sm text-muted-foreground"><GitBranch className="mx-auto mb-3 size-8 opacity-40" />No workflows yet. Create one through the API; the visual composer is the next increment.</div>}
+            {!loading && !items.length && <div className="p-10 text-center text-sm text-muted-foreground"><GitBranch className="mx-auto mb-3 size-8 opacity-40" />{t("workflows.page.list.empty")}</div>}
           </div>
         </section>
 
         <section className="min-w-0 space-y-5">
-          {!detail ? <div className="rounded-xl border border-dashed bg-card p-12 text-center text-sm text-muted-foreground">Select a workflow to inspect its DAG.</div> : <>
-            <div className="sr-only" aria-live="polite">Workflow {detail.title} is {detail.state}.</div>
+          {!detail ? <div className="rounded-xl border border-dashed bg-card p-12 text-center text-sm text-muted-foreground">{t("workflows.page.detail.placeholder")}</div> : <>
+            <div className="sr-only" aria-live="polite">{t("workflows.page.detail.liveStatus", { title: detail.title, state: detail.state })}</div>
             <div className="rounded-xl border bg-card p-5">
-              <div className="flex flex-wrap items-start justify-between gap-4"><div><div className="flex items-center gap-2"><StateBadge state={detail.state} /><Badge variant="outline">{detail.auto_dispatch ? `Auto · max ${detail.max_concurrent_runs}` : "Manual"}</Badge><span className="font-mono text-xs text-muted-foreground">{detail.workflow_id}</span></div><h2 className="mt-2 text-xl font-bold">{detail.title}</h2>{detail.description && <p className="mt-1 text-sm text-muted-foreground">{detail.description}</p>}</div>
-                <div className="flex gap-2">{detail.state === "draft" && <Button disabled={acting} onClick={async () => { const target = detail; setActing(true); detailRequest.current += 1; detailAbort.current?.abort(); try { const updated = await activateWorkflow(target); if (selectedRef.current === target.workflow_id) setDetail((current) => !current || current.version <= updated.version ? updated : current); await loadList(false); } catch (err) { if (!await resyncConflict(err)) setError((err as Error).message); } finally { if (mounted.current) setActing(false); } }}><Play /> Activate</Button>}
-                  {(detail.state === "active" || detail.state === "failed") && <Button disabled={acting} onClick={async () => { const targetId = detail.workflow_id; setActing(true); detailRequest.current += 1; detailAbort.current?.abort(); try { const result = await dispatchWorkflow(targetId); if (selectedRef.current === targetId) setDispatchResult(result); await refreshAll(); } catch (err) { if (!await resyncConflict(err)) setError((err as Error).message); } finally { if (mounted.current) setActing(false); } }}><RotateCw className={cn(acting && "animate-spin")} /> {detail.state === "failed" ? "Cleanup" : "Dispatch / reconcile"}</Button>}</div>
+              <div className="flex flex-wrap items-start justify-between gap-4"><div><div className="flex items-center gap-2"><StateBadge state={detail.state} /><Badge variant="outline">{detail.auto_dispatch ? t("workflows.page.detail.autoBadge", { max: detail.max_concurrent_runs }) : t("workflows.page.detail.manualBadge")}</Badge><span className="font-mono text-xs text-muted-foreground">{detail.workflow_id}</span></div><h2 className="mt-2 text-xl font-bold">{detail.title}</h2>{detail.description && <p className="mt-1 text-sm text-muted-foreground">{detail.description}</p>}</div>
+                <div className="flex gap-2">{detail.state === "draft" && <Button disabled={acting} onClick={async () => { const target = detail; setActing(true); detailRequest.current += 1; detailAbort.current?.abort(); try { const updated = await activateWorkflow(target); if (selectedRef.current === target.workflow_id) setDetail((current) => !current || current.version <= updated.version ? updated : current); await loadList(false); } catch (err) { if (!await resyncConflict(err)) setError((err as Error).message); } finally { if (mounted.current) setActing(false); } }}><Play /> {t("workflows.page.detail.activate")}</Button>}
+                  {(detail.state === "active" || detail.state === "failed") && <Button disabled={acting} onClick={async () => { const targetId = detail.workflow_id; setActing(true); detailRequest.current += 1; detailAbort.current?.abort(); try { const result = await dispatchWorkflow(targetId); if (selectedRef.current === targetId) setDispatchResult(result); await refreshAll(); } catch (err) { if (!await resyncConflict(err)) setError((err as Error).message); } finally { if (mounted.current) setActing(false); } }}><RotateCw className={cn(acting && "animate-spin")} /> {detail.state === "failed" ? t("workflows.page.detail.cleanup") : t("workflows.page.detail.dispatch")}</Button>}</div>
               </div>
-              {dispatchResult && <div className="mt-4 rounded-lg border bg-muted/30 p-3 text-xs"><p>{dispatchResult.dispatched_run_ids.length} runs dispatched · {dispatchResult.blockers.length} blockers</p>{dispatchResult.blockers.map((item) => <p key={item.step_id} className="mt-1 text-amber-700 dark:text-amber-300">{stepName(detail.steps, item.step_id)}: {item.reason}</p>)}</div>}
+              {dispatchResult && <div className="mt-4 rounded-lg border bg-muted/30 p-3 text-xs"><p>{t("workflows.page.detail.dispatchSummary", { runs: dispatchResult.dispatched_run_ids.length, blockers: dispatchResult.blockers.length })}</p>{dispatchResult.blockers.map((item) => <p key={item.step_id} className="mt-1 text-amber-700 dark:text-amber-300">{stepName(detail.steps, item.step_id)}: {item.reason}</p>)}</div>}
             </div>
-            <div className="overflow-x-auto rounded-xl border bg-muted/20 p-4">{graph.unresolved && <p className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-xs text-amber-700 dark:text-amber-300" role="status">Some dependencies could not be resolved; affected steps are shown in the warning stage.</p>}<div className="flex min-w-max items-stretch gap-8">{graph.levels.map((level, index) => <div key={index} className="w-72 space-y-3"><div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{graph.unresolved && index === graph.levels.length - 1 ? "Unresolved" : `Stage ${index + 1}`}</div>{level.map((step) => <StepCard key={step.step_id} step={step} allSteps={detail.steps} />)}</div>)}</div></div>
+            <div className="overflow-x-auto rounded-xl border bg-muted/20 p-4">{graph.unresolved && <p className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-xs text-amber-700 dark:text-amber-300" role="status">{t("workflows.page.graph.warning")}</p>}<div className="flex min-w-max items-stretch gap-8">{graph.levels.map((level, index) => <div key={index} className="w-72 space-y-3"><div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">{graph.unresolved && index === graph.levels.length - 1 ? t("workflows.page.graph.unresolved") : t("workflows.page.graph.stage", { n: index + 1 })}</div>{level.map((step) => <StepCard key={step.step_id} step={step} allSteps={detail.steps} />)}</div>)}</div></div>
           </>}
         </section>
       </div>
@@ -121,12 +123,13 @@ export default function WorkflowsPage() {
 }
 
 function StepCard({ step, allSteps }: { step: WorkflowStep; allSteps: WorkflowStep[] }) {
+  const { t } = useI18n();
   return <article className={cn("rounded-xl border bg-card p-4 shadow-sm", step.dispatch_error && "border-amber-500/40")}>
     <div className="flex items-start justify-between gap-2"><Badge variant="outline">{step.project_id}</Badge><StepBadge state={step.state} /></div>
     <h3 className="mt-3 font-semibold">{step.title}</h3><p className="mt-1 text-xs text-muted-foreground">{step.adapter} · v{step.version}</p>
-    {step.depends_on.length > 0 && <p className="mt-3 text-xs text-muted-foreground">After: {step.depends_on.map((id) => stepName(allSteps, id)).join(", ")}</p>}
+    {step.depends_on.length > 0 && <p className="mt-3 text-xs text-muted-foreground">{t("workflows.page.step.after", { names: step.depends_on.map((id) => stepName(allSteps, id)).join(", ") })}</p>}
     {step.dispatch_error && <p className="mt-3 rounded-md bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-300">{step.dispatch_error}</p>}
-    <div className="mt-3 flex gap-3 text-xs">{step.run_id && <Link className="font-medium hover:underline" href={`/runs?run=${encodeURIComponent(step.run_id)}`}>Open run</Link>}{step.task_id && <Link className="font-medium hover:underline" href={`/requirements?task=${encodeURIComponent(step.task_id)}`}>Open task</Link>}</div>
+    <div className="mt-3 flex gap-3 text-xs">{step.run_id && <Link className="font-medium hover:underline" href={`/runs?run=${encodeURIComponent(step.run_id)}`}>{t("workflows.page.step.openRun")}</Link>}{step.task_id && <Link className="font-medium hover:underline" href={`/requirements?task=${encodeURIComponent(step.task_id)}`}>{t("workflows.page.step.openTask")}</Link>}</div>
   </article>;
 }
 
@@ -137,5 +140,5 @@ function dagLevels(steps: WorkflowStep[]): { levels: WorkflowStep[][]; unresolve
 }
 function stepName(steps: WorkflowStep[], id: string) { return steps.find((step) => step.step_id === id)?.title ?? shortId(id); }
 function shortId(value: string) { return value.length > 20 ? `${value.slice(0, 12)}…${value.slice(-5)}` : value; }
-function StateBadge({ state }: { state: WorkflowState }) { return <Badge variant={state === "failed" ? "destructive" : state === "completed" ? "default" : "secondary"} className="capitalize">{state}</Badge>; }
-function StepBadge({ state }: { state: WorkflowStepState }) { return <Badge variant={state === "failed" ? "destructive" : state === "succeeded" ? "default" : "secondary"} className="capitalize">{state}</Badge>; }
+function StateBadge({ state }: { state: WorkflowState }) { const { te } = useI18n(); return <Badge variant={state === "failed" ? "destructive" : state === "completed" ? "default" : "secondary"} className="capitalize">{te("workflowState", state)}</Badge>; }
+function StepBadge({ state }: { state: WorkflowStepState }) { const { te } = useI18n(); return <Badge variant={state === "failed" ? "destructive" : state === "succeeded" ? "default" : "secondary"} className="capitalize">{te("stepState", state)}</Badge>; }

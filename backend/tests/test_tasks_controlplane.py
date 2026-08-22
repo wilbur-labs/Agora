@@ -95,6 +95,45 @@ def test_store_rejects_invalid_and_stale_transitions(tmp_path):
         pass
 
 
+def test_finished_states_are_terminal_and_graph_is_consistent():
+    from agora.tasks.transitions import ALLOWED_TRANSITIONS, TERMINAL_STATES, can_transition
+
+    # Finished states have no lifecycle out-edges (retirement is display-only).
+    for terminal in (TaskState.DONE, TaskState.FAILED, TaskState.CANCELLED):
+        assert ALLOWED_TRANSITIONS[terminal] == set()
+        for target in TaskState:
+            assert not can_transition(terminal, target)
+    # The exported invariant matches the actual graph.
+    assert TERMINAL_STATES == {state for state, outs in ALLOWED_TRANSITIONS.items() if not outs}
+
+
+def test_store_archive_is_display_only_versioned_and_idempotent(tmp_path):
+    store = TaskStore(tmp_path / "archive.db")
+    task = store.create(_request())
+    assert task.archived_at is None
+
+    archived = store.set_archived(task.task_id, archived=True, expected_version=task.version)
+    assert archived.archived_at is not None
+    assert archived.state == task.state  # lifecycle state is unchanged
+    assert archived.version == task.version + 1
+
+    # Idempotent: re-archiving is a no-op that does not bump the version.
+    again = store.set_archived(archived.task_id, archived=True)
+    assert again.version == archived.version
+    assert again.archived_at == archived.archived_at
+
+    # Fails closed on a stale version.
+    try:
+        store.set_archived(archived.task_id, archived=False, expected_version=task.version)
+        raise AssertionError("stale archive was accepted")
+    except StaleTaskVersionError:
+        pass
+
+    restored = store.set_archived(archived.task_id, archived=False, expected_version=archived.version)
+    assert restored.archived_at is None
+    assert restored.state == task.state
+
+
 def test_task_api_lifecycle_and_validation(tmp_path):
     store = TaskStore(tmp_path / "api.db")
     projects = _projects(tmp_path)

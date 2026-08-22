@@ -4,6 +4,11 @@ from __future__ import annotations
 from .models import TaskState
 
 
+# States with no outgoing transitions. Removing a finished task from the board
+# is a display-only `archived_at` flag (see TaskStore.set_archived), NOT a
+# lifecycle transition, so these stay terminal and the authoritative and
+# compatibility states never diverge. A graph-consistency test asserts this set
+# matches ALLOWED_TRANSITIONS.
 TERMINAL_STATES = {TaskState.DONE, TaskState.FAILED, TaskState.CANCELLED}
 
 ALLOWED_TRANSITIONS: dict[TaskState, set[TaskState]] = {
@@ -49,4 +54,5 @@ ALLOWED_TRANSITIONS: dict[TaskState, set[TaskState]] = {
 
 
 def can_transition(current: TaskState, target: TaskState) -> bool:
-    return target in ALLOWED_TRANSITIONS[current]
+    # Fail closed: an unregistered current state has no permitted transitions.
+    return target in ALLOWED_TRANSITIONS.get(current, set())
