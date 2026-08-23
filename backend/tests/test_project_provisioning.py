@@ -56,6 +56,89 @@ def _registry(tmp_path) -> ProjectRegistry:
     return registry
 
 
+def test_charter_endpoint_sets_and_returns(tmp_path):
+    from agora.tasks.router import get_project_registry
+
+    registry = _registry(tmp_path)
+    app.dependency_overrides[get_project_registry] = lambda: registry
+    client = TestClient(app)
+    try:
+        resp = client.put("/api/projects/agora/charter", json={
+            "goal": "Ship a small tools library",
+            "non_goals": ["no general-purpose library"],
+            "success_criteria": ["every function tested", "reviewed by a different agent"],
+        })
+        assert resp.status_code == 200, resp.text
+        charter = resp.json()["charter"]
+        assert charter["goal"] == "Ship a small tools library"
+        assert charter["success_criteria"] == ["every function tested", "reviewed by a different agent"]
+
+        # blank items are stripped
+        resp2 = client.put("/api/projects/agora/charter", json={
+            "goal": "G2", "non_goals": ["  ", ""], "success_criteria": [],
+        })
+        assert resp2.json()["charter"]["non_goals"] == []
+
+        # it shows up in the projects listing too
+        listing = client.get("/api/projects").json()
+        agora = next(p for p in listing["items"] if p["project_id"] == "agora")
+        assert agora["charter"]["goal"] == "G2"
+
+        assert client.put("/api/projects/nope/charter", json={"goal": "x"}).status_code == 404
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_project_dashboard_progress_vs_verified(tmp_path):
+    from agora.tasks.router import get_project_registry, get_task_store
+    from agora.tasks.store import TaskStore
+    from agora.tasks.models import CreateTaskRequest, TaskState
+    from agora.execution.router import get_execution_store
+    from agora.execution.store import ExecutionStore
+    from agora.requirements.store import RequirementStore
+    from agora.requirements.models import CreateSpecRequest, RequirementItem, AcceptanceScenario
+
+    registry = _registry(tmp_path)
+    tasks = TaskStore(tmp_path / "dash.db")
+    runs = ExecutionStore(tasks)
+    specs = RequirementStore(tasks)
+
+    # one task carried to DONE with a 2-criterion approved spec -> fully verified
+    t = tasks.create(CreateTaskRequest(project_id="agora", title="done task", created_by="t"))
+    t = tasks.transition(t.task_id, TaskState.REQUIREMENTS, actor="t", expected_version=t.version)
+    spec = specs.create(t.task_id, CreateSpecRequest(
+        title="s", summary="s",
+        functional=[RequirementItem(requirement_id="FR-1", statement="does a thing")],
+        acceptance_scenarios=[
+            AcceptanceScenario(scenario_id="AC-1", requirement_ids=["FR-1"], given="g", when="w", then="t"),
+            AcceptanceScenario(scenario_id="AC-2", requirement_ids=["FR-1"], given="g", when="w", then="t"),
+        ], created_by="t"))
+    specs.approve(spec.spec_id, actor="t", expected_revision=spec.revision, reason="ok")
+    with tasks._transaction() as db:
+        db.execute("UPDATE tasks SET state=? WHERE task_id=?", (TaskState.DONE.value, t.task_id))
+
+    # a second, unspecified task still in backlog -> pending, counts as one unit
+    tasks.create(CreateTaskRequest(project_id="agora", title="backlog task", created_by="t"))
+
+    app.dependency_overrides[get_project_registry] = lambda: registry
+    app.dependency_overrides[get_task_store] = lambda: tasks
+    app.dependency_overrides[get_execution_store] = lambda: runs
+    client = TestClient(app)
+    try:
+        resp = client.get("/api/projects/agora/dashboard")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        # 3 units total (2 verified criteria + 1 pending unspecified task):
+        assert body["metrics"]["verified_pct"] == 67   # 2/3
+        assert body["metrics"]["progress_pct"] == 67    # produced = same 2/3 here
+        assert body["metrics"]["health"] == "normal"
+        done = next(tk for tk in body["tasks"] if tk["title"] == "done task")
+        assert len(done["criteria"]) == 2 and all(c["status"] == "verified" for c in done["criteria"])
+        assert client.get("/api/projects/nope/dashboard").status_code == 404
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_create_project_provisions_linked_worktrees_inside_outer_repo(tmp_path):
     registry = _registry(tmp_path)
     outer_head_before = _git("rev-parse", "HEAD", cwd=tmp_path)

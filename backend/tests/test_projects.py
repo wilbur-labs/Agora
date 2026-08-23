@@ -104,3 +104,26 @@ def test_add_accepts_documented_project_id_separators(tmp_path):
         assert "letters, numbers, dashes, or underscores" in str(exc)
     else:
         raise AssertionError("path separators must not be accepted in project ids")
+
+
+def test_charter_round_trips_and_defaults_empty(tmp_path):
+    registry = ProjectRegistry(_config(tmp_path))
+    project = registry.add("charter-proj", tmp_path / "charter-proj")
+    assert project.charter == {}  # no charter until a human sets one
+
+    updated = registry.set_charter(
+        "charter-proj",
+        goal="Ship a small tools library",
+        non_goals=["no general-purpose library"],
+        success_criteria=["every function tested and reviewed"],
+    )
+    assert updated.charter["goal"] == "Ship a small tools library"
+    assert updated.charter["non_goals"] == ["no general-purpose library"]
+
+    # Persisted: a fresh registry reads it back.
+    reread = ProjectRegistry(_config(tmp_path)).get("charter-proj")
+    assert reread.charter["success_criteria"] == ["every function tested and reviewed"]
+
+    import pytest
+    with pytest.raises(KeyError):
+        registry.set_charter("nope", goal="x", non_goals=[], success_criteria=[])

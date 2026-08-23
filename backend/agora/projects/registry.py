@@ -1,7 +1,7 @@
 """Multi-project registry for Agora control-plane state."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +22,9 @@ class Project:
     workspaces: dict[str, Path]
     worker_agent: str = DEFAULT_WORKER_AGENT
     reviewer_agent: str = DEFAULT_REVIEWER_AGENT
+    # Human-authored project definition (goal / non_goals / success_criteria).
+    # Agents never write it; it answers "what is this project ultimately for".
+    charter: dict[str, Any] = field(default_factory=dict)
 
     @property
     def agora_dir(self) -> Path:
@@ -174,6 +177,29 @@ class ProjectRegistry:
         self._write(data)
         return self._project(project_id, projects[project_id])
 
+    def set_charter(
+        self,
+        project_id: str,
+        *,
+        goal: str,
+        non_goals: list[str],
+        success_criteria: list[str],
+    ) -> Project:
+        """Set a project's human-authored charter. This is the human-facing path
+        to define the goal; no agent code path writes the charter. (Endpoint-level
+        authentication is a 1.3 concern — see the charter route.)"""
+        data = self._read()
+        projects = data.get("projects", {})
+        if project_id not in projects:
+            raise KeyError(f"Unknown project: {project_id}")
+        projects[project_id]["charter"] = {
+            "goal": goal,
+            "non_goals": list(non_goals),
+            "success_criteria": list(success_criteria),
+        }
+        self._write(data)
+        return self._project(project_id, projects[project_id])
+
     def research_config(self, project: Project | None = None) -> dict[str, Any]:
         p = project or self.current_project()
         return {
@@ -198,6 +224,7 @@ class ProjectRegistry:
             workspaces={k: self._resolve_path(v, root) for k, v in data.get("workspaces", {}).items()},
             worker_agent=data.get("worker_agent", DEFAULT_WORKER_AGENT),
             reviewer_agent=data.get("reviewer_agent", DEFAULT_REVIEWER_AGENT),
+            charter=dict(data.get("charter") or {}),
         )
 
     def _default_projects(self) -> dict[str, Any]:

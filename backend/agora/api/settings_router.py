@@ -17,10 +17,11 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.concurrency import run_in_threadpool
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from agora.config.settings import get_config
-from agora.tasks.router import get_project_registry
+from agora.tasks.router import get_project_registry, get_task_store
+from agora.tasks.store import TaskStore
 from agora.execution.adapters import build_adapter_registry
 from agora.execution.dispatcher import ExecutionDispatcher
 from agora.execution.models import RunState
@@ -91,9 +92,29 @@ class SetProjectAgentsRequest(BaseModel):
     worker_agent: str = Field(pattern=_AGENT_PATTERN)
     reviewer_agent: str = Field(pattern=_AGENT_PATTERN)
 
+
+class SetCharterRequest(BaseModel):
+    goal: str = Field(default="", max_length=2000)
+    non_goals: list[str] = Field(default_factory=list, max_length=50)
+    success_criteria: list[str] = Field(default_factory=list, max_length=50)
+
+    @field_validator("non_goals", "success_criteria")
+    @classmethod
+    def _no_blank_items(cls, values: list[str]) -> list[str]:
+        cleaned = [v.strip() for v in values if v.strip()]
+        for v in cleaned:
+            if len(v) > 500:
+                raise ValueError("each item must be at most 500 characters")
+        return cleaned
+
 # One page of runs to summarize. Beyond this the summary is marked truncated
 # rather than paging the whole history on every Settings load.
 _RUN_SCAN_LIMIT = 500
+
+# Dashboard projection bounds. The rollup marks itself `truncated` past the task
+# cap rather than paging every task's whole run history on each open.
+_DASHBOARD_TASK_LIMIT = 500
+_DASHBOARD_RUN_LIMIT = 200
 
 
 @router.get("/runtime-capabilities")
@@ -243,6 +264,7 @@ def list_projects(
                 "root": str(project.root),
                 "worker_agent": project.worker_agent,
                 "reviewer_agent": project.reviewer_agent,
+                "charter": _charter_view(project.charter),
             }
             for pid, project in sorted(registry.list_projects().items())
         ],
@@ -295,6 +317,101 @@ def set_project_agents(
     return _project_summary(project)
 
 
+@router.get("/projects/{project_id}/dashboard")
+def project_dashboard(
+    project_id: str,
+    registry: ProjectRegistry = Depends(get_project_registry),
+    task_store: TaskStore = Depends(get_task_store),
+    exec_store: ExecutionStore = Depends(get_execution_store),
+) -> dict[str, Any]:
+    """The project cockpit projection: charter, each task with its acceptance
+    criteria + progress vs verified-completion, and the project-wide rollup."""
+    from agora.execution.dispatcher import ROLE_KEY, ROLE_REVIEW, ROLE_WORKER
+    from agora.execution.models import RunState
+    from agora.requirements.models import SpecState
+    from agora.requirements.store import RequirementStore
+    from agora.tasks.progress import project_metrics, task_metrics
+
+    try:
+        project = registry.get(project_id)
+    except (KeyError, LookupError):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Unknown project: {project_id}") from None
+
+    specs = RequirementStore(task_store)
+
+    task_views: list[dict[str, Any]] = []
+    metric_list: list[dict[str, Any]] = []
+    states = []
+    task_page = task_store.list(project_id=project_id, limit=_DASHBOARD_TASK_LIMIT)
+    truncated = len(task_page) >= _DASHBOARD_TASK_LIMIT
+    for task in task_page:
+        has_worker = has_review = False
+        # Scan only succeeded runs; stop as soon as both roles are seen.
+        for summary in exec_store.list(
+            task_id=task.task_id, state=RunState.SUCCEEDED, limit=_DASHBOARD_RUN_LIMIT
+        ):
+            run = exec_store.require(summary.run_id)
+            role = str((run.result_metadata or {}).get(ROLE_KEY, ""))
+            if role == ROLE_REVIEW:
+                has_review = True
+            elif role == ROLE_WORKER:
+                has_worker = True  # exact match only; unknown/missing roles ignored
+            if has_worker and has_review:
+                break
+        # Only an APPROVED spec's scenarios define criteria; a draft must not
+        # move the metrics.
+        spec = specs.current(task.task_id)
+        if spec is not None and spec.state != SpecState.APPROVED:
+            spec = None
+        m = task_metrics(task.state, spec, has_worker_success=has_worker, has_review_success=has_review)
+        metric_list.append(m)
+        states.append(task.state)
+        task_views.append({
+            "task_id": task.task_id,
+            "title": task.title,
+            "state": task.state.value,
+            "status": m["status"],
+            "has_spec": m["has_spec"],
+            "criteria": m["criteria"],
+            "produced_weight": m["produced_weight"],
+            "verified_weight": m["verified_weight"],
+            "total_weight": m["total_weight"],
+        })
+
+    metrics = project_metrics(metric_list, states)
+    return {
+        "project_id": project_id,
+        "name": project.name,
+        "charter": _charter_view(project.charter),
+        "metrics": metrics,
+        "tasks": task_views,
+        "truncated": truncated,
+    }
+
+
+@router.put("/projects/{project_id}/charter")
+def set_project_charter(
+    project_id: str,
+    request: SetCharterRequest,
+    registry: ProjectRegistry = Depends(get_project_registry),
+) -> dict[str, Any]:
+    """Set the project's human-authored charter (goal / non-goals / success
+    criteria). This is the human-facing route; no agent code path writes the
+    charter. NOTE: like the other task/settings routes this is not yet
+    authenticated (the app's non-control-plane routes gain auth in 1.3), so on a
+    shared host it is not a hard guarantee — tracked for 1.3."""
+    try:
+        project = registry.set_charter(
+            project_id,
+            goal=request.goal,
+            non_goals=request.non_goals,
+            success_criteria=request.success_criteria,
+        )
+    except KeyError:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Unknown project: {project_id}") from None
+    return _project_summary(project)
+
+
 def _project_summary(project: Any) -> dict[str, Any]:
     return {
         "project_id": project.project_id,
@@ -302,6 +419,17 @@ def _project_summary(project: Any) -> dict[str, Any]:
         "root": str(project.root),
         "worker_agent": project.worker_agent,
         "reviewer_agent": project.reviewer_agent,
+        "charter": _charter_view(project.charter),
+    }
+
+
+def _charter_view(charter: dict[str, Any] | None) -> dict[str, Any]:
+    """Normalize a stored charter for the UI (always the same shape)."""
+    charter = charter or {}
+    return {
+        "goal": charter.get("goal", ""),
+        "non_goals": list(charter.get("non_goals") or []),
+        "success_criteria": list(charter.get("success_criteria") or []),
     }
 
 
@@ -318,6 +446,7 @@ def _projects_overview(registry: ProjectRegistry) -> dict[str, Any]:
                 "root_is_git": (project.root / ".git").exists(),
                 "worker_agent": project.worker_agent,
                 "reviewer_agent": project.reviewer_agent,
+                "charter": _charter_view(project.charter),
                 "workspaces": [
                     {
                         "adapter": adapter,
