@@ -5410,3 +5410,46 @@ shipped) — untouched by this increment and tracked separately.
 
 Next safe action: commit this workspace-isolation increment; fix the stale
 `test_web_ui` retired-path expectation separately.
+
+## Increment: control-plane repositioning — 1.2 parts 1–2 (2026-08-24)
+
+Repositioning Agora as a user-controlled project control plane (thin version:
+adopt the ideas that make the human's mental model clear — six questions,
+progress vs verified-completion, deterministic next action, charter/alignment —
+implemented thin; roles / milestones / CQRS / full capability tokens explicitly
+cut or deferred for a solo local tool). Design confirmed via a mockup (project
+portfolio in four groups; a merged project page = cockpit header + tasks that
+expand inline into their thread with an in-context decision; requirements-intake
+with in-UI clarification; human-readable runs).
+
+1.2 plan: (1) Charter, (2) acceptance criteria + metrics, (3) Next Action engine,
+(4) UI. Parts 1–2 landed on branch `feature/control-plane-1.2`:
+
+- Project Charter (goal / non-goals / success_criteria) on the registry Project;
+  human-facing `PUT /api/projects/{id}/charter`; surfaced in project summaries
+  and listings. No agent code path writes it.
+- `agora/tasks/progress.py` (pure): acceptance criteria derived from a task's
+  APPROVED spec; a task-derived criterion status pending -> produced -> reviewed
+  -> verified where nothing is produced/reviewed without a successful worker run;
+  `progress_pct` (produced weight) vs `verified_pct` (only human-approved weight)
+  so an agent cannot make a project look done by producing code; half-up
+  rounding; a no-spec task counts as one self-consistent unit; cancelled tasks
+  leave the denominator; health = attention when a task is blocked/failed.
+- `GET /api/projects/{id}/dashboard` projection: per-task criteria + metrics and
+  the project rollup + charter; APPROVED specs only; exact run-role matching;
+  scans succeeded runs and stops once both roles seen; marks `truncated` past the
+  task cap.
+- Tests: metric math, charter round-trip/endpoint, dashboard projection; broad
+  regression 310 passed. Also surfaced the handoff delivery (commit + files) on
+  done task cards.
+
+Reviewed by Codex; its metric-integrity findings were fixed (produced-without-
+worker, draft-spec leakage, fail-open roles, weight reconciliation, rounding,
+N+1). Two findings deliberately deferred to 1.3: the task-state and charter
+routes are not yet authenticated (the app's non-control-plane routes gain auth in
+1.3), so verified_pct and charter integrity are not tamper-proof on a shared host
+— acceptable for a solo local tool, and noted in code.
+
+Next safe action: build (3) the Next Action engine (one explicit next action or a
+blocker per task/project), then (4) the project-page / four-group-portfolio UI
+consuming the dashboard. Branch is not yet pushed.
