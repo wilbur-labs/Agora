@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowRight, ChevronRight, FolderPlus, Plus, RefreshCw, X } from "lucide-react";
+import { ArrowRight, ChevronRight, FileCheck2, FolderPlus, Plus, RefreshCw, X } from "lucide-react";
 import { DeliveryShell } from "@/components/delivery-shell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -10,6 +10,8 @@ import {
   archiveTask,
   createProject,
   createTask,
+  fetchDelivery,
+  type Delivery,
   handoffTask,
   listOpenAttention,
   listProjects,
@@ -249,6 +251,16 @@ function TaskCard({ task, bucket, ask, latestRun, onAdvanced, onConflict }: { ta
   const advance = ADVANCE[task.state];
   const isArchived = task.archived_at !== null;
   const meta = BUCKET_META[bucket];
+  const [delivery, setDelivery] = useState<Delivery | null>(null);
+
+  // A done task carries a handoff record (commit + files); surface it so "done"
+  // shows what was actually delivered. Fetched only for done cards (few).
+  useEffect(() => {
+    if (task.state !== "done") { setDelivery(null); return; }
+    const ctrl = new AbortController();
+    fetchDelivery(task.task_id, ctrl.signal).then(setDelivery).catch(() => {});
+    return () => ctrl.abort();
+  }, [task.state, task.task_id]);
 
   const run = async (op: () => Promise<TaskManifest>) => {
     setBusy(true); setError(null);
@@ -286,6 +298,15 @@ function TaskCard({ task, bucket, ask, latestRun, onAdvanced, onConflict }: { ta
           <span className="text-muted-foreground">{t("portfolio.card.run.none")}</span>
         )}
       </div>
+      {delivery && (delivery.commit || delivery.fileCount > 0) && (
+        <div className="mt-1 flex items-center gap-1.5 text-[11px] text-emerald-600 dark:text-emerald-400">
+          <FileCheck2 className="size-3" />
+          <span className="text-muted-foreground">
+            {t("portfolio.card.delivery", { count: delivery.fileCount })}
+            {delivery.commit ? ` · ${delivery.commit.slice(0, 8)}` : ""}
+          </span>
+        </div>
+      )}
       <div className="mt-4 flex items-center justify-between gap-2">
         <span className="text-xs capitalize text-muted-foreground">{te("taskState", task.state)} · P{task.priority}</span>
         <span className="flex items-center gap-3">

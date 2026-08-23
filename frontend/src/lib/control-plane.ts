@@ -191,6 +191,41 @@ export function handoffTask(task: TaskManifest): Promise<HandoffResult> {
   });
 }
 
+export interface TaskEvent {
+  event_id: string;
+  task_id: string;
+  event_type: string;
+  actor: string;
+  payload: Record<string, unknown>;
+  created_at: string;
+}
+
+export function listTaskEvents(taskId: string, signal?: AbortSignal): Promise<TaskEvent[]> {
+  return request(`/api/tasks/${encodeURIComponent(taskId)}/events`, { signal });
+}
+
+// The delivery bound to a completed task by handoff (the latest handoff.completed
+// event's payload), if any.
+export interface Delivery {
+  commit: string | null;
+  committed: boolean;
+  fileCount: number;
+  files: string[];
+}
+
+export async function fetchDelivery(taskId: string, signal?: AbortSignal): Promise<Delivery | null> {
+  const events = await listTaskEvents(taskId, signal);
+  const handoff = [...events].reverse().find((e) => e.event_type === "handoff.completed");
+  if (!handoff) return null;
+  const p = handoff.payload;
+  return {
+    commit: (p.commit as string | null) ?? null,
+    committed: Boolean(p.committed),
+    fileCount: typeof p.file_count === "number" ? p.file_count : ((p.files as string[] | undefined)?.length ?? 0),
+    files: Array.isArray(p.files) ? (p.files as string[]) : [],
+  };
+}
+
 // Display-only board archive: hide a task from the active board without
 // changing its lifecycle state (avoids compat/authoritative divergence).
 // Version-checked and idempotent on the server.

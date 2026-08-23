@@ -56,6 +56,7 @@ export const portfolio = {
         viewResult: "View result",
         none: "No runs yet",
       },
+      delivery: "Delivered {count} file(s)",
       advance: {
         toPlanned: "Start build",
         toReview: "Submit for review",
@@ -176,6 +177,7 @@ export const portfolio = {
         viewResult: "查看结果",
         none: "尚无运行",
       },
+      delivery: "已交付 {count} 个文件",
       advance: {
         toPlanned: "开始构建",
         toReview: "提交评审",
