@@ -12,6 +12,7 @@ import { runs } from "./dictionaries/runs";
 import { workflows } from "./dictionaries/workflows";
 import { attention } from "./dictionaries/attention";
 import { settings } from "./dictionaries/settings";
+import { workspace } from "./dictionaries/workspace";
 
 export type Locale = "en" | "zh";
 
@@ -30,6 +31,7 @@ export const messages = {
     workflows: workflows.en,
     attention: attention.en,
     settings: settings.en,
+    workspace: workspace.en,
   },
   zh: {
     common: common.zh,
@@ -42,5 +44,6 @@ export const messages = {
     workflows: workflows.zh,
     attention: attention.zh,
     settings: settings.zh,
+    workspace: workspace.zh,
   },
 } as const;
