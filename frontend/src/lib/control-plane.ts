@@ -399,6 +399,89 @@ export function setProjectAgents(projectId: string, worker_agent: AdapterName, r
   });
 }
 
+// --- Project charter + dashboard (1.2 control-plane cockpit) ---
+
+export interface Charter {
+  goal: string;
+  non_goals: string[];
+  success_criteria: string[];
+}
+
+export type NextActionOwner = "human" | "agent" | "none";
+
+// One deterministic next step for a task (from the Next Action engine).
+export interface NextAction {
+  owner: NextActionOwner;
+  action: string; // a stable slug localized via te("nextAction", action)
+  attention: boolean;
+  summary: string; // English fallback; UI prefers the localized slug
+}
+
+// The project-wide rollup adds which task it points at and header counts.
+export interface ProjectNextAction extends NextAction {
+  task_id: string | null;
+  title: string | null;
+  attention_count: number;
+  pending_count: number;
+  partial: boolean; // the task page was truncated; non-attention rollup may undercount
+}
+
+export type CriterionStatus = "pending" | "produced" | "reviewed" | "verified";
+
+export interface DashboardCriterion {
+  id: string;
+  description: string;
+  weight: number;
+  status: CriterionStatus;
+}
+
+export interface DashboardTask {
+  task_id: string;
+  title: string;
+  state: TaskState;
+  status: CriterionStatus;
+  has_spec: boolean;
+  criteria: DashboardCriterion[];
+  produced_weight: number;
+  verified_weight: number;
+  total_weight: number;
+  next_action: NextAction;
+}
+
+export interface DashboardMetrics {
+  progress_pct: number;
+  verified_pct: number;
+  total_weight: number;
+  produced_weight: number;
+  verified_weight: number;
+  health: "normal" | "attention";
+}
+
+export interface ProjectDashboard {
+  project_id: string;
+  name: string;
+  charter: Charter;
+  metrics: DashboardMetrics;
+  next_action: ProjectNextAction;
+  tasks: DashboardTask[];
+  truncated: boolean;
+}
+
+// The project cockpit projection: charter, progress vs verified completion, the
+// one deterministic next action, and per-task criteria/next-action.
+export function fetchProjectDashboard(projectId: string, signal?: AbortSignal): Promise<ProjectDashboard> {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/dashboard`, { signal });
+}
+
+// Human-authored charter (goal / non-goals / success criteria). No agent path
+// writes this — it is the human's definition of what "done" means.
+export function setProjectCharter(projectId: string, charter: Charter): Promise<ProjectListItem & { charter: Charter }> {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/charter`, {
+    method: "PUT",
+    body: JSON.stringify(charter),
+  });
+}
+
 export function setProjectsBase(path: string): Promise<{ projects_base: string }> {
   return request("/api/settings/projects-base", {
     method: "PUT",

@@ -1,21 +1,26 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowRight, ChevronRight, FileCheck2, FolderPlus, Plus, RefreshCw, X } from "lucide-react";
+import { AlertTriangle, ArrowRight, ChevronRight, CircleCheck, FileCheck2, FolderPlus, Pencil, Plus, RefreshCw, Target, X } from "lucide-react";
 import { DeliveryShell } from "@/components/delivery-shell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   ApiError,
   archiveTask,
+  type Charter,
   createProject,
   createTask,
+  type DashboardTask,
   fetchDelivery,
+  fetchProjectDashboard,
   type Delivery,
   handoffTask,
   listOpenAttention,
   listProjects,
   listTasks,
+  type ProjectDashboard,
+  setProjectCharter,
   transitionTask,
   unarchiveTask,
   type AdapterName,
@@ -75,6 +80,8 @@ export default function PortfolioPage() {
   const [projectFilter, setProjectFilter] = useState("all");
   const [showArchived, setShowArchived] = useState(false);
   const [showCompleted, setShowCompleted] = useState(false);
+  const [dashboard, setDashboard] = useState<ProjectDashboard | null>(null);
+  const [showCharter, setShowCharter] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -96,6 +103,34 @@ export default function PortfolioPage() {
     const timeout = window.setTimeout(() => void load(), 0);
     return () => window.clearTimeout(timeout);
   }, [load]);
+
+  // The cockpit is per-project: fetch the dashboard (charter + metrics + the one
+  // deterministic next action) only when scoped to a single project. Refetch
+  // when the task set changes so the metrics track advances/creates.
+  const loadDashboard = useCallback(
+    (signal?: AbortSignal) => {
+      if (projectFilter === "all") {
+        setDashboard(null);
+        return;
+      }
+      fetchProjectDashboard(projectFilter, signal)
+        .then((next) => { if (!signal?.aborted) setDashboard(next); })
+        .catch(() => { if (!signal?.aborted) setDashboard(null); });
+    },
+    [projectFilter],
+  );
+
+  useEffect(() => {
+    const ctrl = new AbortController();
+    loadDashboard(ctrl.signal);
+    return () => ctrl.abort();
+  }, [loadDashboard, tasks]);
+
+  const dashboardByTask = useMemo(() => {
+    const map = new Map<string, DashboardTask>();
+    for (const task of dashboard?.tasks ?? []) map.set(task.task_id, task);
+    return map;
+  }, [dashboard]);
 
   const projects = useMemo(
     () => Array.from(new Set([...registeredProjects, ...tasks.map((task) => task.project_id)])).sort(),
@@ -172,6 +207,8 @@ export default function PortfolioPage() {
       <div className="mx-auto max-w-[1600px] space-y-6 p-5 md:p-8">
         {error && <Notice tone="error">{t("portfolio.errors.loadFailed", { error })}</Notice>}
 
+        {dashboard && <ProjectCockpit dashboard={dashboard} onEditCharter={() => setShowCharter(true)} />}
+
         {GROUPS.map((group) => {
           const cards = tagged
             .filter((entry) => group.buckets.includes(entry.bucket))
@@ -194,7 +231,7 @@ export default function PortfolioPage() {
               {!collapsed && cards.length > 0 && (
                 <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                   {cards.map(({ task, bucket, ask }) => (
-                    <TaskCard key={task.task_id} task={task} bucket={bucket} ask={ask} latestRun={latestRunByTask.get(task.task_id) ?? null} onConflict={load} onAdvanced={replaceTask} />
+                    <TaskCard key={task.task_id} task={task} bucket={bucket} ask={ask} latestRun={latestRunByTask.get(task.task_id) ?? null} dash={dashboardByTask.get(task.task_id) ?? null} onConflict={load} onAdvanced={replaceTask} />
                   ))}
                 </div>
               )}
@@ -216,7 +253,133 @@ export default function PortfolioPage() {
           onCreated={async () => { setShowNewProject(false); await load(); }}
         />
       )}
+      {showCharter && dashboard && (
+        <CharterPanel
+          projectId={dashboard.project_id}
+          charter={dashboard.charter}
+          onClose={() => setShowCharter(false)}
+          onSaved={(charter) => {
+            setDashboard((current) => (current ? { ...current, charter } : current));
+            setShowCharter(false);
+          }}
+        />
+      )}
     </DeliveryShell>
+  );
+}
+
+// The project cockpit (1.2): the human's charter, progress vs verified
+// completion, and the single deterministic next action — the answer to "where
+// is this project and what do I do next?" without reading the whole board.
+function ProjectCockpit({ dashboard, onEditCharter }: { dashboard: ProjectDashboard; onEditCharter: () => void }) {
+  const { t, te } = useI18n();
+  const { charter, metrics, next_action: next } = dashboard;
+  const hasCharter = Boolean(charter.goal || charter.non_goals.length || charter.success_criteria.length);
+  const attention = metrics.health === "attention";
+
+  return (
+    <section className="space-y-4 rounded-2xl border bg-card p-5 shadow-sm md:p-6">
+      {/* Charter: what "done" means, defined by the human. */}
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+            <Target className="size-3.5" /> {t("portfolio.cockpit.charter.title")}
+          </div>
+          {hasCharter ? (
+            <>
+              <p className="mt-1.5 text-lg font-semibold leading-snug">{charter.goal || "—"}</p>
+              {(charter.non_goals.length > 0 || charter.success_criteria.length > 0) && (
+                <div className="mt-2 grid gap-x-8 gap-y-2 text-xs sm:grid-cols-2">
+                  {charter.success_criteria.length > 0 && (
+                    <div>
+                      <p className="font-medium text-muted-foreground">{t("portfolio.cockpit.charter.successCriteria")}</p>
+                      <ul className="mt-1 list-disc space-y-0.5 pl-4">
+                        {charter.success_criteria.map((item, i) => <li key={i} className="leading-relaxed">{item}</li>)}
+                      </ul>
+                    </div>
+                  )}
+                  {charter.non_goals.length > 0 && (
+                    <div>
+                      <p className="font-medium text-muted-foreground">{t("portfolio.cockpit.charter.nonGoals")}</p>
+                      <ul className="mt-1 list-disc space-y-0.5 pl-4 text-muted-foreground">
+                        {charter.non_goals.map((item, i) => <li key={i} className="leading-relaxed">{item}</li>)}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              )}
+            </>
+          ) : (
+            <p className="mt-1.5 text-sm text-muted-foreground">{t("portfolio.cockpit.charter.empty")}</p>
+          )}
+        </div>
+        <Button variant="outline" size="sm" onClick={onEditCharter}><Pencil className="size-3.5" /> {t("portfolio.cockpit.charter.edit")}</Button>
+      </div>
+
+      {/* Three metrics: produced progress vs human-verified completion vs health. */}
+      <div className="grid gap-3 sm:grid-cols-3">
+        <MetricTile
+          label={t("portfolio.cockpit.metrics.progress")}
+          pct={metrics.progress_pct}
+          sub={t("portfolio.cockpit.metrics.weight", { done: metrics.produced_weight, total: metrics.total_weight })}
+          barClass="bg-blue-500"
+        />
+        <MetricTile
+          label={t("portfolio.cockpit.metrics.verified")}
+          pct={metrics.verified_pct}
+          sub={t("portfolio.cockpit.metrics.weight", { done: metrics.verified_weight, total: metrics.total_weight })}
+          barClass="bg-emerald-500"
+        />
+        <div className={cn("rounded-xl border p-3", attention ? "border-orange-500/40 bg-orange-500/5" : "bg-muted/30")}>
+          <p className="text-xs font-medium text-muted-foreground">{t("portfolio.cockpit.metrics.health")}</p>
+          <p className={cn("mt-2 flex items-center gap-1.5 text-lg font-semibold", attention ? "text-orange-600 dark:text-orange-400" : "text-emerald-600 dark:text-emerald-400")}>
+            {attention ? <AlertTriangle className="size-4" /> : <CircleCheck className="size-4" />}
+            {te("health", metrics.health)}
+          </p>
+        </div>
+      </div>
+
+      {/* The one deterministic next action for the whole project. */}
+      <div className={cn("rounded-xl border-l-4 bg-muted/30 px-4 py-3", next.attention ? "border-l-orange-500" : next.action === "none" ? "border-l-emerald-500" : "border-l-primary")}>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="min-w-0">
+            <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">{t("portfolio.cockpit.nextAction.label")}</p>
+            {next.action === "none" ? (
+              <p className="mt-0.5 text-sm font-medium">{t("portfolio.cockpit.nextAction.allClear")}</p>
+            ) : (
+              <p className="mt-0.5 text-sm font-semibold">
+                {te("nextAction", next.action)}
+                {next.title && <span className="ml-2 font-normal text-muted-foreground">· {t("portfolio.cockpit.nextAction.forTask", { title: next.title })}</span>}
+              </p>
+            )}
+          </div>
+          <div className="flex items-center gap-2 text-[11px]">
+            {next.attention_count > 0 && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-orange-500/10 px-2 py-0.5 font-medium text-orange-600 dark:text-orange-400">
+                <AlertTriangle className="size-3" /> {t("portfolio.cockpit.nextAction.attention", { count: next.attention_count })}
+              </span>
+            )}
+            {next.pending_count > 0 && (
+              <span className="rounded-full bg-primary/10 px-2 py-0.5 font-medium text-primary">{t("portfolio.cockpit.nextAction.pending", { count: next.pending_count })}</span>
+            )}
+          </div>
+        </div>
+        {next.partial && <p className="mt-1 text-[11px] text-muted-foreground">{t("portfolio.cockpit.nextAction.partial")}</p>}
+      </div>
+    </section>
+  );
+}
+
+function MetricTile({ label, pct, sub, barClass }: { label: string; pct: number; sub: string; barClass: string }) {
+  return (
+    <div className="rounded-xl border bg-muted/30 p-3">
+      <p className="text-xs font-medium text-muted-foreground">{label}</p>
+      <p className="mt-1 text-2xl font-bold tabular-nums">{pct}%</p>
+      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted">
+        <div className={cn("h-full rounded-full transition-all", barClass)} style={{ width: `${Math.min(100, Math.max(0, pct))}%` }} />
+      </div>
+      <p className="mt-1.5 text-[11px] text-muted-foreground">{sub}</p>
+    </div>
   );
 }
 
@@ -243,7 +406,7 @@ const RUN_TONE: Record<RunState, string> = {
   abandoned: "bg-red-500",
 };
 
-function TaskCard({ task, bucket, ask, latestRun, onAdvanced, onConflict }: { task: TaskManifest; bucket: Bucket; ask: string | null; latestRun: RunSummary | null; onAdvanced: (updated: TaskManifest) => void; onConflict: () => Promise<void> }) {
+function TaskCard({ task, bucket, ask, latestRun, dash, onAdvanced, onConflict }: { task: TaskManifest; bucket: Bucket; ask: string | null; latestRun: RunSummary | null; dash: DashboardTask | null; onAdvanced: (updated: TaskManifest) => void; onConflict: () => Promise<void> }) {
   const { t, te } = useI18n();
   const [busy, setBusy] = useState(false);
   const [pending, setPending] = useState<null | "advance" | "archive">(null);
@@ -305,6 +468,23 @@ function TaskCard({ task, bucket, ask, latestRun, onAdvanced, onConflict }: { ta
             {t("portfolio.card.delivery", { count: delivery.fileCount })}
             {delivery.commit ? ` · ${delivery.commit.slice(0, 8)}` : ""}
           </span>
+        </div>
+      )}
+      {dash && dash.next_action.action !== "none" && (
+        <p className={cn("mt-2 flex items-center gap-1 text-[11px] font-medium", dash.next_action.attention ? "text-orange-600 dark:text-orange-400" : "text-primary")}>
+          <ArrowRight className="size-3 shrink-0" />
+          {t("portfolio.cockpit.card.next", { action: te("nextAction", dash.next_action.action) })}
+        </p>
+      )}
+      {dash && dash.has_spec && (
+        <div className="mt-2">
+          <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+            <span>{t("portfolio.cockpit.card.verified", { pct: dash.total_weight ? Math.round((dash.verified_weight * 100) / dash.total_weight) : 0 })}</span>
+            <span className="tabular-nums">{dash.verified_weight}/{dash.total_weight}</span>
+          </div>
+          <div className="mt-1 h-1 overflow-hidden rounded-full bg-muted">
+            <div className="h-full rounded-full bg-emerald-500" style={{ width: `${dash.total_weight ? Math.min(100, (dash.verified_weight * 100) / dash.total_weight) : 0}%` }} />
+          </div>
         </div>
       )}
       <div className="mt-4 flex items-center justify-between gap-2">
@@ -474,6 +654,44 @@ function NewProjectPanel({ onClose, onCreated }: { onClose: () => void; onCreate
         <p className="text-xs text-muted-foreground">{t("portfolio.newProject.hint")}</p>
         {error && <Notice tone="error">{error}</Notice>}
         <Button type="submit" size="lg" className="w-full" disabled={submitting || !projectId.trim()}>{submitting ? t("portfolio.newProject.submitting") : t("portfolio.newProject.submit")}</Button>
+      </form>
+    </div>
+  );
+}
+
+function CharterPanel({ projectId, charter, onClose, onSaved }: { projectId: string; charter: Charter; onClose: () => void; onSaved: (charter: Charter) => void }) {
+  const { t } = useI18n();
+  const [goal, setGoal] = useState(charter.goal);
+  const [nonGoals, setNonGoals] = useState(charter.non_goals.join("\n"));
+  const [success, setSuccess] = useState(charter.success_criteria.join("\n"));
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const toLines = (value: string) => value.split("\n").map((line) => line.trim()).filter(Boolean);
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end bg-black/35" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <form
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="charter-title"
+        className="h-full w-full max-w-lg space-y-5 overflow-y-auto bg-background p-6 shadow-2xl"
+        onSubmit={async (event) => {
+          event.preventDefault(); setSubmitting(true); setError(null);
+          const next: Charter = { goal: goal.trim(), non_goals: toLines(nonGoals), success_criteria: toLines(success) };
+          try { await setProjectCharter(projectId, next); onSaved(next); }
+          catch (err) { setError((err as Error).message); setSubmitting(false); }
+        }}
+      >
+        <div className="flex items-center justify-between">
+          <div><p className="text-xs uppercase tracking-widest text-muted-foreground">{t("portfolio.cockpit.charter.eyebrow")}</p><h2 id="charter-title" className="text-xl font-bold">{t("portfolio.cockpit.charter.editTitle")}</h2></div>
+          <Button type="button" variant="ghost" size="icon" onClick={onClose} aria-label={t("portfolio.cockpit.charter.close")}><X /></Button>
+        </div>
+        <Field label={t("portfolio.cockpit.charter.goalLabel")}><textarea value={goal} onChange={(e) => setGoal(e.target.value)} className="field min-h-20 resize-y" placeholder={t("portfolio.cockpit.charter.goalPlaceholder")} /></Field>
+        <Field label={t("portfolio.cockpit.charter.successLabel")}><textarea value={success} onChange={(e) => setSuccess(e.target.value)} className="field min-h-28 resize-y" placeholder={t("portfolio.cockpit.charter.successPlaceholder")} /></Field>
+        <Field label={t("portfolio.cockpit.charter.nonGoalsLabel")}><textarea value={nonGoals} onChange={(e) => setNonGoals(e.target.value)} className="field min-h-24 resize-y" placeholder={t("portfolio.cockpit.charter.nonGoalsPlaceholder")} /></Field>
+        {error && <Notice tone="error">{error}</Notice>}
+        <Button type="submit" size="lg" className="w-full" disabled={submitting}>{submitting ? t("portfolio.cockpit.charter.saving") : t("portfolio.cockpit.charter.save")}</Button>
       </form>
     </div>
   );

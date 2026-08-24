@@ -15,6 +15,11 @@ export const enums = {
     urgency: { low: "low", normal: "normal", high: "high", critical: "critical" },
     workspaceState: { missing: "missing", provisioning: "provisioning", ready: "ready", foreign: "foreign", error: "error", checking: "checking", unknown: "unknown" },
     status: { active: "active", ready: "ready", completed: "completed", passed: "passed", valid: "valid", invalid: "invalid", succeeded: "succeeded", failed: "failed", blocked: "blocked", stale: "stale", cancelled: "cancelled", reconciliation_required: "reconciliation required", unavailable: "unavailable", pending: "pending", running: "running", queued: "queued", timed_out: "timed out", abandoned: "abandoned", skipped: "skipped", not_initialized: "not initialized", awaiting_approval: "awaiting approval", approved: "approved", rejected: "rejected", superseded: "superseded", draft: "draft", waived: "waived", observed: "observed", recorded: "recorded", backlog: "backlog", needs_review: "needs review" },
+    // The deterministic Next Action engine (1.2): one next step per task/project.
+    nextAction: { none: "Nothing to do", resolve_blocker: "Resolve the blocker", investigate_failure: "Investigate the failure", start_requirements: "Start requirements", answer_clarifications: "Answer the questions", draft_spec: "Draft the spec", approve_spec: "Approve the spec", revise_spec: "Revise the spec", advance_to_design: "Move to design", advance_to_plan: "Plan the work", start_run: "Start the run", await_run: "Waiting on the run", verify_review: "Review the result" },
+    nextActionOwner: { human: "You", agent: "Agent", none: "—" },
+    criterionStatus: { pending: "pending", produced: "produced", reviewed: "reviewed", verified: "verified" },
+    health: { normal: "on track", attention: "needs attention" },
   },
   zh: {
     runState: { queued: "排队中", running: "运行中", succeeded: "成功", failed: "失败", timed_out: "超时", cancelled: "已取消", abandoned: "已放弃" },
@@ -27,5 +32,9 @@ export const enums = {
     urgency: { low: "低", normal: "普通", high: "高", critical: "紧急" },
     workspaceState: { missing: "缺失", provisioning: "置备中", ready: "就绪", foreign: "外来", error: "错误", checking: "检查中", unknown: "未知" },
     status: { active: "活跃", ready: "就绪", completed: "已完成", passed: "通过", valid: "有效", invalid: "无效", succeeded: "成功", failed: "失败", blocked: "受阻", stale: "已过期", cancelled: "已取消", reconciliation_required: "需要对账", unavailable: "不可用", pending: "待处理", running: "运行中", queued: "排队中", timed_out: "超时", abandoned: "已放弃", skipped: "已跳过", not_initialized: "未初始化", awaiting_approval: "等待审批", approved: "已批准", rejected: "已拒绝", superseded: "已被取代", draft: "草稿", waived: "已豁免", observed: "已观测", recorded: "已记录", backlog: "待办", needs_review: "待评审" },
+    nextAction: { none: "无需操作", resolve_blocker: "解除阻塞", investigate_failure: "排查失败原因", start_requirements: "开始需求", answer_clarifications: "回答澄清问题", draft_spec: "起草规格", approve_spec: "批准规格", revise_spec: "修订规格", advance_to_design: "进入设计", advance_to_plan: "规划工作", start_run: "启动运行", await_run: "等待运行完成", verify_review: "复核结果" },
+    nextActionOwner: { human: "你", agent: "Agent", none: "—" },
+    criterionStatus: { pending: "待处理", produced: "已产出", reviewed: "已评审", verified: "已验证" },
+    health: { normal: "正常", attention: "需要关注" },
   },
 } as const;
