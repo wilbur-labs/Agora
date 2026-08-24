@@ -41,7 +41,15 @@ import {
   type TaskEvent,
   type TaskManifest,
 } from "@/lib/control-plane";
-import { listRuns, type RunState, type RunSummary } from "@/lib/execution";
+import {
+  getRun,
+  getRunDeliverables,
+  listRuns,
+  type Deliverable,
+  type ExecutionRun,
+  type RunState,
+  type RunSummary,
+} from "@/lib/execution";
 import { useI18n, type Translate, type TranslateEnum } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
@@ -356,6 +364,7 @@ function TaskWorkspace({ task, ask, attention, latestRun }: { task: TaskManifest
   const [specsError, setSpecsError] = useState(false);
   const [delivery, setDelivery] = useState<Delivery | null>(null);
   const [events, setEvents] = useState<TaskEvent[] | null>(null);
+  const [runs, setRuns] = useState<ExecutionRun[] | null>(null);
   const [tab, setTab] = useState<Tab>("requirements");
 
   const loadEvents = useCallback((signal?: AbortSignal) => {
@@ -378,6 +387,14 @@ function TaskWorkspace({ task, ask, attention, latestRun }: { task: TaskManifest
     // A failed read stays "unknown" (null + error), never a false "empty".
     listSpecs(task.task_id).then((value) => { if (!ctrl.signal.aborted) setSpecs(value); }).catch(() => { if (!ctrl.signal.aborted) setSpecsError(true); });
     loadEvents(ctrl.signal);
+    // Full run records (prompt + stdout/stderr + result) so the timeline can show
+    // what the agent actually did — the substance, like the terminal, not a ledger.
+    listRuns({ task_id: task.task_id, limit: 100 }, ctrl.signal)
+      .then(async (summaries) => {
+        const details = await Promise.all(summaries.map((s) => getRun(s.run_id, ctrl.signal).catch(() => null)));
+        if (!ctrl.signal.aborted) setRuns(details.filter((r): r is ExecutionRun => r !== null));
+      })
+      .catch(() => { if (!ctrl.signal.aborted) setRuns([]); });
     if (task.state === "done") {
       fetchDelivery(task.task_id, ctrl.signal).then((value) => { if (!ctrl.signal.aborted) setDelivery(value); }).catch(() => {});
     }
@@ -389,7 +406,7 @@ function TaskWorkspace({ task, ask, attention, latestRun }: { task: TaskManifest
       <WorkspaceHeader task={task} charterGoal={charterGoal} dashTask={dashTask} dashError={dashError} blocker={ask} />
       <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
         {/* Center: the unified, chat-like task timeline + message box. */}
-        <TimelineColumn taskId={task.task_id} events={events} onPosted={() => loadEvents()} />
+        <TimelineColumn taskId={task.task_id} events={events} runs={runs} onPosted={() => loadEvents()} />
         {/* Right: result + control tabs (read-only, deep-link to full pages). */}
         <div className="flex min-h-0 w-full flex-col border-t lg:w-[400px] lg:border-l lg:border-t-0">
           <div className="flex gap-1 border-b bg-background/90 px-4 py-2">
@@ -418,18 +435,35 @@ function TaskWorkspace({ task, ask, attention, latestRun }: { task: TaskManifest
 // The unified task timeline: the whole task process as one readable, chat-like
 // stream (requirement drafting/approval, stage changes, runs, review, handoff,
 // and the human's own notes), with a message box to continue or correct course.
-function TimelineColumn({ taskId, events, onPosted }: { taskId: string; events: TaskEvent[] | null; onPosted: () => void }) {
+type TimelineItem =
+  | { kind: "event"; at: string; key: string; event: TaskEvent }
+  | { kind: "run"; at: string; key: string; run: ExecutionRun };
+
+function TimelineColumn({ taskId, events, runs, onPosted }: { taskId: string; events: TaskEvent[] | null; runs: ExecutionRun[] | null; onPosted: () => void }) {
   const { t, te } = useI18n();
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const rendered = useMemo(() => (events ?? []).filter((e) => e.event_type !== "run.process_started"), [events]);
+
+  // The run.* lifecycle events are noise once we show the actual run cards, so
+  // drop them and interleave one rich run card per run (by its queue time).
+  const items = useMemo<TimelineItem[]>(() => {
+    const out: TimelineItem[] = [];
+    for (const e of events ?? []) {
+      if (e.event_type.startsWith("run.")) continue;
+      out.push({ kind: "event", at: e.created_at, key: e.event_id, event: e });
+    }
+    for (const r of runs ?? []) {
+      out.push({ kind: "run", at: r.queued_at, key: r.run_id, run: r });
+    }
+    return out.sort((a, b) => a.at.localeCompare(b.at));
+  }, [events, runs]);
 
   // Keep the newest entry in view as the stream grows.
   useEffect(() => {
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [rendered.length]);
+  }, [items.length]);
 
   const send = async () => {
     const text = draft.trim();
@@ -449,10 +483,12 @@ function TimelineColumn({ taskId, events, onPosted }: { taskId: string; events: 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div ref={scrollRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto p-5">
-        {rendered.length === 0 ? (
+        {items.length === 0 ? (
           <p className="py-8 text-center text-sm text-muted-foreground">{t("workspace.timeline.empty")}</p>
         ) : (
-          rendered.map((event) => <TimelineEntry key={event.event_id} event={event} t={t} te={te} />)
+          items.map((item) => item.kind === "event"
+            ? <TimelineEntry key={item.key} event={item.event} t={t} te={te} />
+            : <RunCard key={item.key} run={item.run} t={t} te={te} />)
         )}
       </div>
       <div className="border-t bg-background p-3">
@@ -571,6 +607,94 @@ function WorkspaceHeader({ task, charterGoal, dashTask, dashError, blocker }: { 
         </Fact>
       </div>
     </header>
+  );
+}
+
+// A run rendered as the substance it is: the prompt the agent got, its actual
+// terminal output, the failure (if any), and the files it changed.
+function RunCard({ run, t, te }: { run: ExecutionRun; t: Translate; te: TranslateEnum }) {
+  const [showPrompt, setShowPrompt] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const [files, setFiles] = useState<Deliverable[] | "loading" | null>(null);
+  const failed = run.state === "failed" || run.state === "timed_out" || run.state === "abandoned";
+  const out = (run.stdout_tail || "").trimEnd();
+  const err = (run.stderr_tail || "").trimEnd();
+  const longOutput = out.length > 600;
+
+  const loadFiles = async () => {
+    setFiles("loading");
+    try { setFiles((await getRunDeliverables(run.run_id)).files); }
+    catch { setFiles([]); }
+  };
+
+  return (
+    <div className="rounded-xl border bg-card">
+      <div className="flex flex-wrap items-center gap-2 border-b px-3 py-2">
+        <span className={cn("size-2 shrink-0 rounded-full", RUN_TONE[run.state])} />
+        <span className="text-sm font-semibold">{t("workspace.timeline.run.title", { adapter: run.adapter })}</span>
+        <span className={cn("rounded px-1.5 py-0.5 text-[11px] font-medium", failed ? "bg-red-500/10 text-red-600 dark:text-red-400" : "bg-muted text-muted-foreground")}>{te("runState", run.state)}</span>
+        {run.exit_code !== null && <span className="text-[11px] text-muted-foreground">{t("workspace.timeline.run.exit", { code: run.exit_code })}</span>}
+        <span className="ml-auto text-[11px] text-muted-foreground">{relTime(run.finished_at ?? run.started_at ?? run.queued_at, t)}</span>
+      </div>
+
+      <div className="space-y-2 p-3">
+        {/* What the agent was asked to do. */}
+        {run.prompt && (
+          <div>
+            <button onClick={() => setShowPrompt((v) => !v)} className="flex items-center gap-1 text-[11px] font-medium text-muted-foreground hover:text-foreground">
+              <ChevronDown className={cn("size-3 transition-transform", showPrompt && "rotate-180")} /> {t("workspace.timeline.run.prompt")}
+            </button>
+            {showPrompt && <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted/50 p-2 text-xs leading-relaxed">{run.prompt}</pre>}
+          </div>
+        )}
+
+        {/* The actual terminal output. */}
+        <div>
+          <p className="mb-1 text-[11px] font-medium text-muted-foreground">{t("workspace.timeline.run.output")}</p>
+          {out ? (
+            <>
+              <pre className={cn("overflow-auto whitespace-pre rounded-lg bg-zinc-950 p-3 text-xs leading-relaxed text-zinc-100", expanded ? "max-h-none" : "max-h-64")}>{out}</pre>
+              {longOutput && (
+                <button onClick={() => setExpanded((v) => !v)} className="mt-1 text-[11px] font-medium text-primary hover:underline">
+                  {expanded ? t("workspace.timeline.run.collapse") : t("workspace.timeline.run.expand")}
+                </button>
+              )}
+            </>
+          ) : (
+            <p className="text-xs text-muted-foreground">{t("workspace.timeline.run.noOutput")}</p>
+          )}
+        </div>
+
+        {/* Failure detail. */}
+        {failed && (run.error_message || err) && (
+          <div>
+            <p className="mb-1 text-[11px] font-medium text-red-600 dark:text-red-400">{run.error_message ? t("workspace.timeline.run.errorMessage") : t("workspace.timeline.run.stderr")}</p>
+            <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-red-500/5 p-2 text-xs leading-relaxed text-red-700 dark:text-red-300">{run.error_message || err}</pre>
+          </div>
+        )}
+
+        {/* Files the run changed (lazy). */}
+        {files === null ? (
+          <button onClick={() => void loadFiles()} className="text-[11px] font-medium text-primary hover:underline">{t("workspace.timeline.run.showFiles")}</button>
+        ) : files === "loading" ? (
+          <p className="text-[11px] text-muted-foreground">{t("workspace.timeline.run.loadingFiles")}</p>
+        ) : files.length === 0 ? (
+          <p className="text-[11px] text-muted-foreground">{t("workspace.timeline.run.noFiles")}</p>
+        ) : (
+          <div>
+            <p className="mb-1 text-[11px] font-medium text-muted-foreground">{t("workspace.timeline.run.files", { count: files.length })}</p>
+            <ul className="space-y-0.5 text-xs">
+              {files.map((f) => (
+                <li key={f.path} className="flex items-center gap-2 rounded bg-muted/40 px-2 py-0.5 font-mono">
+                  <span className="shrink-0 text-[10px] uppercase text-muted-foreground">{f.status}</span>
+                  <span className="truncate">{f.path}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 
