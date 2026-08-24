@@ -204,6 +204,22 @@ export function listTaskEvents(taskId: string, signal?: AbortSignal): Promise<Ta
   return request(`/api/tasks/${encodeURIComponent(taskId)}/events`, { signal });
 }
 
+// Append a human note / direction-correction to a task's event log. The control
+// plane reserves task_created/state_changed and the spec./cr./run./attention.
+// prefixes, so use an unreserved type (e.g. "user_message"). This records the
+// message in the timeline without dispatching an agent (that's a later phase).
+export function appendTaskEvent(
+  taskId: string,
+  eventType: string,
+  payload: Record<string, unknown> = {},
+  actor = "user",
+): Promise<TaskEvent> {
+  return request(`/api/tasks/${encodeURIComponent(taskId)}/events`, {
+    method: "POST",
+    body: JSON.stringify({ event_type: eventType, payload, actor }),
+  });
+}
+
 // The delivery bound to a completed task by handoff (the latest handoff.completed
 // event's payload), if any.
 export interface Delivery {

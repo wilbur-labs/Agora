@@ -15,6 +15,7 @@ import {
   Plus,
   RefreshCw,
   Search,
+  Send,
   Settings,
   Sun,
   Target,
@@ -23,22 +24,25 @@ import {
 import { Button } from "@/components/ui/button";
 import {
   ApiError,
+  appendTaskEvent,
   createTask,
   fetchDelivery,
   fetchProjectDashboard,
   listOpenAttention,
   listProjects,
   listSpecs,
+  listTaskEvents,
   listTasks,
   type AttentionItem,
   type AttentionKind,
   type DashboardTask,
   type Delivery,
   type RequirementSpec,
+  type TaskEvent,
   type TaskManifest,
 } from "@/lib/control-plane";
 import { listRuns, type RunState, type RunSummary } from "@/lib/execution";
-import { useI18n, type Translate } from "@/lib/i18n";
+import { useI18n, type Translate, type TranslateEnum } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 // The ball is in the human's court whenever a task awaits a decision; a running
@@ -198,8 +202,8 @@ export default function WorkspacePage() {
         onRefresh={load}
         loading={loading}
       />
-      <main className="min-w-0 flex-1 overflow-y-auto">
-        {error && <div className="m-4 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{t("workspace.errors.loadFailed", { error })}</div>}
+      <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
+        {error && <div className="m-4 shrink-0 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{t("workspace.errors.loadFailed", { error })}</div>}
         {selectedTask ? (
           <TaskWorkspace key={selectedTask.task_id} task={selectedTask} ask={attentionByTask.get(selectedTask.task_id)?.blocker ?? null} attention={attention.filter((a) => a.task_id === selectedTask.task_id)} latestRun={latestRunByTask.get(selectedTask.task_id) ?? null} />
         ) : (
@@ -313,7 +317,7 @@ function TaskRail({
 function EmptyWorkspace({ hasTasks }: { hasTasks: boolean }) {
   const { t } = useI18n();
   return (
-    <div className="grid h-full place-items-center p-8 text-center">
+    <div className="grid min-h-0 flex-1 place-items-center p-8 text-center">
       <div className="max-w-sm space-y-2">
         <Target className="mx-auto size-8 text-muted-foreground" />
         <p className="text-sm text-muted-foreground">{hasTasks ? t("workspace.header.selectPrompt") : t("workspace.header.noTasksPrompt")}</p>
@@ -331,7 +335,14 @@ function TaskWorkspace({ task, ask, attention, latestRun }: { task: TaskManifest
   const [charterGoal, setCharterGoal] = useState<string>("");
   const [specs, setSpecs] = useState<RequirementSpec[] | null>(null);
   const [delivery, setDelivery] = useState<Delivery | null>(null);
+  const [events, setEvents] = useState<TaskEvent[] | null>(null);
   const [tab, setTab] = useState<Tab>("requirements");
+
+  const loadEvents = useCallback((signal?: AbortSignal) => {
+    listTaskEvents(task.task_id, signal)
+      .then((value) => { if (!signal?.aborted) setEvents(value); })
+      .catch(() => { if (!signal?.aborted) setEvents([]); });
+  }, [task.task_id]);
 
   // Fetch this task's detail. The parent keys this component by task_id, so a
   // task switch remounts it and the initial state above already resets cleanly.
@@ -345,31 +356,137 @@ function TaskWorkspace({ task, ask, attention, latestRun }: { task: TaskManifest
       })
       .catch(() => {});
     listSpecs(task.task_id).then((value) => { if (!ctrl.signal.aborted) setSpecs(value); }).catch(() => setSpecs([]));
+    loadEvents(ctrl.signal);
     if (task.state === "done") {
       fetchDelivery(task.task_id, ctrl.signal).then((value) => { if (!ctrl.signal.aborted) setDelivery(value); }).catch(() => {});
     }
     return () => ctrl.abort();
-  }, [task.task_id, task.project_id, task.state]);
+  }, [task.task_id, task.project_id, task.state, loadEvents]);
 
   return (
-    <div className="flex min-h-full flex-col">
+    <div className="flex min-h-0 flex-1 flex-col">
       <WorkspaceHeader task={task} charterGoal={charterGoal} dashTask={dashTask} blocker={ask} />
-      <div className="sticky top-0 z-10 flex gap-1 border-b bg-background/90 px-5 py-2 backdrop-blur">
-        {TABS.map((item) => (
-          <button
-            key={item}
-            onClick={() => setTab(item)}
-            className={cn("rounded-lg px-3 py-1.5 text-sm font-medium transition-colors", tab === item ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground")}
-          >
-            {t(`workspace.tabs.${item}`)}
-          </button>
-        ))}
+      <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
+        {/* Center: the unified, chat-like task timeline + message box. */}
+        <TimelineColumn taskId={task.task_id} events={events} onPosted={() => loadEvents()} />
+        {/* Right: result + control tabs (read-only, deep-link to full pages). */}
+        <div className="flex min-h-0 w-full flex-col border-t lg:w-[400px] lg:border-l lg:border-t-0">
+          <div className="flex gap-1 border-b bg-background/90 px-4 py-2">
+            {TABS.map((item) => (
+              <button
+                key={item}
+                onClick={() => setTab(item)}
+                className={cn("rounded-lg px-2.5 py-1.5 text-xs font-medium transition-colors", tab === item ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground")}
+              >
+                {t(`workspace.tabs.${item}`)}
+              </button>
+            ))}
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto p-4">
+            {tab === "requirements" && <RequirementsPanel task={task} specs={specs} />}
+            {tab === "run" && <RunPanel task={task} latestRun={latestRun} />}
+            {tab === "attention" && <AttentionPanel items={attention} />}
+            {tab === "changes" && <ChangesPanel task={task} delivery={delivery} />}
+          </div>
+        </div>
       </div>
-      <div className="flex-1 p-5">
-        {tab === "requirements" && <RequirementsPanel task={task} specs={specs} />}
-        {tab === "run" && <RunPanel task={task} latestRun={latestRun} />}
-        {tab === "attention" && <AttentionPanel items={attention} />}
-        {tab === "changes" && <ChangesPanel task={task} delivery={delivery} />}
+    </div>
+  );
+}
+
+// The unified task timeline: the whole task process as one readable, chat-like
+// stream (requirement drafting/approval, stage changes, runs, review, handoff,
+// and the human's own notes), with a message box to continue or correct course.
+function TimelineColumn({ taskId, events, onPosted }: { taskId: string; events: TaskEvent[] | null; onPosted: () => void }) {
+  const { t, te } = useI18n();
+  const [draft, setDraft] = useState("");
+  const [sending, setSending] = useState(false);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const rendered = useMemo(() => (events ?? []).filter((e) => e.event_type !== "run.process_started"), [events]);
+
+  // Keep the newest entry in view as the stream grows.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [rendered.length]);
+
+  const send = async () => {
+    const text = draft.trim();
+    if (!text || sending) return;
+    setSending(true);
+    try {
+      await appendTaskEvent(taskId, "user_message", { text });
+      setDraft("");
+      onPosted();
+    } catch {
+      // Surfaced by leaving the draft in place; a full error toast is later work.
+    } finally {
+      setSending(false);
+    }
+  };
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div ref={scrollRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto p-5">
+        {rendered.length === 0 ? (
+          <p className="py-8 text-center text-sm text-muted-foreground">{t("workspace.timeline.empty")}</p>
+        ) : (
+          rendered.map((event) => <TimelineEntry key={event.event_id} event={event} t={t} te={te} />)
+        )}
+      </div>
+      <div className="border-t bg-background p-3">
+        <div className="flex items-end gap-2">
+          <textarea
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void send(); } }}
+            rows={1}
+            placeholder={t("workspace.timeline.inputPlaceholder")}
+            className="max-h-40 min-h-[38px] flex-1 resize-y rounded-lg border bg-background px-3 py-2 text-sm outline-none focus:border-ring"
+          />
+          <Button size="icon" onClick={() => void send()} disabled={sending || !draft.trim()} aria-label={t("workspace.timeline.send")}>
+            {sending ? <RefreshCw className="size-4 animate-spin" /> : <Send className="size-4" />}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function timelineView(event: TaskEvent, t: Translate, te: TranslateEnum): { who: "you" | "agent" | "system"; title: string; detail: string | null } {
+  const p = event.payload as Record<string, unknown>;
+  const adapter = String(p.adapter ?? "");
+  const type = event.event_type;
+  if (type === "user_message") return { who: "you", title: t("workspace.timeline.you"), detail: String(p.text ?? "") };
+  if (type === "task_created") return { who: "system", title: t("workspace.timeline.events.taskCreated"), detail: null };
+  if (type === "state_changed") return { who: "system", title: t("workspace.timeline.events.stageChanged", { from: te("taskState", String(p.from ?? "")), to: te("taskState", String(p.to ?? "")) }), detail: p.reason ? String(p.reason) : null };
+  if (type === "spec.created") return { who: "system", title: t("workspace.timeline.events.specCreated"), detail: null };
+  if (type === "spec.approved") return { who: "you", title: t("workspace.timeline.events.specApproved"), detail: p.reason ? String(p.reason) : null };
+  if (type === "spec.rejected") return { who: "you", title: t("workspace.timeline.events.specRejected"), detail: p.reason ? String(p.reason) : null };
+  if (type === "run.queued") return { who: "agent", title: t("workspace.timeline.events.runQueued", { adapter }), detail: null };
+  if (type === "run.started") return { who: "agent", title: t("workspace.timeline.events.runStarted", { adapter }), detail: null };
+  if (type === "run.succeeded") return { who: "agent", title: t("workspace.timeline.events.runSucceeded", { adapter }), detail: null };
+  if (type === "run.failed") return { who: "agent", title: t("workspace.timeline.events.runFailed", { adapter }), detail: p.error_message ? String(p.error_message) : null };
+  if (type.startsWith("attention.")) return { who: "system", title: t(type === "attention.responded" ? "workspace.timeline.events.attentionResponded" : "workspace.timeline.events.attentionRaised"), detail: p.title ? String(p.title) : null };
+  if (type.startsWith("handoff.")) return { who: "system", title: t("workspace.timeline.events.handoff"), detail: p.commit ? String(p.commit).slice(0, 8) : null };
+  // Fallback: humanized type.
+  return { who: "system", title: type.replaceAll(".", " ").replaceAll("_", " "), detail: null };
+}
+
+const WHO_DOT: Record<"you" | "agent" | "system", string> = { you: "bg-primary", agent: "bg-blue-500", system: "bg-zinc-400" };
+
+function TimelineEntry({ event, t, te }: { event: TaskEvent; t: Translate; te: TranslateEnum }) {
+  const view = timelineView(event, t, te);
+  const isYou = view.who === "you";
+  return (
+    <div className={cn("flex gap-2.5", isYou && "flex-row-reverse")}>
+      <span className={cn("mt-1.5 size-2 shrink-0 rounded-full", WHO_DOT[view.who])} />
+      <div className={cn("max-w-[85%] rounded-xl border px-3 py-2", isYou ? "bg-primary/5" : "bg-card")}>
+        <div className={cn("flex items-baseline gap-2", isYou && "flex-row-reverse")}>
+          <span className="text-xs font-semibold">{view.title}</span>
+          <span className="text-[10px] text-muted-foreground">{relTime(event.created_at, t)}</span>
+        </div>
+        {view.detail && <p className={cn("mt-0.5 whitespace-pre-wrap text-sm leading-relaxed", isYou && "text-right")}>{view.detail}</p>}
       </div>
     </div>
   );
