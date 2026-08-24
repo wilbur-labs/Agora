@@ -5453,3 +5453,35 @@ routes are not yet authenticated (the app's non-control-plane routes gain auth i
 Next safe action: build (3) the Next Action engine (one explicit next action or a
 blocker per task/project), then (4) the project-page / four-group-portfolio UI
 consuming the dashboard. Branch is not yet pushed.
+
+## Increment: control-plane repositioning — 1.2 part 3 (2026-08-24)
+
+Part (3) of the 1.2 plan — the Next Action engine — landed on branch
+`feature/control-plane-1.2`. It answers the human's "what do I do next?" without
+reading the whole board.
+
+- `agora/tasks/next_action.py` (pure, mirrors `progress.py` — no I/O, derives
+  from signals only): `task_next_action(state, *, spec_state,
+  pending_clarifications, has_worker_success)` derives exactly one next step per
+  task — `owner` (human / agent / none), `action` (a stable slug the UI
+  localizes, single source of truth in `ACTIONS`), `attention` (True only for
+  blocked/failed, matching the `health` metric), and an English `summary`
+  fallback. Requirements routes on signals in order: unanswered clarifications ->
+  answer; no spec -> draft; draft -> approve; approved -> advance; rejected/
+  superseded -> revise. `spec_state` accepts a `SpecState` enum or its value.
+- `project_next_action(items)` rolls the per-task actions up to one project-wide
+  next action: attention outranks every routine step, then human decisions
+  outrank starting a run, which outranks waiting on a run; ties break on task
+  priority then list order. Also reports `attention_count` and `pending_count`
+  for the cockpit header. All-terminal / empty -> a `none` action.
+- `has_pending_clarifications()` treats a blank answer as unanswered.
+- Wired into `GET /api/projects/{id}/dashboard`: each task view gains a
+  `next_action`, and the projection gains a project-level `next_action`. Metrics
+  still count APPROVED specs only; the next action reads the *current* spec state
+  (draft/rejected) so it can route to approval/revision.
+- Tests: `tests/test_next_action.py` (lifecycle ladder, attention priority, spec
+  routing, enum-or-value, tie-breaks, empty/all-terminal) + dashboard integration
+  assertions. Narrow run 28 passed; full backend suite 786 passed.
+
+Next safe action: (4) the project-page / four-group-portfolio UI consuming the
+dashboard's metrics + next_action. Branch is not yet pushed.

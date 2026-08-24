@@ -134,6 +134,13 @@ def test_project_dashboard_progress_vs_verified(tmp_path):
         assert body["metrics"]["health"] == "normal"
         done = next(tk for tk in body["tasks"] if tk["title"] == "done task")
         assert len(done["criteria"]) == 2 and all(c["status"] == "verified" for c in done["criteria"])
+        assert done["next_action"]["action"] == "none"
+        backlog = next(tk for tk in body["tasks"] if tk["title"] == "backlog task")
+        assert backlog["next_action"]["action"] == "start_requirements"
+        # Project-wide: the only actionable task is the backlog one.
+        assert body["next_action"]["task_id"] == backlog["task_id"]
+        assert body["next_action"]["action"] == "start_requirements"
+        assert body["next_action"]["attention_count"] == 0
         assert client.get("/api/projects/nope/dashboard").status_code == 404
     finally:
         app.dependency_overrides.clear()

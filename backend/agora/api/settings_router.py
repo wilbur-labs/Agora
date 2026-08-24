@@ -330,6 +330,11 @@ def project_dashboard(
     from agora.execution.models import RunState
     from agora.requirements.models import SpecState
     from agora.requirements.store import RequirementStore
+    from agora.tasks.next_action import (
+        has_pending_clarifications,
+        project_next_action,
+        task_next_action,
+    )
     from agora.tasks.progress import project_metrics, task_metrics
 
     try:
@@ -341,6 +346,7 @@ def project_dashboard(
 
     task_views: list[dict[str, Any]] = []
     metric_list: list[dict[str, Any]] = []
+    action_items: list[dict[str, Any]] = []
     states = []
     task_page = task_store.list(project_id=project_id, limit=_DASHBOARD_TASK_LIMIT)
     truncated = len(task_page) >= _DASHBOARD_TASK_LIMIT
@@ -358,14 +364,26 @@ def project_dashboard(
                 has_worker = True  # exact match only; unknown/missing roles ignored
             if has_worker and has_review:
                 break
-        # Only an APPROVED spec's scenarios define criteria; a draft must not
-        # move the metrics.
-        spec = specs.current(task.task_id)
-        if spec is not None and spec.state != SpecState.APPROVED:
-            spec = None
+        # The current spec's actual state drives the next action (draft ->
+        # approve, rejected -> revise); the metrics still count APPROVED only.
+        current_spec = specs.current(task.task_id)
+        spec_state = current_spec.state if current_spec is not None else None
+        spec = current_spec if spec_state == SpecState.APPROVED else None
         m = task_metrics(task.state, spec, has_worker_success=has_worker, has_review_success=has_review)
+        next_action = task_next_action(
+            task.state,
+            spec_state=spec_state,
+            pending_clarifications=has_pending_clarifications(task.clarifications),
+            has_worker_success=has_worker,
+        )
         metric_list.append(m)
         states.append(task.state)
+        action_items.append({
+            "task_id": task.task_id,
+            "title": task.title,
+            "priority": task.priority,
+            "next_action": next_action,
+        })
         task_views.append({
             "task_id": task.task_id,
             "title": task.title,
@@ -376,6 +394,7 @@ def project_dashboard(
             "produced_weight": m["produced_weight"],
             "verified_weight": m["verified_weight"],
             "total_weight": m["total_weight"],
+            "next_action": next_action,
         })
 
     metrics = project_metrics(metric_list, states)
@@ -384,6 +403,7 @@ def project_dashboard(
         "name": project.name,
         "charter": _charter_view(project.charter),
         "metrics": metrics,
+        "next_action": project_next_action(action_items),
         "tasks": task_views,
         "truncated": truncated,
     }
