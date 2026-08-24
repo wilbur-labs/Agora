@@ -37,6 +37,7 @@ import {
   type AttentionKind,
   type DashboardTask,
   type Delivery,
+  type ProjectDashboard,
   type RequirementSpec,
   type TaskEvent,
   type TaskManifest,
@@ -357,9 +358,9 @@ const TABS: Tab[] = ["requirements", "run", "attention", "changes"];
 
 function TaskWorkspace({ task, ask, attention, latestRun }: { task: TaskManifest; ask: string | null; attention: AttentionItem[]; latestRun: RunSummary | null }) {
   const { t } = useI18n();
-  const [dashTask, setDashTask] = useState<DashboardTask | null>(null);
-  const [charterGoal, setCharterGoal] = useState<string>("");
+  const [dashboard, setDashboard] = useState<ProjectDashboard | null>(null);
   const [dashError, setDashError] = useState(false);
+  const dashTask = dashboard?.tasks.find((it) => it.task_id === task.task_id) ?? null;
   const [specs, setSpecs] = useState<RequirementSpec[] | null>(null);
   const [specsError, setSpecsError] = useState(false);
   const [delivery, setDelivery] = useState<Delivery | null>(null);
@@ -378,11 +379,7 @@ function TaskWorkspace({ task, ask, attention, latestRun }: { task: TaskManifest
   useEffect(() => {
     const ctrl = new AbortController();
     fetchProjectDashboard(task.project_id, ctrl.signal)
-      .then((dash) => {
-        if (ctrl.signal.aborted) return;
-        setCharterGoal(dash.charter.goal);
-        setDashTask(dash.tasks.find((item) => item.task_id === task.task_id) ?? null);
-      })
+      .then((dash) => { if (!ctrl.signal.aborted) setDashboard(dash); })
       .catch(() => { if (!ctrl.signal.aborted) setDashError(true); });
     // A failed read stays "unknown" (null + error), never a false "empty".
     listSpecs(task.task_id).then((value) => { if (!ctrl.signal.aborted) setSpecs(value); }).catch(() => { if (!ctrl.signal.aborted) setSpecsError(true); });
@@ -401,9 +398,17 @@ function TaskWorkspace({ task, ask, attention, latestRun }: { task: TaskManifest
     return () => ctrl.abort();
   }, [task.task_id, task.project_id, task.state, loadEvents]);
 
+  // The latest successful run is what "produced" the current result.
+  const latestSuccess = useMemo(() => {
+    const ok = (runs ?? []).filter((r) => r.state === "succeeded");
+    ok.sort((a, b) => (a.finished_at ?? a.queued_at).localeCompare(b.finished_at ?? b.queued_at));
+    return ok.at(-1) ?? null;
+  }, [runs]);
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <WorkspaceHeader task={task} charterGoal={charterGoal} dashTask={dashTask} dashError={dashError} blocker={ask} />
+      <ProjectStrip dashboard={dashboard} dashError={dashError} />
+      <OutcomeSummary task={task} dashTask={dashTask} dashError={dashError} blocker={ask} delivery={delivery} latestSuccess={latestSuccess} />
       <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
         {/* Center: the unified, chat-like task timeline + message box. */}
         <TimelineColumn taskId={task.task_id} events={events} runs={runs} onPosted={() => loadEvents()} />
@@ -549,65 +554,119 @@ function TimelineEntry({ event, t, te }: { event: TaskEvent; t: Translate; te: T
   );
 }
 
-// The always-on Agora header: goal, stage, trustworthy completion, blocker, and
-// the one next step — the answer to "where is this and what do I do next?".
-function WorkspaceHeader({ task, charterGoal, dashTask, dashError, blocker }: { task: TaskManifest; charterGoal: string; dashTask: DashboardTask | null; dashError: boolean; blocker: string | null }) {
+// Top strip: project-level orientation, so switching tasks never loses "where
+// is this whole project and what's its next move?".
+function ProjectStrip({ dashboard, dashError }: { dashboard: ProjectDashboard | null; dashError: boolean }) {
+  const { t, te } = useI18n();
+  if (!dashboard) {
+    return <div className="border-b bg-muted/30 px-5 py-2 text-xs text-muted-foreground">{dashError ? t("workspace.project.unavailable") : "…"}</div>;
+  }
+  const done = dashboard.tasks.filter((it) => it.state === "done").length;
+  const total = dashboard.tasks.length;
+  const next = dashboard.next_action;
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b bg-muted/30 px-5 py-2 text-xs">
+      <span className="inline-flex items-center gap-1.5 font-semibold"><Network className="size-3.5 text-primary" />{dashboard.name}</span>
+      <span className="text-muted-foreground">{t("workspace.project.strip", { done, total, verified: dashboard.metrics.verified_pct })}</span>
+      <span className="text-muted-foreground/50">·</span>
+      {next.action === "none" ? (
+        <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400"><CircleCheck className="size-3.5" />{t("workspace.project.allDone")}</span>
+      ) : (
+        <span className={cn("inline-flex items-center gap-1", next.attention ? "text-orange-600 dark:text-orange-400" : "text-foreground")}>
+          <ArrowRight className="size-3.5" />
+          <span className="font-medium">{t("workspace.project.next")}:</span> {te("nextAction", next.action)}
+          {next.title && <span className="text-muted-foreground">{t("workspace.project.forTask", { title: next.title })}</span>}
+        </span>
+      )}
+      {next.attention_count > 0 && (
+        <span className="ml-auto inline-flex items-center gap-1 rounded-full bg-orange-500/10 px-2 py-0.5 font-medium text-orange-600 dark:text-orange-400">
+          <AlertTriangle className="size-3" />{t("workspace.project.attention", { count: next.attention_count })}
+        </span>
+      )}
+    </div>
+  );
+}
+
+// The plain-language answer for the selected task: what it did, whether that's
+// trustworthy, and the one next step. The timeline below is the evidence.
+function OutcomeSummary({ task, dashTask, dashError, blocker, delivery, latestSuccess }: { task: TaskManifest; dashTask: DashboardTask | null; dashError: boolean; blocker: string | null; delivery: Delivery | null; latestSuccess: ExecutionRun | null }) {
   const { t, te } = useI18n();
   const next = dashTask?.next_action ?? null;
   const total = dashTask?.total_weight ?? 0;
   const verified = dashTask?.verified_weight ?? 0;
   const pct = total ? Math.round((verified * 100) / total) : 0;
-  // A blocked/failed task with no open blocker item still IS blocked — never
-  // claim "None", which would contradict its authoritative state.
   const stuck = task.state === "blocked" || task.state === "failed";
   const blockerText = blocker ?? (stuck ? t("workspace.header.blockedNoDetail") : null);
+  const done = task.state === "done";
+  const outcomeLine = firstMeaningfulLine(latestSuccess?.stdout_tail ?? "");
+  const fileCount = delivery?.fileCount ?? 0;
 
   return (
     <header className="border-b bg-card px-5 py-4">
-      <div className="flex items-center gap-2 text-xs text-muted-foreground">
-        <span>{task.project_id}</span>
-        <span>·</span>
-        <span className="rounded bg-muted px-1.5 py-0.5 font-medium capitalize text-foreground">{te("taskState", task.state)}</span>
+      <div className="flex items-start justify-between gap-3">
+        <h1 className="text-xl font-bold leading-snug">{task.title}</h1>
+        <span className={cn("inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium",
+          done ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" : stuck ? "bg-orange-500/10 text-orange-600 dark:text-orange-400" : "bg-muted text-muted-foreground")}>
+          {done && <CircleCheck className="size-3.5" />}{te("taskState", task.state)}
+        </span>
       </div>
-      <h1 className="mt-1 text-xl font-bold leading-snug">{task.title}</h1>
 
-      <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <Fact icon={<Target className="size-3.5" />} label={t("workspace.header.goal")}>
-          {dashError && !charterGoal
-            ? <span className="text-sm text-muted-foreground">{t("workspace.header.unavailable")}</span>
-            : <span className={cn("text-sm", !charterGoal && "text-muted-foreground")}>{charterGoal || t("workspace.header.noGoal")}</span>}
-        </Fact>
-        <Fact label={t("workspace.header.completion")}>
-          {!dashTask ? (
-            <span className="text-sm text-muted-foreground">{dashError ? t("workspace.header.unavailable") : "—"}</span>
-          ) : !dashTask.has_spec ? (
-            // No approved spec → the dashboard's implicit weight of 1 is a rollup
-            // unit, not a real criterion; don't render it as "0/1".
-            <span className="text-sm text-muted-foreground">{t("workspace.header.noCriteria")}</span>
-          ) : (
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-semibold tabular-nums">{t("workspace.header.completionValue", { done: verified, total })}</span>
-              {total > 0 && (
-                <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-muted">
-                  <div className="h-full rounded-full bg-emerald-500" style={{ width: `${pct}%` }} />
-                </div>
-              )}
+      <div className="mt-3 grid gap-3 md:grid-cols-3">
+        {/* What it did — the concrete outcome, not a log. */}
+        <div className="rounded-xl border bg-muted/30 p-3 md:col-span-2">
+          <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{t("workspace.summary.did")}</p>
+          {outcomeLine || fileCount > 0 ? (
+            <div className="mt-1 space-y-1">
+              {outcomeLine && <p className="text-sm leading-relaxed">{outcomeLine}</p>}
+              <p className="text-xs text-muted-foreground">
+                {latestSuccess && <span>· {latestSuccess.adapter}</span>}
+                {fileCount > 0 && <span> · {t("workspace.summary.files", { count: fileCount })}{delivery?.commit ? ` · ${delivery.commit.slice(0, 8)}` : ""}</span>}
+              </p>
             </div>
+          ) : (
+            <p className="mt-1 text-sm text-muted-foreground">{t("workspace.summary.nothingYet")}</p>
           )}
-        </Fact>
-        <Fact label={t("workspace.header.blocker")} tone={blockerText ? "attention" : undefined}>
-          <span className={cn("text-sm", blockerText ? "text-orange-600 dark:text-orange-400" : "text-muted-foreground")}>{blockerText || t("workspace.header.noBlocker")}</span>
-        </Fact>
-        <Fact icon={<ArrowRight className="size-3.5" />} label={t("workspace.header.nextStep")} tone={next?.attention ? "attention" : "primary"}>
-          {next ? (
-            next.action === "none"
-              ? <span className="inline-flex items-center gap-1 text-sm text-emerald-600 dark:text-emerald-400"><CircleCheck className="size-3.5" /> {te("nextAction", "none")}</span>
-              : <span className={cn("text-sm font-semibold", next.attention ? "text-orange-600 dark:text-orange-400" : "text-primary")}>{te("nextAction", next.action)}</span>
-          ) : <span className="text-sm text-muted-foreground">{dashError ? t("workspace.header.unavailable") : "—"}</span>}
-        </Fact>
+        </div>
+
+        {/* Trust + next step stacked. */}
+        <div className="space-y-3">
+          <div>
+            <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{t("workspace.summary.trust")}</p>
+            {!dashTask ? (
+              <p className="mt-0.5 text-sm text-muted-foreground">{dashError ? t("workspace.header.unavailable") : "—"}</p>
+            ) : !dashTask.has_spec ? (
+              <p className="mt-0.5 text-sm text-muted-foreground">{t("workspace.header.noCriteria")}</p>
+            ) : (
+              <div className="mt-0.5 flex items-center gap-2">
+                <span className="text-sm font-semibold tabular-nums">{t("workspace.header.completionValue", { done: verified, total })}</span>
+                {total > 0 && <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-emerald-500" style={{ width: `${pct}%` }} /></div>}
+              </div>
+            )}
+          </div>
+          <div>
+            <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{t("workspace.summary.next")}</p>
+            {blockerText ? (
+              <p className="mt-0.5 text-sm font-medium text-orange-600 dark:text-orange-400">{blockerText}</p>
+            ) : next ? (
+              next.action === "none"
+                ? <p className="mt-0.5 inline-flex items-center gap-1 text-sm text-emerald-600 dark:text-emerald-400"><CircleCheck className="size-3.5" />{t("workspace.summary.done")}</p>
+                : <p className={cn("mt-0.5 text-sm font-semibold", next.attention ? "text-orange-600 dark:text-orange-400" : "text-primary")}>{te("nextAction", next.action)}</p>
+            ) : <p className="mt-0.5 text-sm text-muted-foreground">{dashError ? t("workspace.header.unavailable") : "—"}</p>}
+          </div>
+        </div>
       </div>
     </header>
   );
+}
+
+// First non-empty line of an agent's output, stripped of markdown noise — a
+// usable one-line "what it did" for the summary.
+function firstMeaningfulLine(text: string): string {
+  for (const raw of text.split("\n")) {
+    const line = raw.replace(/^[#>\s`*-]+/, "").trim();
+    if (line) return line.length > 160 ? `${line.slice(0, 160)}…` : line;
+  }
+  return "";
 }
 
 // A run rendered as the substance it is: the prompt the agent got, its actual
@@ -694,15 +753,6 @@ function RunCard({ run, t, te }: { run: ExecutionRun; t: Translate; te: Translat
           </div>
         )}
       </div>
-    </div>
-  );
-}
-
-function Fact({ icon, label, tone, children }: { icon?: React.ReactNode; label: string; tone?: "attention" | "primary"; children: React.ReactNode }) {
-  return (
-    <div className={cn("rounded-xl border p-3", tone === "attention" ? "border-orange-500/40 bg-orange-500/5" : "bg-muted/30")}>
-      <p className="flex items-center gap-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{icon}{label}</p>
-      <div className="mt-1.5">{children}</div>
     </div>
   );
 }
