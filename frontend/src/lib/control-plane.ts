@@ -138,8 +138,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-export function listTasks(): Promise<TaskManifest[]> {
-  return request("/api/tasks");
+export function listTasks(limit = 500): Promise<TaskManifest[]> {
+  return request(`/api/tasks?limit=${limit}`);
 }
 
 export type AttentionKind = "question" | "approval" | "blocker";

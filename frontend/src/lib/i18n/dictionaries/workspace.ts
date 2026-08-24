@@ -29,8 +29,11 @@ export const workspace = {
       stage: "Stage",
       completion: "Verified completion",
       completionValue: "{done}/{total} criteria",
+      noCriteria: "No approved criteria yet",
+      unavailable: "Unavailable",
       blocker: "Blocker",
       noBlocker: "None",
+      blockedNoDetail: "Blocked — reason not recorded",
       nextStep: "Next step",
       noGoal: "No project goal set — define the charter.",
       selectPrompt: "Select a task on the left to open its workspace.",
@@ -68,6 +71,7 @@ export const workspace = {
     },
     panels: {
       openFull: "Open full page",
+      unavailable: "Couldn't load this — the data is unavailable, not necessarily empty.",
       requirements: {
         none: "No requirement spec yet.",
         state: "Spec {state} · rev {rev}",
@@ -136,8 +140,11 @@ export const workspace = {
       stage: "当前阶段",
       completion: "可信完成度",
       completionValue: "{done}/{total} 项验收",
+      noCriteria: "尚无已批准的验收标准",
+      unavailable: "不可用",
       blocker: "阻塞",
       noBlocker: "无",
+      blockedNoDetail: "受阻——未记录原因",
       nextStep: "下一步",
       noGoal: "尚未设定项目目标——去定义章程。",
       selectPrompt: "在左侧选择一个任务,打开它的工作台。",
@@ -175,6 +182,7 @@ export const workspace = {
     },
     panels: {
       openFull: "打开完整页面",
+      unavailable: "加载失败——数据不可用,不代表为空。",
       requirements: {
         none: "尚无需求规格。",
         state: "规格 {state} · 修订 {rev}",

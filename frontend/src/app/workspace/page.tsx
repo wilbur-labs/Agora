@@ -62,9 +62,18 @@ function railGroupOf(task: TaskManifest, kinds: Set<AttentionKind>): RailGroup {
   if (kinds.size > 0) return "needsYou";
   if (task.state === "blocked" || task.state === "failed") return "needsYou";
   if (task.state === "running") return "running";
-  if (task.state === "review") return "review";
-  if (task.state === "verified" || task.state === "done" || task.state === "cancelled") return "done";
+  // Verified still owes a human handoff (mark_done), so it is NOT "done" — it
+  // sits in review/acceptance until it actually reaches the done state.
+  if (task.state === "review" || task.state === "verified") return "review";
+  if (task.state === "done" || task.state === "cancelled") return "done";
   return "needsYou"; // backlog / requirements / design / planned all await the human
+}
+
+// Best-effort activity time for ordering: TaskManifest.updated_at does not move
+// when events/runs are written, so fold in the latest run's timestamps.
+function activityOf(task: TaskManifest, run: RunSummary | null): string {
+  const candidates = [task.updated_at, run?.finished_at, run?.started_at, run?.queued_at].filter(Boolean) as string[];
+  return candidates.sort().at(-1) ?? task.updated_at;
 }
 
 const RUN_TONE: Record<RunState, string> = {
@@ -159,17 +168,18 @@ export default function WorkspacePage() {
   }, [tasks, projectFilter, query]);
 
   const grouped = useMemo(() => {
-    const groups: Record<RailGroup, Array<{ task: TaskManifest; ask: string | null; run: RunSummary | null }>> = {
+    const groups: Record<RailGroup, Array<{ task: TaskManifest; ask: string | null; run: RunSummary | null; activity: string }>> = {
       needsYou: [], running: [], review: [], done: [],
     };
     for (const task of visibleTasks) {
       const info = attentionByTask.get(task.task_id);
+      const run = latestRunByTask.get(task.task_id) ?? null;
       const group = railGroupOf(task, info?.kinds ?? new Set());
-      groups[group].push({ task, ask: info?.ask ?? null, run: latestRunByTask.get(task.task_id) ?? null });
+      groups[group].push({ task, ask: info?.ask ?? null, run, activity: activityOf(task, run) });
     }
     // Newest activity first within each group.
     for (const group of RAIL_ORDER) {
-      groups[group].sort((a, b) => (b.task.updated_at ?? "").localeCompare(a.task.updated_at ?? ""));
+      groups[group].sort((a, b) => b.activity.localeCompare(a.activity));
     }
     return groups;
   }, [visibleTasks, attentionByTask, latestRunByTask]);
@@ -178,6 +188,14 @@ export default function WorkspacePage() {
     () => tasks.find((task) => task.task_id === selectedTaskId) ?? null,
     [tasks, selectedTaskId],
   );
+
+  // Drop a selection the project filter now excludes, so the main view never
+  // shows a task hidden from the rail (notes would post to the wrong project).
+  useEffect(() => {
+    if (projectFilter !== "all" && selectedTask && selectedTask.project_id !== projectFilter) {
+      setSelectedTaskId(null);
+    }
+  }, [projectFilter, selectedTask]);
 
   const selectTask = useCallback((task: TaskManifest) => {
     setSelectedTaskId(task.task_id);
@@ -225,7 +243,7 @@ export default function WorkspacePage() {
 function TaskRail({
   groups, projectIds, projectFilter, onProjectFilter, query, onQuery, selectedTaskId, onSelect, onNewTask, onRefresh, loading,
 }: {
-  groups: Record<RailGroup, Array<{ task: TaskManifest; ask: string | null; run: RunSummary | null }>>;
+  groups: Record<RailGroup, Array<{ task: TaskManifest; ask: string | null; run: RunSummary | null; activity: string }>>;
   projectIds: string[]; projectFilter: string; onProjectFilter: (value: string) => void;
   query: string; onQuery: (value: string) => void;
   selectedTaskId: string | null; onSelect: (task: TaskManifest) => void;
@@ -283,7 +301,7 @@ function TaskRail({
                 <span className="text-[11px] text-muted-foreground">{items.length}</span>
               </div>
               <ul className="space-y-0.5">
-                {items.map(({ task, ask, run }) => {
+                {items.map(({ task, ask, run, activity }) => {
                   const selected = task.task_id === selectedTaskId;
                   const sub = ask ?? te("taskState", task.state);
                   return (
@@ -299,7 +317,7 @@ function TaskRail({
                         </div>
                         <div className="mt-0.5 flex items-center justify-between gap-2 pl-4">
                           <span className="min-w-0 truncate text-[11px] text-muted-foreground">{sub}</span>
-                          <span className="shrink-0 text-[11px] text-muted-foreground">{relTime(task.updated_at, t)}</span>
+                          <span className="shrink-0 text-[11px] text-muted-foreground">{relTime(activity, t)}</span>
                         </div>
                       </button>
                     </li>
@@ -333,7 +351,9 @@ function TaskWorkspace({ task, ask, attention, latestRun }: { task: TaskManifest
   const { t } = useI18n();
   const [dashTask, setDashTask] = useState<DashboardTask | null>(null);
   const [charterGoal, setCharterGoal] = useState<string>("");
+  const [dashError, setDashError] = useState(false);
   const [specs, setSpecs] = useState<RequirementSpec[] | null>(null);
+  const [specsError, setSpecsError] = useState(false);
   const [delivery, setDelivery] = useState<Delivery | null>(null);
   const [events, setEvents] = useState<TaskEvent[] | null>(null);
   const [tab, setTab] = useState<Tab>("requirements");
@@ -354,8 +374,9 @@ function TaskWorkspace({ task, ask, attention, latestRun }: { task: TaskManifest
         setCharterGoal(dash.charter.goal);
         setDashTask(dash.tasks.find((item) => item.task_id === task.task_id) ?? null);
       })
-      .catch(() => {});
-    listSpecs(task.task_id).then((value) => { if (!ctrl.signal.aborted) setSpecs(value); }).catch(() => setSpecs([]));
+      .catch(() => { if (!ctrl.signal.aborted) setDashError(true); });
+    // A failed read stays "unknown" (null + error), never a false "empty".
+    listSpecs(task.task_id).then((value) => { if (!ctrl.signal.aborted) setSpecs(value); }).catch(() => { if (!ctrl.signal.aborted) setSpecsError(true); });
     loadEvents(ctrl.signal);
     if (task.state === "done") {
       fetchDelivery(task.task_id, ctrl.signal).then((value) => { if (!ctrl.signal.aborted) setDelivery(value); }).catch(() => {});
@@ -365,7 +386,7 @@ function TaskWorkspace({ task, ask, attention, latestRun }: { task: TaskManifest
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <WorkspaceHeader task={task} charterGoal={charterGoal} dashTask={dashTask} blocker={ask} />
+      <WorkspaceHeader task={task} charterGoal={charterGoal} dashTask={dashTask} dashError={dashError} blocker={ask} />
       <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
         {/* Center: the unified, chat-like task timeline + message box. */}
         <TimelineColumn taskId={task.task_id} events={events} onPosted={() => loadEvents()} />
@@ -383,7 +404,7 @@ function TaskWorkspace({ task, ask, attention, latestRun }: { task: TaskManifest
             ))}
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto p-4">
-            {tab === "requirements" && <RequirementsPanel task={task} specs={specs} />}
+            {tab === "requirements" && <RequirementsPanel task={task} specs={specs} error={specsError} />}
             {tab === "run" && <RunPanel task={task} latestRun={latestRun} />}
             {tab === "attention" && <AttentionPanel items={attention} />}
             {tab === "changes" && <ChangesPanel task={task} delivery={delivery} />}
@@ -494,12 +515,16 @@ function TimelineEntry({ event, t, te }: { event: TaskEvent; t: Translate; te: T
 
 // The always-on Agora header: goal, stage, trustworthy completion, blocker, and
 // the one next step — the answer to "where is this and what do I do next?".
-function WorkspaceHeader({ task, charterGoal, dashTask, blocker }: { task: TaskManifest; charterGoal: string; dashTask: DashboardTask | null; blocker: string | null }) {
+function WorkspaceHeader({ task, charterGoal, dashTask, dashError, blocker }: { task: TaskManifest; charterGoal: string; dashTask: DashboardTask | null; dashError: boolean; blocker: string | null }) {
   const { t, te } = useI18n();
   const next = dashTask?.next_action ?? null;
   const total = dashTask?.total_weight ?? 0;
   const verified = dashTask?.verified_weight ?? 0;
   const pct = total ? Math.round((verified * 100) / total) : 0;
+  // A blocked/failed task with no open blocker item still IS blocked — never
+  // claim "None", which would contradict its authoritative state.
+  const stuck = task.state === "blocked" || task.state === "failed";
+  const blockerText = blocker ?? (stuck ? t("workspace.header.blockedNoDetail") : null);
 
   return (
     <header className="border-b bg-card px-5 py-4">
@@ -512,27 +537,37 @@ function WorkspaceHeader({ task, charterGoal, dashTask, blocker }: { task: TaskM
 
       <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <Fact icon={<Target className="size-3.5" />} label={t("workspace.header.goal")}>
-          <span className={cn("text-sm", !charterGoal && "text-muted-foreground")}>{charterGoal || t("workspace.header.noGoal")}</span>
+          {dashError && !charterGoal
+            ? <span className="text-sm text-muted-foreground">{t("workspace.header.unavailable")}</span>
+            : <span className={cn("text-sm", !charterGoal && "text-muted-foreground")}>{charterGoal || t("workspace.header.noGoal")}</span>}
         </Fact>
         <Fact label={t("workspace.header.completion")}>
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-semibold tabular-nums">{dashTask ? t("workspace.header.completionValue", { done: verified, total }) : "—"}</span>
-            {dashTask && total > 0 && (
-              <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-muted">
-                <div className="h-full rounded-full bg-emerald-500" style={{ width: `${pct}%` }} />
-              </div>
-            )}
-          </div>
+          {!dashTask ? (
+            <span className="text-sm text-muted-foreground">{dashError ? t("workspace.header.unavailable") : "—"}</span>
+          ) : !dashTask.has_spec ? (
+            // No approved spec → the dashboard's implicit weight of 1 is a rollup
+            // unit, not a real criterion; don't render it as "0/1".
+            <span className="text-sm text-muted-foreground">{t("workspace.header.noCriteria")}</span>
+          ) : (
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-semibold tabular-nums">{t("workspace.header.completionValue", { done: verified, total })}</span>
+              {total > 0 && (
+                <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-muted">
+                  <div className="h-full rounded-full bg-emerald-500" style={{ width: `${pct}%` }} />
+                </div>
+              )}
+            </div>
+          )}
         </Fact>
-        <Fact label={t("workspace.header.blocker")} tone={blocker ? "attention" : undefined}>
-          <span className={cn("text-sm", blocker ? "text-orange-600 dark:text-orange-400" : "text-muted-foreground")}>{blocker || t("workspace.header.noBlocker")}</span>
+        <Fact label={t("workspace.header.blocker")} tone={blockerText ? "attention" : undefined}>
+          <span className={cn("text-sm", blockerText ? "text-orange-600 dark:text-orange-400" : "text-muted-foreground")}>{blockerText || t("workspace.header.noBlocker")}</span>
         </Fact>
         <Fact icon={<ArrowRight className="size-3.5" />} label={t("workspace.header.nextStep")} tone={next?.attention ? "attention" : "primary"}>
           {next ? (
             next.action === "none"
               ? <span className="inline-flex items-center gap-1 text-sm text-emerald-600 dark:text-emerald-400"><CircleCheck className="size-3.5" /> {te("nextAction", "none")}</span>
               : <span className={cn("text-sm font-semibold", next.attention ? "text-orange-600 dark:text-orange-400" : "text-primary")}>{te("nextAction", next.action)}</span>
-          ) : <span className="text-sm text-muted-foreground">—</span>}
+          ) : <span className="text-sm text-muted-foreground">{dashError ? t("workspace.header.unavailable") : "—"}</span>}
         </Fact>
       </div>
     </header>
@@ -559,12 +594,14 @@ function PanelShell({ href, hrefLabel, children }: { href: string; hrefLabel: st
   );
 }
 
-function RequirementsPanel({ task, specs }: { task: TaskManifest; specs: RequirementSpec[] | null }) {
+function RequirementsPanel({ task, specs, error }: { task: TaskManifest; specs: RequirementSpec[] | null; error: boolean }) {
   const { t, te } = useI18n();
   const latest = specs && specs.length > 0 ? specs[0] : null;
   return (
     <PanelShell href={`/requirements?task=${encodeURIComponent(task.task_id)}`} hrefLabel={t("workspace.panels.openFull")}>
-      {!latest ? (
+      {error ? (
+        <p className="text-sm text-muted-foreground">{t("workspace.panels.unavailable")}</p>
+      ) : !latest ? (
         <p className="text-sm text-muted-foreground">{t("workspace.panels.requirements.none")}</p>
       ) : (
         <div className="space-y-3">
