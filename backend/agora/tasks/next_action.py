@@ -99,12 +99,19 @@ def task_next_action(
     spec_state: Any = None,
     pending_clarifications: bool = False,
     has_worker_success: bool = False,
+    has_active_run: bool = False,
 ) -> dict[str, Any]:
     """The single next step for one task, derived from its state and signals.
 
     ``spec_state`` is the current spec's ``SpecState`` (or None if the task has
     no spec yet) — any state, not only APPROVED, so requirements can route a
     draft to approval or a rejection to revision.
+
+    ``has_active_run`` disambiguates ``RUNNING``: a run finishing does NOT move
+    the task out of ``running`` (the dispatcher raises a review/approval
+    Attention and the human's response advances it), so ``running`` means "wait"
+    only while a run is genuinely active — otherwise the human must review the
+    result.
     """
     if task_state == TaskState.CANCELLED or task_state == TaskState.DONE:
         return _action("none", "none")
@@ -131,7 +138,11 @@ def task_next_action(
     if task_state == TaskState.PLANNED:
         return _action("human", "start_run")
     if task_state == TaskState.RUNNING:
-        return _action("agent", "await_run")
+        # A run is active -> wait; no active run -> the run finished and the
+        # human must review the result / settle its review Attention.
+        if has_active_run:
+            return _action("agent", "await_run")
+        return _action("human", "verify_review")
     if task_state == TaskState.REVIEW:
         return _action("human", "verify_review")
     if task_state == TaskState.VERIFIED:
@@ -140,7 +151,7 @@ def task_next_action(
     return _action("none", "none")  # pragma: no cover
 
 
-def project_next_action(items: list[dict[str, Any]]) -> dict[str, Any]:
+def project_next_action(items: list[dict[str, Any]], *, partial: bool = False) -> dict[str, Any]:
     """Roll per-task next actions up to one project-wide next action.
 
     ``items`` is a list of ``{"task_id", "title", "priority", "next_action"}``.
@@ -148,6 +159,11 @@ def project_next_action(items: list[dict[str, Any]]) -> dict[str, Any]:
     priority, then the earlier task (list order, which the store returns newest
     last within a page — callers pass tasks in a stable order). Also reports how
     many tasks need attention and how many await a human, for the cockpit header.
+
+    ``partial`` is True when the caller could not consider every task (the task
+    page was truncated); the caller must still feed in all attention tasks so the
+    winner/attention_count stay correct, but the non-attention rollup and
+    ``pending_count`` may undercount. The flag is surfaced so the UI can say so.
     """
     attention_count = sum(1 for it in items if it["next_action"]["attention"])
     pending_count = sum(1 for it in items if it["next_action"]["owner"] == "human")
@@ -173,4 +189,5 @@ def project_next_action(items: list[dict[str, Any]]) -> dict[str, Any]:
         result.update({"task_id": best["task_id"], "title": best["title"]})
     result["attention_count"] = attention_count
     result["pending_count"] = pending_count
+    result["partial"] = partial
     return result

@@ -50,10 +50,17 @@ def test_lifecycle_owner_ladder():
     assert task_next_action(TaskState.BACKLOG)["action"] == "start_requirements"
     assert task_next_action(TaskState.DESIGN)["action"] == "advance_to_plan"
     assert task_next_action(TaskState.PLANNED)["action"] == "start_run"
-    running = task_next_action(TaskState.RUNNING)
-    assert running["owner"] == "agent" and running["action"] == "await_run"
     assert task_next_action(TaskState.REVIEW)["action"] == "verify_review"
     assert task_next_action(TaskState.VERIFIED)["action"] == "mark_done"
+
+
+def test_running_waits_only_while_a_run_is_active():
+    # A run finishing does not move the task out of running; without an active
+    # run the human must review the result, not keep waiting.
+    active = task_next_action(TaskState.RUNNING, has_active_run=True)
+    assert active["owner"] == "agent" and active["action"] == "await_run"
+    finished = task_next_action(TaskState.RUNNING, has_active_run=False)
+    assert finished["owner"] == "human" and finished["action"] == "verify_review"
 
 
 def test_every_action_has_a_summary():
@@ -100,10 +107,16 @@ def test_project_next_action_orders_human_decisions_over_runs():
     items = [
         _item("a", TaskState.PLANNED),                     # start_run (60)
         _item("b", TaskState.REQUIREMENTS, spec_state="draft"),  # approve_spec (78)
-        _item("c", TaskState.RUNNING),                     # await_run (20)
+        _item("c", TaskState.RUNNING, has_active_run=True),  # await_run (20)
     ]
     na = project_next_action(items)
     assert na["task_id"] == "b" and na["action"] == "approve_spec"
+    assert na["partial"] is False
+
+
+def test_project_next_action_partial_flag():
+    items = [_item("a", TaskState.PLANNED)]
+    assert project_next_action(items, partial=True)["partial"] is True
 
 
 def test_project_next_action_ties_break_on_task_priority_then_order():

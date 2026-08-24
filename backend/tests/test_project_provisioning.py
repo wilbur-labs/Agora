@@ -141,7 +141,86 @@ def test_project_dashboard_progress_vs_verified(tmp_path):
         assert body["next_action"]["task_id"] == backlog["task_id"]
         assert body["next_action"]["action"] == "start_requirements"
         assert body["next_action"]["attention_count"] == 0
+        assert body["next_action"]["partial"] is False
         assert client.get("/api/projects/nope/dashboard").status_code == 404
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_dashboard_next_action_routes_rejected_spec_to_revise(tmp_path):
+    from agora.tasks.router import get_project_registry, get_task_store
+    from agora.tasks.store import TaskStore
+    from agora.tasks.models import CreateTaskRequest, TaskState
+    from agora.execution.router import get_execution_store
+    from agora.execution.store import ExecutionStore
+    from agora.requirements.store import RequirementStore
+    from agora.requirements.models import CreateSpecRequest, RequirementItem, AcceptanceScenario
+
+    registry = _registry(tmp_path)
+    tasks = TaskStore(tmp_path / "reject.db")
+    runs = ExecutionStore(tasks)
+    specs = RequirementStore(tasks)
+
+    t = tasks.create(CreateTaskRequest(project_id="agora", title="rej", created_by="t"))
+    t = tasks.transition(t.task_id, TaskState.REQUIREMENTS, actor="t", expected_version=t.version)
+    spec = specs.create(t.task_id, CreateSpecRequest(
+        title="s", summary="s",
+        functional=[RequirementItem(requirement_id="FR-1", statement="does a thing")],
+        acceptance_scenarios=[
+            AcceptanceScenario(scenario_id="AC-1", requirement_ids=["FR-1"], given="g", when="w", then="t"),
+        ], created_by="t"))
+    specs.reject(spec.spec_id, actor="t", expected_revision=spec.revision, reason="no")
+    # current() now returns None (only draft/approved), so the next action must
+    # still recover the rejected latest spec and route to revise, not draft.
+    assert specs.current(t.task_id) is None
+
+    app.dependency_overrides[get_project_registry] = lambda: registry
+    app.dependency_overrides[get_task_store] = lambda: tasks
+    app.dependency_overrides[get_execution_store] = lambda: runs
+    client = TestClient(app)
+    try:
+        body = client.get("/api/projects/agora/dashboard").json()
+        task_view = next(tk for tk in body["tasks"] if tk["task_id"] == t.task_id)
+        assert task_view["next_action"]["action"] == "revise_spec"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_dashboard_next_action_never_hides_a_blocker_past_the_page(tmp_path, monkeypatch):
+    from agora.api import settings_router
+    from agora.tasks.router import get_project_registry, get_task_store
+    from agora.tasks.store import TaskStore
+    from agora.tasks.models import CreateTaskRequest, TaskState
+    from agora.execution.router import get_execution_store
+    from agora.execution.store import ExecutionStore
+
+    # Shrink the page cap so a small fixture triggers truncation deterministically.
+    monkeypatch.setattr(settings_router, "_DASHBOARD_TASK_LIMIT", 3)
+
+    registry = _registry(tmp_path)
+    tasks = TaskStore(tmp_path / "trunc.db")
+    runs = ExecutionStore(tasks)
+
+    # High-priority routine tasks fill the page; a low-priority blocked task sorts
+    # last (priority DESC) and falls off it.
+    for i in range(3):
+        tasks.create(CreateTaskRequest(project_id="agora", title=f"routine-{i}", priority=100, created_by="t"))
+    b = tasks.create(CreateTaskRequest(project_id="agora", title="late-blocker", priority=0, created_by="t"))
+    b = tasks.transition(b.task_id, TaskState.REQUIREMENTS, actor="t", expected_version=b.version)
+    tasks.transition(b.task_id, TaskState.BLOCKED, actor="t", expected_version=b.version)
+
+    app.dependency_overrides[get_project_registry] = lambda: registry
+    app.dependency_overrides[get_task_store] = lambda: tasks
+    app.dependency_overrides[get_execution_store] = lambda: runs
+    client = TestClient(app)
+    try:
+        body = client.get("/api/projects/agora/dashboard").json()
+        assert body["truncated"] is True
+        # The blocker is not on the page, yet attention must still surface.
+        assert b.task_id not in {tk["task_id"] for tk in body["tasks"]}
+        na = body["next_action"]
+        assert na["task_id"] == b.task_id and na["action"] == "resolve_blocker"
+        assert na["attention_count"] == 1 and na["partial"] is True
     finally:
         app.dependency_overrides.clear()
 

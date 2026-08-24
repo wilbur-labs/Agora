@@ -5483,5 +5483,24 @@ reading the whole board.
   routing, enum-or-value, tie-breaks, empty/all-terminal) + dashboard integration
   assertions. Narrow run 28 passed; full backend suite 786 passed.
 
+Reviewed by Codex (review --commit); three findings, all confirmed against the
+real code and fixed:
+- [P1] `running` returned `await_run` unconditionally, but a finished run leaves
+  the task in `running` (the dispatcher raises a review/approval Attention and
+  the human's response advances it via `review_gate`). Added a `has_active_run`
+  signal: active run -> `await_run`; no active run -> `verify_review` (the human
+  must review the result). The dashboard checks for a QUEUED/RUNNING run.
+- [P2] a rejected spec made `RequirementStore.current()` (draft/approved only)
+  return None, so the engine emitted `draft_spec` and the `revise_spec` branch
+  was unreachable. The dashboard now falls back to `list_for_task()[0]` (the
+  latest spec of any state) when current() is None.
+- [P2] task-page truncation (>500) could hide a lower-priority blocked/failed
+  task, letting the rollup return a routine action with `attention_count: 0`.
+  When truncated, the dashboard now also pulls the project's BLOCKED/FAILED tasks
+  and folds them into the rollup, and `next_action.partial` flags that the
+  non-attention rollup may be incomplete.
+Added tests for each fix (running active/finished, partial flag, rejected->revise
+endpoint, blocker-past-the-page endpoint). Full backend suite 790 passed.
+
 Next safe action: (4) the project-page / four-group-portfolio UI consuming the
 dashboard's metrics + next_action. Branch is not yet pushed.

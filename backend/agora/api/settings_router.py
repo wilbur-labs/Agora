@@ -330,6 +330,7 @@ def project_dashboard(
     from agora.execution.models import RunState
     from agora.requirements.models import SpecState
     from agora.requirements.store import RequirementStore
+    from agora.tasks.models import TaskState
     from agora.tasks.next_action import (
         has_pending_clarifications,
         project_next_action,
@@ -364,17 +365,30 @@ def project_dashboard(
                 has_worker = True  # exact match only; unknown/missing roles ignored
             if has_worker and has_review:
                 break
-        # The current spec's actual state drives the next action (draft ->
-        # approve, rejected -> revise); the metrics still count APPROVED only.
+        # The spec state drives the next action (draft -> approve, rejected ->
+        # revise); metrics still count APPROVED only. current() sees only
+        # draft/approved, so fall back to the latest spec of any state to reach
+        # the rejected/superseded-only case.
         current_spec = specs.current(task.task_id)
-        spec_state = current_spec.state if current_spec is not None else None
-        spec = current_spec if spec_state == SpecState.APPROVED else None
+        if current_spec is not None:
+            spec_state = current_spec.state
+        else:
+            history = specs.list_for_task(task.task_id)
+            spec_state = history[0].state if history else None
+        spec = current_spec if current_spec is not None and current_spec.state == SpecState.APPROVED else None
+        # A run finishing leaves the task in RUNNING until the human settles its
+        # review; only an actually-active run means "wait".
+        has_active_run = task.state == TaskState.RUNNING and bool(
+            exec_store.list(task_id=task.task_id, state=RunState.RUNNING, limit=1)
+            or exec_store.list(task_id=task.task_id, state=RunState.QUEUED, limit=1)
+        )
         m = task_metrics(task.state, spec, has_worker_success=has_worker, has_review_success=has_review)
         next_action = task_next_action(
             task.state,
             spec_state=spec_state,
             pending_clarifications=has_pending_clarifications(task.clarifications),
             has_worker_success=has_worker,
+            has_active_run=has_active_run,
         )
         metric_list.append(m)
         states.append(task.state)
@@ -397,13 +411,34 @@ def project_dashboard(
             "next_action": next_action,
         })
 
+    # Attention outranks every routine step, so it must never be hidden by page
+    # truncation. When the page was capped, pull the project's blocked/failed
+    # tasks (few by nature) directly and fold any that fell off the page into the
+    # rollup. Their next action is fully determined by state, so no run/spec
+    # signals are needed.
+    if truncated:
+        seen = {it["task_id"] for it in action_items}
+        for attn_state in (TaskState.BLOCKED, TaskState.FAILED):
+            for task in task_store.list(
+                project_id=project_id, state=attn_state, limit=_DASHBOARD_TASK_LIMIT
+            ):
+                if task.task_id in seen:
+                    continue
+                seen.add(task.task_id)
+                action_items.append({
+                    "task_id": task.task_id,
+                    "title": task.title,
+                    "priority": task.priority,
+                    "next_action": task_next_action(task.state),
+                })
+
     metrics = project_metrics(metric_list, states)
     return {
         "project_id": project_id,
         "name": project.name,
         "charter": _charter_view(project.charter),
         "metrics": metrics,
-        "next_action": project_next_action(action_items),
+        "next_action": project_next_action(action_items, partial=truncated),
         "tasks": task_views,
         "truncated": truncated,
     }
