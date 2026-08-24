@@ -5504,3 +5504,52 @@ endpoint, blocker-past-the-page endpoint). Full backend suite 790 passed.
 
 Next safe action: (4) the project-page / four-group-portfolio UI consuming the
 dashboard's metrics + next_action. Branch is not yet pushed.
+
+## Increment: Task Workspace — repositioning pivot (2026-08-25)
+
+After reviewing Kandev (a competitor) the human set the next-phase priority: stop
+spreading capability across pages and build ONE task-centric three-column
+**Task Workspace**, so opening a task immediately answers "what's the goal, is it
+trustworthy, has it drifted, what do I do next?". Kandev is a reference only
+(AGPL-3.0 — no code copied); the switcher idea is reimplemented on Agora's own
+data model. This is a scoped validation iteration with explicit exit criteria
+(30s to create a task; 5s to see where a project stands; every Done shows
+acceptance evidence; mid-task course-correction; no page-hopping from need to
+Verified). Everything else is frozen (more agents, Docker/SSH, workflow visual
+editor, cost stats, arbitrary layouts, etc.). See memory task-workspace-next-phase.
+
+Part 4a — project cockpit in the portfolio (`12c4284`): when scoped to one
+project, the portfolio renders the 1.2 dashboard (charter with an edit slide-over,
+progress vs verified vs health, the one deterministic next action + attention/
+pending counts); task cards gain their per-task next action and a verified bar.
+Dashboard types + fetch fn and the nextAction/criterionStatus/health enum labels
+(EN/ZH) become the workspace's foundation.
+
+Part 4b — Task Workspace shell (`68dbdfc`): new `/workspace?project=&task=`
+(static-export query params), set as the default landing (`/` redirects). Left
+TaskRail (persistent): project filter + search + a dead-simple 3-question create
+(accomplish / done-when / must-not-do; the rest uses project defaults under
+Advanced), tasks grouped Needs you / Running / Review / Done. Always-on Agora
+header for the selected task (goal, stage, verified completion, blocker, next
+step) reusing the dashboard. Right tabs reuse existing data read-only
+(Requirements / Run / Attention / Changes) with deep links to the full pages.
+
+Part 4c — timeline + message box (`5bad34a`): the center column is a unified,
+chat-like timeline of the task's event log (created, stage changes, spec
+drafted/approved/rejected, runs, attention, handoff, plus human notes), with a
+bottom box that appends a non-destructive `user_message` event (no agent
+dispatched — session resume / run-from-chat is a later phase).
+
+Reviewed by Codex (review --base); seven P2 findings, all confirmed and fixed
+(`ddb5c97`): clear a selection the project filter excludes; verified -> Review
+group (not Done); a blocked task never shows "Blocker: None"; load the rail with
+limit=500; render failed reads as "Unavailable" not a false "empty"; don't show a
+no-spec task's implicit weight as "0/1 criteria"; order the rail by real activity
+(updated_at + latest run) not the stale manifest updated_at.
+
+Verified end-to-end against a running backend (dashboard metrics/next_action,
+event stream, user_message round-trip). Frontend build (12 static pages incl.
+/workspace), tsc, eslint, and EN==ZH key parity (796 each) pass. Branch not pushed.
+
+Next safe action: run the exit-criteria validation on a real task in the browser,
+then decide continue-vs-stop per the agreed test.
