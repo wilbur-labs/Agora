@@ -520,13 +520,27 @@ function TimelineColumn({ taskId, events, runs, specs, onPosted }: { taskId: str
   );
 }
 
+const MILESTONE_STATES = new Set([
+  "backlog", "requirements", "design", "planned", "running", "review", "verified", "done", "blocked", "failed", "cancelled",
+]);
+
+function lookupMilestone(state: string, t: Translate): string | null {
+  return MILESTONE_STATES.has(state) ? t(`workspace.timeline.milestone.${state}`) : null;
+}
+
 function timelineView(event: TaskEvent, t: Translate, te: TranslateEnum): { who: "you" | "agent" | "system"; title: string; detail: string | null } {
   const p = event.payload as Record<string, unknown>;
   const adapter = String(p.adapter ?? "");
   const type = event.event_type;
   if (type === "user_message") return { who: "you", title: t("workspace.timeline.you"), detail: String(p.text ?? "") };
   if (type === "task_created") return { who: "system", title: t("workspace.timeline.events.taskCreated"), detail: null };
-  if (type === "state_changed") return { who: "system", title: t("workspace.timeline.events.stageChanged", { from: te("taskState", String(p.from ?? "")), to: te("taskState", String(p.to ?? "")) }), detail: p.reason ? String(p.reason) : null };
+  if (type === "state_changed") {
+    const to = String(p.to ?? "");
+    // Plain-language milestone by the state reached; fall back to the localized
+    // state name for anything unmapped. A human actor reads as "you".
+    const milestone = lookupMilestone(to, t) ?? te("taskState", to);
+    return { who: event.actor === "user" ? "you" : "system", title: milestone, detail: p.reason ? String(p.reason) : null };
+  }
   if (type === "spec.created") return { who: "system", title: t("workspace.timeline.events.specCreated"), detail: null };
   if (type === "spec.approved") return { who: "you", title: t("workspace.timeline.events.specApproved"), detail: p.reason ? String(p.reason) : null };
   if (type === "spec.rejected") return { who: "you", title: t("workspace.timeline.events.specRejected"), detail: p.reason ? String(p.reason) : null };
