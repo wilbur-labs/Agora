@@ -5553,3 +5553,58 @@ event stream, user_message round-trip). Frontend build (12 static pages incl.
 
 Next safe action: run the exit-criteria validation on a real task in the browser,
 then decide continue-vs-stop per the agreed test.
+
+## Increment: Task Workspace — make each step show its substance (2026-08-25/26)
+
+Driven by direct user feedback while looking at the workspace: it was showing
+labels, not substance ("显示的是屁"). A run of content-surfacing changes, all
+frontend, all reusing existing unauthenticated APIs (no backend change):
+
+- `04cde90` Run output, not a ledger: the timeline drops the noisy run.* events
+  and renders one rich RunCard per run (listRuns + getRun) — the prompt, the
+  actual stdout/stderr (terminal-style, expandable), exit code, error, and the
+  changed files (lazy getRunDeliverables).
+- `0c2bbc7` Two plain-language layers lead the workspace (user chose this shape):
+  a ProjectStrip (name, done/total, verified %, the one project next action,
+  attention count — orientation that survives task switches) and an
+  OutcomeSummary per task ("what it did" = first meaningful line of the latest
+  succeeded run + delivered files/commit; trustworthy completion; the one next
+  step; a done task reads "Done — nothing to do", not an empty grid). Replaced the
+  abstract fact-grid header.
+- `e7fdc88` Content-bearing steps show what they produced: spec.created/approved
+  expand to the spec (summary, requirements, given/when/then scenarios); a
+  review-role run is titled "review".
+- `382c3c4` Plain-language milestones replace state-machine jargon (running ->
+  review => "Development done — in review", etc.).
+- `1c37439` Deliverables are openable: each changed file in a RunCard can be
+  viewed inline (getDeliverableContent) or opened rendered in a new tab
+  (deliverables/raw) — so the design/architecture doc and the built page are
+  actually visible, not just filenames.
+
+Ground truth checked against the running backend: a hotel task's spec, run stdout,
+and deliverables (incl. docs/hotel-site-design.md, mockup.html) all exist and are
+now surfaced. Honest gaps recorded for the user: structured FE/BE progress and
+"architecture status" are NOT tracked as data; decision points (attention +
+choice) and reviewer feedback only exist for tasks that actually ran a
+review/attention flow (the demo tasks had none). Each increment: build (12 static
+pages), tsc, eslint, EN==ZH parity all pass. Branch not pushed.
+
+## Proposal (awaiting review): Kandev-style live terminal + switchable sessions
+
+Wrote `docs/control-plane/live-terminal-integration-proposal.md` (DRAFT, not
+implemented) for borrowing Kandev's switchable per-task session + live run status
++ direct terminal, kept subordinate to Agora's frame (goal / verified completion /
+next step / timeline-as-record). Core: dispatcher writes an in-memory per-run
+ring buffer with a cursor; SSE `GET /api/runs/{id}/stream?cursor=N` +
+`GET /api/tasks/{id}/active-run`; a Terminal mode in the workspace center (xterm.js)
+with a live status pill and a live TaskRail dot; read-only by default, stdin only
+for `bidirectional` adapters; Windows uses piped stdout first, ConPTY only if a
+TTY is needed; phased P0 poll -> P1 SSE -> P2 xterm -> P3 interactive.
+
+Codex review of the proposal was attempted but did NOT complete — its tool host
+crashed ("code-mode host exited during handshake") and the task was stopped before
+producing findings. No verdict was recorded. Re-running the proposal review is the
+open action here.
+
+Next safe action: re-run the Codex review of the live-terminal proposal (avoiding
+the code-mode path), then decide whether to build P0/P1. Branch not pushed.
