@@ -411,7 +411,7 @@ function TaskWorkspace({ task, ask, attention, latestRun }: { task: TaskManifest
       <OutcomeSummary task={task} dashTask={dashTask} dashError={dashError} blocker={ask} delivery={delivery} latestSuccess={latestSuccess} />
       <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
         {/* Center: the unified, chat-like task timeline + message box. */}
-        <TimelineColumn taskId={task.task_id} events={events} runs={runs} onPosted={() => loadEvents()} />
+        <TimelineColumn taskId={task.task_id} events={events} runs={runs} specs={specs} onPosted={() => loadEvents()} />
         {/* Right: result + control tabs (read-only, deep-link to full pages). */}
         <div className="flex min-h-0 w-full flex-col border-t lg:w-[400px] lg:border-l lg:border-t-0">
           <div className="flex gap-1 border-b bg-background/90 px-4 py-2">
@@ -444,11 +444,16 @@ type TimelineItem =
   | { kind: "event"; at: string; key: string; event: TaskEvent }
   | { kind: "run"; at: string; key: string; run: ExecutionRun };
 
-function TimelineColumn({ taskId, events, runs, onPosted }: { taskId: string; events: TaskEvent[] | null; runs: ExecutionRun[] | null; onPosted: () => void }) {
+function TimelineColumn({ taskId, events, runs, specs, onPosted }: { taskId: string; events: TaskEvent[] | null; runs: ExecutionRun[] | null; specs: RequirementSpec[] | null; onPosted: () => void }) {
   const { t, te } = useI18n();
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const specsById = useMemo(() => {
+    const map = new Map<string, RequirementSpec>();
+    for (const spec of specs ?? []) map.set(spec.spec_id, spec);
+    return map;
+  }, [specs]);
 
   // The run.* lifecycle events are noise once we show the actual run cards, so
   // drop them and interleave one rich run card per run (by its queue time).
@@ -492,7 +497,7 @@ function TimelineColumn({ taskId, events, runs, onPosted }: { taskId: string; ev
           <p className="py-8 text-center text-sm text-muted-foreground">{t("workspace.timeline.empty")}</p>
         ) : (
           items.map((item) => item.kind === "event"
-            ? <TimelineEntry key={item.key} event={item.event} t={t} te={te} />
+            ? <TimelineEntry key={item.key} event={item.event} spec={specForEvent(item.event, specsById)} t={t} te={te} />
             : <RunCard key={item.key} run={item.run} t={t} te={te} />)
         )}
       </div>
@@ -537,7 +542,15 @@ function timelineView(event: TaskEvent, t: Translate, te: TranslateEnum): { who:
 
 const WHO_DOT: Record<"you" | "agent" | "system", string> = { you: "bg-primary", agent: "bg-blue-500", system: "bg-zinc-400" };
 
-function TimelineEntry({ event, t, te }: { event: TaskEvent; t: Translate; te: TranslateEnum }) {
+// The spec a spec.created/spec.approved event refers to (by spec_id), so the
+// requirements step can show what was actually specified — not just a label.
+function specForEvent(event: TaskEvent, specsById: Map<string, RequirementSpec>): RequirementSpec | null {
+  if (!event.event_type.startsWith("spec.")) return null;
+  const id = String((event.payload as Record<string, unknown>).spec_id ?? "");
+  return specsById.get(id) ?? null;
+}
+
+function TimelineEntry({ event, spec, t, te }: { event: TaskEvent; spec: RequirementSpec | null; t: Translate; te: TranslateEnum }) {
   const view = timelineView(event, t, te);
   const isYou = view.who === "you";
   return (
@@ -549,7 +562,52 @@ function TimelineEntry({ event, t, te }: { event: TaskEvent; t: Translate; te: T
           <span className="text-[10px] text-muted-foreground">{relTime(event.created_at, t)}</span>
         </div>
         {view.detail && <p className={cn("mt-0.5 whitespace-pre-wrap text-sm leading-relaxed", isYou && "text-right")}>{view.detail}</p>}
+        {spec && <SpecBlock spec={spec} t={t} />}
       </div>
+    </div>
+  );
+}
+
+// What the requirements step actually produced: summary, requirements, and the
+// given/when/then acceptance scenarios — collapsed by default.
+function SpecBlock({ spec, t }: { spec: RequirementSpec; t: Translate }) {
+  const [open, setOpen] = useState(false);
+  const reqs = [...spec.functional, ...spec.non_functional];
+  return (
+    <div className="mt-1.5">
+      <button onClick={() => setOpen((v) => !v)} className="flex items-center gap-1 text-[11px] font-medium text-primary hover:underline">
+        <ChevronDown className={cn("size-3 transition-transform", open && "rotate-180")} /> {open ? t("workspace.timeline.spec.hide") : t("workspace.timeline.spec.view")}
+      </button>
+      {open && (
+        <div className="mt-1.5 space-y-2 rounded-lg bg-muted/40 p-2 text-xs leading-relaxed">
+          {spec.summary && (
+            <div>
+              <p className="font-medium text-muted-foreground">{t("workspace.timeline.spec.summary")}</p>
+              <p className="mt-0.5">{spec.summary}</p>
+            </div>
+          )}
+          {reqs.length > 0 && (
+            <div>
+              <p className="font-medium text-muted-foreground">{t("workspace.timeline.spec.requirements")} ({reqs.length})</p>
+              <ul className="mt-0.5 list-disc space-y-0.5 pl-4">
+                {reqs.map((r) => <li key={r.requirement_id}>{r.statement}</li>)}
+              </ul>
+            </div>
+          )}
+          {spec.acceptance_scenarios.length > 0 && (
+            <div>
+              <p className="font-medium text-muted-foreground">{t("workspace.timeline.spec.scenarios")} ({spec.acceptance_scenarios.length})</p>
+              <ul className="mt-0.5 space-y-0.5">
+                {spec.acceptance_scenarios.map((s) => (
+                  <li key={s.scenario_id} className="rounded bg-background/60 px-2 py-1">
+                    <span className="font-medium">{s.given}</span> → {s.when} → <span className="font-medium">{s.then}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -676,6 +734,7 @@ function RunCard({ run, t, te }: { run: ExecutionRun; t: Translate; te: Translat
   const [expanded, setExpanded] = useState(false);
   const [files, setFiles] = useState<Deliverable[] | "loading" | null>(null);
   const failed = run.state === "failed" || run.state === "timed_out" || run.state === "abandoned";
+  const isReview = String((run.result_metadata as Record<string, unknown>)?.agora_role ?? "") === "review";
   const out = (run.stdout_tail || "").trimEnd();
   const err = (run.stderr_tail || "").trimEnd();
   const longOutput = out.length > 600;
@@ -690,7 +749,7 @@ function RunCard({ run, t, te }: { run: ExecutionRun; t: Translate; te: Translat
     <div className="rounded-xl border bg-card">
       <div className="flex flex-wrap items-center gap-2 border-b px-3 py-2">
         <span className={cn("size-2 shrink-0 rounded-full", RUN_TONE[run.state])} />
-        <span className="text-sm font-semibold">{t("workspace.timeline.run.title", { adapter: run.adapter })}</span>
+        <span className="text-sm font-semibold">{t(isReview ? "workspace.timeline.run.titleReview" : "workspace.timeline.run.title", { adapter: run.adapter })}</span>
         <span className={cn("rounded px-1.5 py-0.5 text-[11px] font-medium", failed ? "bg-red-500/10 text-red-600 dark:text-red-400" : "bg-muted text-muted-foreground")}>{te("runState", run.state)}</span>
         {run.exit_code !== null && <span className="text-[11px] text-muted-foreground">{t("workspace.timeline.run.exit", { code: run.exit_code })}</span>}
         <span className="ml-auto text-[11px] text-muted-foreground">{relTime(run.finished_at ?? run.started_at ?? run.queued_at, t)}</span>

@@ -79,8 +79,16 @@ export const workspace = {
         handoff: "Handed off",
         note: "Note",
       },
+      spec: {
+        view: "View the spec",
+        hide: "Hide the spec",
+        summary: "Summary",
+        requirements: "Requirements",
+        scenarios: "Acceptance scenarios",
+      },
       run: {
         title: "{adapter} run",
+        titleReview: "{adapter} review",
         exit: "exit {code}",
         prompt: "Prompt",
         showPrompt: "Show prompt",
@@ -223,8 +231,16 @@ export const workspace = {
         handoff: "已交付",
         note: "说明",
       },
+      spec: {
+        view: "查看规格",
+        hide: "收起规格",
+        summary: "摘要",
+        requirements: "需求",
+        scenarios: "验收场景",
+      },
       run: {
         title: "{adapter} 运行",
+        titleReview: "{adapter} 评审",
         exit: "退出码 {code}",
         prompt: "指令(Prompt)",
         showPrompt: "查看指令",
