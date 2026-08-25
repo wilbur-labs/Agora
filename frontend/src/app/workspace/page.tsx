@@ -43,6 +43,8 @@ import {
   type TaskManifest,
 } from "@/lib/control-plane";
 import {
+  deliverableRawUrl,
+  getDeliverableContent,
   getRun,
   getRunDeliverables,
   listRuns,
@@ -816,17 +818,45 @@ function RunCard({ run, t, te }: { run: ExecutionRun; t: Translate; te: Translat
           <div>
             <p className="mb-1 text-[11px] font-medium text-muted-foreground">{t("workspace.timeline.run.files", { count: files.length })}</p>
             <ul className="space-y-0.5 text-xs">
-              {files.map((f) => (
-                <li key={f.path} className="flex items-center gap-2 rounded bg-muted/40 px-2 py-0.5 font-mono">
-                  <span className="shrink-0 text-[10px] uppercase text-muted-foreground">{f.status}</span>
-                  <span className="truncate">{f.path}</span>
-                </li>
-              ))}
+              {files.map((f) => <FileRow key={f.path} runId={run.run_id} file={f} t={t} />)}
             </ul>
           </div>
         )}
       </div>
     </div>
+  );
+}
+
+// A changed file you can actually open: view its content inline, or open the
+// rendered artifact in a new tab (e.g. see the mockup page as it looks now).
+function FileRow({ runId, file, t }: { runId: string; file: Deliverable; t: Translate }) {
+  const [content, setContent] = useState<string | null | "loading">(null);
+  const [open, setOpen] = useState(false);
+
+  const toggle = async () => {
+    if (open) { setOpen(false); return; }
+    setOpen(true);
+    if (content === null) {
+      setContent("loading");
+      try { setContent((await getDeliverableContent(runId, file.path)).content); }
+      catch { setContent(""); }
+    }
+  };
+
+  return (
+    <li className="rounded bg-muted/40">
+      <div className="flex items-center gap-2 px-2 py-0.5 font-mono">
+        <span className="shrink-0 text-[10px] uppercase text-muted-foreground">{file.status}</span>
+        <button onClick={() => void toggle()} className="min-w-0 flex-1 truncate text-left hover:underline">{file.path}</button>
+        <button onClick={() => void toggle()} className="shrink-0 font-sans text-[11px] font-medium text-primary hover:underline">{open ? t("workspace.timeline.run.hideFile") : t("workspace.timeline.run.viewFile")}</button>
+        <a href={deliverableRawUrl(runId, file.path)} target="_blank" rel="noopener noreferrer" className="shrink-0 font-sans text-[11px] font-medium text-primary hover:underline">{t("workspace.timeline.run.openRaw")}</a>
+      </div>
+      {open && (
+        content === "loading"
+          ? <p className="px-2 py-1 text-[11px] text-muted-foreground">{t("workspace.timeline.run.loadingFile")}</p>
+          : <pre className="max-h-72 overflow-auto whitespace-pre rounded-b bg-zinc-950 p-3 text-[11px] leading-relaxed text-zinc-100">{content}</pre>
+      )}
+    </li>
   );
 }
 

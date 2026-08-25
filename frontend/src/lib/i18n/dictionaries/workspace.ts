@@ -117,6 +117,10 @@ export const workspace = {
         noFiles: "No files changed.",
         showFiles: "Show files changed",
         loadingFiles: "Loading files…",
+        viewFile: "view",
+        hideFile: "hide",
+        openRaw: "open",
+        loadingFile: "loading…",
       },
     },
     tabs: {
@@ -282,6 +286,10 @@ export const workspace = {
         noFiles: "无文件改动。",
         showFiles: "查看改动文件",
         loadingFiles: "加载文件中…",
+        viewFile: "查看",
+        hideFile: "收起",
+        openRaw: "打开预览",
+        loadingFile: "加载中…",
       },
     },
     tabs: {
