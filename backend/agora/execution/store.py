@@ -8,6 +8,7 @@ from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
+from agora.tasks.localday import local_day_bounds, local_day_of
 from agora.tasks.models import TaskState, utc_now
 from agora.tasks.store import TaskStore
 
@@ -292,7 +293,7 @@ class ExecutionStore:
         )
 
     def latest_finished_day(self, task_id: str) -> str | None:
-        """The most recent day (UTC, YYYY-MM-DD) a run of this task finished.
+        """The most recent **local** calendar day a run of this task finished.
 
         Ordered by ``finished_at``, not ``queued_at`` like ``list``: a long run
         queued earlier can finish later, so a ``queued_at``-ordered page can miss
@@ -301,29 +302,33 @@ class ExecutionStore:
         with closing(self._connect()) as db:
             row = db.execute(
                 """
-                SELECT substr(finished_at, 1, 10) AS day
-                FROM execution_runs
+                SELECT finished_at FROM execution_runs
                 WHERE task_id = ? AND finished_at IS NOT NULL
                 ORDER BY finished_at DESC LIMIT 1
                 """,
                 (task_id,),
             ).fetchone()
-        return row["day"] if row and row["day"] else None
+        return local_day_of(row["finished_at"]) if row else None
 
     def list_finished_on_day(
         self, task_id: str, day: str, *, limit: int
     ) -> tuple[list[ExecutionRun], bool]:
-        """``(runs, truncated)`` for this task's runs that finished on ``day``,
-        oldest first. ``truncated`` is True when more exist than ``limit``, so a
-        caller reports "at least these" instead of implying completeness."""
+        """``(runs, truncated)`` for this task's runs that finished on the **local**
+        ``day``, oldest first. ``truncated`` is True when more exist than ``limit``,
+        so a caller reports "at least these" instead of implying completeness.
+
+        A UTC range, not a string prefix: one local day spans two UTC dates, so
+        prefix matching would drop the hours either side of midnight.
+        """
+        start, end = local_day_bounds(day)
         with closing(self._connect()) as db:
             rows = db.execute(
                 """
                 SELECT * FROM execution_runs
-                WHERE task_id = ? AND substr(finished_at, 1, 10) = ?
+                WHERE task_id = ? AND finished_at >= ? AND finished_at < ?
                 ORDER BY finished_at, rowid LIMIT ?
                 """,
-                (task_id, day, limit + 1),
+                (task_id, start, end, limit + 1),
             ).fetchall()
         truncated = len(rows) > limit
         return [self._run(row) for row in rows[:limit]], truncated

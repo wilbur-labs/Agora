@@ -463,7 +463,7 @@ def task_recap(
     "where did I leave off" is a question about recorded facts.
     """
     from agora.execution.dispatcher import ROLE_KEY, ROLE_WORKER
-    from agora.tasks.models import utc_now
+    from agora.tasks.localday import local_today
     from agora.tasks.recap import DAY_ELIGIBLE_EVENTS, last_active_day
 
     if task_store.get(task_id) is None:
@@ -475,7 +475,7 @@ def task_recap(
     run_day = exec_store.latest_finished_day(task_id)
     day = max([d for d in (event_day, run_day) if d], default=None)
     if day is None:
-        return last_active_day([], [], today=utc_now()[:10])
+        return last_active_day([], [], today=local_today())
 
     events = task_store.events_on_day(task_id, day, limit=_RECAP_EVENT_LIMIT)
     day_runs, runs_truncated = exec_store.list_finished_on_day(
@@ -498,7 +498,7 @@ def task_recap(
             "delivered_truncated": bool(snapshot and snapshot.get("truncated")),
         })
 
-    result = last_active_day(events, runs, today=utc_now()[:10])
+    result = last_active_day(events, runs, today=local_today())
     # Say so when the day held more than we read, rather than letting a bounded
     # read look like the whole day.
     result["partial"] = bool(runs_truncated or len(events) >= _RECAP_EVENT_LIMIT)

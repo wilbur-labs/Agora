@@ -230,3 +230,158 @@ def test_run_activity_events_mark_the_day_without_duplicating_the_outcome():
     recap = last_active_day(events, [], today="2026-08-27")
     assert recap["day"] == "2026-08-27"
     assert recap["items"] == []  # the day was active, but nothing is claimed
+
+
+# ── the day is the one on the wall clock, not UTC's ────────────────────
+
+def test_late_night_work_lands_on_the_local_day_not_the_utc_one():
+    """The case that made this necessary: in UTC+9, 02:30 local is 17:30 UTC the
+    previous date. Bucketing by UTC would file a late night under yesterday and
+    make "where did I leave off" answer with the wrong day."""
+    def tokyo_day(ts):
+        # A fixed +09:00 view, so the test does not inherit the machine's zone.
+        from datetime import datetime, timedelta
+        if not ts:
+            return None
+        try:
+            parsed = datetime.fromisoformat(ts)
+        except ValueError:
+            return None
+        return (parsed + timedelta(hours=9)).date().isoformat()
+
+    # Worked 01:00–02:30 local on the 27th; both timestamps are UTC the 26th.
+    runs = [_run("succeeded", "2026-08-26T16:00:00+00:00", delivered_count=2)]
+    events = [_event("state_changed", "2026-08-26T17:30:00+00:00", to="review")]
+
+    local = last_active_day(events, runs, today="2026-08-27", day_of=tokyo_day)
+    assert local["day"] == "2026-08-27"
+    assert local["days_ago"] == 0
+    assert _kinds(local) == ["delivered", "stage_reached"]
+
+    # The same history read in UTC files it a day earlier — the bug this avoids.
+    utc = last_active_day(events, runs, today="2026-08-27",
+                          day_of=lambda ts: ts[:10] if ts else None)
+    assert utc["day"] == "2026-08-26"
+    assert utc["days_ago"] == 1
+
+
+def test_localday_helpers_agree_with_each_other():
+    """A timestamp inside a local day's UTC bounds must map back to that day."""
+    from agora.tasks.localday import local_day_bounds, local_day_of
+
+    start, end = local_day_bounds("2026-08-27")
+    assert local_day_of(start) == "2026-08-27"
+    # The end bound is exclusive: it is already the next local day.
+    assert local_day_of(end) == "2026-08-28"
+
+
+def test_localday_of_rejects_junk_and_assumes_utc_when_naive():
+    from datetime import datetime, timezone
+    from agora.tasks.localday import local_day_of
+
+    assert local_day_of(None) is None
+    assert local_day_of("") is None
+    assert local_day_of("not-a-timestamp") is None
+    # A bare timestamp is read as UTC, not as local: reading it as local would
+    # shift it by the offset and could move it to the wrong day.
+    naive = "2026-08-26T16:00:00"
+    aware = "2026-08-26T16:00:00+00:00"
+    assert local_day_of(naive) == local_day_of(aware)
+    expected = datetime(2026, 8, 26, 16, tzinfo=timezone.utc).astimezone().date().isoformat()
+    assert local_day_of(aware) == expected
+
+
+# ── which wall clock (codex: the process zone is UTC in Docker) ─────────
+
+def test_configured_offset_decides_the_day_not_the_process_zone():
+    """The process zone is the wrong thing to rely on: the supported Docker image
+    is UTC with no TZ, and a backend on a remote server is in that server's zone.
+    An explicit offset makes the day the viewer's regardless of where it runs."""
+    from agora.tasks.localday import local_day_bounds, local_day_of, parse_offset
+
+    tokyo = parse_offset("+09:00")
+    utc = parse_offset("+00:00")
+    new_york = parse_offset("-05:00")
+
+    # 02:30 on the 27th in Tokyo; 17:30 on the 26th in UTC.
+    late_night = "2026-08-26T17:30:00+00:00"
+    assert local_day_of(late_night, zone=tokyo) == "2026-08-27"
+    assert local_day_of(late_night, zone=utc) == "2026-08-26"
+    assert local_day_of(late_night, zone=new_york) == "2026-08-26"
+
+    # And the query bounds follow the same zone.
+    assert local_day_bounds("2026-08-27", zone=tokyo) == (
+        "2026-08-26T15:00:00+00:00", "2026-08-27T15:00:00+00:00",
+    )
+    assert local_day_bounds("2026-08-27", zone=utc) == (
+        "2026-08-27T00:00:00+00:00", "2026-08-28T00:00:00+00:00",
+    )
+
+
+def test_a_bad_offset_is_rejected_rather_than_silently_utc():
+    """A typo must not quietly move everyone's days back to UTC."""
+    import pytest as _pytest
+    from agora.tasks.localday import InvalidTimezoneOffset, parse_offset
+
+    assert parse_offset("+0900").utcoffset(None).total_seconds() == 9 * 3600
+    assert parse_offset("-05:30").utcoffset(None).total_seconds() == -5.5 * 3600
+    bad_inputs = [
+        "Asia/Tokyo",   # a zone name, the intuitive thing to write
+        "+9", "09:00", "",  # malformed
+        "+99:00", "+15:00",  # out of range
+        # timedelta silently normalizes these into a *different* zone (+06:00 and
+        # -01:39), so accepting them would be the very failure this guards.
+        "+05:60", "-00:99", "+00:60",
+    ]
+    for bad in bad_inputs:
+        with _pytest.raises(InvalidTimezoneOffset):
+            parse_offset(bad)
+    # And the largest legal minute value still works.
+    assert parse_offset("+05:59").utcoffset(None).total_seconds() == 5 * 3600 + 59 * 60
+
+
+def test_the_committed_config_does_not_pin_one_persons_timezone():
+    """The repo's own config.yaml must leave timezone_offset unset: it ships to
+    everyone and to the Docker image, so a value here would override every
+    deployment's zone with whoever committed it — reintroducing the wrong-day bug
+    this module exists to fix, for every other user."""
+    from pathlib import Path
+    import yaml
+
+    root = Path(__file__).resolve().parents[2]
+    config = yaml.safe_load((root / "config.yaml").read_text(encoding="utf-8"))
+    assert not (config.get("control_plane", {}) or {}).get("timezone_offset")
+
+
+def test_day_bounds_round_trip_in_the_same_zone():
+    from agora.tasks.localday import local_day_bounds, local_day_of, parse_offset
+
+    for offset in ["+09:00", "+00:00", "-05:00", "+05:45"]:
+        zone = parse_offset(offset)
+        start, end = local_day_bounds("2026-08-27", zone=zone)
+        assert local_day_of(start, zone=zone) == "2026-08-27", offset
+        # End is exclusive: it is already the next day.
+        assert local_day_of(end, zone=zone) == "2026-08-28", offset
+
+
+def test_day_bounds_are_two_local_midnights_not_start_plus_24h():
+    """On a daylight-saving change a local day is 23 or 25 hours, so the end
+    bound must be the *next local midnight*, not start + 24h. With a fixed offset
+    the two agree, and this pins the shape that keeps them agreeing when the zone
+    is the machine's own and does observe DST."""
+    from datetime import datetime, timedelta
+    from agora.tasks.localday import local_day_bounds, parse_offset
+
+    for offset in ["+09:00", "+00:00", "-05:00", "+05:45", "+14:00"]:
+        zone = parse_offset(offset)
+        for day in ["2026-01-01", "2026-03-29", "2026-10-25", "2026-12-31"]:
+            start, end = local_day_bounds(day, zone=zone)
+            span = datetime.fromisoformat(end) - datetime.fromisoformat(start)
+            # A fixed offset never shifts, so every day is exactly 24 hours.
+            assert span == timedelta(hours=24), (offset, day, span)
+            # And the end bound is the following day's start.
+            next_start, _ = local_day_bounds(
+                (datetime.fromisoformat(day + "T00:00:00").date() + timedelta(days=1)).isoformat(),
+                zone=zone,
+            )
+            assert end == next_start, (offset, day)

@@ -18,6 +18,7 @@ from .models import (
     TaskState,
     utc_now,
 )
+from .localday import local_day_bounds, local_day_of
 from .transitions import can_transition
 
 
@@ -374,12 +375,13 @@ class TaskStore:
         return [self._event(row) for row in rows]
 
     def latest_event_day(self, task_id: str, event_types: Iterable[str]) -> str | None:
-        """The most recent day (UTC, YYYY-MM-DD) on which one of ``event_types``
+        """The most recent **local** calendar day on which one of ``event_types``
         was recorded, or None if there is none.
 
         Exists so a recap can find its day without reading a task's whole event
         history: a long-lived task accumulates thousands of events, and paying for
-        all of them on every open makes the cost grow without bound.
+        all of them on every open makes the cost grow without bound. The newest
+        matching row is enough to name the day, so this reads exactly one.
         """
         types = list(dict.fromkeys(event_types))
         if not types:
@@ -388,25 +390,32 @@ class TaskStore:
         with closing(self._connect()) as db:
             row = db.execute(
                 f"""
-                SELECT substr(created_at, 1, 10) AS day
-                FROM task_events
+                SELECT created_at FROM task_events
                 WHERE task_id = ? AND event_type IN ({placeholders})
                 ORDER BY created_at DESC LIMIT 1
                 """,
                 (task_id, *types),
             ).fetchone()
-        return row["day"] if row and row["day"] else None
+        return local_day_of(row["created_at"]) if row else None
 
     def events_on_day(self, task_id: str, day: str, *, limit: int) -> list[TaskEvent]:
-        """This task's events recorded on ``day`` (UTC), oldest first, bounded."""
+        """This task's events recorded on the **local** ``day``, oldest first,
+        bounded.
+
+        Compared against a UTC range rather than a string prefix: timestamps are
+        stored in UTC, so one local day spans two UTC dates (in UTC+9, local
+        2026-08-27 runs from 2026-08-26T15:00Z). Prefix matching would silently
+        drop a late night's work.
+        """
+        start, end = local_day_bounds(day)
         with closing(self._connect()) as db:
             rows = db.execute(
                 """
                 SELECT * FROM task_events
-                WHERE task_id = ? AND substr(created_at, 1, 10) = ?
+                WHERE task_id = ? AND created_at >= ? AND created_at < ?
                 ORDER BY created_at, rowid LIMIT ?
                 """,
-                (task_id, day, limit),
+                (task_id, start, end, limit),
             ).fetchall()
         return [self._event(row) for row in rows]
 

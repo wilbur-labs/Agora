@@ -46,6 +46,20 @@ memory:
 # Authenticated Agora 1.0 Control Plane. The referenced bearer stays outside
 # the repository; an unset or empty environment variable authorizes nobody.
 control_plane:
+  # Which wall clock "yesterday" means, as a UTC offset (e.g. "+09:00", "-05:00").
+  #
+  # Left unset on purpose: unset means "use this machine's own zone", which is
+  # right for a plain local run and right for whoever clones this repo. Setting a
+  # value here would override every deployment's zone with one person's, so the
+  # committed default must not carry an offset.
+  #
+  # Set it in *your* config when the backend's clock is not the viewer's: the
+  # Docker image is UTC (no TZ is passed), and a backend on a remote server runs
+  # in that server's zone. A fixed offset does not follow daylight saving, so a
+  # zone that observes DST is better served by leaving this unset on a machine
+  # whose own clock is correct. See agora/tasks/localday.py.
+  #
+  # timezone_offset: "+09:00"
   auth:
     credentials:
       - secret_ref: AGORA_CONTROL_PLANE_TOKEN

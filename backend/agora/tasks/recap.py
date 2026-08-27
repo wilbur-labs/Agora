@@ -14,7 +14,9 @@ answer plausible instead of true.
 from __future__ import annotations
 
 from datetime import date
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
+
+from .localday import local_day_of
 
 # Enough to say what a day amounted to without turning back into a log. A busier
 # day reports the overflow rather than growing without bound.
@@ -59,18 +61,10 @@ _ACTIVITY_ONLY = {
 DAY_ELIGIBLE_EVENTS = _ITEM_EVENTS | _ACTIVITY_ONLY
 
 
-def _day_of(timestamp: str | None) -> str | None:
-    """The calendar day (UTC) of an ISO timestamp. Sliced rather than parsed:
-    every timestamp here comes from ``utc_now()`` and is already UTC ISO, and a
-    recap must not fail because one row is malformed."""
-    if not timestamp or len(timestamp) < 10:
-        return None
-    candidate = timestamp[:10]
-    try:
-        date.fromisoformat(candidate)
-    except ValueError:
-        return None
-    return candidate
+# How a stored UTC timestamp becomes a calendar day. Injectable so tests can pin
+# a zone instead of inheriting the machine's, and so the derivation stays a
+# function of its inputs.
+DayOf = Callable[[str | None], str | None]
 
 
 def _item(kind: str, **fields: Any) -> dict[str, Any]:
@@ -82,6 +76,7 @@ def last_active_day(
     runs: Iterable[dict[str, Any]],
     *,
     today: str | None = None,
+    day_of: DayOf = local_day_of,
 ) -> dict[str, Any]:
     """The most recent day this task moved, and what moved on it.
 
@@ -98,11 +93,11 @@ def last_active_day(
     run_list = list(runs)
 
     days = {
-        _day_of(getattr(event, "created_at", None))
+        day_of(getattr(event, "created_at", None))
         for event in event_list
         if getattr(event, "event_type", "") in DAY_ELIGIBLE_EVENTS
     }
-    days |= {_day_of(run.get("finished_at")) for run in run_list}
+    days |= {day_of(run.get("finished_at")) for run in run_list}
     days.discard(None)
     if not days:
         return {"day": None, "items": [], "more": 0, "days_ago": None}
@@ -111,7 +106,7 @@ def last_active_day(
     items: list[dict[str, Any]] = []
 
     # Runs first, ordered as they finished: they are the substance of a day.
-    same_day_runs = [run for run in run_list if _day_of(run.get("finished_at")) == day]
+    same_day_runs = [run for run in run_list if day_of(run.get("finished_at")) == day]
     same_day_runs.sort(key=lambda run: run.get("finished_at") or "")
     for run in same_day_runs:
         adapter = run.get("adapter")
@@ -140,7 +135,7 @@ def last_active_day(
 
     # Then the decisions recorded that day.
     same_day_events = [
-        event for event in event_list if _day_of(getattr(event, "created_at", None)) == day
+        event for event in event_list if day_of(getattr(event, "created_at", None)) == day
     ]
     same_day_events.sort(key=lambda event: getattr(event, "created_at", "") or "")
     attention_raised = 0
@@ -192,13 +187,23 @@ def last_active_day(
     }
 
 
+def _as_date(value: str | None) -> date | None:
+    """A plain YYYY-MM-DD string as a date, or None. Both sides of the day
+    arithmetic are already calendar days, so this parses rather than converts."""
+    if not value or len(value) < 10:
+        return None
+    try:
+        return date.fromisoformat(value[:10])
+    except ValueError:
+        return None
+
+
 def _days_between(day: str, today: str | None) -> int | None:
     """Whole days from ``day`` to ``today``, or None if today was not supplied or
     either value is not a date. Negative values are clamped to 0: a clock skew
     should not make a recap claim the future."""
-    parsed_day = _day_of(day)
-    parsed_today = _day_of(today) if today else None
+    parsed_day = _as_date(day)
+    parsed_today = _as_date(today)
     if parsed_day is None or parsed_today is None:
         return None
-    delta = (date.fromisoformat(parsed_today) - date.fromisoformat(parsed_day)).days
-    return max(0, delta)
+    return max(0, (parsed_today - parsed_day).days)
