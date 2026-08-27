@@ -291,6 +291,43 @@ class ExecutionStore:
             event_payload={"exit_code": exit_code, "error_message": error_message},
         )
 
+    def latest_finished_day(self, task_id: str) -> str | None:
+        """The most recent day (UTC, YYYY-MM-DD) a run of this task finished.
+
+        Ordered by ``finished_at``, not ``queued_at`` like ``list``: a long run
+        queued earlier can finish later, so a ``queued_at``-ordered page can miss
+        the newest completion entirely and point a recap at the wrong day.
+        """
+        with closing(self._connect()) as db:
+            row = db.execute(
+                """
+                SELECT substr(finished_at, 1, 10) AS day
+                FROM execution_runs
+                WHERE task_id = ? AND finished_at IS NOT NULL
+                ORDER BY finished_at DESC LIMIT 1
+                """,
+                (task_id,),
+            ).fetchone()
+        return row["day"] if row and row["day"] else None
+
+    def list_finished_on_day(
+        self, task_id: str, day: str, *, limit: int
+    ) -> tuple[list[ExecutionRun], bool]:
+        """``(runs, truncated)`` for this task's runs that finished on ``day``,
+        oldest first. ``truncated`` is True when more exist than ``limit``, so a
+        caller reports "at least these" instead of implying completeness."""
+        with closing(self._connect()) as db:
+            rows = db.execute(
+                """
+                SELECT * FROM execution_runs
+                WHERE task_id = ? AND substr(finished_at, 1, 10) = ?
+                ORDER BY finished_at, rowid LIMIT ?
+                """,
+                (task_id, day, limit + 1),
+            ).fetchall()
+        truncated = len(rows) > limit
+        return [self._run(row) for row in rows[:limit]], truncated
+
     def deliverable_snapshot(self, run_id: str) -> dict[str, Any] | None:
         """What this run delivered, frozen when it ended, or None if never
         captured: ``{"files": [...], "truncated": bool}``.

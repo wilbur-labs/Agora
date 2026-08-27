@@ -6,7 +6,7 @@ import sqlite3
 import uuid
 from contextlib import closing, contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 from .models import (
     AppendEventRequest,
@@ -370,6 +370,43 @@ class TaskStore:
             rows = db.execute(
                 "SELECT * FROM task_events WHERE task_id = ? ORDER BY rowid",
                 (task_id,),
+            ).fetchall()
+        return [self._event(row) for row in rows]
+
+    def latest_event_day(self, task_id: str, event_types: Iterable[str]) -> str | None:
+        """The most recent day (UTC, YYYY-MM-DD) on which one of ``event_types``
+        was recorded, or None if there is none.
+
+        Exists so a recap can find its day without reading a task's whole event
+        history: a long-lived task accumulates thousands of events, and paying for
+        all of them on every open makes the cost grow without bound.
+        """
+        types = list(dict.fromkeys(event_types))
+        if not types:
+            return None
+        placeholders = ", ".join("?" for _ in types)
+        with closing(self._connect()) as db:
+            row = db.execute(
+                f"""
+                SELECT substr(created_at, 1, 10) AS day
+                FROM task_events
+                WHERE task_id = ? AND event_type IN ({placeholders})
+                ORDER BY created_at DESC LIMIT 1
+                """,
+                (task_id, *types),
+            ).fetchone()
+        return row["day"] if row and row["day"] else None
+
+    def events_on_day(self, task_id: str, day: str, *, limit: int) -> list[TaskEvent]:
+        """This task's events recorded on ``day`` (UTC), oldest first, bounded."""
+        with closing(self._connect()) as db:
+            rows = db.execute(
+                """
+                SELECT * FROM task_events
+                WHERE task_id = ? AND substr(created_at, 1, 10) = ?
+                ORDER BY created_at, rowid LIMIT ?
+                """,
+                (task_id, day, limit),
             ).fetchall()
         return [self._event(row) for row in rows]
 

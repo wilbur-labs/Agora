@@ -115,6 +115,11 @@ _RUN_SCAN_LIMIT = 500
 # cap rather than paging every task's whole run history on each open.
 _DASHBOARD_TASK_LIMIT = 500
 _DASHBOARD_RUN_LIMIT = 200
+# Bounded like the dashboard, but scoped to one day: the recap resolves its day
+# with an indexed lookup first, then reads only that day, so cost does not grow
+# with a task's whole history. Past these caps it reports itself partial.
+_RECAP_RUN_LIMIT = 100
+_RECAP_EVENT_LIMIT = 500
 
 
 @router.get("/runtime-capabilities")
@@ -442,6 +447,62 @@ def project_dashboard(
         "tasks": task_views,
         "truncated": truncated,
     }
+
+
+@router.get("/tasks/{task_id}/recap")
+def task_recap(
+    task_id: str,
+    task_store: TaskStore = Depends(get_task_store),
+    exec_store: ExecutionStore = Depends(get_execution_store),
+) -> dict[str, Any]:
+    """What happened on this task's last active day — "where did I leave off".
+
+    Lives with the dashboard because it is the same kind of read model: it needs
+    both stores, owns all the I/O, and hands the derivation to a pure module
+    (``tasks.recap``) that has no store access. Deliberately not a model call —
+    "where did I leave off" is a question about recorded facts.
+    """
+    from agora.execution.dispatcher import ROLE_KEY, ROLE_WORKER
+    from agora.tasks.models import utc_now
+    from agora.tasks.recap import DAY_ELIGIBLE_EVENTS, last_active_day
+
+    if task_store.get(task_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Task not found")
+
+    # Two phases, so the cost does not grow with a task's whole history: find the
+    # candidate day with one indexed lookup on each side, then read only that day.
+    event_day = task_store.latest_event_day(task_id, DAY_ELIGIBLE_EVENTS)
+    run_day = exec_store.latest_finished_day(task_id)
+    day = max([d for d in (event_day, run_day) if d], default=None)
+    if day is None:
+        return last_active_day([], [], today=utc_now()[:10])
+
+    events = task_store.events_on_day(task_id, day, limit=_RECAP_EVENT_LIMIT)
+    day_runs, runs_truncated = exec_store.list_finished_on_day(
+        task_id, day, limit=_RECAP_RUN_LIMIT
+    )
+
+    runs: list[dict[str, Any]] = []
+    for run in day_runs:
+        snapshot = exec_store.deliverable_snapshot(run.run_id)
+        runs.append({
+            "adapter": run.adapter,
+            "state": run.state.value,
+            "finished_at": run.finished_at,
+            "role": str((run.result_metadata or {}).get(ROLE_KEY, ROLE_WORKER)),
+            # None when the run has no snapshot: the count is then unknown, and
+            # the recap says "delivered work" without inventing a number. An empty
+            # list is different — it is a verified "changed nothing".
+            "delivered_count": None if snapshot is None else len(snapshot.get("files") or []),
+            # The snapshot itself stopped at MAX_FILES, so its count is a floor.
+            "delivered_truncated": bool(snapshot and snapshot.get("truncated")),
+        })
+
+    result = last_active_day(events, runs, today=utc_now()[:10])
+    # Say so when the day held more than we read, rather than letting a bounded
+    # read look like the whole day.
+    result["partial"] = bool(runs_truncated or len(events) >= _RECAP_EVENT_LIMIT)
+    return result
 
 
 @router.put("/projects/{project_id}/charter")
