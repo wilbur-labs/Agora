@@ -29,9 +29,24 @@ def test_task_criterion_status_ladder():
     assert task_criterion_status(TaskState.PLANNED, False, False) == "pending"
     assert task_criterion_status(TaskState.RUNNING, True, False) == "produced"
     assert task_criterion_status(TaskState.RUNNING, True, True) == "reviewed"
-    assert task_criterion_status(TaskState.REVIEW, True, False) == "reviewed"
+    # The review *state* is routing, not evidence: without a successful review
+    # run the criterion is only "produced".
+    assert task_criterion_status(TaskState.REVIEW, True, False) == "produced"
     assert task_criterion_status(TaskState.VERIFIED, True, True) == "verified"
     assert task_criterion_status(TaskState.DONE, True, True) == "verified"
+
+
+def test_lifecycle_state_alone_never_reports_verified():
+    # A task walked to verified/done through the transition API without any
+    # successful worker run has no evidence behind it — reporting "verified"
+    # here is precisely the false "done" this module exists to prevent.
+    assert task_criterion_status(TaskState.VERIFIED, False, False) == "pending"
+    assert task_criterion_status(TaskState.DONE, False, False) == "pending"
+    assert task_criterion_status(TaskState.DONE, False, True) == "pending"
+    spec = _spec("AC-1", "AC-2")
+    m = task_metrics(TaskState.DONE, spec, has_worker_success=False, has_review_success=False)
+    assert m["verified_weight"] == 0 and m["produced_weight"] == 0
+    assert m["total_weight"] == 2  # still counted in the denominator, not hidden
 
 
 def test_no_produced_weight_without_a_worker_run():

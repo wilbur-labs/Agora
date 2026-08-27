@@ -95,6 +95,7 @@ def test_project_dashboard_progress_vs_verified(tmp_path):
     from agora.tasks.models import CreateTaskRequest, TaskState
     from agora.execution.router import get_execution_store
     from agora.execution.store import ExecutionStore
+    from agora.execution.models import CreateRunRequest, RunState
     from agora.requirements.store import RequirementStore
     from agora.requirements.models import CreateSpecRequest, RequirementItem, AcceptanceScenario
 
@@ -114,6 +115,21 @@ def test_project_dashboard_progress_vs_verified(tmp_path):
             AcceptanceScenario(scenario_id="AC-2", requirement_ids=["FR-1"], given="g", when="w", then="t"),
         ], created_by="t"))
     specs.approve(spec.spec_id, actor="t", expected_revision=spec.revision, reason="ok")
+    # Verified weight requires evidence, not just a lifecycle state: give the
+    # task a real succeeded worker run before carrying it to DONE. Walking it to
+    # DONE with no run at all is the false-confidence case covered below.
+    with tasks._transaction() as db:
+        db.execute("UPDATE tasks SET state=?, version=version+1 WHERE task_id=?",
+                   (TaskState.PLANNED.value, t.task_id))
+    planned = tasks.get(t.task_id)
+    run = runs.create(
+        CreateRunRequest(task_id=t.task_id, adapter="codex", prompt="do the thing",
+                         expected_task_version=planned.version),
+        project_id="agora", workspace=tmp_path, stored_command=["codex", "exec"],
+    )
+    run = runs.start(run.run_id, expected_version=run.version)
+    runs.finish(run.run_id, RunState.SUCCEEDED, expected_version=run.version, exit_code=0,
+                stdout_tail="done", stderr_tail="", result_metadata={"agora_role": "worker"})
     with tasks._transaction() as db:
         db.execute("UPDATE tasks SET state=? WHERE task_id=?", (TaskState.DONE.value, t.task_id))
 

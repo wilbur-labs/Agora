@@ -47,14 +47,22 @@ def task_criterion_status(
 ) -> str:
     """The state shared by a task's criteria, derived from its signals (1.2).
 
-    A terminal verified/done task counts as verified. Otherwise nothing is
-    "produced" or "reviewed" without an actual successful worker run — a review
-    (or the review state) alone never manufactures produced weight."""
-    if task_state in (TaskState.VERIFIED, TaskState.DONE):
-        return "verified"
+    Evidence advances a criterion — never a lifecycle state on its own. A task
+    moved to verified/done through the transition API without a successful
+    worker run has produced nothing, so it stays "pending" instead of reporting
+    full verified weight; otherwise completion would claim exactly the false
+    "done" this module exists to prevent. Likewise the review *state* is a
+    routing signal, not a review: only a successful review run reports
+    "reviewed".
+
+    Known limitation (1.2): work a human did by hand, with no agent run, also
+    reads as "pending" — this metric measures agent-produced evidence. 1.3's
+    Result Envelope is where non-run evidence gets a home."""
     if not has_worker_success:
         return "pending"
-    if has_review_success or task_state == TaskState.REVIEW:
+    if task_state in (TaskState.VERIFIED, TaskState.DONE):
+        return "verified"
+    if has_review_success:
         return "reviewed"
     return "produced"
 

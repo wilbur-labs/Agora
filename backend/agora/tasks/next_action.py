@@ -142,6 +142,13 @@ def task_next_action(
         # human must review the result / settle its review Attention.
         if has_active_run:
             return _action("agent", "await_run")
+        # A run that failed / timed out / was abandoned leaves the task in
+        # RUNNING (the dispatcher only settles the *run*, never the task), so
+        # "no active run" alone does not mean a result exists. Without a worker
+        # success there is nothing to review — route to investigation instead of
+        # sending the human to verify a result that was never produced.
+        if not has_worker_success:
+            return _action("human", "investigate_failure", attention=True)
         return _action("human", "verify_review")
     if task_state == TaskState.REVIEW:
         return _action("human", "verify_review")

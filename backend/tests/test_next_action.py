@@ -55,12 +55,26 @@ def test_lifecycle_owner_ladder():
 
 
 def test_running_waits_only_while_a_run_is_active():
-    # A run finishing does not move the task out of running; without an active
-    # run the human must review the result, not keep waiting.
+    # A run finishing does not move the task out of running; once a worker run
+    # has succeeded the human must review the result, not keep waiting.
     active = task_next_action(TaskState.RUNNING, has_active_run=True)
     assert active["owner"] == "agent" and active["action"] == "await_run"
-    finished = task_next_action(TaskState.RUNNING, has_active_run=False)
+    finished = task_next_action(
+        TaskState.RUNNING, has_active_run=False, has_worker_success=True
+    )
     assert finished["owner"] == "human" and finished["action"] == "verify_review"
+
+
+def test_running_without_a_worker_success_routes_to_investigation():
+    # A failed / timed-out / abandoned run settles the run but leaves the task
+    # in RUNNING. "No active run" alone must not send the human to verify a
+    # result that was never produced.
+    ended = task_next_action(
+        TaskState.RUNNING, has_active_run=False, has_worker_success=False
+    )
+    assert ended["owner"] == "human"
+    assert ended["action"] == "investigate_failure"
+    assert ended["attention"] is True
 
 
 def test_every_action_has_a_summary():

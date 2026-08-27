@@ -400,9 +400,19 @@ function TaskWorkspace({ task, ask, attention, latestRun }: { task: TaskManifest
     return () => ctrl.abort();
   }, [task.task_id, task.project_id, task.state, loadEvents]);
 
-  // The latest successful run is what "produced" the current result.
+  // The latest successful *worker* run is what "produced" the current result.
+  // In the auto-review flow the review run finishes after the worker run it
+  // reviews, so an unfiltered "latest success" shows the review verdict instead
+  // of the implementation. Role rule, identical to dispatcher.py and
+  // handoff.py: a missing role is a legacy worker run, but anything present
+  // must equal "worker" exactly — an unknown or future role is never presented
+  // as the delivered result.
   const latestSuccess = useMemo(() => {
-    const ok = (runs ?? []).filter((r) => r.state === "succeeded");
+    const ok = (runs ?? []).filter(
+      (r) =>
+        r.state === "succeeded" &&
+        String((r.result_metadata as Record<string, unknown>)?.agora_role ?? "worker") === "worker",
+    );
     ok.sort((a, b) => (a.finished_at ?? a.queued_at).localeCompare(b.finished_at ?? b.queued_at));
     return ok.at(-1) ?? null;
   }, [runs]);
