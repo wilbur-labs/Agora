@@ -19,7 +19,13 @@ from agora.attention.bridges.codex_broker import CodexApprovalBroker
 from agora.workspaces.naming import worktree_branch
 
 from .adapters import ExecutionAdapter
-from .deliverables import is_ready_worktree, list_changes, read_file
+from .deliverables import (
+    baseline_state,
+    is_ready_worktree,
+    list_changes,
+    read_file,
+    snapshot_changes,
+)
 from .models import CancelRunRequest, CreateRunRequest, ExecutionRun, RunState, OUTPUT_TAIL_LIMIT
 from .store import ExecutionStore, RunConflictError, RunValidationError
 from .security import redact_text
@@ -67,8 +73,32 @@ class ExecutionDispatcher:
         self._project_limits: defaultdict[str, asyncio.Semaphore] = defaultdict(
             lambda: asyncio.Semaphore(max_concurrent_per_project)
         )
+        # One run at a time per worktree. Workspaces are keyed by adapter, so two
+        # runs of the same project+adapter resolve to the SAME directory, and
+        # max_concurrent_per_project defaults to 2 — without this they would write
+        # one git worktree concurrently (clobbered files, index.lock contention)
+        # and each run's deliverable snapshot would claim the other's files.
+        # Acquired BEFORE the capacity limits (see execute) so a run waiting on a
+        # busy worktree does not sit on global/project capacity meanwhile.
+        self._workspace_limits: defaultdict[str, asyncio.Semaphore] = defaultdict(
+            lambda: asyncio.Semaphore(1)
+        )
         self._active: dict[str, asyncio.subprocess.Process] = {}
+        # Per-run pre-launch worktree state, so an abandoned run can still record
+        # what it delivered (the CancelledError path lives outside execute()).
+        # A missing or None entry means the baseline was never established, which
+        # snapshot_changes reads as "attribution unknown" — the correct answer.
+        self._baselines: dict[str, tuple[dict[str, dict], bool] | None] = {}
         self._scheduled: set[asyncio.Task[Any]] = set()
+
+    @staticmethod
+    def _workspace_key(workspace: str | Path) -> str:
+        """Normalize a workspace path so two runs naming the same directory
+        differently still contend for the same slot."""
+        try:
+            return str(Path(workspace).expanduser().resolve())
+        except OSError:  # pragma: no cover - defensive
+            return str(workspace)
 
     def queue(self, request: CreateRunRequest) -> ExecutionRun:
         task = self.store.tasks.get(request.task_id)
@@ -110,10 +140,20 @@ class ExecutionDispatcher:
                 await self._stop(proc)
             current = self.store.require(run_id)
             if current.state == RunState.RUNNING:
+                # A run stopped mid-flight may already have written files. Freeze
+                # them before the terminal transition, or its record would read
+                # "unknown" for work that is sitting right there on disk. The
+                # process is already stopped, so nothing else is writing.
+                delivered = await asyncio.to_thread(
+                    snapshot_changes,
+                    Path(current.workspace).expanduser().resolve(),
+                    self._baselines.get(run_id),
+                )
                 self.store.abandon(
                     run_id,
                     expected_version=current.version,
                     reason="dispatcher stopped before the process completed",
+                    deliverables=delivered,
                 )
             raise
         except Exception as exc:
@@ -129,6 +169,8 @@ class ExecutionDispatcher:
                     error_message=redact_text(f"dispatcher error: {exc}"),
                 )
             return current
+        finally:
+            self._baselines.pop(run_id, None)
 
     def _scheduled_done(self, task: asyncio.Task[Any]) -> None:
         self._scheduled.discard(task)
@@ -139,7 +181,16 @@ class ExecutionDispatcher:
         initial = self.store.require(run_id)
         if initial.state != RunState.QUEUED:
             return initial
-        async with self._global_limit, self._project_limits[initial.project_id]:
+        # Workspace slot FIRST, then run capacity. Every run acquires in this same
+        # order, so no pair can hold one another's resource — and a run queued
+        # behind a busy worktree waits without occupying global/project capacity
+        # that other projects could be using (two same-worktree runs would
+        # otherwise starve every other project while only one process ran).
+        async with (
+            self._workspace_limits[self._workspace_key(initial.workspace)],
+            self._global_limit,
+            self._project_limits[initial.project_id],
+        ):
             run = self.store.require(run_id)
             if run.state != RunState.QUEUED:
                 return run
@@ -199,9 +250,16 @@ class ExecutionDispatcher:
                     stdout_tail="", stderr_tail="",
                     error_message="workspace is not a provisioned worktree for this project/adapter; provision it before running",
                 )
+            # What this worktree already had changed before we launch. The queue
+            # allows another run on an already-RUNNING task, and a retry reuses
+            # the same worktree, so without this the next run's snapshot would
+            # claim the previous run's files. Captured after the readiness gate
+            # so it only ever reads a proven worktree.
+            baseline = await asyncio.to_thread(baseline_state, workspace)
+            self._baselines[run_id] = baseline
             if adapter.bridge_mode == "codex_app_server":
                 return await self._execute_codex_app_server(
-                    running, adapter, workspace, role, reviews_run_id,
+                    running, adapter, workspace, role, reviews_run_id, baseline,
                 )
             # CLI adapters only: resolve the executable via PATHEXT and unwrap
             # Windows .cmd/.bat shims (npm's codex.cmd) into a CreateProcess-
@@ -263,6 +321,14 @@ class ExecutionDispatcher:
                 )
                 out = redact_text(semantic)
                 err = redact_text(stderr.decode("utf-8", errors="replace"))
+                # Snapshot before branching: a cancelled run that already wrote
+                # files delivered them, and its record should say so rather than
+                # reading "unknown".
+                delivered = await asyncio.to_thread(snapshot_changes, workspace, baseline)
+                # Re-read AFTER the snapshot. A cancel can land while it runs (a
+                # large worktree widens that window), and a version captured
+                # before the await would make both branches below fail their
+                # optimistic check — losing the output and the snapshot together.
                 current = self.store.require(run_id)
                 if current.state == RunState.CANCELLED:
                     return self.store.record_cancelled_output(
@@ -271,6 +337,7 @@ class ExecutionDispatcher:
                         stdout_tail=out[-OUTPUT_TAIL_LIMIT:],
                         stderr_tail=err[-OUTPUT_TAIL_LIMIT:],
                         exit_code=proc.returncode,
+                        deliverables=delivered,
                     )
                 target = RunState.TIMED_OUT if timed_out else (
                     RunState.SUCCEEDED if proc.returncode == 0 else RunState.FAILED
@@ -288,6 +355,7 @@ class ExecutionDispatcher:
                     stderr_tail=err[-OUTPUT_TAIL_LIMIT:],
                     error_message=error,
                     result_metadata={**usage_metadata, ROLE_KEY: role, REVIEWS_RUN_KEY: reviews_run_id},
+                    deliverables=delivered,
                 )
                 await self._after_run(finished, role, reviews_run_id)
                 return finished
@@ -297,6 +365,7 @@ class ExecutionDispatcher:
     async def _execute_codex_app_server(
         self, running: ExecutionRun, adapter: ExecutionAdapter, workspace: Path,
         role: str = ROLE_WORKER, reviews_run_id: str | None = None,
+        baseline: dict[str, dict] | None = None,
     ) -> ExecutionRun:
         attention = AttentionStore(self.store.tasks)
         broker = CodexApprovalBroker(attention, task_id=running.task_id, run_id=running.run_id)
@@ -343,13 +412,17 @@ class ExecutionDispatcher:
         finally:
             self._active.pop(running.run_id, None)
 
-        current = self.store.require(running.run_id)
         safe_out = redact_text(out.decode("utf-8", errors="replace"))[-OUTPUT_TAIL_LIMIT:]
         safe_err = redact_text(err.decode("utf-8", errors="replace"))[-OUTPUT_TAIL_LIMIT:]
+        # Same as the CLI path: freeze the delivered list (baseline-subtracted)
+        # before branching, then re-read state/version after the await so a cancel
+        # landing during the snapshot does not void both writes.
+        delivered = await asyncio.to_thread(snapshot_changes, workspace, baseline)
+        current = self.store.require(running.run_id)
         if current.state == RunState.CANCELLED:
             return self.store.record_cancelled_output(
                 running.run_id, expected_version=current.version, stdout_tail=safe_out,
-                stderr_tail=safe_err, exit_code=None,
+                stderr_tail=safe_err, exit_code=None, deliverables=delivered,
             )
         target = RunState.TIMED_OUT if timed_out else (RunState.SUCCEEDED if failure is None else RunState.FAILED)
         finished = self.store.finish(
@@ -357,6 +430,7 @@ class ExecutionDispatcher:
             exit_code=0 if target == RunState.SUCCEEDED else None,
             stdout_tail=safe_out, stderr_tail=safe_err, error_message=failure,
             result_metadata={ROLE_KEY: role, REVIEWS_RUN_KEY: reviews_run_id},
+            deliverables=delivered,
         )
         await self._after_run(finished, role, reviews_run_id)
         return finished

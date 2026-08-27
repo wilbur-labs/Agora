@@ -119,13 +119,50 @@ export interface Deliverable {
   path: string;
   status: string;
   size: number | null;
+  // Digest of the file as the run left it. Absent for pre-snapshot runs, null
+  // for files too large to hash.
+  sha256?: string | null;
 }
 
 export interface RunDeliverables {
   run_id: string;
   workspace: string;
   files: Deliverable[];
+  // Where the list came from. "snapshot": frozen when the run ended — what this
+  // run actually delivered. "live": the worktree right now, only meaningful
+  // while the run is active. "none": the run ended without a snapshot, so its
+  // files are unknown and are NOT guessed from the worktree.
+  source?: "snapshot" | "live" | "none";
+  captured_at?: string | null;
+  // Snapshot reads only: the recorded list hit MAX_FILES, so it is "at least
+  // these" and a path absent from it is unknown rather than not delivered.
+  truncated?: boolean;
+  // Snapshot reads only: whether the worktree behind these files still exists,
+  // i.e. whether any of them can actually be opened. The list stays true about
+  // the run either way.
+  content_available?: boolean;
   unavailable?: string;
+}
+
+/**
+ * Whether one delivered file can actually be opened — the single place this rule
+ * lives, because both the Task Workspace and the Run Center render it and two
+ * copies would be two chances to drift.
+ *
+ * Two conditions, and each mirrors a way the backend refuses the read:
+ * - the worktree behind the files must still exist (`content_available`);
+ * - a *snapshot* read must carry a digest, since the backend verifies the bytes
+ *   against it and refuses an entry that has none (deleted, not a regular file,
+ *   or above the hash limit). A live listing of an active run has no digests and
+ *   the backend allows those reads, so requiring one there would wrongly hide
+ *   the preview while a run is in progress.
+ */
+export function canOpenDeliverable(
+  record: Pick<RunDeliverables, "source" | "content_available">,
+  file: Deliverable,
+): boolean {
+  if (record.content_available === false) return false;
+  return record.source !== "snapshot" || !!file.sha256;
 }
 
 export interface DeliverableContent {

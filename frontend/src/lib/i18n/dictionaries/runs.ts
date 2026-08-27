@@ -80,7 +80,9 @@ export const runs = {
       deliverables: {
         title: "Deliverables",
         loading: "Loading deliverables…",
-        empty: "No file changes in the workspace.",
+        empty: "This run changed no files.",
+        noSnapshot: "This run's file list was not recorded, so it cannot be shown.",
+        partial: "More files changed than were recorded — this list is partial.",
         opening: "Opening…",
         open: "Open",
         truncated: "Preview truncated.",
@@ -199,7 +201,9 @@ export const runs = {
       deliverables: {
         title: "交付物",
         loading: "正在加载交付物…",
-        empty: "工作区没有文件改动。",
+        empty: "这次运行没有改动文件。",
+        noSnapshot: "这次运行没有记录改动文件清单，无法显示。",
+        partial: "改动的文件数超过记录上限——此列表不完整。",
         opening: "正在打开…",
         open: "打开",
         truncated: "预览已截断。",

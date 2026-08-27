@@ -270,7 +270,12 @@ class ExecutionStore:
         stderr_tail: str,
         error_message: str | None = None,
         result_metadata: dict[str, Any] | None = None,
+        deliverables: dict[str, Any] | None = None,
     ) -> ExecutionRun:
+        """Settle a run. ``deliverables`` is the frozen delivery record captured
+        from the worktree as this run ended (see ``deliverables.snapshot_changes``);
+        empty ``files`` means "this run changed nothing", while None means no
+        snapshot was taken and reads must say so instead of guessing."""
         if target not in {RunState.SUCCEEDED, RunState.FAILED, RunState.TIMED_OUT}:
             raise RunValidationError(f"Invalid dispatcher terminal state: {target.value}")
         return self._transition(
@@ -282,8 +287,35 @@ class ExecutionStore:
             stderr_tail=stderr_tail,
             error_message=error_message,
             result_metadata=sanitize_data(result_metadata or {}),
+            deliverables=deliverables,
             event_payload={"exit_code": exit_code, "error_message": error_message},
         )
+
+    def deliverable_snapshot(self, run_id: str) -> dict[str, Any] | None:
+        """What this run delivered, frozen when it ended, or None if never
+        captured: ``{"files": [...], "truncated": bool}``.
+
+        None and an empty ``files`` mean different things: None is "we do not
+        know what this run delivered", empty is "this run delivered no file
+        changes". Callers must not collapse them. ``truncated`` marks a list that
+        hit MAX_FILES, so an absent path is unknown rather than not-delivered.
+        """
+        with closing(self._connect()) as db:
+            row = db.execute(
+                "SELECT deliverable_snapshot FROM execution_runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+        if row is None:
+            raise RunNotFoundError(run_id)
+        raw = row["deliverable_snapshot"]
+        if raw is None:
+            return None
+        try:
+            value = json.loads(raw)
+        except (TypeError, ValueError):
+            return None
+        if not isinstance(value, dict) or not isinstance(value.get("files"), list):
+            return None
+        return value
 
     def cancel(self, run_id: str, request: CancelRunRequest) -> ExecutionRun:
         return self._transition(
@@ -303,21 +335,29 @@ class ExecutionStore:
         stdout_tail: str,
         stderr_tail: str,
         exit_code: int | None,
+        deliverables: dict[str, Any] | None = None,
     ) -> ExecutionRun:
+        """Record a cancelled run's final output. ``deliverables`` is its frozen
+        delivery record: a run cancelled after it already wrote files still
+        delivered them, and its record should say so rather than "unknown"."""
         with self._transaction() as db:
             row = db.execute("SELECT * FROM execution_runs WHERE run_id = ?", (run_id,)).fetchone()
             if row is None:
                 raise RunNotFoundError(run_id)
+            snapshot_sql = ", deliverable_snapshot = ?" if deliverables is not None else ""
+            snapshot_args = (self._json(deliverables),) if deliverables is not None else ()
             cursor = db.execute(
-                """
+                f"""
                 UPDATE execution_runs
-                SET stdout_tail = ?, stderr_tail = ?, exit_code = ?, version = version + 1
+                SET stdout_tail = ?, stderr_tail = ?, exit_code = ?{snapshot_sql},
+                    version = version + 1
                 WHERE run_id = ? AND state = ? AND version = ?
                 """,
                 (
                     redact_text(stdout_tail)[-OUTPUT_TAIL_LIMIT:],
                     redact_text(stderr_tail)[-OUTPUT_TAIL_LIMIT:],
                     exit_code,
+                    *snapshot_args,
                     run_id, RunState.CANCELLED.value, expected_version,
                 ),
             )
@@ -350,12 +390,23 @@ class ExecutionStore:
                 continue
         return recovered
 
-    def abandon(self, run_id: str, *, expected_version: int, reason: str) -> ExecutionRun:
+    def abandon(
+        self,
+        run_id: str,
+        *,
+        expected_version: int,
+        reason: str,
+        deliverables: dict[str, Any] | None = None,
+    ) -> ExecutionRun:
+        """Give up on a run the dispatcher can no longer follow. ``deliverables``
+        is its frozen delivery record: work already written to the worktree is
+        still this run's delivery, and its record should say so."""
         return self._transition(
             run_id,
             RunState.ABANDONED,
             expected_version=expected_version,
             error_message=reason,
+            deliverables=deliverables,
             event_payload={"reason": reason},
         )
 
@@ -372,6 +423,7 @@ class ExecutionStore:
         stderr_tail: str | None = None,
         error_message: str | None = None,
         result_metadata: dict[str, Any] | None = None,
+        deliverables: dict[str, Any] | None = None,
         event_payload: dict[str, Any] | None = None,
     ) -> ExecutionRun:
         now = utc_now()
@@ -404,6 +456,19 @@ class ExecutionStore:
                 ),
                 "error_message": redact_text(error_message) if error_message is not None else None,
                 "result_metadata": self._json(result_metadata) if result_metadata is not None else None,
+                # A dict always serializes to a non-empty JSON string, so a run
+                # that changed nothing ({"files": [], ...}) is recorded rather
+                # than dropped by the None filter below.
+                #
+                # Deliberately NOT run through sanitize_data: it flags any dict key
+                # containing one of its markers, and "PAT" (personal access token)
+                # is a substring of "path" — so every delivered file path would be
+                # stored as "[REDACTED]". The values here are git-derived paths,
+                # statuses, sizes and digests, and the live listing already returns
+                # those same paths unredacted.
+                "deliverable_snapshot": (
+                    self._json(deliverables) if deliverables is not None else None
+                ),
             }
             updates.update({key: value for key, value in optional.items() if value is not None})
             assignments = ", ".join(f"{column} = ?" for column in updates)

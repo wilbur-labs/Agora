@@ -1,13 +1,15 @@
 """REST API for durable delivery execution runs."""
 from __future__ import annotations
 
+import mimetypes
+
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Path as PathParam, Query, status
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 
 from pydantic import BaseModel
 
@@ -25,10 +27,25 @@ from agora.tasks.store import (
 from agora.workspaces.naming import worktree_branch
 
 from .adapters import build_adapter_registry
-from .deliverables import is_ready_worktree, list_changes, read_file, resolve_confined
+from .deliverables import (
+    is_ready_worktree,
+    list_changes,
+    preview_of,
+    read_bytes_verified,
+    read_file,
+    resolve_confined,
+)
 from .dispatcher import ExecutionDispatcher
 from .handoff import HandoffError, hand_off
-from .models import AdapterCapability, CancelRunRequest, CreateRunRequest, ExecutionRun, RunState, RunSummary
+from .models import (
+    AdapterCapability,
+    CancelRunRequest,
+    CreateRunRequest,
+    ExecutionRun,
+    RunState,
+    RunSummary,
+    TERMINAL_RUN_STATES,
+)
 from .store import ExecutionStore, RunConflictError, RunNotFoundError, RunValidationError
 
 
@@ -62,6 +79,72 @@ def _require_ready_worktree(registry: ProjectRegistry, run: ExecutionRun) -> Non
     worktree, never from a repo root, an unrelated worktree, or a plain dir."""
     if not _ready_worktree_for_run(registry, run):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Deliverable not found")
+
+
+def _delivered_entry(store: ExecutionStore, run: ExecutionRun, path: str) -> dict | None:
+    """The snapshot entry proving this run delivered ``path``.
+
+    Returns None only when the run has no snapshot at all — runs recorded before
+    snapshots existed keep the previous behavior (the worktree gate alone).
+    Otherwise it either returns a verifiable entry or refuses: a later run in the
+    same worktree can rewrite or recreate a path, and serving that under the
+    earlier run's card is exactly the untruth the snapshot exists to remove.
+    """
+    snapshot = store.deliverable_snapshot(run.run_id)
+    if snapshot is None:
+        if run.state in TERMINAL_RUN_STATES:
+            # The list endpoint already says this run's files are unrecoverable.
+            # Reading from the live worktree here would contradict it, and would
+            # hand back a later run's file under this run's id.
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "This run ended without a deliverable record, so no file can be "
+                "attributed to it",
+            )
+        return None  # active run: the live worktree is the answer
+    files = snapshot.get("files") or []
+    entry = next(
+        (item for item in files if isinstance(item, dict) and item.get("path") == path),
+        None,
+    )
+    if entry is None:
+        if snapshot.get("truncated"):
+            # The recorded list stopped at MAX_FILES, so absence from it is not
+            # proof the run did not deliver this file — it is simply unknown.
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "This run changed more files than were recorded, so this one cannot be "
+                "attributed to it",
+            )
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "This run did not deliver that file")
+    if entry.get("sha256") is None:
+        # No digest means no verifiable identity — deleted, not a regular file, or
+        # above the hash limit. A later run can recreate the same path, so serving
+        # whatever is there now would present its bytes as this run's delivery.
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "This run recorded no verifiable content for that file, so it cannot be opened",
+        )
+    return entry
+
+
+def _verified_bytes(workspace: Path, path: str, entry: dict) -> bytes:
+    """The file's bytes, read once and proven to be what the run delivered.
+
+    Digesting one read and then serving a second (or handing a path to a response
+    that opens it later) leaves a window for the file to change in between, so
+    the caller must build its response from exactly these bytes.
+    """
+    try:
+        raw = read_bytes_verified(workspace, path, str(entry["sha256"]))
+    except (FileNotFoundError, PermissionError):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Deliverable not found") from None
+    if raw is None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "This file changed after the run ended, so it no longer holds what the run delivered",
+        )
+    return raw
 
 
 @lru_cache(maxsize=1)
@@ -151,7 +234,15 @@ def run_deliverables(
     dispatcher: ExecutionDispatcher = Depends(get_execution_dispatcher),
     registry: ProjectRegistry = Depends(get_project_registry),
 ):
-    """List the files this run produced in its Git worktree (read-only)."""
+    """What files this run delivered (read-only).
+
+    A terminal run is answered from the snapshot frozen when it ended, so its
+    card keeps showing that run's files after a handoff commit or a later run in
+    the same worktree. A terminal run with no snapshot says so — it never falls
+    back to the live worktree, which is what made historical file lists wrong.
+    An active run has no snapshot yet, and there the live worktree *is* the
+    answer.
+    """
     try:
         run = store.require(run_id)
     except RunNotFoundError:
@@ -159,11 +250,37 @@ def run_deliverables(
     workspace = Path(run.workspace).expanduser().resolve()
     if not dispatcher.is_workspace_readable(run.project_id, workspace):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Workspace is not readable")
+
+    base = {"run_id": run_id, "workspace": str(workspace)}
+    snapshot = store.deliverable_snapshot(run_id)
+    if snapshot is not None:
+        # Serving stored data, so the worktree-shape checks below do not gate this
+        # list — they gate filesystem reads, and there is no filesystem read here.
+        # The project-scoped readability check above still gates access, and the
+        # content/raw endpoints keep their own gate.
+        #
+        # The worktree can be gone or replaced by now, in which case the file list
+        # is still the truth about this run but no file can be opened. Report that
+        # instead of leaving every "view" to fail with a 404.
+        return {
+            **base,
+            "files": snapshot.get("files") or [],
+            "truncated": bool(snapshot.get("truncated")),
+            "source": "snapshot",
+            "captured_at": run.finished_at,
+            "content_available": workspace.is_dir() and _ready_worktree_for_run(registry, run),
+        }
+    if run.state in TERMINAL_RUN_STATES:
+        return {
+            **base, "files": [], "source": "none",
+            "unavailable": "this run ended without a deliverable snapshot; its files are not recoverable",
+        }
+
     if not workspace.is_dir():
-        return {"run_id": run_id, "workspace": str(workspace), "files": [], "unavailable": "workspace not found"}
+        return {**base, "files": [], "source": "live", "unavailable": "workspace not found"}
     if not _ready_worktree_for_run(registry, run):
-        return {"run_id": run_id, "workspace": str(workspace), "files": [], "unavailable": "workspace is not a provisioned worktree"}
-    return {"run_id": run_id, "workspace": str(workspace), "files": list_changes(workspace)}
+        return {**base, "files": [], "source": "live", "unavailable": "workspace is not a provisioned worktree"}
+    return {**base, "files": list_changes(workspace), "source": "live"}
 
 
 @router.get("/runs/{run_id}/deliverables/content")
@@ -183,10 +300,13 @@ def run_deliverable_content(
     if not dispatcher.is_workspace_readable(run.project_id, workspace):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Workspace is not readable")
     _require_ready_worktree(registry, run)
-    try:
-        return read_file(workspace, path)
-    except (FileNotFoundError, PermissionError):
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Deliverable not found") from None
+    entry = _delivered_entry(store, run, path)
+    if entry is None:  # pre-snapshot run: nothing recorded to verify against
+        try:
+            return read_file(workspace, path)
+        except (FileNotFoundError, PermissionError):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Deliverable not found") from None
+    return preview_of(path, _verified_bytes(workspace, path, entry))
 
 
 @router.get("/runs/{run_id}/deliverables/raw")
@@ -210,17 +330,24 @@ def run_deliverable_raw(
     if not dispatcher.is_workspace_readable(run.project_id, workspace):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Workspace is not readable")
     _require_ready_worktree(registry, run)
-    try:
-        target = resolve_confined(workspace, path)
-    except (FileNotFoundError, PermissionError):
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Deliverable not found") from None
-    return FileResponse(
-        str(target),
-        headers={
-            "Content-Security-Policy": "sandbox allow-scripts allow-forms allow-popups allow-modals;",
-            "X-Content-Type-Options": "nosniff",
-        },
-    )
+    sandbox_headers = {
+        "Content-Security-Policy": "sandbox allow-scripts allow-forms allow-popups allow-modals;",
+        "X-Content-Type-Options": "nosniff",
+    }
+    entry = _delivered_entry(store, run, path)
+    if entry is None:  # pre-snapshot run: keep streaming from disk
+        try:
+            target = resolve_confined(workspace, path)
+        except (FileNotFoundError, PermissionError):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Deliverable not found") from None
+        return FileResponse(str(target), headers=sandbox_headers)
+    # Serve the very bytes that were verified. FileResponse opens the path after
+    # this function returns, which would reopen a file a later run may have
+    # rewritten in between. Bounded by SNAPSHOT_HASH_LIMIT, since anything larger
+    # has no digest and was already refused above.
+    raw = _verified_bytes(workspace, path, entry)
+    media_type = mimetypes.guess_type(path)[0] or "application/octet-stream"
+    return Response(content=raw, media_type=media_type, headers=sandbox_headers)
 
 
 @router.post("/runs/{run_id}/cancel", response_model=ExecutionRun)

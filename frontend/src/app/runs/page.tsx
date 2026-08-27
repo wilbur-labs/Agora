@@ -11,6 +11,7 @@ import { ApiError, listTasks, type TaskManifest } from "@/lib/control-plane";
 import {
   TERMINAL_RUN_STATES,
   asRunSummary,
+  canOpenDeliverable,
   cancelRun,
   deliverableRawUrl,
   getDeliverableContent,
@@ -18,6 +19,8 @@ import {
   getRunDeliverables,
   listRuns,
   type Deliverable,
+  // Aliased: a local component in this file is also called RunDeliverables.
+  type RunDeliverables as DeliveryRecord,
   type ExecutionAdapter,
   type ExecutionRun,
   type RunState,
@@ -309,7 +312,13 @@ function RunDetail({ run, loading, taskTitle, onCancel }: { run: ExecutionRun | 
 
 function RunDeliverables({ run }: { run: ExecutionRun }) {
   const { t } = useI18n();
-  const [files, setFiles] = useState<Deliverable[] | null>(null);
+  // Keep the whole response: whether the list is this run's frozen snapshot, the
+  // still-moving worktree, or unknown decides what may honestly be claimed and
+  // which files can be opened at all.
+  const [delivered, setDelivered] = useState<DeliveryRecord | null>(null);
+  const files: Deliverable[] | null = delivered ? delivered.files : null;
+  const openable = (file: Deliverable) =>
+    delivered !== null && canOpenDeliverable(delivered, file);
   const [openPath, setOpenPath] = useState<string | null>(null);
   const [content, setContent] = useState<string>("");
   const [contentTruncated, setContentTruncated] = useState(false);
@@ -317,10 +326,14 @@ function RunDeliverables({ run }: { run: ExecutionRun }) {
 
   useEffect(() => {
     const controller = new AbortController();
-    setFiles(null); setOpenPath(null); setContent("");
+    setDelivered(null); setOpenPath(null); setContent("");
     getRunDeliverables(run.run_id, controller.signal)
-      .then((data) => setFiles(data.files))
-      .catch((err) => { if ((err as Error).name !== "AbortError") setFiles([]); });
+      .then((data) => setDelivered(data))
+      .catch((err) => {
+        if ((err as Error).name !== "AbortError") {
+          setDelivered({ run_id: run.run_id, workspace: "", files: [], source: "none" });
+        }
+      });
     return () => controller.abort();
   }, [run.run_id]);
 
@@ -342,30 +355,51 @@ function RunDeliverables({ run }: { run: ExecutionRun }) {
         {t("runs.page.deliverables.title")}{files ? ` (${files.length})` : ""}
       </h3>
       {files === null && <p className="text-xs text-muted-foreground">{t("runs.page.deliverables.loading")}</p>}
-      {files !== null && files.length === 0 && <p className="text-xs text-muted-foreground">{t("runs.page.deliverables.empty")}</p>}
+      {files !== null && files.length === 0 && (
+        <p className="text-xs text-muted-foreground">
+          {delivered?.source === "none"
+            ? t("runs.page.deliverables.noSnapshot")
+            : t("runs.page.deliverables.empty")}
+        </p>
+      )}
+      {delivered?.truncated && (
+        <p className="mb-1 text-[10px] text-amber-600">{t("runs.page.deliverables.partial")}</p>
+      )}
       {files !== null && files.length > 0 && (
         <ul className="divide-y rounded-lg border">
           {files.map((file) => (
             <li key={file.path}>
               <div className="flex items-center gap-2 px-3 py-2 text-xs hover:bg-accent/50">
-                <button
-                  type="button"
-                  onClick={() => void openFile(file.path)}
-                  className="flex min-w-0 flex-1 items-center gap-2 text-left"
-                  aria-expanded={openPath === file.path}
-                >
-                  <span className="min-w-0 flex-1 truncate font-mono">{file.path}</span>
-                  <span className="shrink-0 rounded-full border px-2 py-0.5 text-[10px] capitalize text-muted-foreground">{file.status}</span>
-                  {file.size !== null && <span className="shrink-0 text-[10px] text-muted-foreground">{formatBytes(file.size)}</span>}
-                </button>
-                <a
-                  href={deliverableRawUrl(run.run_id, file.path)}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="shrink-0 rounded-md border px-2 py-1 text-[11px] font-medium text-primary hover:bg-accent"
-                >
-                  {t("runs.page.deliverables.open")}
-                </a>
+                {openable(file) ? (
+                  <button
+                    type="button"
+                    onClick={() => void openFile(file.path)}
+                    className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                    aria-expanded={openPath === file.path}
+                  >
+                    <span className="min-w-0 flex-1 truncate font-mono">{file.path}</span>
+                    <span className="shrink-0 rounded-full border px-2 py-0.5 text-[10px] capitalize text-muted-foreground">{file.status}</span>
+                    {file.size !== null && <span className="shrink-0 text-[10px] text-muted-foreground">{formatBytes(file.size)}</span>}
+                  </button>
+                ) : (
+                  // No digest, or the worktree is gone: the path is still what the
+                  // run delivered, but an open control here could only fail.
+                  <span className="flex min-w-0 flex-1 items-center gap-2 text-muted-foreground">
+                    <span className="min-w-0 flex-1 truncate font-mono">{file.path}</span>
+                    <span className="shrink-0 rounded-full border px-2 py-0.5 text-[10px] capitalize">{file.status}</span>
+                    {file.size !== null && <span className="shrink-0 text-[10px]">{formatBytes(file.size)}</span>}
+                  </span>
+                )}
+                {openable(file) && (
+                  <a
+                    href={deliverableRawUrl(run.run_id, file.path)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="shrink-0 rounded-md border px-2 py-1 text-[11px] font-medium text-primary hover:bg-accent"
+                  >
+                    {t("runs.page.deliverables.open")}
+                  </a>
+                )}
               </div>
               {openPath === file.path && (
                 <div className="border-t bg-muted/30 p-3">

@@ -471,15 +471,24 @@ def test_deliverable_endpoints_gate_on_provisioned_worktree(tmp_path):
         assert content.status_code == 200 and "hi there" in content.json()["content"]
         assert client.get(f"/api/runs/{run.run_id}/deliverables/raw", params={"path": "out.txt"}).status_code == 200
 
-        # Tear down the worktree -> a plain dir -> every deliverable path fails closed.
+        # Tear down the worktree -> a plain dir holding a *different* out.txt.
+        # Every path that READS the filesystem must still fail closed.
         workspace = dispatcher.projects.get("alpha").workspaces["codex"]
         shutil.rmtree(workspace)
         workspace.mkdir(parents=True)
         (workspace / "out.txt").write_text("resurrected", encoding="utf-8")
-        relisting = client.get(f"/api/runs/{run.run_id}/deliverables")
-        assert relisting.json()["files"] == [] and "unavailable" in relisting.json()
         assert client.get(f"/api/runs/{run.run_id}/deliverables/content", params={"path": "out.txt"}).status_code == 404
         assert client.get(f"/api/runs/{run.run_id}/deliverables/raw", params={"path": "out.txt"}).status_code == 404
+
+        # The listing, however, is no longer a directory listing: it is the
+        # snapshot frozen when the run ended, so it keeps reporting what this run
+        # delivered even though the worktree is gone. That is stored data, not a
+        # filesystem read, so it discloses nothing the run did not already own —
+        # and `content_available` tells the UI the files can no longer be opened.
+        relisting = client.get(f"/api/runs/{run.run_id}/deliverables").json()
+        assert relisting["source"] == "snapshot"
+        assert [f["path"] for f in relisting["files"]] == ["out.txt"]
+        assert relisting["content_available"] is False
     finally:
         app.dependency_overrides.clear()
 

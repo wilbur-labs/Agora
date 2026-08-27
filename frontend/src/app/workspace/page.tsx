@@ -43,12 +43,14 @@ import {
   type TaskManifest,
 } from "@/lib/control-plane";
 import {
+  canOpenDeliverable,
   deliverableRawUrl,
   getDeliverableContent,
   getRun,
   getRunDeliverables,
   listRuns,
   type Deliverable,
+  type RunDeliverables,
   type ExecutionRun,
   type RunState,
   type RunSummary,
@@ -758,17 +760,21 @@ function firstMeaningfulLine(text: string): string {
 function RunCard({ run, t, te }: { run: ExecutionRun; t: Translate; te: TranslateEnum }) {
   const [showPrompt, setShowPrompt] = useState(false);
   const [expanded, setExpanded] = useState(false);
-  const [files, setFiles] = useState<Deliverable[] | "loading" | null>(null);
+  // Keep the whole response, not just `files`: whether the list is this run's
+  // frozen snapshot, the still-moving worktree, or unknown changes what we may
+  // honestly claim about it.
+  const [delivered, setDelivered] = useState<RunDeliverables | "loading" | null>(null);
   const failed = run.state === "failed" || run.state === "timed_out" || run.state === "abandoned";
   const isReview = String((run.result_metadata as Record<string, unknown>)?.agora_role ?? "") === "review";
   const out = (run.stdout_tail || "").trimEnd();
   const err = (run.stderr_tail || "").trimEnd();
   const longOutput = out.length > 600;
+  const files = delivered && delivered !== "loading" ? delivered.files : [];
 
   const loadFiles = async () => {
-    setFiles("loading");
-    try { setFiles((await getRunDeliverables(run.run_id)).files); }
-    catch { setFiles([]); }
+    setDelivered("loading");
+    try { setDelivered(await getRunDeliverables(run.run_id)); }
+    catch { setDelivered({ run_id: run.run_id, workspace: "", files: [], source: "none" }); }
   };
 
   return (
@@ -817,19 +823,41 @@ function RunCard({ run, t, te }: { run: ExecutionRun; t: Translate; te: Translat
           </div>
         )}
 
-        {/* Files the run changed (lazy). */}
-        {files === null ? (
+        {/* Files the run delivered (lazy). "none" means the list was never
+            recorded — say so rather than showing the current worktree. */}
+        {delivered === null ? (
           <button onClick={() => void loadFiles()} className="text-[11px] font-medium text-primary hover:underline">{t("workspace.timeline.run.showFiles")}</button>
-        ) : files === "loading" ? (
+        ) : delivered === "loading" ? (
           <p className="text-[11px] text-muted-foreground">{t("workspace.timeline.run.loadingFiles")}</p>
+        ) : delivered.source === "none" ? (
+          <p className="text-[11px] text-muted-foreground">{t("workspace.timeline.run.noSnapshot")}</p>
         ) : files.length === 0 ? (
           <p className="text-[11px] text-muted-foreground">{t("workspace.timeline.run.noFiles")}</p>
         ) : (
           <div>
-            <p className="mb-1 text-[11px] font-medium text-muted-foreground">{t("workspace.timeline.run.files", { count: files.length })}</p>
+            <p className="mb-1 text-[11px] font-medium text-muted-foreground">
+              {t("workspace.timeline.run.files", { count: files.length })}
+              {delivered.source === "live" && (
+                <span className="ml-2 font-normal">{t("workspace.timeline.run.liveFiles")}</span>
+              )}
+            </p>
             <ul className="space-y-0.5 text-xs">
-              {files.map((f) => <FileRow key={f.path} runId={run.run_id} file={f} t={t} />)}
+              {files.map((f) => (
+                <FileRow
+                  key={f.path}
+                  runId={run.run_id}
+                  file={f}
+                  openable={canOpenDeliverable(delivered, f)}
+                  t={t}
+                />
+              ))}
             </ul>
+            {delivered.content_available === false && (
+              <p className="mt-1 text-[11px] text-muted-foreground">{t("workspace.timeline.run.gone")}</p>
+            )}
+            {delivered.truncated && (
+              <p className="mt-1 text-[11px] text-muted-foreground">{t("workspace.timeline.run.partial")}</p>
+            )}
           </div>
         )}
       </div>
@@ -839,8 +867,12 @@ function RunCard({ run, t, te }: { run: ExecutionRun; t: Translate; te: Translat
 
 // A changed file you can actually open: view its content inline, or open the
 // rendered artifact in a new tab (e.g. see the mockup page as it looks now).
-function FileRow({ runId, file, t }: { runId: string; file: Deliverable; t: Translate }) {
+function FileRow(
+  { runId, file, openable = true, t }:
+  { runId: string; file: Deliverable; openable?: boolean; t: Translate },
+) {
   const [content, setContent] = useState<string | null | "loading">(null);
+  const [failed, setFailed] = useState(false);
   const [open, setOpen] = useState(false);
 
   const toggle = async () => {
@@ -848,8 +880,10 @@ function FileRow({ runId, file, t }: { runId: string; file: Deliverable; t: Tran
     setOpen(true);
     if (content === null) {
       setContent("loading");
+      // A 409 here means the file no longer holds what this run delivered (a
+      // later run rewrote it). Say that instead of rendering an empty box.
       try { setContent((await getDeliverableContent(runId, file.path)).content); }
-      catch { setContent(""); }
+      catch { setFailed(true); setContent(""); }
     }
   };
 
@@ -857,14 +891,24 @@ function FileRow({ runId, file, t }: { runId: string; file: Deliverable; t: Tran
     <li className="rounded bg-muted/40">
       <div className="flex items-center gap-2 px-2 py-0.5 font-mono">
         <span className="shrink-0 text-[10px] uppercase text-muted-foreground">{file.status}</span>
-        <button onClick={() => void toggle()} className="min-w-0 flex-1 truncate text-left hover:underline">{file.path}</button>
-        <button onClick={() => void toggle()} className="shrink-0 font-sans text-[11px] font-medium text-primary hover:underline">{open ? t("workspace.timeline.run.hideFile") : t("workspace.timeline.run.viewFile")}</button>
-        <a href={deliverableRawUrl(runId, file.path)} target="_blank" rel="noopener noreferrer" className="shrink-0 font-sans text-[11px] font-medium text-primary hover:underline">{t("workspace.timeline.run.openRaw")}</a>
+        {openable ? (
+          <>
+            <button onClick={() => void toggle()} className="min-w-0 flex-1 truncate text-left hover:underline">{file.path}</button>
+            <button onClick={() => void toggle()} className="shrink-0 font-sans text-[11px] font-medium text-primary hover:underline">{open ? t("workspace.timeline.run.hideFile") : t("workspace.timeline.run.viewFile")}</button>
+            <a href={deliverableRawUrl(runId, file.path)} target="_blank" rel="noopener noreferrer" className="shrink-0 font-sans text-[11px] font-medium text-primary hover:underline">{t("workspace.timeline.run.openRaw")}</a>
+          </>
+        ) : (
+          // The worktree is gone: the path is still what the run delivered, but
+          // offering a link that can only 404 would be a lie.
+          <span className="min-w-0 flex-1 truncate text-muted-foreground">{file.path}</span>
+        )}
       </div>
       {open && (
         content === "loading"
           ? <p className="px-2 py-1 text-[11px] text-muted-foreground">{t("workspace.timeline.run.loadingFile")}</p>
-          : <pre className="max-h-72 overflow-auto whitespace-pre rounded-b bg-zinc-950 p-3 text-[11px] leading-relaxed text-zinc-100">{content}</pre>
+          : failed
+            ? <p className="px-2 py-1 text-[11px] text-muted-foreground">{t("workspace.timeline.run.changedSince")}</p>
+            : <pre className="max-h-72 overflow-auto whitespace-pre rounded-b bg-zinc-950 p-3 text-[11px] leading-relaxed text-zinc-100">{content}</pre>
       )}
     </li>
   );

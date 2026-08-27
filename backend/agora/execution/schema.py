@@ -45,3 +45,10 @@ def initialize_execution_schema(db: sqlite3.Connection) -> None:
     )
     for statement in statements:
         db.execute(statement)
+    # Migration: the frozen deliverable list a run produced (JSON array), written
+    # once when the run reaches a terminal state. NULL means "never captured" —
+    # a legacy run, or one that never reached a worktree — and must be reported
+    # as such, never silently answered from the current worktree.
+    columns = {row[1] for row in db.execute("PRAGMA table_info(execution_runs)")}
+    if "deliverable_snapshot" not in columns:
+        db.execute("ALTER TABLE execution_runs ADD COLUMN deliverable_snapshot TEXT")
