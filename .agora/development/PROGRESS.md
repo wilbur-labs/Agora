@@ -5410,3 +5410,201 @@ shipped) — untouched by this increment and tracked separately.
 
 Next safe action: commit this workspace-isolation increment; fix the stale
 `test_web_ui` retired-path expectation separately.
+
+## Increment: control-plane repositioning — 1.2 parts 1–2 (2026-08-24)
+
+Repositioning Agora as a user-controlled project control plane (thin version:
+adopt the ideas that make the human's mental model clear — six questions,
+progress vs verified-completion, deterministic next action, charter/alignment —
+implemented thin; roles / milestones / CQRS / full capability tokens explicitly
+cut or deferred for a solo local tool). Design confirmed via a mockup (project
+portfolio in four groups; a merged project page = cockpit header + tasks that
+expand inline into their thread with an in-context decision; requirements-intake
+with in-UI clarification; human-readable runs).
+
+1.2 plan: (1) Charter, (2) acceptance criteria + metrics, (3) Next Action engine,
+(4) UI. Parts 1–2 landed on branch `feature/control-plane-1.2`:
+
+- Project Charter (goal / non-goals / success_criteria) on the registry Project;
+  human-facing `PUT /api/projects/{id}/charter`; surfaced in project summaries
+  and listings. No agent code path writes it.
+- `agora/tasks/progress.py` (pure): acceptance criteria derived from a task's
+  APPROVED spec; a task-derived criterion status pending -> produced -> reviewed
+  -> verified where nothing is produced/reviewed without a successful worker run;
+  `progress_pct` (produced weight) vs `verified_pct` (only human-approved weight)
+  so an agent cannot make a project look done by producing code; half-up
+  rounding; a no-spec task counts as one self-consistent unit; cancelled tasks
+  leave the denominator; health = attention when a task is blocked/failed.
+- `GET /api/projects/{id}/dashboard` projection: per-task criteria + metrics and
+  the project rollup + charter; APPROVED specs only; exact run-role matching;
+  scans succeeded runs and stops once both roles seen; marks `truncated` past the
+  task cap.
+- Tests: metric math, charter round-trip/endpoint, dashboard projection; broad
+  regression 310 passed. Also surfaced the handoff delivery (commit + files) on
+  done task cards.
+
+Reviewed by Codex; its metric-integrity findings were fixed (produced-without-
+worker, draft-spec leakage, fail-open roles, weight reconciliation, rounding,
+N+1). Two findings deliberately deferred to 1.3: the task-state and charter
+routes are not yet authenticated (the app's non-control-plane routes gain auth in
+1.3), so verified_pct and charter integrity are not tamper-proof on a shared host
+— acceptable for a solo local tool, and noted in code.
+
+Next safe action: build (3) the Next Action engine (one explicit next action or a
+blocker per task/project), then (4) the project-page / four-group-portfolio UI
+consuming the dashboard. Branch is not yet pushed.
+
+## Increment: control-plane repositioning — 1.2 part 3 (2026-08-24)
+
+Part (3) of the 1.2 plan — the Next Action engine — landed on branch
+`feature/control-plane-1.2`. It answers the human's "what do I do next?" without
+reading the whole board.
+
+- `agora/tasks/next_action.py` (pure, mirrors `progress.py` — no I/O, derives
+  from signals only): `task_next_action(state, *, spec_state,
+  pending_clarifications, has_worker_success)` derives exactly one next step per
+  task — `owner` (human / agent / none), `action` (a stable slug the UI
+  localizes, single source of truth in `ACTIONS`), `attention` (True only for
+  blocked/failed, matching the `health` metric), and an English `summary`
+  fallback. Requirements routes on signals in order: unanswered clarifications ->
+  answer; no spec -> draft; draft -> approve; approved -> advance; rejected/
+  superseded -> revise. `spec_state` accepts a `SpecState` enum or its value.
+- `project_next_action(items)` rolls the per-task actions up to one project-wide
+  next action: attention outranks every routine step, then human decisions
+  outrank starting a run, which outranks waiting on a run; ties break on task
+  priority then list order. Also reports `attention_count` and `pending_count`
+  for the cockpit header. All-terminal / empty -> a `none` action.
+- `has_pending_clarifications()` treats a blank answer as unanswered.
+- Wired into `GET /api/projects/{id}/dashboard`: each task view gains a
+  `next_action`, and the projection gains a project-level `next_action`. Metrics
+  still count APPROVED specs only; the next action reads the *current* spec state
+  (draft/rejected) so it can route to approval/revision.
+- Tests: `tests/test_next_action.py` (lifecycle ladder, attention priority, spec
+  routing, enum-or-value, tie-breaks, empty/all-terminal) + dashboard integration
+  assertions. Narrow run 28 passed; full backend suite 786 passed.
+
+Reviewed by Codex (review --commit); three findings, all confirmed against the
+real code and fixed:
+- [P1] `running` returned `await_run` unconditionally, but a finished run leaves
+  the task in `running` (the dispatcher raises a review/approval Attention and
+  the human's response advances it via `review_gate`). Added a `has_active_run`
+  signal: active run -> `await_run`; no active run -> `verify_review` (the human
+  must review the result). The dashboard checks for a QUEUED/RUNNING run.
+- [P2] a rejected spec made `RequirementStore.current()` (draft/approved only)
+  return None, so the engine emitted `draft_spec` and the `revise_spec` branch
+  was unreachable. The dashboard now falls back to `list_for_task()[0]` (the
+  latest spec of any state) when current() is None.
+- [P2] task-page truncation (>500) could hide a lower-priority blocked/failed
+  task, letting the rollup return a routine action with `attention_count: 0`.
+  When truncated, the dashboard now also pulls the project's BLOCKED/FAILED tasks
+  and folds them into the rollup, and `next_action.partial` flags that the
+  non-attention rollup may be incomplete.
+Added tests for each fix (running active/finished, partial flag, rejected->revise
+endpoint, blocker-past-the-page endpoint). Full backend suite 790 passed.
+
+Next safe action: (4) the project-page / four-group-portfolio UI consuming the
+dashboard's metrics + next_action. Branch is not yet pushed.
+
+## Increment: Task Workspace — repositioning pivot (2026-08-25)
+
+After reviewing Kandev (a competitor) the human set the next-phase priority: stop
+spreading capability across pages and build ONE task-centric three-column
+**Task Workspace**, so opening a task immediately answers "what's the goal, is it
+trustworthy, has it drifted, what do I do next?". Kandev is a reference only
+(AGPL-3.0 — no code copied); the switcher idea is reimplemented on Agora's own
+data model. This is a scoped validation iteration with explicit exit criteria
+(30s to create a task; 5s to see where a project stands; every Done shows
+acceptance evidence; mid-task course-correction; no page-hopping from need to
+Verified). Everything else is frozen (more agents, Docker/SSH, workflow visual
+editor, cost stats, arbitrary layouts, etc.). See memory task-workspace-next-phase.
+
+Part 4a — project cockpit in the portfolio (`12c4284`): when scoped to one
+project, the portfolio renders the 1.2 dashboard (charter with an edit slide-over,
+progress vs verified vs health, the one deterministic next action + attention/
+pending counts); task cards gain their per-task next action and a verified bar.
+Dashboard types + fetch fn and the nextAction/criterionStatus/health enum labels
+(EN/ZH) become the workspace's foundation.
+
+Part 4b — Task Workspace shell (`68dbdfc`): new `/workspace?project=&task=`
+(static-export query params), set as the default landing (`/` redirects). Left
+TaskRail (persistent): project filter + search + a dead-simple 3-question create
+(accomplish / done-when / must-not-do; the rest uses project defaults under
+Advanced), tasks grouped Needs you / Running / Review / Done. Always-on Agora
+header for the selected task (goal, stage, verified completion, blocker, next
+step) reusing the dashboard. Right tabs reuse existing data read-only
+(Requirements / Run / Attention / Changes) with deep links to the full pages.
+
+Part 4c — timeline + message box (`5bad34a`): the center column is a unified,
+chat-like timeline of the task's event log (created, stage changes, spec
+drafted/approved/rejected, runs, attention, handoff, plus human notes), with a
+bottom box that appends a non-destructive `user_message` event (no agent
+dispatched — session resume / run-from-chat is a later phase).
+
+Reviewed by Codex (review --base); seven P2 findings, all confirmed and fixed
+(`ddb5c97`): clear a selection the project filter excludes; verified -> Review
+group (not Done); a blocked task never shows "Blocker: None"; load the rail with
+limit=500; render failed reads as "Unavailable" not a false "empty"; don't show a
+no-spec task's implicit weight as "0/1 criteria"; order the rail by real activity
+(updated_at + latest run) not the stale manifest updated_at.
+
+Verified end-to-end against a running backend (dashboard metrics/next_action,
+event stream, user_message round-trip). Frontend build (12 static pages incl.
+/workspace), tsc, eslint, and EN==ZH key parity (796 each) pass. Branch not pushed.
+
+Next safe action: run the exit-criteria validation on a real task in the browser,
+then decide continue-vs-stop per the agreed test.
+
+## Increment: Task Workspace — make each step show its substance (2026-08-25/26)
+
+Driven by direct user feedback while looking at the workspace: it was showing
+labels, not substance ("显示的是屁"). A run of content-surfacing changes, all
+frontend, all reusing existing unauthenticated APIs (no backend change):
+
+- `04cde90` Run output, not a ledger: the timeline drops the noisy run.* events
+  and renders one rich RunCard per run (listRuns + getRun) — the prompt, the
+  actual stdout/stderr (terminal-style, expandable), exit code, error, and the
+  changed files (lazy getRunDeliverables).
+- `0c2bbc7` Two plain-language layers lead the workspace (user chose this shape):
+  a ProjectStrip (name, done/total, verified %, the one project next action,
+  attention count — orientation that survives task switches) and an
+  OutcomeSummary per task ("what it did" = first meaningful line of the latest
+  succeeded run + delivered files/commit; trustworthy completion; the one next
+  step; a done task reads "Done — nothing to do", not an empty grid). Replaced the
+  abstract fact-grid header.
+- `e7fdc88` Content-bearing steps show what they produced: spec.created/approved
+  expand to the spec (summary, requirements, given/when/then scenarios); a
+  review-role run is titled "review".
+- `382c3c4` Plain-language milestones replace state-machine jargon (running ->
+  review => "Development done — in review", etc.).
+- `1c37439` Deliverables are openable: each changed file in a RunCard can be
+  viewed inline (getDeliverableContent) or opened rendered in a new tab
+  (deliverables/raw) — so the design/architecture doc and the built page are
+  actually visible, not just filenames.
+
+Ground truth checked against the running backend: a hotel task's spec, run stdout,
+and deliverables (incl. docs/hotel-site-design.md, mockup.html) all exist and are
+now surfaced. Honest gaps recorded for the user: structured FE/BE progress and
+"architecture status" are NOT tracked as data; decision points (attention +
+choice) and reviewer feedback only exist for tasks that actually ran a
+review/attention flow (the demo tasks had none). Each increment: build (12 static
+pages), tsc, eslint, EN==ZH parity all pass. Branch not pushed.
+
+## Proposal (awaiting review): Kandev-style live terminal + switchable sessions
+
+Wrote `docs/control-plane/live-terminal-integration-proposal.md` (DRAFT, not
+implemented) for borrowing Kandev's switchable per-task session + live run status
++ direct terminal, kept subordinate to Agora's frame (goal / verified completion /
+next step / timeline-as-record). Core: dispatcher writes an in-memory per-run
+ring buffer with a cursor; SSE `GET /api/runs/{id}/stream?cursor=N` +
+`GET /api/tasks/{id}/active-run`; a Terminal mode in the workspace center (xterm.js)
+with a live status pill and a live TaskRail dot; read-only by default, stdin only
+for `bidirectional` adapters; Windows uses piped stdout first, ConPTY only if a
+TTY is needed; phased P0 poll -> P1 SSE -> P2 xterm -> P3 interactive.
+
+Codex review of the proposal was attempted but did NOT complete — its tool host
+crashed ("code-mode host exited during handshake") and the task was stopped before
+producing findings. No verdict was recorded. Re-running the proposal review is the
+open action here.
+
+Next safe action: re-run the Codex review of the live-terminal proposal (avoiding
+the code-mode path), then decide whether to build P0/P1. Branch not pushed.

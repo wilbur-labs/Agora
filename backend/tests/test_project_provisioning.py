@@ -56,6 +56,191 @@ def _registry(tmp_path) -> ProjectRegistry:
     return registry
 
 
+def test_charter_endpoint_sets_and_returns(tmp_path):
+    from agora.tasks.router import get_project_registry
+
+    registry = _registry(tmp_path)
+    app.dependency_overrides[get_project_registry] = lambda: registry
+    client = TestClient(app)
+    try:
+        resp = client.put("/api/projects/agora/charter", json={
+            "goal": "Ship a small tools library",
+            "non_goals": ["no general-purpose library"],
+            "success_criteria": ["every function tested", "reviewed by a different agent"],
+        })
+        assert resp.status_code == 200, resp.text
+        charter = resp.json()["charter"]
+        assert charter["goal"] == "Ship a small tools library"
+        assert charter["success_criteria"] == ["every function tested", "reviewed by a different agent"]
+
+        # blank items are stripped
+        resp2 = client.put("/api/projects/agora/charter", json={
+            "goal": "G2", "non_goals": ["  ", ""], "success_criteria": [],
+        })
+        assert resp2.json()["charter"]["non_goals"] == []
+
+        # it shows up in the projects listing too
+        listing = client.get("/api/projects").json()
+        agora = next(p for p in listing["items"] if p["project_id"] == "agora")
+        assert agora["charter"]["goal"] == "G2"
+
+        assert client.put("/api/projects/nope/charter", json={"goal": "x"}).status_code == 404
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_project_dashboard_progress_vs_verified(tmp_path):
+    from agora.tasks.router import get_project_registry, get_task_store
+    from agora.tasks.store import TaskStore
+    from agora.tasks.models import CreateTaskRequest, TaskState
+    from agora.execution.router import get_execution_store
+    from agora.execution.store import ExecutionStore
+    from agora.execution.models import CreateRunRequest, RunState
+    from agora.requirements.store import RequirementStore
+    from agora.requirements.models import CreateSpecRequest, RequirementItem, AcceptanceScenario
+
+    registry = _registry(tmp_path)
+    tasks = TaskStore(tmp_path / "dash.db")
+    runs = ExecutionStore(tasks)
+    specs = RequirementStore(tasks)
+
+    # one task carried to DONE with a 2-criterion approved spec -> fully verified
+    t = tasks.create(CreateTaskRequest(project_id="agora", title="done task", created_by="t"))
+    t = tasks.transition(t.task_id, TaskState.REQUIREMENTS, actor="t", expected_version=t.version)
+    spec = specs.create(t.task_id, CreateSpecRequest(
+        title="s", summary="s",
+        functional=[RequirementItem(requirement_id="FR-1", statement="does a thing")],
+        acceptance_scenarios=[
+            AcceptanceScenario(scenario_id="AC-1", requirement_ids=["FR-1"], given="g", when="w", then="t"),
+            AcceptanceScenario(scenario_id="AC-2", requirement_ids=["FR-1"], given="g", when="w", then="t"),
+        ], created_by="t"))
+    specs.approve(spec.spec_id, actor="t", expected_revision=spec.revision, reason="ok")
+    # Verified weight requires evidence, not just a lifecycle state: give the
+    # task a real succeeded worker run before carrying it to DONE. Walking it to
+    # DONE with no run at all is the false-confidence case covered below.
+    with tasks._transaction() as db:
+        db.execute("UPDATE tasks SET state=?, version=version+1 WHERE task_id=?",
+                   (TaskState.PLANNED.value, t.task_id))
+    planned = tasks.get(t.task_id)
+    run = runs.create(
+        CreateRunRequest(task_id=t.task_id, adapter="codex", prompt="do the thing",
+                         expected_task_version=planned.version),
+        project_id="agora", workspace=tmp_path, stored_command=["codex", "exec"],
+    )
+    run = runs.start(run.run_id, expected_version=run.version)
+    runs.finish(run.run_id, RunState.SUCCEEDED, expected_version=run.version, exit_code=0,
+                stdout_tail="done", stderr_tail="", result_metadata={"agora_role": "worker"})
+    with tasks._transaction() as db:
+        db.execute("UPDATE tasks SET state=? WHERE task_id=?", (TaskState.DONE.value, t.task_id))
+
+    # a second, unspecified task still in backlog -> pending, counts as one unit
+    tasks.create(CreateTaskRequest(project_id="agora", title="backlog task", created_by="t"))
+
+    app.dependency_overrides[get_project_registry] = lambda: registry
+    app.dependency_overrides[get_task_store] = lambda: tasks
+    app.dependency_overrides[get_execution_store] = lambda: runs
+    client = TestClient(app)
+    try:
+        resp = client.get("/api/projects/agora/dashboard")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        # 3 units total (2 verified criteria + 1 pending unspecified task):
+        assert body["metrics"]["verified_pct"] == 67   # 2/3
+        assert body["metrics"]["progress_pct"] == 67    # produced = same 2/3 here
+        assert body["metrics"]["health"] == "normal"
+        done = next(tk for tk in body["tasks"] if tk["title"] == "done task")
+        assert len(done["criteria"]) == 2 and all(c["status"] == "verified" for c in done["criteria"])
+        assert done["next_action"]["action"] == "none"
+        backlog = next(tk for tk in body["tasks"] if tk["title"] == "backlog task")
+        assert backlog["next_action"]["action"] == "start_requirements"
+        # Project-wide: the only actionable task is the backlog one.
+        assert body["next_action"]["task_id"] == backlog["task_id"]
+        assert body["next_action"]["action"] == "start_requirements"
+        assert body["next_action"]["attention_count"] == 0
+        assert body["next_action"]["partial"] is False
+        assert client.get("/api/projects/nope/dashboard").status_code == 404
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_dashboard_next_action_routes_rejected_spec_to_revise(tmp_path):
+    from agora.tasks.router import get_project_registry, get_task_store
+    from agora.tasks.store import TaskStore
+    from agora.tasks.models import CreateTaskRequest, TaskState
+    from agora.execution.router import get_execution_store
+    from agora.execution.store import ExecutionStore
+    from agora.requirements.store import RequirementStore
+    from agora.requirements.models import CreateSpecRequest, RequirementItem, AcceptanceScenario
+
+    registry = _registry(tmp_path)
+    tasks = TaskStore(tmp_path / "reject.db")
+    runs = ExecutionStore(tasks)
+    specs = RequirementStore(tasks)
+
+    t = tasks.create(CreateTaskRequest(project_id="agora", title="rej", created_by="t"))
+    t = tasks.transition(t.task_id, TaskState.REQUIREMENTS, actor="t", expected_version=t.version)
+    spec = specs.create(t.task_id, CreateSpecRequest(
+        title="s", summary="s",
+        functional=[RequirementItem(requirement_id="FR-1", statement="does a thing")],
+        acceptance_scenarios=[
+            AcceptanceScenario(scenario_id="AC-1", requirement_ids=["FR-1"], given="g", when="w", then="t"),
+        ], created_by="t"))
+    specs.reject(spec.spec_id, actor="t", expected_revision=spec.revision, reason="no")
+    # current() now returns None (only draft/approved), so the next action must
+    # still recover the rejected latest spec and route to revise, not draft.
+    assert specs.current(t.task_id) is None
+
+    app.dependency_overrides[get_project_registry] = lambda: registry
+    app.dependency_overrides[get_task_store] = lambda: tasks
+    app.dependency_overrides[get_execution_store] = lambda: runs
+    client = TestClient(app)
+    try:
+        body = client.get("/api/projects/agora/dashboard").json()
+        task_view = next(tk for tk in body["tasks"] if tk["task_id"] == t.task_id)
+        assert task_view["next_action"]["action"] == "revise_spec"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_dashboard_next_action_never_hides_a_blocker_past_the_page(tmp_path, monkeypatch):
+    from agora.api import settings_router
+    from agora.tasks.router import get_project_registry, get_task_store
+    from agora.tasks.store import TaskStore
+    from agora.tasks.models import CreateTaskRequest, TaskState
+    from agora.execution.router import get_execution_store
+    from agora.execution.store import ExecutionStore
+
+    # Shrink the page cap so a small fixture triggers truncation deterministically.
+    monkeypatch.setattr(settings_router, "_DASHBOARD_TASK_LIMIT", 3)
+
+    registry = _registry(tmp_path)
+    tasks = TaskStore(tmp_path / "trunc.db")
+    runs = ExecutionStore(tasks)
+
+    # High-priority routine tasks fill the page; a low-priority blocked task sorts
+    # last (priority DESC) and falls off it.
+    for i in range(3):
+        tasks.create(CreateTaskRequest(project_id="agora", title=f"routine-{i}", priority=100, created_by="t"))
+    b = tasks.create(CreateTaskRequest(project_id="agora", title="late-blocker", priority=0, created_by="t"))
+    b = tasks.transition(b.task_id, TaskState.REQUIREMENTS, actor="t", expected_version=b.version)
+    tasks.transition(b.task_id, TaskState.BLOCKED, actor="t", expected_version=b.version)
+
+    app.dependency_overrides[get_project_registry] = lambda: registry
+    app.dependency_overrides[get_task_store] = lambda: tasks
+    app.dependency_overrides[get_execution_store] = lambda: runs
+    client = TestClient(app)
+    try:
+        body = client.get("/api/projects/agora/dashboard").json()
+        assert body["truncated"] is True
+        # The blocker is not on the page, yet attention must still surface.
+        assert b.task_id not in {tk["task_id"] for tk in body["tasks"]}
+        na = body["next_action"]
+        assert na["task_id"] == b.task_id and na["action"] == "resolve_blocker"
+        assert na["attention_count"] == 1 and na["partial"] is True
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_create_project_provisions_linked_worktrees_inside_outer_repo(tmp_path):
     registry = _registry(tmp_path)
     outer_head_before = _git("rev-parse", "HEAD", cwd=tmp_path)
