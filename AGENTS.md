@@ -49,12 +49,17 @@ Do not infer progress from a previous chat transcript alone.
 After every meaningful increment:
 
 1. Update `.agora/development/PROGRESS.md` with tests, review state, blockers,
-   and the next safe action.
+   and the next safe action. Record the **collected** count alongside the passed
+   count: "N passed" alone cannot distinguish a suite that shrank from one that
+   ran fewer tests, and a figure that cannot be reproduced later is not a record.
 2. Run relevant automated tests and schema consistency checks.
 3. Obtain a Kiro CLI review for protocol, AI-DLC, reconciliation, and
    methodology boundaries.
-4. Obtain an independent Claude Code review for implementation correctness,
-   safety, and regression coverage.
+4. Obtain an independent **Codex** review for implementation correctness, safety,
+   and regression coverage. The rule is that the reviewer must not be the model
+   that wrote the code: implementation is dispatched to Kiro CLI, so Codex is the
+   independent gate. (This named Claude Code until 2026-08-29, when the
+   maintainer moved implementation to Kiro.)
 5. Fix actionable findings from both reviewers and rerun tests.
 6. Commit only after both review gates approve.
 
