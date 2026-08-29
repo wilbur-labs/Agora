@@ -385,3 +385,155 @@ def test_day_bounds_are_two_local_midnights_not_start_plus_24h():
                 zone=zone,
             )
             assert end == next_start, (offset, day)
+
+
+def test_zone_offset_is_reported_so_a_client_can_time_the_rollover():
+    """The client needs the *display* zone's offset to know when this zone's day
+    rolls over. The browser's own zone is not a substitute: the display zone can
+    be configured and the backend may run somewhere else entirely."""
+    from agora.tasks.localday import parse_offset, zone_offset_minutes
+
+    assert zone_offset_minutes(zone=parse_offset("+09:00")) == 540
+    assert zone_offset_minutes(zone=parse_offset("+00:00")) == 0
+    assert zone_offset_minutes(zone=parse_offset("-05:00")) == -300
+    assert zone_offset_minutes(zone=parse_offset("+05:45")) == 345
+    # Unset falls back to the process zone, which must still be a real offset.
+    assert isinstance(zone_offset_minutes(), int)
+
+
+def test_next_rollover_is_the_zone_s_next_midnight_not_now_plus_24h():
+    """The client schedules its refetch from this, because the current offset
+    alone cannot locate the next midnight across a DST change. Must always land
+    strictly ahead and no more than a day out, in every zone."""
+    from datetime import datetime, timedelta, timezone as tz
+    from agora.tasks.localday import local_day_bounds, local_day_of, next_rollover, parse_offset
+
+    # One captured instant drives every assertion, including the call itself: let
+    # next_rollover read the clock again and a run that crosses a zone's midnight
+    # gets the midnight *after* the one this "now" belongs to, so the test would
+    # re-enact the very cross-midnight race it exists to catch.
+    now = datetime.now(tz.utc)
+    for offset in ["+09:00", "+00:00", "-05:00", "+05:45", "+14:00", "-11:00"]:
+        zone = parse_offset(offset)
+        at = datetime.fromisoformat(next_rollover(zone=zone, now=now))
+        assert now < at <= now + timedelta(days=1), offset
+        # It is exactly a midnight in that zone: the instant belongs to the day
+        # after the one that contains "now".
+        today = local_day_of(now.isoformat(), zone=zone)
+        assert local_day_of(at.isoformat(), zone=zone) != today, offset
+        assert at.isoformat() == local_day_bounds(today, zone=zone)[1], offset
+
+
+# ── one response, one instant (codex P2 / kiro P3) ─────────────────────
+#
+# The endpoint derives several things from the wall clock: the day it reads, the
+# `today` that becomes days_ago, the reported offset, and the next rollover. Read
+# the clock once per derivation and a request that crosses this zone's midnight
+# answers from two days at once — days_ago from before the boundary, next_rollover
+# from the midnight *after* it — and the client then waits a whole extra day while
+# calling yesterday "today". These pin the single-snapshot behavior by handing the
+# endpoint a clock that jumps forward on every read.
+
+
+def _advancing_clock(*instants: str):
+    """A ``now_utc`` replacement that returns each instant in turn and sticks on
+    the last. One read sees only the first, so any extra read is visible."""
+    from datetime import datetime
+
+    values = [datetime.fromisoformat(value) for value in instants]
+    reads: list = []
+
+    def clock():
+        reads.append(values[min(len(reads), len(values) - 1)])
+        return reads[-1]
+
+    clock.reads = reads  # type: ignore[attr-defined]
+    return clock
+
+
+def _recap_endpoint(tmp_path, monkeypatch, *, offset: str, clock, event_at: str | None):
+    """The real endpoint over real stores, with the zone and the clock pinned."""
+    from agora.api.settings_router import task_recap
+    from agora.execution.store import ExecutionStore
+    from agora.tasks import localday
+    from agora.tasks.localday import parse_offset
+    from agora.tasks.models import CreateTaskRequest
+    from agora.tasks.store import TaskStore
+
+    zone = parse_offset(offset)
+    monkeypatch.setattr(localday, "configured_zone", lambda: zone)
+    monkeypatch.setattr(localday, "now_utc", clock)
+
+    tasks = TaskStore(tmp_path / f"recap-{offset.replace(':', '')}.db")
+    runs = ExecutionStore(tasks)
+    task = tasks.create(CreateTaskRequest(project_id="alpha", title="Where did I leave off"))
+    if event_at is None:
+        # The "no activity" path: drop the creation event so no day is eligible.
+        with tasks._transaction() as db:
+            db.execute("DELETE FROM task_events WHERE task_id = ?", (task.task_id,))
+    else:
+        with tasks._transaction() as db:
+            db.execute("UPDATE task_events SET created_at = ? WHERE task_id = ?",
+                       (event_at, task.task_id))
+    return task_recap(task.task_id, task_store=tasks, exec_store=runs), zone
+
+
+def _assert_one_instant(recap, zone):
+    """The response's own fields must agree: the rollover it tells the client to
+    wait for has to be the end of the day it is calling "today"."""
+    from datetime import date, timedelta
+
+    from agora.tasks.localday import local_day_bounds
+
+    assert recap["days_ago"] is not None, "this check needs a day to anchor on"
+    today = date.fromisoformat(recap["day"]) + timedelta(days=recap["days_ago"])
+    assert recap["next_rollover"] == local_day_bounds(today.isoformat(), zone=zone)[1]
+
+
+def test_recap_stays_consistent_when_the_clock_crosses_local_midnight(tmp_path, monkeypatch):
+    """Pinned a tenth of a second before local midnight in +09:00, with every
+    later read landing after it. The response must be entirely on the earlier
+    side: today is the 27th, so the rollover is the 27th's, not the 28th's."""
+    recap, zone = _recap_endpoint(
+        tmp_path, monkeypatch, offset="+09:00",
+        clock=_advancing_clock("2026-08-27T14:59:59.900000+00:00",
+                               "2026-08-27T15:00:01+00:00"),
+        event_at="2026-08-27T10:00:00+00:00",
+    )
+    assert recap["day"] == "2026-08-27"
+    assert recap["days_ago"] == 0
+    assert recap["next_rollover"] == "2026-08-27T15:00:00+00:00"
+    assert recap["zone_offset_minutes"] == 540
+    _assert_one_instant(recap, zone)
+
+
+def test_the_no_activity_response_is_snapshotted_too(tmp_path, monkeypatch):
+    """The early return has the same two reads to get wrong, so it takes the same
+    snapshot: a task with nothing recorded still gets the boundary of the day the
+    request was answered in."""
+    recap, _ = _recap_endpoint(
+        tmp_path, monkeypatch, offset="+09:00",
+        clock=_advancing_clock("2026-08-27T14:59:59.900000+00:00",
+                               "2026-08-27T15:00:01+00:00"),
+        event_at=None,
+    )
+    assert recap["day"] is None and recap["days_ago"] is None
+    assert recap["next_rollover"] == "2026-08-27T15:00:00+00:00"
+    assert recap["zone_offset_minutes"] == 540
+
+
+def test_next_rollover_and_days_ago_come_from_the_same_instant(tmp_path, monkeypatch):
+    """Across zones, and with the clock jumping a full day on every read after the
+    first: days_ago and next_rollover must still describe one instant."""
+    for offset in ["+09:00", "+00:00", "-05:00", "+05:45", "+14:00", "-11:00"]:
+        recap, zone = _recap_endpoint(
+            tmp_path, monkeypatch, offset=offset,
+            clock=_advancing_clock("2026-08-27T12:00:00+00:00",
+                                   "2026-08-28T12:00:00+00:00",
+                                   "2026-08-29T12:00:00+00:00"),
+            event_at="2026-08-27T12:00:00+00:00",
+        )
+        _assert_one_instant(recap, zone)
+        # And the day the response is about is the day it was answered on, so the
+        # panel says "today" — the whole point of reading the clock once.
+        assert recap["days_ago"] == 0, offset

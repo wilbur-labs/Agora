@@ -229,6 +229,48 @@ export interface Delivery {
   files: string[];
 }
 
+// What happened on this task's last active day — the "where did I leave off"
+// recap. `kind` is a stable slug the UI localizes; `summary` is the server's
+// English fallback for API consumers without the UI, not for display here.
+export interface RecapItem {
+  kind: string;
+  summary: string;
+  adapter?: string;
+  // Files a run delivered. null means the count is unknown (no deliverable
+  // snapshot), which is different from 0; `files_at_least` marks it as a floor
+  // because the snapshot itself was truncated.
+  files?: number | null;
+  files_at_least?: boolean;
+  state?: string;
+  count?: number;
+}
+
+export interface TaskRecap {
+  // null when nothing has ever happened to this task.
+  day: string | null;
+  items: RecapItem[];
+  // Items beyond what the recap shows, so a busy day is not silently trimmed.
+  more: number;
+  // Whole days from `day` to today, in the viewer's zone. Drives the wording:
+  // "today" / "yesterday" / "N days ago" / the date itself.
+  days_ago: number | null;
+  // The day held more than the endpoint read.
+  partial?: boolean;
+  // The display zone's UTC offset in minutes. Informational; use next_rollover
+  // to schedule, since an offset alone cannot locate the next midnight across a
+  // daylight-saving change.
+  zone_offset_minutes?: number;
+  // When the display zone's calendar day next changes, as a UTC ISO timestamp.
+  // Computed server-side: the browser's zone is not a substitute (the display
+  // zone is configurable and the backend may run elsewhere), and the current
+  // offset is not enough on a DST boundary.
+  next_rollover?: string;
+}
+
+export function fetchTaskRecap(taskId: string, signal?: AbortSignal): Promise<TaskRecap> {
+  return request(`/api/tasks/${encodeURIComponent(taskId)}/recap`, { signal });
+}
+
 export async function fetchDelivery(taskId: string, signal?: AbortSignal): Promise<Delivery | null> {
   const events = await listTaskEvents(taskId, signal);
   const handoff = [...events].reverse().find((e) => e.event_type === "handoff.completed");

@@ -28,6 +28,7 @@ import {
   createTask,
   fetchDelivery,
   fetchProjectDashboard,
+  fetchTaskRecap,
   listOpenAttention,
   listProjects,
   listSpecs,
@@ -38,6 +39,8 @@ import {
   type DashboardTask,
   type Delivery,
   type ProjectDashboard,
+  type RecapItem,
+  type TaskRecap,
   type RequirementSpec,
   type TaskEvent,
   type TaskManifest,
@@ -124,8 +127,14 @@ export default function WorkspacePage() {
   const [projectFilter, setProjectFilter] = useState("all");
   const [query, setQuery] = useState("");
   const [showCreate, setShowCreate] = useState(false);
+  // Bumped on every explicit refresh so the selected task's own reads (recap,
+  // events, dashboard) reload too. Without it a run finishing without changing
+  // the task's state leaves the child's effect deps untouched, and Refresh
+  // silently updates only the rail.
+  const [refreshNonce, setRefreshNonce] = useState(0);
 
   const load = useCallback(async () => {
+    setRefreshNonce((n) => n + 1);
     setLoading(true);
     setError(null);
     try {
@@ -236,7 +245,7 @@ export default function WorkspacePage() {
       <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
         {error && <div className="m-4 shrink-0 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{t("workspace.errors.loadFailed", { error })}</div>}
         {selectedTask ? (
-          <TaskWorkspace key={selectedTask.task_id} task={selectedTask} ask={attentionByTask.get(selectedTask.task_id)?.blocker ?? null} attention={attention.filter((a) => a.task_id === selectedTask.task_id)} latestRun={latestRunByTask.get(selectedTask.task_id) ?? null} />
+          <TaskWorkspace key={selectedTask.task_id} refreshNonce={refreshNonce} task={selectedTask} ask={attentionByTask.get(selectedTask.task_id)?.blocker ?? null} attention={attention.filter((a) => a.task_id === selectedTask.task_id)} latestRun={latestRunByTask.get(selectedTask.task_id) ?? null} />
         ) : (
           <EmptyWorkspace hasTasks={tasks.length > 0} />
         )}
@@ -360,17 +369,66 @@ function EmptyWorkspace({ hasTasks }: { hasTasks: boolean }) {
 type Tab = "requirements" | "run" | "attention" | "changes";
 const TABS: Tab[] = ["requirements", "run", "attention", "changes"];
 
-function TaskWorkspace({ task, ask, attention, latestRun }: { task: TaskManifest; ask: string | null; attention: AttentionItem[]; latestRun: RunSummary | null }) {
-  const { t } = useI18n();
+// Retry window for a rollover boundary that is already in the past — see the
+// rollover effect below. Wide enough that an offline page costs one request a
+// minute at worst, short enough that a page recovers the day within one.
+const ROLLOVER_RETRY_MIN_MS = 30_000;
+const ROLLOVER_RETRY_MAX_MS = 300_000;
+
+function TaskWorkspace({ task, ask, attention, latestRun, refreshNonce }: { task: TaskManifest; ask: string | null; attention: AttentionItem[]; latestRun: RunSummary | null; refreshNonce: number }) {
+  const { t, te } = useI18n();
   const [dashboard, setDashboard] = useState<ProjectDashboard | null>(null);
   const [dashError, setDashError] = useState(false);
   const dashTask = dashboard?.tasks.find((it) => it.task_id === task.task_id) ?? null;
   const [specs, setSpecs] = useState<RequirementSpec[] | null>(null);
   const [specsError, setSpecsError] = useState(false);
   const [delivery, setDelivery] = useState<Delivery | null>(null);
+  // D-6: a swallowed error left `delivery` null, which renders as "nothing
+  // produced yet" — a load failure shown as an absence. Track it like the other
+  // reads here do, so unknown stays unknown.
+  const [deliveryError, setDeliveryError] = useState(false);
+  const [recap, setRecap] = useState<TaskRecap | null>(null);
+  const [recapError, setRecapError] = useState(false);
   const [events, setEvents] = useState<TaskEvent[] | null>(null);
   const [runs, setRuns] = useState<ExecutionRun[] | null>(null);
   const [tab, setTab] = useState<Tab>("requirements");
+
+  // Where the task was left off. Reusable because posting a note changes the
+  // answer: the recap would otherwise keep saying "yesterday" while the timeline
+  // already shows today's message. A success clears any earlier error, so a
+  // transient failure does not leave the panel permanently unavailable.
+  //
+  // Guarded by a request token, because the answer changes over time. Posting a
+  // note while the first read is still in flight leaves two requests running,
+  // and the older one resolving last would overwrite the fresher recap with a
+  // pre-note one — showing yesterday's date next to today's message until the
+  // task is reopened. Only the newest request may write.
+  const recapRequest = useRef(0);
+  // Bumped whenever a recap read settles, success or failure. The midnight
+  // reschedule keys on this rather than on a field of the response: keying on
+  // recap.day looked right but does not advance on a quiet task (day is the last
+  // *active* day, while midnight moves days_ago), so the timer fired once and
+  // never rescheduled — a page left visible went stale after one night. A
+  // counter removes the need to reason about which field changes.
+  const [recapSettled, setRecapSettled] = useState(0);
+  const loadRecap = useCallback((signal?: AbortSignal) => {
+    const token = ++recapRequest.current;
+    const stale = () => signal?.aborted || token !== recapRequest.current;
+    fetchTaskRecap(task.task_id, signal)
+      .then((value) => {
+        if (stale()) return;
+        setRecap(value);
+        setRecapError(false);
+        setRecapSettled((n) => n + 1);
+      })
+      .catch(() => {
+        if (stale()) return;
+        setRecapError(true);
+        // Settle on failure too, so a failed midnight read still reschedules
+        // instead of leaving the panel frozen until the next mount.
+        setRecapSettled((n) => n + 1);
+      });
+  }, [task.task_id]);
 
   const loadEvents = useCallback((signal?: AbortSignal) => {
     listTaskEvents(task.task_id, signal)
@@ -383,10 +441,14 @@ function TaskWorkspace({ task, ask, attention, latestRun }: { task: TaskManifest
   useEffect(() => {
     const ctrl = new AbortController();
     fetchProjectDashboard(task.project_id, ctrl.signal)
-      .then((dash) => { if (!ctrl.signal.aborted) setDashboard(dash); })
+      .then((dash) => { if (!ctrl.signal.aborted) { setDashboard(dash); setDashError(false); } })
       .catch(() => { if (!ctrl.signal.aborted) setDashError(true); });
     // A failed read stays "unknown" (null + error), never a false "empty".
-    listSpecs(task.task_id).then((value) => { if (!ctrl.signal.aborted) setSpecs(value); }).catch(() => { if (!ctrl.signal.aborted) setSpecsError(true); });
+    // Clear the error on success: an explicit Refresh after a transient failure
+    // must not leave the page showing real data next to "unavailable".
+    listSpecs(task.task_id)
+      .then((value) => { if (!ctrl.signal.aborted) { setSpecs(value); setSpecsError(false); } })
+      .catch(() => { if (!ctrl.signal.aborted) setSpecsError(true); });
     loadEvents(ctrl.signal);
     // Full run records (prompt + stdout/stderr + result) so the timeline can show
     // what the agent actually did — the substance, like the terminal, not a ledger.
@@ -397,10 +459,63 @@ function TaskWorkspace({ task, ask, attention, latestRun }: { task: TaskManifest
       })
       .catch(() => { if (!ctrl.signal.aborted) setRuns([]); });
     if (task.state === "done") {
-      fetchDelivery(task.task_id, ctrl.signal).then((value) => { if (!ctrl.signal.aborted) setDelivery(value); }).catch(() => {});
+      fetchDelivery(task.task_id, ctrl.signal)
+        .then((value) => { if (!ctrl.signal.aborted) { setDelivery(value); setDeliveryError(false); } })
+        .catch(() => { if (!ctrl.signal.aborted) setDeliveryError(true); });
     }
+    loadRecap(ctrl.signal);
     return () => ctrl.abort();
-  }, [task.task_id, task.project_id, task.state, loadEvents]);
+  // refreshNonce: the left rail's Refresh reloads the parent's data, but a run
+  // finishing without changing the task's state leaves every dep here unchanged,
+  // so the recap would keep showing the pre-run answer. The nonce makes an
+  // explicit refresh reach this component's own reads too.
+  }, [task.task_id, task.project_id, task.state, refreshNonce, loadEvents, loadRecap]);
+
+  // The recap's wording depends on what day it is, so leaving the page open past
+  // midnight would keep it saying "today" about yesterday's work. Refetch when
+  // the display zone's day rolls over, and whenever the tab becomes visible
+  // again — the common way a page survives a night.
+  //
+  // The rollover is computed from the zone the *server* renders in
+  // (zone_offset_minutes), not the browser's: the display zone can be configured
+  // and the backend may run elsewhere, which is exactly why that field exists.
+  // Until the first response arrives there is nothing to schedule.
+  const nextRollover = recap?.next_rollover;
+  // How long to wait before retrying a boundary that has already passed. A ref,
+  // not state, because writing it must not itself re-run the effect below — that
+  // would restart the timer it is there to slow down.
+  const rolloverBackoff = useRef(0);
+  useEffect(() => {
+    if (!nextRollover) return;
+    const at = Date.parse(nextRollover);
+    if (Number.isNaN(at)) return;
+    // A second past the boundary, so the server has certainly rolled over too.
+    const remaining = at - Date.now() + 1_000;
+    if (remaining > 0) {
+      // The boundary is genuinely ahead: schedule the real rollover read, and
+      // forget any backoff an earlier failure built up — the day is being tracked
+      // again, which is what the backoff was waiting for.
+      rolloverBackoff.current = 0;
+      const timer = window.setTimeout(() => loadRecap(), remaining);
+      return () => window.clearTimeout(timer);
+    }
+    // The boundary is already in the past: either the midnight read failed (the
+    // failure path settles too, and recapSettled re-runs this effect) or the
+    // client's clock is ahead of the server's. Firing immediately would refetch,
+    // fail, settle, re-run, and fire again — an offline page emitting a tight
+    // request loop. Retry on a bounded, increasing delay instead; it resets above
+    // as soon as a read comes back with a future boundary.
+    const wait = Math.min(rolloverBackoff.current || ROLLOVER_RETRY_MIN_MS, ROLLOVER_RETRY_MAX_MS);
+    rolloverBackoff.current = Math.min(wait * 2, ROLLOVER_RETRY_MAX_MS);
+    const timer = window.setTimeout(() => loadRecap(), wait);
+    return () => window.clearTimeout(timer);
+  }, [nextRollover, loadRecap, recapSettled]);
+
+  useEffect(() => {
+    const onVisible = () => { if (document.visibilityState === "visible") loadRecap(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [loadRecap]);
 
   // The latest successful *worker* run is what "produced" the current result.
   // In the auto-review flow the review run finishes after the worker run it
@@ -422,10 +537,11 @@ function TaskWorkspace({ task, ask, attention, latestRun }: { task: TaskManifest
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <ProjectStrip dashboard={dashboard} dashError={dashError} />
-      <OutcomeSummary task={task} dashTask={dashTask} dashError={dashError} blocker={ask} delivery={delivery} latestSuccess={latestSuccess} />
+      <ResumeBrief recap={recap} recapError={recapError} t={t} te={te} />
+      <OutcomeSummary task={task} dashTask={dashTask} dashError={dashError} blocker={ask} delivery={delivery} deliveryError={deliveryError} latestSuccess={latestSuccess} />
       <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
         {/* Center: the unified, chat-like task timeline + message box. */}
-        <TimelineColumn taskId={task.task_id} events={events} runs={runs} specs={specs} onPosted={() => loadEvents()} />
+        <TimelineColumn taskId={task.task_id} events={events} runs={runs} specs={specs} onPosted={() => { loadEvents(); loadRecap(); }} />
         {/* Right: result + control tabs (read-only, deep-link to full pages). */}
         <div className="flex min-h-0 w-full flex-col border-t lg:w-[400px] lg:border-l lg:border-t-0">
           <div className="flex gap-1 border-b bg-background/90 px-4 py-2">
@@ -443,7 +559,7 @@ function TaskWorkspace({ task, ask, attention, latestRun }: { task: TaskManifest
             {tab === "requirements" && <RequirementsPanel task={task} specs={specs} error={specsError} />}
             {tab === "run" && <RunPanel task={task} latestRun={latestRun} />}
             {tab === "attention" && <AttentionPanel items={attention} />}
-            {tab === "changes" && <ChangesPanel task={task} delivery={delivery} />}
+            {tab === "changes" && <ChangesPanel task={task} delivery={delivery} deliveryError={deliveryError} />}
           </div>
         </div>
       </div>
@@ -675,7 +791,134 @@ function ProjectStrip({ dashboard, dashError }: { dashboard: ProjectDashboard | 
 
 // The plain-language answer for the selected task: what it did, whether that's
 // trustworthy, and the one next step. The timeline below is the evidence.
-function OutcomeSummary({ task, dashTask, dashError, blocker, delivery, latestSuccess }: { task: TaskManifest; dashTask: DashboardTask | null; dashError: boolean; blocker: string | null; delivery: Delivery | null; latestSuccess: ExecutionRun | null }) {
+// Where this task was left off: the last day it moved, and what moved on it.
+// First thing in the header because it answers the question you open a task with,
+// which comes before "what state is it in" and "what is next".
+//
+// Every line is localized from a stable slug the backend derived from records —
+// never generated prose. `item.summary` is the server's English fallback for API
+// consumers and is deliberately not rendered here.
+function recapItemText(item: RecapItem, t: Translate, te: TranslateEnum): string {
+  const base = "workspace.recap.items";
+  const adapter = item.adapter ?? "";
+  switch (item.kind) {
+    case "created":
+      return t(`${base}.created`);
+    case "delivered":
+      // Three claims, three keys. A known count, a floor (the snapshot was
+      // truncated), and an unknown count are different things to say, and the
+      // backend keeps them apart precisely so the UI does not merge them.
+      if (item.files === null || item.files === undefined) {
+        return t(`${base}.deliveredUnknown`, { adapter });
+      }
+      return item.files_at_least
+        ? t(`${base}.deliveredAtLeast`, { adapter, files: item.files })
+        : t(`${base}.deliveredCount`, { adapter, files: item.files });
+    case "ran_no_changes":
+      return t(`${base}.ranNoChanges`, { adapter });
+    case "run_failed":
+      return t(`${base}.runFailed`, { adapter });
+    case "reviewed":
+      return t(`${base}.reviewed`, { adapter });
+    case "spec_approved":
+      return t(`${base}.specApproved`);
+    case "spec_rejected":
+      return t(`${base}.specRejected`);
+    case "stage_reached":
+      // Reuse the plain-language milestone wording rather than the raw state.
+      return t(`${base}.stageReached`, {
+        stage: item.state ? te("taskState", item.state as never) : "",
+      });
+    case "needs_you":
+      return t(`${base}.needsYou`, { count: item.count ?? 0 });
+    case "answered":
+      return t(`${base}.answered`, { count: item.count ?? 0 });
+    case "handed_off":
+      return t(`${base}.handedOff`);
+    case "noted":
+      return t(`${base}.noted`, { count: item.count ?? 0 });
+    default:
+      // An unrecognized kind is a newer backend than this UI. Show the server's
+      // own words rather than dropping the fact silently.
+      return item.summary;
+  }
+}
+
+// A failure and an unbroken run of nothing are different states and must read
+// differently: "couldn't load" is not "nothing happened".
+const RECAP_TONE: Record<string, string> = {
+  run_failed: "bg-red-500",
+  needs_you: "bg-amber-500",
+  spec_rejected: "bg-red-500",
+  delivered: "bg-emerald-500",
+  handed_off: "bg-emerald-500",
+  reviewed: "bg-violet-500",
+};
+
+function ResumeBrief(
+  { recap, recapError, t, te }:
+  { recap: TaskRecap | null; recapError: boolean; t: Translate; te: TranslateEnum },
+) {
+  if (recapError) {
+    return (
+      <div className="border-b bg-muted/20 px-5 py-2">
+        <p className="text-xs text-muted-foreground">{t("workspace.panels.unavailable")}</p>
+      </div>
+    );
+  }
+  if (recap === null) return null; // still loading; the header below already shows
+  if (recap.day === null) {
+    return (
+      <div className="border-b bg-muted/20 px-5 py-2">
+        <p className="text-xs text-muted-foreground">{t("workspace.recap.never")}</p>
+      </div>
+    );
+  }
+
+  // The heading follows days_ago, so a task nobody has touched for three weeks
+  // never claims "yesterday".
+  const ago = recap.days_ago;
+  const heading =
+    ago === 0 ? t("workspace.recap.today")
+    : ago === 1 ? t("workspace.recap.yesterday")
+    : ago !== null && ago < 7 ? t("workspace.recap.daysAgo", { n: ago })
+    : t("workspace.recap.onDate", { date: recap.day });
+
+  return (
+    <div className="border-b bg-muted/20 px-5 py-2.5">
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+          {heading}
+        </p>
+        {recap.items.length === 0 && (
+          // A day with only activity-only events (run.process_started and the
+          // like) legitimately has a day and no items. Saying "nothing has ever
+          // happened" here would contradict the timeline right below it — the
+          // backend keeps the two apart on purpose, so the UI must too.
+          <p className="text-xs text-muted-foreground">{t("workspace.recap.noSummary")}</p>
+        )}
+        <ul className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1">
+          {recap.items.map((item, index) => (
+            <li key={`${item.kind}-${index}`} className="flex items-center gap-1.5 text-xs">
+              <span className={cn("size-1.5 shrink-0 rounded-full", RECAP_TONE[item.kind] ?? "bg-muted-foreground/50")} />
+              {recapItemText(item, t, te)}
+            </li>
+          ))}
+        </ul>
+        {recap.more > 0 && (
+          <span className="text-[11px] text-muted-foreground">
+            {t("workspace.recap.more", { n: recap.more })}
+          </span>
+        )}
+        {recap.partial && (
+          <span className="text-[11px] text-muted-foreground">{t("workspace.recap.partial")}</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function OutcomeSummary({ task, dashTask, dashError, blocker, delivery, deliveryError, latestSuccess }: { task: TaskManifest; dashTask: DashboardTask | null; dashError: boolean; blocker: string | null; delivery: Delivery | null; deliveryError: boolean; latestSuccess: ExecutionRun | null }) {
   const { t, te } = useI18n();
   const next = dashTask?.next_action ?? null;
   const total = dashTask?.total_weight ?? 0;
@@ -707,10 +950,15 @@ function OutcomeSummary({ task, dashTask, dashError, blocker, delivery, latestSu
               <p className="text-xs text-muted-foreground">
                 {latestSuccess && <span>· {latestSuccess.adapter}</span>}
                 {fileCount > 0 && <span> · {t("workspace.summary.files", { count: fileCount })}{delivery?.commit ? ` · ${delivery.commit.slice(0, 8)}` : ""}</span>}
+                {deliveryError && <span> · {t("workspace.summary.deliveryUnknown")}</span>}
               </p>
             </div>
           ) : (
-            <p className="mt-1 text-sm text-muted-foreground">{t("workspace.summary.nothingYet")}</p>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {/* D-6: a failed delivery read used to land here as "nothing
+                  produced yet". An absence and an unknown are different. */}
+              {deliveryError ? t("workspace.panels.unavailable") : t("workspace.summary.nothingYet")}
+            </p>
           )}
         </div>
 
@@ -1001,11 +1249,16 @@ function AttentionPanel({ items }: { items: AttentionItem[] }) {
   );
 }
 
-function ChangesPanel({ task, delivery }: { task: TaskManifest; delivery: Delivery | null }) {
+function ChangesPanel({ task, delivery, deliveryError }: { task: TaskManifest; delivery: Delivery | null; deliveryError: boolean }) {
   const { t } = useI18n();
   return (
     <PanelShell href={`/runs?task=${encodeURIComponent(task.task_id)}`} hrefLabel={t("workspace.panels.openFull")}>
-      {!delivery || (delivery.fileCount === 0 && !delivery.commit) ? (
+      {deliveryError ? (
+        /* A failed read is not an absence. Without this the summary above says
+           "unavailable" while this panel says "no changes" — the same page
+           contradicting itself about the same fact. */
+        <p className="text-sm text-muted-foreground">{t("workspace.panels.unavailable")}</p>
+      ) : !delivery || (delivery.fileCount === 0 && !delivery.commit) ? (
         <p className="text-sm text-muted-foreground">{t("workspace.panels.changes.none")}</p>
       ) : (
         <div className="space-y-2">

@@ -69,6 +69,19 @@ def configured_zone() -> timezone | None:
     return parse_offset(str(raw))
 
 
+def now_utc() -> datetime:
+    """The current instant, in UTC.
+
+    Exists so a response can read the clock *once* and pass that instant to every
+    derivation below. Each of these functions defaults to reading the clock again,
+    which is fine in isolation and wrong for a response that has to agree with
+    itself: a request that straddles local midnight would take its day from before
+    the boundary and its next rollover from after it, and the page would then call
+    yesterday "today" until the following midnight.
+    """
+    return datetime.now(timezone.utc)
+
+
 def local_day_of(timestamp: str | None, *, zone: timezone | None = None) -> str | None:
     """The display calendar day (YYYY-MM-DD) of a stored UTC ISO timestamp, or
     None if it is missing or unparseable — a recap must not fail because one row
@@ -91,11 +104,15 @@ def local_day_of(timestamp: str | None, *, zone: timezone | None = None) -> str 
     return shifted.date().isoformat()
 
 
-def local_today(*, zone: timezone | None = None) -> str:
-    """Today, on the display zone's wall clock."""
+def local_today(*, zone: timezone | None = None, now: datetime | None = None) -> str:
+    """Today, on the display zone's wall clock.
+
+    ``now`` pins the instant, so a caller that also derives a rollover reads the
+    clock once and gets one day out of it; None means "read it now".
+    """
     target = zone if zone is not None else configured_zone()
-    now = datetime.now(timezone.utc)
-    return (now.astimezone(target) if target else now.astimezone()).date().isoformat()
+    instant = now if now is not None else now_utc()
+    return (instant.astimezone(target) if target else instant.astimezone()).date().isoformat()
 
 
 def _local_midnight(day: date, zone: timezone | None) -> datetime:
@@ -104,6 +121,46 @@ def _local_midnight(day: date, zone: timezone | None) -> datetime:
     # A fixed offset attaches exactly; the process zone resolves the offset that
     # applies on *that* date, which is what makes the DST case come out right.
     return naive.replace(tzinfo=zone) if zone else naive.astimezone()
+
+
+def zone_offset_minutes(*, zone: timezone | None = None, now: datetime | None = None) -> int:
+    """The display zone's current offset from UTC, in minutes. Informational —
+    for scheduling a day rollover use ``next_rollover``, which is DST-correct.
+
+    ``now`` pins the instant, which matters under DST: the offset either side of a
+    transition differs, so a response must report the one for the instant it
+    answered from.
+    """
+    target = zone if zone is not None else configured_zone()
+    instant = now if now is not None else now_utc()
+    offset = (instant.astimezone(target) if target else instant.astimezone()).utcoffset()
+    return int(offset.total_seconds() // 60) if offset else 0
+
+
+def next_rollover(*, zone: timezone | None = None, now: datetime | None = None) -> str:
+    """The next instant the display zone's calendar day changes, as a UTC ISO
+    timestamp.
+
+    Computed here rather than left to the client, because the current offset is
+    not enough to locate the next midnight: on a spring-forward date the offset
+    in force *now* is the old one, so "now plus 24 hours minus time-since-
+    midnight" lands an hour late and a page keeps saying "today" into the next
+    day. The bounds helper resolves each midnight in the zone independently, so
+    this is right across a DST change.
+
+    The browser's own zone is not a substitute either — the display zone can be
+    configured and the backend may run elsewhere, which is why the configured
+    zone exists at all.
+
+    ``now`` pins the instant. Pass the same one used for ``local_today`` or the
+    two can disagree across midnight, which puts the client's refetch a whole day
+    out — the boundary it waits for is the one *after* the day it is showing.
+    """
+    target = zone if zone is not None else configured_zone()
+    instant = now if now is not None else now_utc()
+    today = (instant.astimezone(target) if target else instant.astimezone()).date()
+    _, end = local_day_bounds(today.isoformat(), zone=target)
+    return end
 
 
 def local_day_bounds(day: str, *, zone: timezone | None = None) -> tuple[str, str]:

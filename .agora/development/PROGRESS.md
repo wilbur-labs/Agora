@@ -5748,8 +5748,129 @@ review to protocol / AI-DLC / reconciliation / methodology boundaries - the froz
 layer, which none of this work touches. Reconciling the two rule sets is an open
 decision for the maintainer, recorded here rather than resolved unilaterally.
 
-Next safe action: obtain the Kiro review for the uncommitted local-day change,
-then commit it. After that, render the recap in the Task Workspace header and
-continue the slice: Continue -> run in a worktree -> write progress back ->
-verify the next morning that it reads back as yesterday's step. Branch: `main`,
-two commits ahead of `origin/main`, not pushed.
+Next safe action at the time of writing: obtain the Kiro review for the
+local-day change, then commit it. (Done: Kiro returned APPROVE and the change is
+committed as `20876b6`. The recap rendering that followed is its own entry
+below.)
+
+## Increment: the recap rendered in the Task Workspace (2026-08-28)
+
+The recap endpoint existed; nothing showed it. `ResumeBrief` sits between the
+project strip and the outcome summary, because "where was I" is the question you
+open a task with — it comes before "what state is it in" and "what is next".
+
+Every line is localized from the stable `kind` slugs the backend derives from
+records. `item.summary` (the server's English fallback) is deliberately not
+rendered as display prose, except for an unrecognized kind, where showing the
+recorded fact in English beats dropping it silently.
+
+Three distinctions the backend keeps are carried through rather than flattened:
+
+- `delivered` fans out to three separate message keys — an exact count, a floor
+  (`files_at_least`, when the snapshot itself was truncated), and an unknown
+  count (`files === null`, no snapshot). One template with a condition would have
+  merged claims the backend separates on purpose.
+- Four display states, four wordings: loading (render nothing), error
+  (unavailable), never-active (`day === null`), and **a day with activity but no
+  summarizable items** — a real backend state, reachable when the day is picked
+  by an activity-only event or a cancelled run, which was initially rendered as
+  "nothing has ever happened" and contradicted the timeline below it.
+- The heading follows `days_ago`: today / yesterday / N days ago / the date
+  itself, so a task untouched for three weeks never claims "yesterday".
+
+D-6, fixed in the same change because it is the same principle: a failed delivery
+read was swallowed, leaving `delivery` null, `fileCount` 0 via `?? 0`, and the UI
+saying "nothing produced yet" about a load failure. All three reads on this view
+(dashboard, specs, delivery) now clear their error on success as well as setting
+it on failure, so an explicit Refresh after a transient failure cannot leave real
+data sitting next to "unavailable"; and the error reaches both consumers, since
+the summary saying "unavailable" while the Changes panel said "no changes" is the
+same page contradicting itself about one fact.
+
+Staleness was the whole second half of this increment, and it is a class of
+problem the backend does not have: the endpoint computes a correct answer every
+time it is called, so everything here is about *when* it is called.
+
+- Posting a note changes the answer, so `onPosted` refetches. Without it the
+  timeline showed today's message beside a heading reading "yesterday".
+- Concurrent reads are guarded by a request token, because the recap is **not**
+  idempotent across time — the same URL returns a different answer before and
+  after a note. An older response resolving last would overwrite the fresher one.
+- An explicit Refresh reaches this component through a `refreshNonce` prop: a run
+  finishing without changing the task's state leaves every effect dependency
+  untouched, so Refresh silently updated only the rail.
+- A page left open past midnight kept saying "today". The endpoint now returns
+  `next_rollover` — the instant the display zone's day changes, computed
+  server-side because the current offset cannot locate the next midnight across a
+  DST change — and the client schedules a refetch just past it, plus one on
+  `visibilitychange`. The reschedule keys on a settle counter rather than on a
+  field of the response: keying on `recap.day` looked right but does not advance
+  on a quiet task (day is the last *active* day; midnight moves `days_ago`), so
+  the timer fired once and never rescheduled, and a page left visible went stale
+  after a single night.
+
+Review: Codex 6 rounds (3 + 1 + 2 + 5 + 2 + 1 findings) and Kiro 6 rounds
+(APPROVE, APPROVE, APPROVE, CHANGES_REQUESTED, then two clean), all findings
+confirmed and addressed. Three things worth recording about the gate itself:
+
+The reviewers disagreed once, on whether the refetch race was benign. Kiro judged
+it benign, reasoning that the recap is idempotent and self-corrects on the next
+activity; Codex called it a defect. Codex was right — the recap is not idempotent
+across time, and "self-corrects on the next activity" presupposes further
+activity, which a user who posts once and then watches the screen does not
+produce. Kiro withdrew the call in a later round and identified its own error as
+begging the question. Two gates agreeing is not the signal; two gates plus
+checking their reasoning is.
+
+Both reviewers then independently found the same reschedule defect, from
+different directions. That convergence is the strongest signal either produced.
+
+Round 5 produced the two defects that mattered most, and they were the same
+defect on both sides of the wire — a derivation reading the clock more than once.
+
+- Codex P1, the client: the rollover effect clamped its delay to zero, so a
+  boundary already in the past fired immediately. The failure path settles too,
+  and the effect keys on that settle counter, so a failed midnight read became
+  refetch → fail → settle → refetch, a tight loop from an offline page. Fixed by
+  splitting the effect into a future-boundary path (schedule the real read, clear
+  any backoff) and a passed-boundary path (30s doubling to a 5-minute cap). The
+  backoff lives in a ref, not state: writing it must not re-run the effect and
+  restart the timer it exists to slow down.
+- Codex P2 and Kiro P3, the server: the response read the clock and resolved the
+  zone several separate times. A request straddling local midnight took its day
+  from before the boundary and its `next_rollover` from after it, so the client
+  waited for the midnight *after* the day it was showing and called yesterday
+  "today" for up to a day. The endpoint now takes one `(zone, now)` snapshot and
+  threads it through every derivation, on the empty-return path as well as the
+  main one; `local_today`, `zone_offset_minutes` and `next_rollover` gained an
+  optional `now=`, and the two stores an optional `zone=`, both defaulting to the
+  previous behaviour so no other caller changes.
+
+Round 6 found one thing, and it is the sharpest comment either gate produced this
+increment: `test_next_rollover_is_the_zone_s_next_midnight_not_now_plus_24h`
+captured `now` once and then let `next_rollover` read the clock again — the test
+re-enacted the exact cross-midnight race it exists to catch, and would have
+failed intermittently. Pinning the instant into the call fixes it. A test that
+reproduces its own subject is worth more attention than its P3 severity suggests.
+
+Tests: backend 826 passed, 31 cases in test_recap.py; frontend tsc, eslint,
+build (12 static pages) and the 14 control-plane view tests clean.
+
+Recorded, unresolved: this suite collected 826 where the previous entry recorded
+836. Nothing here regressed — the only test file changed since that commit is
+`test_recap.py`, and it only gained cases — so the earlier figure was measured in
+some other state or misrecorded, and cannot now be reproduced. The record itself
+is the defect: "N passed" cannot distinguish "fewer tests ran" from "fewer tests
+exist", which is the `none-means-unknown-not-absent` failure repeated at the
+process layer. Entries from here record the collected count alongside the passed
+count.
+
+Gate: the AGENTS.md gate names a Kiro review and an independent Claude Code
+review; review goes to Codex instead, decided by the maintainer on 2026-08-29 —
+implementation is dispatched to Kiro CLI (claude-opus-5), so Codex is the model
+that did not write the code. AGENTS.md still says otherwise and needs updating.
+
+Next safe action: W0(b) step 3 — dispatch a run for the selected task into its
+provisioned worktree from the workspace view, then write the outcome back so the
+next morning's recap reads as yesterday's step. Branch: `main`, three commits
+ahead of `origin/main`, not pushed.

@@ -5,6 +5,7 @@ import json
 import sqlite3
 import uuid
 from contextlib import closing, contextmanager
+from datetime import timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -374,7 +375,9 @@ class TaskStore:
             ).fetchall()
         return [self._event(row) for row in rows]
 
-    def latest_event_day(self, task_id: str, event_types: Iterable[str]) -> str | None:
+    def latest_event_day(
+        self, task_id: str, event_types: Iterable[str], *, zone: timezone | None = None
+    ) -> str | None:
         """The most recent **local** calendar day on which one of ``event_types``
         was recorded, or None if there is none.
 
@@ -382,6 +385,9 @@ class TaskStore:
         history: a long-lived task accumulates thousands of events, and paying for
         all of them on every open makes the cost grow without bound. The newest
         matching row is enough to name the day, so this reads exactly one.
+
+        ``zone`` overrides the configured one, so a caller making several day
+        derivations resolves the zone once and cannot straddle a config change.
         """
         types = list(dict.fromkeys(event_types))
         if not types:
@@ -396,9 +402,11 @@ class TaskStore:
                 """,
                 (task_id, *types),
             ).fetchone()
-        return local_day_of(row["created_at"]) if row else None
+        return local_day_of(row["created_at"], zone=zone) if row else None
 
-    def events_on_day(self, task_id: str, day: str, *, limit: int) -> list[TaskEvent]:
+    def events_on_day(
+        self, task_id: str, day: str, *, limit: int, zone: timezone | None = None
+    ) -> list[TaskEvent]:
         """This task's events recorded on the **local** ``day``, oldest first,
         bounded.
 
@@ -407,7 +415,7 @@ class TaskStore:
         2026-08-27 runs from 2026-08-26T15:00Z). Prefix matching would silently
         drop a late night's work.
         """
-        start, end = local_day_bounds(day)
+        start, end = local_day_bounds(day, zone=zone)
         with closing(self._connect()) as db:
             rows = db.execute(
                 """

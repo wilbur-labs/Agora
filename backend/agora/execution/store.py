@@ -5,6 +5,7 @@ import json
 import sqlite3
 import uuid
 from contextlib import closing, contextmanager
+from datetime import timezone
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -292,12 +293,15 @@ class ExecutionStore:
             event_payload={"exit_code": exit_code, "error_message": error_message},
         )
 
-    def latest_finished_day(self, task_id: str) -> str | None:
+    def latest_finished_day(self, task_id: str, *, zone: timezone | None = None) -> str | None:
         """The most recent **local** calendar day a run of this task finished.
 
         Ordered by ``finished_at``, not ``queued_at`` like ``list``: a long run
         queued earlier can finish later, so a ``queued_at``-ordered page can miss
         the newest completion entirely and point a recap at the wrong day.
+
+        ``zone`` overrides the configured one, so a caller making several day
+        derivations resolves the zone once and cannot straddle a config change.
         """
         with closing(self._connect()) as db:
             row = db.execute(
@@ -308,10 +312,10 @@ class ExecutionStore:
                 """,
                 (task_id,),
             ).fetchone()
-        return local_day_of(row["finished_at"]) if row else None
+        return local_day_of(row["finished_at"], zone=zone) if row else None
 
     def list_finished_on_day(
-        self, task_id: str, day: str, *, limit: int
+        self, task_id: str, day: str, *, limit: int, zone: timezone | None = None
     ) -> tuple[list[ExecutionRun], bool]:
         """``(runs, truncated)`` for this task's runs that finished on the **local**
         ``day``, oldest first. ``truncated`` is True when more exist than ``limit``,
@@ -320,7 +324,7 @@ class ExecutionStore:
         A UTC range, not a string prefix: one local day spans two UTC dates, so
         prefix matching would drop the hours either side of midnight.
         """
-        start, end = local_day_bounds(day)
+        start, end = local_day_bounds(day, zone=zone)
         with closing(self._connect()) as db:
             rows = db.execute(
                 """

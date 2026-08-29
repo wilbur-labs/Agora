@@ -463,23 +463,47 @@ def task_recap(
     "where did I leave off" is a question about recorded facts.
     """
     from agora.execution.dispatcher import ROLE_KEY, ROLE_WORKER
-    from agora.tasks.localday import local_today
+    from agora.tasks.localday import (
+        configured_zone,
+        local_day_of,
+        local_today,
+        next_rollover,
+        now_utc,
+        zone_offset_minutes,
+    )
     from agora.tasks.recap import DAY_ELIGIBLE_EVENTS, last_active_day
 
     if task_store.get(task_id) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Task not found")
 
+    # One snapshot of (zone, now) for the whole response. Every derivation below
+    # is a function of the wall clock, and reading it again per derivation lets a
+    # request that crosses this zone's midnight answer from two different days:
+    # days_ago from the day before the boundary while next_rollover jumps to the
+    # midnight *after* it, so the client waits a full extra day and keeps calling
+    # yesterday "today". A config timezone change landing mid-request does the
+    # same thing to the zone. Snapshotting once makes that unrepresentable.
+    zone = configured_zone()
+    now = now_utc()
+    today = local_today(zone=zone, now=now)
+
+    def day_of(timestamp: str | None) -> str | None:
+        return local_day_of(timestamp, zone=zone)
+
     # Two phases, so the cost does not grow with a task's whole history: find the
     # candidate day with one indexed lookup on each side, then read only that day.
-    event_day = task_store.latest_event_day(task_id, DAY_ELIGIBLE_EVENTS)
-    run_day = exec_store.latest_finished_day(task_id)
+    event_day = task_store.latest_event_day(task_id, DAY_ELIGIBLE_EVENTS, zone=zone)
+    run_day = exec_store.latest_finished_day(task_id, zone=zone)
     day = max([d for d in (event_day, run_day) if d], default=None)
     if day is None:
-        return last_active_day([], [], today=local_today())
+        empty = last_active_day([], [], today=today, day_of=day_of)
+        empty["zone_offset_minutes"] = zone_offset_minutes(zone=zone, now=now)
+        empty["next_rollover"] = next_rollover(zone=zone, now=now)
+        return empty
 
-    events = task_store.events_on_day(task_id, day, limit=_RECAP_EVENT_LIMIT)
+    events = task_store.events_on_day(task_id, day, limit=_RECAP_EVENT_LIMIT, zone=zone)
     day_runs, runs_truncated = exec_store.list_finished_on_day(
-        task_id, day, limit=_RECAP_RUN_LIMIT
+        task_id, day, limit=_RECAP_RUN_LIMIT, zone=zone
     )
 
     runs: list[dict[str, Any]] = []
@@ -498,10 +522,17 @@ def task_recap(
             "delivered_truncated": bool(snapshot and snapshot.get("truncated")),
         })
 
-    result = last_active_day(events, runs, today=local_today())
+    result = last_active_day(events, runs, today=today, day_of=day_of)
     # Say so when the day held more than we read, rather than letting a bounded
     # read look like the whole day.
     result["partial"] = bool(runs_truncated or len(events) >= _RECAP_EVENT_LIMIT)
+    # When this zone's day next changes, so a page left open past midnight stops
+    # saying "today" about yesterday. Computed server-side because the current
+    # offset alone cannot locate the next midnight across a DST change; the
+    # offset is reported alongside it only for display/diagnostics. Both come from
+    # the snapshot above, so they describe the same instant as days_ago.
+    result["zone_offset_minutes"] = zone_offset_minutes(zone=zone, now=now)
+    result["next_rollover"] = next_rollover(zone=zone, now=now)
     return result
 
 
