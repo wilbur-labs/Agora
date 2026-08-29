@@ -1,5 +1,5 @@
 import { getApiBase } from "@/lib/api";
-import { ApiError } from "@/lib/control-plane";
+import { apiErrorFrom } from "@/lib/control-plane";
 
 export type RunState =
   | "queued"
@@ -71,6 +71,8 @@ export interface ListRunsParams {
   task_id?: string;
   project_id?: string;
   state?: RunState;
+  /** Several states in one request. Mutually exclusive with `state`. */
+  states?: readonly RunState[];
   adapter?: ExecutionAdapter;
   limit?: number;
   offset?: number;
@@ -82,15 +84,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers: { "Content-Type": "application/json", ...init?.headers },
   });
   if (!response.ok) {
-    let message = `Request failed (${response.status})`;
-    try {
-      const payload = await response.json();
-      if (typeof payload.detail === "string") message = payload.detail;
-      else if (payload.detail) message = JSON.stringify(payload.detail);
-    } catch {
-      // Keep the status-based fallback for non-JSON responses.
-    }
-    throw new ApiError(response.status, message);
+    // Shared parser: it unwraps the control plane's structured `detail` so a 409
+    // that carries a gate code arrives here as a code, not as prose to sniff.
+    throw await apiErrorFrom(response);
   }
   return response.json() as Promise<T>;
 }
@@ -100,11 +96,33 @@ export function listRuns(params: ListRunsParams = {}, signal?: AbortSignal): Pro
   if (params.task_id) query.set("task_id", params.task_id);
   if (params.project_id) query.set("project_id", params.project_id);
   if (params.state) query.set("state", params.state);
+  // Repeated `states` params: the endpoint filters on the set in one query.
+  for (const state of params.states ?? []) query.append("states", state);
   if (params.adapter) query.set("adapter", params.adapter);
   if (params.limit !== undefined) query.set("limit", String(params.limit));
   if (params.offset !== undefined) query.set("offset", String(params.offset));
   const suffix = query.size ? `?${query.toString()}` : "";
   return request(`/api/runs${suffix}`, { signal });
+}
+
+/**
+ * The runs of one task that have not settled.
+ *
+ * "Is a run active?" asked as its own question, because it cannot be inferred
+ * from a page of recent history: a long-lived task can fill a `limit` page with
+ * terminal runs while an older one is still queued, and the absence of an active
+ * run in that page is not its absence.
+ *
+ * One request, not one per state. Two filtered reads are two moments: a run that
+ * moves queued -> running between them appears in neither, and the caller reads
+ * "nothing is active" while a run is active. Sequencing them queued-then-running
+ * would happen to be sound (run states only move forward), but it would rest on
+ * an implicit invariant, and a mirror that can drift is worse than no mirror — so
+ * the set is asked for atomically instead.
+ */
+export function listActiveRuns(taskId: string, signal?: AbortSignal): Promise<RunSummary[]> {
+  const states: RunState[] = ["queued", "running"];
+  return listRuns({ task_id: taskId, states, limit: 500 }, signal);
 }
 
 export function listExecutionAdapters(signal?: AbortSignal): Promise<AdapterCapability[]> {

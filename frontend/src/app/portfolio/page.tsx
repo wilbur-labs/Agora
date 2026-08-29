@@ -90,7 +90,7 @@ export default function PortfolioPage() {
       const [loadedTasks, projectList, openAttention, loadedRuns] = await Promise.all([listTasks(), listProjects(), listOpenAttention(), listRuns({ limit: 500 })]);
       setTasks(loadedTasks);
       setRegisteredProjects(projectList.items.map((item) => item.project_id));
-      setAttention(openAttention);
+      setAttention(openAttention.items);
       setRuns(loadedRuns);
     } catch (err) {
       setError((err as Error).message);

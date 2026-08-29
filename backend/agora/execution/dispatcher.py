@@ -26,18 +26,26 @@ from .deliverables import (
     read_file,
     snapshot_changes,
 )
-from .models import CancelRunRequest, CreateRunRequest, ExecutionRun, RunState, OUTPUT_TAIL_LIMIT
-from .store import ExecutionStore, RunConflictError, RunValidationError
+from .models import (
+    CancelRunRequest,
+    CreateRunRequest,
+    ExecutionRun,
+    RunState,
+    OUTPUT_TAIL_LIMIT,
+    # Role tags for cross-review orchestration. Defined in .models because
+    # ExecutionStore.create enforces one unfinished run per role and importing
+    # the dispatcher from the store would be a cycle; re-exported from here,
+    # which is where every existing caller imports them from.
+    ROLE_KEY,
+    ROLE_REVIEW,
+    ROLE_WORKER,
+    REVIEWS_RUN_KEY,
+    role_of,
+)
+from .store import ExecutionStore, RunConflictError, RunNotFoundError, RunValidationError
 from .security import redact_text
 
 
-# Role tags carried in a run's metadata so the dispatcher can tell a developer
-# run (which triggers cross-review when it succeeds) from a review run (which
-# raises an approval for the human) — and never review a review (no loops).
-ROLE_KEY = "agora_role"
-ROLE_WORKER = "worker"
-ROLE_REVIEW = "review"
-REVIEWS_RUN_KEY = "reviews_run_id"
 _REVIEW_PROMPT_BUDGET = 12_000
 _REVIEW_FILE_CHARS = 1_500
 
@@ -89,7 +97,11 @@ class ExecutionDispatcher:
         # A missing or None entry means the baseline was never established, which
         # snapshot_changes reads as "attribution unknown" — the correct answer.
         self._baselines: dict[str, tuple[dict[str, dict], bool] | None] = {}
-        self._scheduled: set[asyncio.Task[Any]] = set()
+        # Scheduled task -> its run_id. The mapping (rather than a bare set) exists
+        # because a cancelled task has to be settled from *outside* the coroutine:
+        # a task cancelled before the loop ever ran its body has no body to raise
+        # CancelledError in, so only the canceller knows which row is now orphaned.
+        self._scheduled: dict[asyncio.Task[Any], str] = {}
 
     @staticmethod
     def _workspace_key(workspace: str | Path) -> str:
@@ -100,7 +112,21 @@ class ExecutionDispatcher:
         except OSError:  # pragma: no cover - defensive
             return str(workspace)
 
-    def queue(self, request: CreateRunRequest) -> ExecutionRun:
+    def queue(
+        self,
+        request: CreateRunRequest,
+        *,
+        role: str = ROLE_WORKER,
+        reviews_run_id: str | None = None,
+    ) -> ExecutionRun:
+        """Create a queued run.
+
+        ``role`` defaults to ``worker`` and is a server-side argument: anything
+        arriving from a client is a worker run (``CreateRunRequest`` refuses the
+        reserved metadata keys), and only ``_dispatch_review`` below passes
+        ``ROLE_REVIEW``. The role decides which unfinished run blocks this one, so
+        a client-settable role would defeat that guard outright.
+        """
         task = self.store.tasks.get(request.task_id)
         if task is None:
             raise TaskNotFoundError(request.task_id)
@@ -120,16 +146,31 @@ class ExecutionDispatcher:
             project_id=project.project_id,
             workspace=workspace,
             stored_command=adapter.stored_command(),
+            role=role,
+            reviews_run_id=reviews_run_id,
         )
 
     def schedule(self, run_id: str) -> None:
         task = asyncio.create_task(self._execute_guarded(run_id), name=f"agora-run-{run_id}")
-        self._scheduled.add(task)
+        self._scheduled[task] = run_id
         task.add_done_callback(self._scheduled_done)
 
-    def resume_queued(self) -> None:
-        for run in self.store.list(state=RunState.QUEUED, limit=500):
-            self.schedule(run.run_id)
+    def resume_queued(self) -> list[dict[str, Any]]:
+        """Reschedule persisted QUEUED runs — after re-checking the create-time gates.
+
+        A QUEUED row was validated when it was inserted and never again, so on an
+        upgrade from a database written before those gates existed, or after a
+        crash, rescheduling it blindly starts a worker run while its predecessor's
+        review is still unsettled or a human gate is still open.
+        ``ExecutionStore.revalidate_queued`` re-asks those questions and settles the
+        rows that cannot be launched; only what it admits is scheduled here. The
+        refused rows are returned — and recorded on their task's timeline — rather
+        than dropped silently.
+        """
+        admitted, refused = self.store.revalidate_queued()
+        for run_id in admitted:
+            self.schedule(run_id)
+        return refused
 
     async def _execute_guarded(self, run_id: str) -> ExecutionRun:
         try:
@@ -155,6 +196,14 @@ class ExecutionDispatcher:
                     reason="dispatcher stopped before the process completed",
                     deliverables=delivered,
                 )
+            elif current.state == RunState.QUEUED:
+                # Cancelled before launch — typically while waiting behind a busy
+                # worktree or for capacity. See _settle_unstarted for why it may
+                # not be left QUEUED, and note that this branch only covers a
+                # cancellation the coroutine actually *received*; one that lands
+                # before the loop first runs this body never reaches here, which
+                # is why schedule()/shutdown() settle it from outside too.
+                self._settle_unstarted(run_id)
             raise
         except Exception as exc:
             current = self.store.require(run_id)
@@ -172,10 +221,61 @@ class ExecutionDispatcher:
         finally:
             self._baselines.pop(run_id, None)
 
+    def _settle_unstarted(self, run_id: str) -> None:
+        """Terminate a run that was cancelled before its process ever started.
+
+        Left QUEUED it survives as a run nothing will ever execute, and the
+        same-role guard in ``ExecutionStore.create`` then refuses **every** new
+        worker run for that task — permanently, since no restart clears a QUEUED
+        row (``recover_abandoned`` only settles RUNNING ones). A human would have
+        to cancel it by hand through the API.
+
+        CANCELLED, not ABANDONED: no process was ever started, so nothing was
+        abandoned mid-flight, and ABANDONED is reserved for a run whose process we
+        lost track of. It is also the only terminal state a QUEUED run may legally
+        reach (see ``store._ALLOWED``).
+
+        No deliverable snapshot: the baseline is established after the readiness
+        gate, which this run never reached, and a snapshot without a baseline is
+        attribution guesswork.
+
+        Idempotent and state-checked, because it is called from three places (the
+        coroutine's own CancelledError handler, the scheduled task's done callback,
+        and shutdown's sweep) and at most one of them may win.
+        """
+        try:
+            current = self.store.require(run_id)
+        except RunNotFoundError:
+            return
+        if current.state != RunState.QUEUED:
+            return
+        try:
+            self.store.cancel(
+                run_id,
+                CancelRunRequest(
+                    expected_version=current.version,
+                    reason="dispatcher stopped before the run started",
+                    actor=current.actor,
+                ),
+            )
+        except (RunConflictError, RunNotFoundError):
+            # It settled underneath us (a user cancel landing in the same moment,
+            # or another of the three callers). Never let this mask the
+            # cancellation being reported.
+            pass
+
     def _scheduled_done(self, task: asyncio.Task[Any]) -> None:
-        self._scheduled.discard(task)
-        if not task.cancelled():
-            task.exception()
+        run_id = self._scheduled.pop(task, None)
+        if task.cancelled():
+            # The task ended cancelled. If the cancellation arrived before the
+            # loop first ran the coroutine, its body — and therefore its own
+            # except CancelledError — never executed, and this callback is the
+            # only place that still knows the row exists. Cheap and idempotent
+            # when the coroutine did settle it.
+            if run_id is not None:
+                self._settle_unstarted(run_id)
+            return
+        task.exception()
 
     async def execute(self, run_id: str) -> ExecutionRun:
         initial = self.store.require(run_id)
@@ -194,9 +294,22 @@ class ExecutionDispatcher:
             run = self.store.require(run_id)
             if run.state != RunState.QUEUED:
                 return run
+            # The create-time questions, re-asked at the last moment the run is
+            # still QUEUED. This run may have waited here for a long time — behind
+            # its worktree, or for capacity — and in that time its task can be
+            # cancelled, carried to `verified` by the review gate, edited into a new
+            # version, or have a gate raised on the work that came before it, all of
+            # which would make `create` refuse the identical request now. Settles
+            # the row CANCELLED with a stated reason rather than launching an agent
+            # against a task that no longer wants it, or on top of work a human is
+            # still holding a gate on. Items scoped to this run are excluded, so a
+            # prompt it raised itself never becomes its own refusal; see
+            # revalidate_before_launch.
+            if self.store.revalidate_before_launch(run_id) is not None:
+                return self.store.require(run_id)
             # Role/target-run are set at create time (metadata) and still present
             # here (finish overwrites result_metadata later). Capture before start.
-            role = str((run.result_metadata or {}).get(ROLE_KEY, ROLE_WORKER))
+            role = role_of(run.result_metadata)
             reviews_run_id = (run.result_metadata or {}).get(REVIEWS_RUN_KEY)
             adapter = self.adapters.get(run.adapter)
             workspace = Path(run.workspace).expanduser().resolve()
@@ -443,11 +556,18 @@ class ExecutionDispatcher:
         return cancelled
 
     async def shutdown(self) -> None:
-        tasks = list(self._scheduled)
-        for task in tasks:
+        scheduled = list(self._scheduled.items())
+        for task, _ in scheduled:
             task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+        if scheduled:
+            await asyncio.gather(*(task for task, _ in scheduled), return_exceptions=True)
+        # Sweep every run we just cancelled. A done callback is only *scheduled*
+        # on the loop when a task completes, so "shutdown returned" must not
+        # depend on it having run yet — and a task cancelled before the loop ever
+        # entered its coroutine has no body that could settle its own row. Both
+        # paths are idempotent; whichever gets there first wins.
+        for _, run_id in scheduled:
+            self._settle_unstarted(run_id)
 
     def _observe_usage(
         self, adapter: str, raw_stdout: str, run_id: str, prompt: str,
@@ -498,36 +618,152 @@ class ExecutionDispatcher:
                 self._raise_review_attention(finished, reviews_run_id, AttentionKind.APPROVAL)
             elif role == ROLE_REVIEW and finished.state in {RunState.FAILED, RunState.TIMED_OUT}:
                 self._raise_review_attention(finished, reviews_run_id, AttentionKind.BLOCKER)
+        except Exception as exc:
+            # Orchestration is best-effort for the run that just completed: its own
+            # outcome is already recorded and must not change. But "best-effort"
+            # used to mean the review stage vanished without trace — an unavailable
+            # reviewer, a failed prompt build, a queue conflict or a failed gate
+            # write all ended as "no review exists", and both the UI and the create
+            # gate then accepted another worker run on unreviewed work. So the
+            # failure is recorded as a durable blocker on the task instead. That
+            # blocker is a gating kind, so an unavailable reviewer now blocks its
+            # work rather than deleting the review stage.
+            self._record_review_failure(finished, reviews_run_id, exc)
+
+    def _record_review_failure(
+        self, finished: ExecutionRun, reviews_run_id: str | None, exc: BaseException,
+    ) -> None:
+        """Last resort for an orchestration failure: make it visible, never raise.
+
+        Wrapped in its own ``except`` because this is the path taken when something
+        has already gone wrong, and the primary run's recorded outcome must survive
+        whatever else fails here.
+        """
+        try:
+            self._block_review_owed(
+                task_id=finished.task_id,
+                run_id=reviews_run_id or finished.run_id,
+                reason=f"{type(exc).__name__}: {exc}",
+            )
         except Exception:
-            # Orchestration is best-effort; a review-dispatch failure must not
-            # change the outcome of the run that just completed.
             pass
 
+    #: Fixed title of the "the cross-review did not happen" blocker. Fixed on
+    #: purpose: it is the idempotency key (with the task and the run it is scoped
+    #: to), so a retry updates nothing and piles up nothing. The varying detail
+    #: lives in the body.
+    REVIEW_FAILED_TITLE = "跨评审未能启动,需要你处理"
+
+    def _block_review_owed(self, *, task_id: str, run_id: str | None, reason: str) -> None:
+        """Record a durable BLOCKER saying the cross-review did not happen.
+
+        This is the bounded half of the problem. The full fix is a "a review is
+        owed" marker written in the same transaction that settles the worker run,
+        so the window between the settle and the review insert is closed
+        atomically; that is out of scope here and is recorded as an open residual in
+        docs/architecture/run-gate-ordering-v1.md. What this does is make the
+        failure visible and gating instead of silent: ``blocker`` is one of
+        ``GATING_ATTENTION_KINDS``, so while it is open ``ExecutionStore.create``
+        refuses another worker run on the task and the Continue action declines to
+        offer one. An unavailable reviewer blocks its work; it does not delete the
+        review stage.
+
+        **Idempotent.** A retry — a second worker run that also fails to dispatch a
+        review, or a redelivery of the same failure — must not pile up blockers, so
+        an existing OPEN item with this title, this requester and this ``run_id`` is
+        left exactly as it is. Not updated either: the first failure is the one that
+        gated the task, and rewriting its body would move a record a human may
+        already be reading. The task timeline still carries every attempt, because
+        each attempt is a run event.
+
+        That test is ``AttentionStore.create_once``: an exact existence query and the
+        insert, in one transaction. It used to be a scan of the first 50 open
+        blockers on the task from this side of the store, which is a different and
+        weaker thing — attention ordering puts critical items first, so 50 critical
+        blockers scoped to the same run hid the existing item and a redelivery
+        created a duplicate with the identical key. A cap cannot answer an existence
+        question, and the read-then-create it was part of was not one transaction.
+
+        The item is scoped to the run whose review is missing, so answering it
+        binds to that run rather than to the task at large.
+        """
+        AttentionStore(self.store.tasks).create_once(
+            CreateAttentionRequest(
+                task_id=task_id,
+                run_id=run_id,
+                kind=AttentionKind.BLOCKER,
+                urgency=AttentionUrgency.HIGH,
+                title=self.REVIEW_FAILED_TITLE,
+                body=(
+                    "这次实现运行已完成,但独立交叉评审没有建立起来,因此这份工作还没有被"
+                    "任何评审看过。原因:\n"
+                    f"{reason}\n\n"
+                    "请先处理原因(例如配置/登录评审运行时),然后重新派发运行;或者在确认"
+                    "不需要评审后取消本条,任务才会重新接受新的实现运行。"
+                )[:32_000],
+                requester=REVIEW_REQUESTER,
+            )
+        )
+
     async def _dispatch_review(self, worker_run: ExecutionRun) -> None:
-        """Queue an independent review run by the project's reviewer agent."""
+        """Queue an independent review run by the project's reviewer agent.
+
+        Every path that ends without a review run records a blocker naming what
+        failed (see ``_block_review_owed``). Returning quietly is what turned a
+        missing reviewer into "this work needs no review", which is the one answer
+        that must not be produced silently.
+        """
         try:
             project = self.projects.get(worker_run.project_id)
         except KeyError:
+            self._block_review_owed(
+                task_id=worker_run.task_id, run_id=worker_run.run_id,
+                reason=f"项目 {worker_run.project_id} 已不在配置中,无法确定评审代理。",
+            )
             return
         reviewer = project.reviewer_agent
         if reviewer not in self.adapters:
-            return  # reviewer runtime not configured; skip silently
+            # A pinned runtime is never silently substituted, and "skip the review"
+            # is a substitution: it replaces an independent review with none.
+            self._block_review_owed(
+                task_id=worker_run.task_id, run_id=worker_run.run_id,
+                reason=(
+                    f"评审运行时 {reviewer!r} 未配置或已停用(可用:"
+                    f"{', '.join(sorted(self.adapters)) or '无'})。"
+                ),
+            )
+            return
         task = self.store.tasks.get(worker_run.task_id)
         if task is None:
+            # Nothing to gate and nowhere to record: an attention item requires the
+            # task row it hangs on. The run's own record is the only trace left, and
+            # that is the honest end of this path.
             return
-        # The prompt build shells out to git (readiness + list_changes + reads);
-        # keep it off the event loop.
-        prompt = await asyncio.to_thread(self._review_prompt, worker_run)
-        request = CreateRunRequest(
-            task_id=worker_run.task_id,
-            adapter=reviewer,
-            prompt=prompt,
-            timeout_seconds=worker_run.timeout_seconds,
-            actor=REVIEW_REQUESTER,
-            expected_task_version=task.version,
-            metadata={ROLE_KEY: ROLE_REVIEW, REVIEWS_RUN_KEY: worker_run.run_id},
-        )
-        review_run = self.queue(request)
+        try:
+            # The prompt build shells out to git (readiness + list_changes + reads);
+            # keep it off the event loop.
+            prompt = await asyncio.to_thread(self._review_prompt, worker_run)
+            request = CreateRunRequest(
+                task_id=worker_run.task_id,
+                adapter=reviewer,
+                prompt=prompt,
+                timeout_seconds=worker_run.timeout_seconds,
+                actor=REVIEW_REQUESTER,
+                expected_task_version=task.version,
+            )
+            # The role travels as an argument, not as request metadata: the request
+            # model refuses the reserved keys so no client can forge a role, and this
+            # is the only place that asks for ROLE_REVIEW.
+            review_run = self.queue(request, role=ROLE_REVIEW, reviews_run_id=worker_run.run_id)
+        except Exception as exc:
+            # A failed prompt build, a rejected request, a queue conflict, a task
+            # that moved underneath us: all of them mean no review exists, and that
+            # is what has to be visible.
+            self._block_review_owed(
+                task_id=worker_run.task_id, run_id=worker_run.run_id,
+                reason=f"评审运行未能入队:{type(exc).__name__}: {exc}",
+            )
+            return
         self.schedule(review_run.run_id)
 
     def _review_prompt(self, worker_run: ExecutionRun) -> str:

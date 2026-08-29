@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test:control-plane": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test tests/control-plane-view.test.mts"
+    "test:control-plane": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test tests/control-plane-view.test.mts tests/continue-run.test.mts tests/task-attention.test.mts tests/rail-group.test.mts"
   },
   "dependencies": {
     "@base-ui/react": "^1.4.0",

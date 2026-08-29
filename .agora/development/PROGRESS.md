@@ -5874,3 +5874,95 @@ Next safe action: W0(b) step 3 — dispatch a run for the selected task into its
 provisioned worktree from the workspace view, then write the outcome back so the
 next morning's recap reads as yesterday's step. Branch: `main`, three commits
 ahead of `origin/main`, not pushed.
+
+## W0(b) step 3 — Continue: start a run from what the task recorded
+
+Continue sits with the Resume Brief because it acts on exactly what that panel
+says. It never dispatches an invented prompt: the seed is shown and editable, and
+only the button below it sends anything. Adapter is pinned to Codex; choosing
+executor and environment at dispatch time is later work.
+
+The decisions — may this be offered, what does a refusal mean, what does the seed
+say — live in `frontend/src/lib/continue-run.ts`, free of React so `node --test`
+runs them. That module is where this project's standing rule is actually decided:
+an unknown must never render as an absence.
+
+### What review turned this into
+
+Five rounds, both gates. What arrived as a UI wiring task left as a control-plane
+change, because every guard added to close one bypass opened the next:
+
+1. The gate lived only on the client. Two tabs could each observe zero active runs
+   and POST with the same `expected_task_version` — a task already RUNNING is not
+   version-bumped by queueing — so both succeeded: two paid runs on one worktree,
+   the second working on the first's output. Closed by a refusal inside
+   `create`'s transaction, scoped to the role.
+2. Role came from client metadata. `{"agora_role": "anything"}` matched no
+   existing role and walked straight past the new guard. Role is no longer
+   settable from outside; the reserved keys are refused the way reserved event
+   types already were.
+3. A run cancelled while QUEUED was never settled — first when the coroutine's
+   handler was skipped, then when the coroutine never ran at all — and the guard
+   then refused every new worker run on that task, permanently.
+4. The ordering was still only advisory: an Attention item does not bump the task
+   version, so nothing stopped a worker starting while a human gate waited. Moved
+   into the create transaction. Decision, alternatives and accepted failure mode:
+   `docs/architecture/run-gate-ordering-v1.md`.
+5. That refusal then created its own denial of service. The Codex permission
+   bridge raises `approval`, not `question`, with no expiry and nothing settling
+   it at run end — so one unanswered permission prompt locked its task out of all
+   future work. Bridge prompts are now swept in the transaction that settles their
+   run, cut **by origin** rather than by run state: settling by run state would
+   have destroyed the review gate, which is raised *after* its review run is
+   already terminal.
+
+The recurrence is the finding, not any one of the five. Each fix was correct and
+each created the next lockout, because moving an ordering constraint into a
+transaction forces the question the client version never had to answer: when does
+the constraint lift?
+
+### The test that guarded nothing
+
+Round five asked a different question — not "is this code right?" but "does the
+test that guards it bite?" The regression protecting the origin-vs-state cut never
+constructed the one arrangement that distinguishes them, so widening the sweep
+back to run state would have kept it green while the review gate quietly died. The
+production code was correct; its guard was theatre. No review of the
+implementation could have found that, because the implementation was not wrong.
+
+### Tests
+
+Backend 851 collected, 851 passed (from 826 at the start of this slice; the
+increase is this change's own tests). `test_web_ui.py` 14 collected, 14 passed
+once a static export existed. Frontend: 65 collected, 65 passed; tsc, eslint and
+build (12/12 static pages) clean; `export_protocol_schemas.py --check` and
+`git diff --check` clean. Collected counts are recorded alongside passed counts
+from this entry on, per the gate item in AGENTS.md — "N passed" cannot tell a
+shrinking suite from a shrinking run.
+
+### Review
+
+Eight rounds, both gates. Codex ran the first four and hit its usage limit twice;
+the remaining rounds used GPT-5.6 Sol through Kiro CLI, which is the same model
+Codex itself runs, so the independent-reviewer rule held throughout: the reviewer
+was never the model that wrote the code. P1 counts by round: 2, 3, 1, 2, 3, 1, 0, 0.
+
+Two findings were rejected rather than fixed. A reported risk of committing
+`.claude/settings.local.json` was wrong — a global gitignore excludes it, which
+the reviewer could not see. A Chinese hardcoded attention title was flagged as
+inconsistent; it matches what `_raise_review_attention` already does, so the
+convention was the code's, not the finding's.
+
+### Not done here
+
+The durable "review owed" marker is not built. The window between a worker run
+settling and its review being queued is not atomically closed, and a reviewer
+reproduced a worker being accepted inside it through the API. What exists is the
+client's bounded window plus a blocker recorded when dispatch fails outright. The
+cost of closing it properly — a marker written in the settling transaction, six
+terminal call sites, and its own startup reconciliation or a crash leaks it — is
+recorded in the ADR rather than described as covered.
+
+`portfolio/page.tsx`'s `bucketOf` has the rail's defect, reading an empty kind set
+from the same capped page as "nothing waiting". It is a separate surface with its
+own taxonomy and is left as its own item rather than half-fixed here.

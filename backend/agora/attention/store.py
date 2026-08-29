@@ -72,33 +72,87 @@ class AttentionStore:
             db.close()
 
     def create(self, request: CreateAttentionRequest) -> AttentionItem:
-        item_id = f"attn_{uuid.uuid4().hex}"
         now = utc_now()
         with self._transaction() as db:
-            task = db.execute("SELECT project_id FROM tasks WHERE task_id = ?", (request.task_id,)).fetchone()
-            if task is None:
-                raise AttentionNotFoundError("Task not found")
-            if request.run_id:
-                run = db.execute(
-                    "SELECT task_id, project_id FROM execution_runs WHERE run_id = ?", (request.run_id,)
-                ).fetchone()
-                if run is None:
-                    raise AttentionNotFoundError("Run not found")
-                if run["task_id"] != request.task_id or run["project_id"] != task["project_id"]:
-                    raise AttentionValidationError("Run does not belong to the requested task")
-            db.execute(
-                """INSERT INTO attention_items (
-                    item_id, project_id, task_id, run_id, kind, state, urgency, title, body,
-                    options, context, requester, assignee, version, expires_at, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)""",
-                (item_id, task["project_id"], request.task_id, request.run_id, request.kind.value,
-                 AttentionState.OPEN.value, request.urgency.value, redact_text(request.title.strip()), redact_text(request.body),
-                 self._json(request.options), self._json(sanitize_data(request.context)), request.requester,
-                 request.assignee, request.expires_at, now, now),
-            )
-            self._event(db, request.task_id, "attention.created", request.requester,
-                        {"item_id": item_id, "kind": request.kind.value, "urgency": request.urgency.value}, now)
+            item_id = self._insert_locked(db, request, now=now)
         return self.require(item_id)
+
+    def create_once(self, request: CreateAttentionRequest) -> tuple[AttentionItem, bool]:
+        """Create this item unless an equal OPEN one already exists.
+
+        Returns ``(item, created)``: the existing item and False when one is
+        already there, the new item and True otherwise. Equality is
+        ``(task_id, run_id, kind, requester, title)`` — the caller's idempotency
+        key — over items that are open and not past their expiry, which is the same
+        set ``ExecutionStore._open_gate_items`` counts as a gate. An expired row the
+        sweep has not reached yet does not gate anything, so it must not suppress an
+        item that would.
+
+        For callers that must not pile up duplicates of a fixed-title item. The
+        existence test and the insert are one ``BEGIN IMMEDIATE`` transaction, so
+        two writers cannot both read "absent" and both insert: SQLite serializes
+        them and the loser sees the winner's row. A read-then-``create`` from
+        outside the store could not promise that, however exact its query — which is
+        why this lives here rather than in the caller.
+
+        Nothing about the existing item is updated. The first item is the one a
+        human may already be reading (and, for a gating kind, the one that has been
+        holding the task); rewriting its body would move a record under them. The
+        varying detail of a later occurrence belongs on the task timeline, which
+        records every attempt anyway.
+        """
+        now = utc_now()
+        with self._transaction() as db:
+            row = db.execute(
+                """SELECT item_id FROM attention_items
+                   WHERE task_id = ? AND run_id IS ? AND kind = ? AND state = ?
+                     AND requester IS ? AND title = ?
+                     AND (expires_at IS NULL OR expires_at > ?)
+                   ORDER BY created_at, rowid LIMIT 1""",
+                (request.task_id, request.run_id, request.kind.value, AttentionState.OPEN.value,
+                 request.requester, redact_text(request.title.strip()), now),
+            ).fetchone()
+            # Read the item back outside this transaction: `require` opens its own
+            # connection, and doing that while this one holds BEGIN IMMEDIATE is a
+            # second lock on the same database for no reason.
+            created = row is None
+            item_id = self._insert_locked(db, request, now=now) if created else str(row["item_id"])
+        return self.require(item_id), created
+
+    def _insert_locked(
+        self, db: sqlite3.Connection, request: CreateAttentionRequest, *, now: str
+    ) -> str:
+        """Insert one attention item inside the caller's transaction; return its id.
+
+        Shared by ``create`` and ``create_once`` so both write the same row and the
+        same event. It cannot open its own transaction: a second ``BEGIN IMMEDIATE``
+        on this database while the caller holds one would block on itself.
+        """
+        item_id = f"attn_{uuid.uuid4().hex}"
+        task = db.execute("SELECT project_id FROM tasks WHERE task_id = ?", (request.task_id,)).fetchone()
+        if task is None:
+            raise AttentionNotFoundError("Task not found")
+        if request.run_id:
+            run = db.execute(
+                "SELECT task_id, project_id FROM execution_runs WHERE run_id = ?", (request.run_id,)
+            ).fetchone()
+            if run is None:
+                raise AttentionNotFoundError("Run not found")
+            if run["task_id"] != request.task_id or run["project_id"] != task["project_id"]:
+                raise AttentionValidationError("Run does not belong to the requested task")
+        db.execute(
+            """INSERT INTO attention_items (
+                item_id, project_id, task_id, run_id, kind, state, urgency, title, body,
+                options, context, requester, assignee, version, expires_at, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)""",
+            (item_id, task["project_id"], request.task_id, request.run_id, request.kind.value,
+             AttentionState.OPEN.value, request.urgency.value, redact_text(request.title.strip()), redact_text(request.body),
+             self._json(request.options), self._json(sanitize_data(request.context)), request.requester,
+             request.assignee, request.expires_at, now, now),
+        )
+        self._event(db, request.task_id, "attention.created", request.requester,
+                    {"item_id": item_id, "kind": request.kind.value, "urgency": request.urgency.value}, now)
+        return item_id
 
     def create_bridge_event(
         self, request: BridgeEventRequest, *, trusted_bidirectional: bool = False,

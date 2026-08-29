@@ -34,6 +34,7 @@ import {
   listSpecs,
   listTaskEvents,
   listTasks,
+  OPEN_ATTENTION_PAGE_LIMIT,
   type AttentionItem,
   type AttentionKind,
   type DashboardTask,
@@ -46,44 +47,61 @@ import {
   type TaskManifest,
 } from "@/lib/control-plane";
 import {
+  asRunSummary,
   canOpenDeliverable,
   deliverableRawUrl,
   getDeliverableContent,
   getRun,
   getRunDeliverables,
+  listActiveRuns,
   listRuns,
+  TERMINAL_RUN_STATES,
   type Deliverable,
   type RunDeliverables,
   type ExecutionRun,
   type RunState,
   type RunSummary,
 } from "@/lib/execution";
+import { ContinueAction } from "@/components/continue-action";
+import { listAttention } from "@/lib/attention";
+import { mergeRunUpdates, type ContinueSeedFacts } from "@/lib/continue-run";
+import {
+  RAIL_ATTENTION_NOTICE_KEY,
+  RAIL_ORDER,
+  RAIL_STALE_NOTICE_KEY,
+  attentionReadIsComplete,
+  railGroupOf,
+  railReadReport,
+  railSubtitleOf,
+  settleRead,
+  type AttentionReach,
+  type RailGroup,
+  type RailStaleOrigin,
+} from "@/lib/rail-group";
+import {
+  TASK_ATTENTION_NOTICE_KEY,
+  openGateCount,
+  taskAttentionView,
+  taskBlockerClaim,
+  type TaskAttentionView,
+  type TaskBlockerClaim,
+} from "@/lib/task-attention";
 import { useI18n, type Translate, type TranslateEnum } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 // The ball is in the human's court whenever a task awaits a decision; a running
-// task is the agent's; review is its own stage; terminal/verified is done.
-type RailGroup = "needsYou" | "running" | "review" | "done";
-
-const RAIL_ORDER: RailGroup[] = ["needsYou", "running", "review", "done"];
-
+// task is the agent's; review is its own stage; terminal/verified is done. The
+// grouping itself — including the `unknown` group a capped attention read forces —
+// lives in lib/rail-group.ts so it can be tested without a DOM.
 const GROUP_DOT: Record<RailGroup, string> = {
   needsYou: "bg-red-500",
+  unknown: "bg-amber-500",
   running: "bg-blue-500",
   review: "bg-violet-500",
   done: "bg-emerald-500",
 };
 
-function railGroupOf(task: TaskManifest, kinds: Set<AttentionKind>): RailGroup {
-  if (kinds.size > 0) return "needsYou";
-  if (task.state === "blocked" || task.state === "failed") return "needsYou";
-  if (task.state === "running") return "running";
-  // Verified still owes a human handoff (mark_done), so it is NOT "done" — it
-  // sits in review/acceptance until it actually reaches the done state.
-  if (task.state === "review" || task.state === "verified") return "review";
-  if (task.state === "done" || task.state === "cancelled") return "done";
-  return "needsYou"; // backlog / requirements / design / planned all await the human
-}
+const NO_KINDS: ReadonlySet<AttentionKind> = new Set<AttentionKind>();
 
 // Best-effort activity time for ordering: TaskManifest.updated_at does not move
 // when events/runs are written, so fold in the latest run's timestamps.
@@ -117,7 +135,29 @@ function relTime(iso: string | null, t: Translate): string {
 export default function WorkspacePage() {
   const { t } = useI18n();
   const [tasks, setTasks] = useState<TaskManifest[]>([]);
+  // Every open attention item, for the rail's grouping and the selected task's
+  // blocker line. Display only: it is one capped, global page, so a task's items
+  // can fall outside it, and "absent from this list" is not "this task has no
+  // open gate". The Continue gate therefore asks its own task-scoped question
+  // (see TaskWorkspace) rather than counting what happens to be in here.
   const [attention, setAttention] = useState<AttentionItem[]>([]);
+  // Whether that page is a complete answer about every task in the rail, and if
+  // not, why not. The rail's grouping needs the yes/no because a group other than
+  // "needs you" is a claim that the task needs nothing, and past the cap the list
+  // cannot support that claim for a task it does not mention (see
+  // lib/rail-group.ts). The notice needs the reason: "capped" and "unreadable"
+  // group the same but are different facts, and one shared message told a user
+  // whose read had failed that the 500-item limit had been reached. Starts
+  // "pending": no read has settled yet, which is its own state and not a failure.
+  const [attentionReach, setAttentionReach] = useState<AttentionReach>("pending");
+  const attentionComplete = attentionReadIsComplete(attentionReach);
+  // The other reads of this same refresh that failed. Kept apart from
+  // `attentionReach` because they are claims about different reads: a rejected run
+  // or task list leaves the rail showing an older snapshot, which is worth saying,
+  // and is not evidence of anything about the attention read. Folding them into
+  // one flag is how "Open attention items could not be read" came to be printed
+  // beside an attention read that had succeeded.
+  const [staleOrigins, setStaleOrigins] = useState<readonly RailStaleOrigin[]>([]);
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [projectIds, setProjectIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
@@ -133,22 +173,71 @@ export default function WorkspacePage() {
   // silently updates only the rail.
   const [refreshNonce, setRefreshNonce] = useState(0);
 
+  // Token-guarded like every other loader in this file, and for the sharpest
+  // version of the reason: this one *replaces* the whole rail snapshot, and one of
+  // the things it writes is the completeness flag the grouping rests on. Overlapping
+  // loads are routine and have nothing to do with the Refresh button —
+  // onTaskMayHaveChanged={load} fires from the selected task whenever a run
+  // settles or a note is posted. So: load A reads 499 items and is slow, a 500th
+  // item is created, load B returns first and correctly records "capped", then A
+  // lands and puts its stale 499-item answer and its "complete" back. A running
+  // task whose approval A never saw returns to "Running" — the rail asserting that
+  // nothing is waiting, which is exactly the claim the capped read cannot make.
+  // Only the newest request may write, and that covers every piece of state here,
+  // not just the attention pair: tasks, projects and runs go stale together.
+  const loadRequest = useRef(0);
   const load = useCallback(async () => {
+    const token = ++loadRequest.current;
+    const stale = () => token !== loadRequest.current;
     setRefreshNonce((n) => n + 1);
     setLoading(true);
     setError(null);
     try {
-      const [loadedTasks, projectList, openAttention, loadedRuns] = await Promise.all([
-        listTasks(), listProjects(), listOpenAttention(), listRuns({ limit: 500 }),
+      // One settled outcome per read (see lib/rail-group.ts). Previously this was
+      // one Promise.all with one catch that set attentionReach = "unreadable", so
+      // a rejected sibling — the run list, say — made the rail state that the
+      // open-attention read had failed when it had succeeded. Each read now
+      // reports only about itself: `settleRead` never rejects, so there is no
+      // combined failure left to infer a reach from.
+      const [tasksRead, projectsRead, attentionRead, runsRead] = await Promise.all([
+        settleRead(() => listTasks()),
+        settleRead(() => listProjects()),
+        settleRead(() => listOpenAttention()),
+        settleRead(() => listRuns({ limit: 500 })),
       ]);
-      setTasks(loadedTasks);
-      setProjectIds(projectList.items.map((item) => item.project_id));
-      setAttention(openAttention);
-      setRuns(loadedRuns);
+      // The generation guard is unchanged and still covers every write below,
+      // including the spinner in `finally`: only the newest request may write.
+      if (stale()) return;
+      const report = railReadReport({
+        tasks: tasksRead, projects: projectsRead, attention: attentionRead, runs: runsRead,
+      });
+      // Each read's own verdict, written first so no later step can leave the rail
+      // grouping against a reach from an earlier load: "capped"/"complete" when the
+      // attention read itself settled, "unreadable" only when *it* failed, and a
+      // sibling's failure disclosed as its own stale read.
+      setAttentionReach(report.attentionReach);
+      setStaleOrigins(report.staleOrigins);
+      setError(report.errors.length > 0 ? report.errors.join(" · ") : null);
+      // A failed read leaves its own slice of the snapshot as it was — stale, and
+      // disclosed as stale by the rail — rather than replacing it with an empty
+      // list that would read as "there are none".
+      if (tasksRead.status === "fulfilled") setTasks(tasksRead.value);
+      if (projectsRead.status === "fulfilled") {
+        setProjectIds(projectsRead.value.items.map((item) => item.project_id));
+      }
+      if (attentionRead.status === "fulfilled") setAttention(attentionRead.value.items);
+      if (runsRead.status === "fulfilled") setRuns(runsRead.value);
     } catch (err) {
+      // Not a read failure: `settleRead` gives every read its own outcome and the
+      // batch above cannot reject. This is a fault in the handling itself, so it is
+      // reported as an error and claims nothing about any single read — least of all
+      // that the attention read failed, which is the whole point of the split.
+      if (stale()) return;
       setError((err as Error).message);
     } finally {
-      setLoading(false);
+      // A superseded load must not clear the spinner either: a newer read owns it
+      // and is still in flight.
+      if (!stale()) setLoading(false);
     }
   }, []);
 
@@ -165,12 +254,11 @@ export default function WorkspacePage() {
   }, []);
 
   const attentionByTask = useMemo(() => {
-    const map = new Map<string, { kinds: Set<AttentionKind>; ask: string | null; blocker: string | null }>();
+    const map = new Map<string, { kinds: Set<AttentionKind>; ask: string | null }>();
     for (const item of attention) {
-      const entry = map.get(item.task_id) ?? { kinds: new Set<AttentionKind>(), ask: null, blocker: null };
+      const entry = map.get(item.task_id) ?? { kinds: new Set<AttentionKind>(), ask: null };
       entry.kinds.add(item.kind);
       if (!entry.ask) entry.ask = item.title;
-      if (item.kind === "blocker" && !entry.blocker) entry.blocker = item.title;
       map.set(item.task_id, entry);
     }
     return map;
@@ -191,12 +279,12 @@ export default function WorkspacePage() {
 
   const grouped = useMemo(() => {
     const groups: Record<RailGroup, Array<{ task: TaskManifest; ask: string | null; run: RunSummary | null; activity: string }>> = {
-      needsYou: [], running: [], review: [], done: [],
+      needsYou: [], unknown: [], running: [], review: [], done: [],
     };
     for (const task of visibleTasks) {
       const info = attentionByTask.get(task.task_id);
       const run = latestRunByTask.get(task.task_id) ?? null;
-      const group = railGroupOf(task, info?.kinds ?? new Set());
+      const group = railGroupOf({ task, kinds: info?.kinds ?? NO_KINDS, attentionComplete });
       groups[group].push({ task, ask: info?.ask ?? null, run, activity: activityOf(task, run) });
     }
     // Newest activity first within each group.
@@ -204,7 +292,7 @@ export default function WorkspacePage() {
       groups[group].sort((a, b) => b.activity.localeCompare(a.activity));
     }
     return groups;
-  }, [visibleTasks, attentionByTask, latestRunByTask]);
+  }, [visibleTasks, attentionByTask, latestRunByTask, attentionComplete]);
 
   const selectedTask = useMemo(
     () => tasks.find((task) => task.task_id === selectedTaskId) ?? null,
@@ -231,6 +319,8 @@ export default function WorkspacePage() {
     <div className="flex h-screen overflow-hidden bg-muted/20">
       <TaskRail
         groups={grouped}
+        attentionReach={attentionReach}
+        staleOrigins={staleOrigins}
         projectIds={projectIds}
         projectFilter={projectFilter}
         onProjectFilter={setProjectFilter}
@@ -245,7 +335,7 @@ export default function WorkspacePage() {
       <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
         {error && <div className="m-4 shrink-0 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{t("workspace.errors.loadFailed", { error })}</div>}
         {selectedTask ? (
-          <TaskWorkspace key={selectedTask.task_id} refreshNonce={refreshNonce} task={selectedTask} ask={attentionByTask.get(selectedTask.task_id)?.blocker ?? null} attention={attention.filter((a) => a.task_id === selectedTask.task_id)} latestRun={latestRunByTask.get(selectedTask.task_id) ?? null} />
+          <TaskWorkspace key={selectedTask.task_id} refreshNonce={refreshNonce} task={selectedTask} latestRun={latestRunByTask.get(selectedTask.task_id) ?? null} onTaskMayHaveChanged={load} />
         ) : (
           <EmptyWorkspace hasTasks={tasks.length > 0} />
         )}
@@ -263,9 +353,11 @@ export default function WorkspacePage() {
 }
 
 function TaskRail({
-  groups, projectIds, projectFilter, onProjectFilter, query, onQuery, selectedTaskId, onSelect, onNewTask, onRefresh, loading,
+  groups, attentionReach, staleOrigins, projectIds, projectFilter, onProjectFilter, query, onQuery, selectedTaskId, onSelect, onNewTask, onRefresh, loading,
 }: {
   groups: Record<RailGroup, Array<{ task: TaskManifest; ask: string | null; run: RunSummary | null; activity: string }>>;
+  attentionReach: AttentionReach;
+  staleOrigins: readonly RailStaleOrigin[];
   projectIds: string[]; projectFilter: string; onProjectFilter: (value: string) => void;
   query: string; onQuery: (value: string) => void;
   selectedTaskId: string | null; onSelect: (task: TaskManifest) => void;
@@ -309,6 +401,29 @@ function TaskRail({
 
       {/* Grouped task list */}
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-4">
+        {/* Why the rail says this out loud rather than quietly grouping anyway: the
+            groups below "needs you" are a claim that nothing is waiting, and once
+            the global attention page is capped or unreadable it cannot support
+            that claim for a task it does not mention. Those tasks are in
+            "unknown", and this line is the reason — the actual reason: the message
+            names which of the three non-complete outcomes occurred, because a
+            failed read wearing the cap's explanation is a confident falsehood. */}
+        {attentionReach !== "complete" && total > 0 && (
+          <p className="mx-2 mb-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-[11px] leading-snug text-amber-700 dark:text-amber-400">
+            {t(RAIL_ATTENTION_NOTICE_KEY[attentionReach], { limit: OPEN_ATTENTION_PAGE_LIMIT })}
+          </p>
+        )}
+        {/* A sibling read of the same refresh failed. Its own sentence, about its
+            own read: what it costs is a stale rail (or, on a first load, an empty
+            one — which is why this is not gated on there being tasks: "No tasks
+            yet" below would otherwise be the only thing said about a task list
+            that could not be read). It deliberately claims nothing about the
+            attention read, whose reach is settled above from its own outcome. */}
+        {staleOrigins.map((origin) => (
+          <p key={origin} className="mx-2 mb-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-[11px] leading-snug text-amber-700 dark:text-amber-400">
+            {t(RAIL_STALE_NOTICE_KEY[origin])}
+          </p>
+        ))}
         {total === 0 && (
           <p className="px-2 py-6 text-center text-xs text-muted-foreground">{query.trim() ? t("workspace.rail.noMatch") : t("workspace.rail.empty")}</p>
         )}
@@ -325,7 +440,16 @@ function TaskRail({
               <ul className="space-y-0.5">
                 {items.map(({ task, ask, run, activity }) => {
                   const selected = task.task_id === selectedTaskId;
-                  const sub = ask ?? te("taskState", task.state);
+                  // Never "the lifecycle state, where the ask should have been":
+                  // in the unknown group that substitution is what made a task
+                  // with an off-page approval read as a calm "running".
+                  const subtitle = railSubtitleOf(group, ask);
+                  const sub =
+                    subtitle.kind === "ask"
+                      ? subtitle.text
+                      : subtitle.kind === "stateWithUnknownAttention"
+                        ? t("workspace.rail.unknownSubtitle", { state: te("taskState", task.state) })
+                        : te("taskState", task.state);
                   return (
                     <li key={task.task_id}>
                       <button
@@ -375,7 +499,43 @@ const TABS: Tab[] = ["requirements", "run", "attention", "changes"];
 const ROLLOVER_RETRY_MIN_MS = 30_000;
 const ROLLOVER_RETRY_MAX_MS = 300_000;
 
-function TaskWorkspace({ task, ask, attention, latestRun, refreshNonce }: { task: TaskManifest; ask: string | null; attention: AttentionItem[]; latestRun: RunSummary | null; refreshNonce: number }) {
+// How often an unsettled run is re-read. A dispatched run starts queued with no
+// output, so without this the timeline would show an empty card until somebody
+// pressed Refresh.
+const RUN_POLL_MS = 2_500;
+
+// How long to keep watching after the last run of a task settles.
+//
+// The dispatcher publishes a worker run's terminal state and only *then* builds
+// and records the cross-review run, so at the instant polling would naturally
+// stop there is nothing yet to see. Without a settle window the review run — and
+// the approval it raises — appear only on a manual Refresh.
+//
+// Bounded, and expiring with nothing new is a normal outcome, not an error:
+// auto_review can be off, the reviewer runtime can be unconfigured, and a run
+// that failed is not reviewed at all. Wide enough to cover the review's own
+// prompt build (it shells out to git over the worktree), then it stops.
+const FOLLOW_UP_WINDOW_MS = 30_000;
+
+// How many open attention items to ask for when gating on this task's human
+// gates. A task will never have this many, which is the point: if the answer
+// comes back full, it may have been cut off, and a cut-off page cannot say "no
+// gate is open".
+const TASK_ATTENTION_LIMIT = 500;
+
+// The parent's global attention list is deliberately NOT passed in, in any form.
+// It is one capped page across every project, so it is not authoritative for one
+// task, and substituting it when this component's own task-scoped read had no
+// answer yet is exactly how the Attention panel came to say "nothing needs you"
+// while the Continue gate on the same screen was blocking on the same fact as
+// unknown. The same substitution came back once as an `ask` prop — the first
+// global blocker's title, rendered by OutcomeSummary as *this task's* blocker,
+// which disagreed with the panel in both directions: a resolved blocker stayed on
+// screen until the next global refresh, and a blocker beyond the global page never
+// appeared at all. This component asks its own question (loadTaskAttention) and
+// every task-level attention claim on this screen — panel, Continue gate, and
+// blocker line — derives from that one answer (lib/task-attention.ts).
+function TaskWorkspace({ task, latestRun, refreshNonce, onTaskMayHaveChanged }: { task: TaskManifest; latestRun: RunSummary | null; refreshNonce: number; onTaskMayHaveChanged: () => void }) {
   const { t, te } = useI18n();
   const [dashboard, setDashboard] = useState<ProjectDashboard | null>(null);
   const [dashError, setDashError] = useState(false);
@@ -391,6 +551,33 @@ function TaskWorkspace({ task, ask, attention, latestRun, refreshNonce }: { task
   const [recapError, setRecapError] = useState(false);
   const [events, setEvents] = useState<TaskEvent[] | null>(null);
   const [runs, setRuns] = useState<ExecutionRun[] | null>(null);
+  // Whether this task's run list is trustworthy. A failed read used to land as
+  // an empty list, which the Continue action would have read as "nothing is
+  // running" — an unknown presented as an absence, on the one question that
+  // decides whether a second run may be dispatched.
+  const [runsError, setRunsError] = useState(false);
+  // The task's unsettled runs, asked as their own question rather than filtered
+  // out of the page of recent history above: that page is capped, so a long-lived
+  // task can fill it with terminal runs while an older one is still queued, and
+  // an active run missing from it is not an absence. null = no answer yet, or the
+  // read failed — both unknown.
+  const [activeRuns, setActiveRuns] = useState<RunSummary[] | null>(null);
+  // This task's own open attention items. Asked here, task-scoped, rather than
+  // taken from the parent's global list: that list is one capped page, so past
+  // the cap a task whose approval sits beyond it would read as "no open gate"
+  // and unlock Continue. null = no answer yet or the read failed — the two are
+  // told apart by `taskAttentionError`, because a spinner and an error are
+  // different things to show (see lib/task-attention.ts).
+  const [taskAttention, setTaskAttention] = useState<AttentionItem[] | null>(null);
+  // The task-scoped read itself failed. Tracked separately from the null above so
+  // the panel can say "unavailable" instead of sitting on a spinner forever — and
+  // so it never says "nothing needs you" about a fact it could not read.
+  const [taskAttentionError, setTaskAttentionError] = useState(false);
+  // The task-scoped read came back full, so it may have been cut off. "Not in a
+  // page that may be truncated" is not "not there", so this reads as unknown too.
+  const [taskAttentionTruncated, setTaskAttentionTruncated] = useState(false);
+  // When set, the follow-up watch below is armed until this timestamp.
+  const [followUpUntil, setFollowUpUntil] = useState<number | null>(null);
   const [tab, setTab] = useState<Tab>("requirements");
 
   // Where the task was left off. Reusable because posting a note changes the
@@ -436,6 +623,91 @@ function TaskWorkspace({ task, ask, attention, latestRun, refreshNonce }: { task
       .catch(() => { if (!signal?.aborted) setEvents([]); });
   }, [task.task_id]);
 
+  // Full run records (prompt + stdout/stderr + result) so the timeline can show
+  // what the agent actually did — the substance, like the terminal, not a ledger.
+  // A failed list read, or a detail read that dropped a run from the list, leaves
+  // `runsError` set: what we have is still shown, but "is a run active?" becomes
+  // unknown rather than silently answered "no".
+  //
+  // Token-guarded like its siblings, and for a sharper reason: this one *replaces*
+  // the array rather than folding updates in through mergeRunUpdates, so a stale
+  // response landing last does not merely lose a version race — it overwrites the
+  // whole snapshot. The terminal-run path calls this unsignalled and then calls
+  // onTaskMayHaveChanged(), whose refreshNonce bump starts a second, newer read;
+  // without a token the older answer could land after it and put the pre-settle
+  // list back on screen. Only the newest request may write.
+  const runsRequest = useRef(0);
+  const loadRuns = useCallback((signal?: AbortSignal) => {
+    const token = ++runsRequest.current;
+    const stale = () => signal?.aborted || token !== runsRequest.current;
+    return listRuns({ task_id: task.task_id, limit: 100 }, signal)
+      .then((summaries) =>
+        Promise.all(summaries.map((summary) => getRun(summary.run_id, signal).catch(() => null)))
+          .then((details) => {
+            if (stale()) return;
+            const loaded = details.filter((run): run is ExecutionRun => run !== null);
+            setRuns(loaded);
+            setRunsError(loaded.length !== summaries.length);
+          }),
+      )
+      .catch(() => { if (!stale()) setRunsError(true); });
+  }, [task.task_id]);
+
+  // "Is a run active?" — its own request, so the answer never depends on how much
+  // history fits in one page. A failed read is unknown (null), never "none". The
+  // answer is also returned, so a caller can act on it without waiting for a
+  // re-render.
+  //
+  // Token-guarded for the same reason as the attention read below: the terminal
+  // -state path calls this unsignalled and also bumps refreshNonce, so two reads
+  // overlap and a stale empty one landing last would say "nothing running" over a
+  // live run. A superseded read returns null — unknown — rather than its own stale
+  // array, so the follow-up watcher keeps watching instead of acting on it.
+  const activeRunsRequest = useRef(0);
+  const loadActiveRuns = useCallback((signal?: AbortSignal) => {
+    const token = ++activeRunsRequest.current;
+    const stale = () => signal?.aborted || token !== activeRunsRequest.current;
+    return listActiveRuns(task.task_id, signal)
+      .then((summaries) => {
+        if (stale()) return null;
+        setActiveRuns(summaries);
+        return summaries as RunSummary[] | null;
+      })
+      .catch(() => { if (!stale()) setActiveRuns(null); return null; });
+  }, [task.task_id]);
+
+  // "Is a human gate open on this task?" — its own task-scoped request, so the
+  // answer never depends on where this task's items happen to fall in a global
+  // page. A failed read leaves it unknown (null), never "none".
+  //
+  // Guarded by a request token, like the recap above, because the answer changes
+  // and two reads overlap on the one path that matters: a run reaching a terminal
+  // state calls this unsignalled AND calls onTaskMayHaveChanged(), whose
+  // refreshNonce bump re-runs the mount effect and starts a second read. Without
+  // a token the earlier — still empty — response can land after the newer one
+  // that carries the review approval, and Continue would then read the gate as
+  // absent at exactly the moment it exists. Only the newest request may write.
+  const attentionRequest = useRef(0);
+  const loadTaskAttention = useCallback((signal?: AbortSignal) => {
+    const token = ++attentionRequest.current;
+    const stale = () => signal?.aborted || token !== attentionRequest.current;
+    return listAttention(
+      { task_id: task.task_id, state: "open", limit: TASK_ATTENTION_LIMIT }, signal,
+    )
+      .then((items) => {
+        if (stale()) return;
+        setTaskAttention(items);
+        setTaskAttentionError(false);
+        setTaskAttentionTruncated(items.length >= TASK_ATTENTION_LIMIT);
+      })
+      .catch(() => {
+        if (stale()) return;
+        setTaskAttention(null);
+        setTaskAttentionError(true);
+        setTaskAttentionTruncated(false);
+      });
+  }, [task.task_id]);
+
   // Fetch this task's detail. The parent keys this component by task_id, so a
   // task switch remounts it and the initial state above already resets cleanly.
   useEffect(() => {
@@ -450,14 +722,9 @@ function TaskWorkspace({ task, ask, attention, latestRun, refreshNonce }: { task
       .then((value) => { if (!ctrl.signal.aborted) { setSpecs(value); setSpecsError(false); } })
       .catch(() => { if (!ctrl.signal.aborted) setSpecsError(true); });
     loadEvents(ctrl.signal);
-    // Full run records (prompt + stdout/stderr + result) so the timeline can show
-    // what the agent actually did — the substance, like the terminal, not a ledger.
-    listRuns({ task_id: task.task_id, limit: 100 }, ctrl.signal)
-      .then(async (summaries) => {
-        const details = await Promise.all(summaries.map((s) => getRun(s.run_id, ctrl.signal).catch(() => null)));
-        if (!ctrl.signal.aborted) setRuns(details.filter((r): r is ExecutionRun => r !== null));
-      })
-      .catch(() => { if (!ctrl.signal.aborted) setRuns([]); });
+    void loadRuns(ctrl.signal);
+    void loadActiveRuns(ctrl.signal);
+    void loadTaskAttention(ctrl.signal);
     if (task.state === "done") {
       fetchDelivery(task.task_id, ctrl.signal)
         .then((value) => { if (!ctrl.signal.aborted) { setDelivery(value); setDeliveryError(false); } })
@@ -469,7 +736,7 @@ function TaskWorkspace({ task, ask, attention, latestRun, refreshNonce }: { task
   // finishing without changing the task's state leaves every dep here unchanged,
   // so the recap would keep showing the pre-run answer. The nonce makes an
   // explicit refresh reach this component's own reads too.
-  }, [task.task_id, task.project_id, task.state, refreshNonce, loadEvents, loadRecap]);
+  }, [task.task_id, task.project_id, task.state, refreshNonce, loadEvents, loadRecap, loadRuns, loadActiveRuns, loadTaskAttention]);
 
   // The recap's wording depends on what day it is, so leaving the page open past
   // midnight would keep it saying "today" about yesterday's work. Refetch when
@@ -534,11 +801,201 @@ function TaskWorkspace({ task, ask, attention, latestRun, refreshNonce }: { task
     return ok.at(-1) ?? null;
   }, [runs]);
 
+  // Runs that have not settled: the authoritative active-run read, plus anything
+  // non-terminal this view already holds (a run dispatched a moment ago is known
+  // here before the next server answer arrives). A joined key, not the array, so
+  // the poll below re-arms only when the *set* changes and not on every merged
+  // output update.
+  const activeRunIds = useMemo(() => {
+    const ids = new Set<string>((activeRuns ?? []).map((run) => run.run_id));
+    for (const run of runs ?? []) if (!TERMINAL_RUN_STATES.has(run.state)) ids.add(run.run_id);
+    return [...ids].sort();
+  }, [activeRuns, runs]);
+  const activeRunKey = activeRunIds.join(",");
+
+  // Poll the unsettled runs until they settle, so a run dispatched from this page
+  // shows its real output here instead of an empty card awaiting a manual
+  // Refresh. When one settles, re-read the whole list: the control plane may have
+  // created another run in response (the automatic cross-review), and that one is
+  // not in the set we were polling.
+  useEffect(() => {
+    if (!activeRunKey) return;
+    const ctrl = new AbortController();
+    let timer: number | undefined;
+    const tick = async () => {
+      const fresh = await Promise.all(
+        activeRunKey.split(",").map((runId) => getRun(runId, ctrl.signal).catch(() => null)),
+      );
+      if (ctrl.signal.aborted) return;
+      const updates = fresh.filter((run): run is ExecutionRun => run !== null);
+      if (updates.length > 0) {
+        setRuns((current) => mergeRunUpdates(current, updates));
+        if (updates.some((run) => TERMINAL_RUN_STATES.has(run.state))) {
+          // Deliberately unsignalled: this state change retires the effect that
+          // owns `ctrl`, so passing it would abort the follow-up reads it exists
+          // to trigger.
+          void loadRuns();
+          void loadActiveRuns();
+          void loadTaskAttention();
+          loadEvents();
+          loadRecap();
+          // The orchestration this run may trigger has not been recorded yet, so
+          // keep watching for a bounded while (see FOLLOW_UP_WINDOW_MS). Also
+          // reload the parent: a review run that just finished raises the
+          // approval that must block Continue, and that lives in the parent's
+          // attention read.
+          setFollowUpUntil(Date.now() + FOLLOW_UP_WINDOW_MS);
+          onTaskMayHaveChanged();
+        }
+      }
+      if (!ctrl.signal.aborted) timer = window.setTimeout(() => void tick(), RUN_POLL_MS);
+    };
+    timer = window.setTimeout(() => void tick(), RUN_POLL_MS);
+    return () => { ctrl.abort(); if (timer !== undefined) window.clearTimeout(timer); };
+  }, [activeRunKey, loadEvents, loadRecap, loadRuns, loadActiveRuns, loadTaskAttention, onTaskMayHaveChanged]);
+
+  // The settle window: a worker run reaching a terminal state is when the
+  // dispatcher *starts* building the cross-review run, so the moment polling
+  // would otherwise stop is the moment there is nothing yet to find. Keep asking
+  // for a bounded while, and stop as soon as something unsettled shows up (the
+  // poll above then owns it) or the window expires — which is the ordinary
+  // outcome when auto-review is off or the run failed.
+  //
+  // The window is armed *state*, not just a scheduled timer, because while it is
+  // armed the Continue gate is closed (block "followUpPending"): between the
+  // worker run going terminal and the review run being queued, nothing is active
+  // and no gate exists yet, and the backend would accept a second worker run.
+  // So something has to disarm it, and that is `close` below.
+  useEffect(() => {
+    if (followUpUntil === null) return;
+    if (activeRunKey) return; // a follow-up run exists; the poll above tracks it
+    const ctrl = new AbortController();
+    let timer: number | undefined;
+    // Closing the window: disarm the gate AND re-read everything. A review run
+    // that started and finished inside one interval (a launcher that fails
+    // immediately does exactly that) is invisible to the active-run probe, so
+    // without a full read here the approval or blocker it raised would never
+    // reach this page while Continue quietly reopened. Unsignalled on purpose:
+    // clearing the deadline retires the effect that owns `ctrl`.
+    const close = () => {
+      setFollowUpUntil(null);
+      void loadRuns();
+      void loadActiveRuns();
+      void loadTaskAttention();
+      loadEvents();
+      loadRecap();
+      onTaskMayHaveChanged();
+    };
+    if (Date.now() >= followUpUntil) { close(); return; }
+    const watch = async () => {
+      const found = await loadActiveRuns(ctrl.signal);
+      if (ctrl.signal.aborted) return;
+      if (found !== null && found.length > 0) {
+        // The follow-up showed up. Pull its record and the events around it into
+        // the view and stop: the poll above owns an unsettled run, and that run
+        // being active is what keeps Continue closed from here on. Unsignalled on
+        // purpose — this discovery retires the effect that owns `ctrl`.
+        void loadRuns();
+        loadEvents();
+        setFollowUpUntil(null);
+        return;
+      }
+      if (Date.now() >= followUpUntil) { close(); return; }
+      // Asking only for the unsettled runs while the window is open: this repeats
+      // on a timer, and the full read happens once, when the window closes.
+      timer = window.setTimeout(() => void watch(), RUN_POLL_MS);
+    };
+    timer = window.setTimeout(() => void watch(), RUN_POLL_MS);
+    return () => { ctrl.abort(); if (timer !== undefined) window.clearTimeout(timer); };
+  }, [followUpUntil, activeRunKey, loadActiveRuns, loadRuns, loadEvents, loadRecap, loadTaskAttention, onTaskMayHaveChanged]);
+
+  const activeRunCount = activeRuns === null || runsError
+    ? null // unknown — never presented to the Continue gate as "nothing running"
+    : activeRunIds.length;
+
+  // Whether the auto-review handoff window is still open. Armed means: a run of
+  // this task settled moments ago and whether it triggers a review is not yet
+  // known. It is cleared by the effect above (on discovery or on expiry), so this
+  // does not depend on a re-render happening at the right moment.
+  const followUpArmed = followUpUntil !== null;
+
+  // Open human gates on this task, as ONE derived answer that both the Continue
+  // gate and the Attention panel read (see lib/task-attention.ts). They used to
+  // derive it separately, from different sources, and disagreed: the panel fell
+  // back to the parent's capped global list and could render "nothing needs you"
+  // while the gate on the same screen was blocking with `attentionUnknown`.
+  const attentionView = useMemo(
+    () => taskAttentionView({
+      items: taskAttention,
+      readFailed: taskAttentionError,
+      truncated: taskAttentionTruncated,
+    }),
+    [taskAttention, taskAttentionError, taskAttentionTruncated],
+  );
+  const openAttentionCount = openGateCount(attentionView);
+  // The blocker line in the Outcome Summary, from the same view. It used to be the
+  // `ask` prop the parent derived from its global page; see the note above this
+  // component.
+  const blockerClaim = useMemo(() => taskBlockerClaim(attentionView), [attentionView]);
+
+  // What the Continue action seeds its prompt with: the recap's day and items as
+  // this view already renders them, plus the task's own goal and recorded next
+  // step. Unreadable facts travel as "unavailable" so the seed says so instead of
+  // implying nothing happened.
+  const nextAction = dashTask?.next_action ?? null;
+  const continueSeed = useMemo<ContinueSeedFacts>(() => ({
+    title: task.title,
+    description: task.description,
+    acceptance: task.acceptance,
+    recapHeading: recap && recap.day !== null ? recapHeadingText(recap, t) : null,
+    recapLines: (recap?.items ?? []).map((item) => recapItemText(item, t, te)),
+    // What the recap did NOT include. The Resume Brief renders both facts, so the
+    // seed must carry them: with only `items`, a trimmed day reaches the agent
+    // looking complete — and with zero loaded items it would assert the day had
+    // nothing to summarize.
+    recapMore: recap?.more ?? 0,
+    recapPartial: recap?.partial ?? false,
+    recapUnavailable: recapError || recap === null,
+    nextAction: nextAction && nextAction.action !== "none" ? te("nextAction", nextAction.action) : null,
+    nextActionUnavailable: dashError || dashTask === null,
+  }), [task.title, task.description, task.acceptance, recap, recapError, nextAction, dashError, dashTask, t, te]);
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <ProjectStrip dashboard={dashboard} dashError={dashError} />
-      <ResumeBrief recap={recap} recapError={recapError} t={t} te={te} />
-      <OutcomeSummary task={task} dashTask={dashTask} dashError={dashError} blocker={ask} delivery={delivery} deliveryError={deliveryError} latestSuccess={latestSuccess} />
+      {/* The Resume Brief and the action that acts on it, as one block. */}
+      <div className="border-b bg-muted/20">
+        <ResumeBrief recap={recap} recapError={recapError} t={t} te={te} />
+        <ContinueAction
+          task={task}
+          seed={continueSeed}
+          activeRunCount={activeRunCount}
+          openAttentionCount={openAttentionCount}
+          followUpArmed={followUpArmed}
+          onCreated={(run) => {
+            if (run === null) {
+              // The POST's answer was lost and the re-read found an active run:
+              // one exists, but its record is not in hand. Ask for it instead of
+              // inventing a row — and take the authoritative active set from the
+              // same read path the gate uses.
+              void loadRuns();
+              void loadActiveRuns();
+              loadEvents();
+              loadRecap();
+              return;
+            }
+            setRuns((current) => mergeRunUpdates(current, [run]));
+            // The dispatched run is unsettled by definition, so record it in the
+            // authoritative set too rather than leaving that answer one poll
+            // behind — otherwise the collapsed button would offer Continue again.
+            setActiveRuns((current) => [...(current ?? []), asRunSummary(run)]);
+            loadEvents();
+            loadRecap();
+          }}
+          onTaskMayHaveChanged={onTaskMayHaveChanged}
+        />
+      </div>
+      <OutcomeSummary task={task} dashTask={dashTask} dashError={dashError} blocker={blockerClaim} delivery={delivery} deliveryError={deliveryError} latestSuccess={latestSuccess} />
       <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
         {/* Center: the unified, chat-like task timeline + message box. */}
         <TimelineColumn taskId={task.task_id} events={events} runs={runs} specs={specs} onPosted={() => { loadEvents(); loadRecap(); }} />
@@ -558,7 +1015,7 @@ function TaskWorkspace({ task, ask, attention, latestRun, refreshNonce }: { task
           <div className="min-h-0 flex-1 overflow-y-auto p-4">
             {tab === "requirements" && <RequirementsPanel task={task} specs={specs} error={specsError} />}
             {tab === "run" && <RunPanel task={task} latestRun={latestRun} />}
-            {tab === "attention" && <AttentionPanel items={attention} />}
+            {tab === "attention" && <AttentionPanel view={attentionView} />}
             {tab === "changes" && <ChangesPanel task={task} delivery={delivery} deliveryError={deliveryError} />}
           </div>
         </div>
@@ -855,13 +1312,26 @@ const RECAP_TONE: Record<string, string> = {
   reviewed: "bg-violet-500",
 };
 
+// The heading the Resume Brief shows for the recap's day, and the same words the
+// Continue action seeds its prompt with — one source, so the prompt can never
+// claim a different day than the panel above it.
+function recapHeadingText(recap: TaskRecap, t: Translate): string {
+  const ago = recap.days_ago;
+  // Follows days_ago, so a task nobody has touched for three weeks never claims
+  // "yesterday".
+  if (ago === 0) return t("workspace.recap.today");
+  if (ago === 1) return t("workspace.recap.yesterday");
+  if (ago !== null && ago < 7) return t("workspace.recap.daysAgo", { n: ago });
+  return t("workspace.recap.onDate", { date: recap.day ?? "" });
+}
+
 function ResumeBrief(
   { recap, recapError, t, te }:
   { recap: TaskRecap | null; recapError: boolean; t: Translate; te: TranslateEnum },
 ) {
   if (recapError) {
     return (
-      <div className="border-b bg-muted/20 px-5 py-2">
+      <div className="px-5 py-2">
         <p className="text-xs text-muted-foreground">{t("workspace.panels.unavailable")}</p>
       </div>
     );
@@ -869,23 +1339,16 @@ function ResumeBrief(
   if (recap === null) return null; // still loading; the header below already shows
   if (recap.day === null) {
     return (
-      <div className="border-b bg-muted/20 px-5 py-2">
+      <div className="px-5 py-2">
         <p className="text-xs text-muted-foreground">{t("workspace.recap.never")}</p>
       </div>
     );
   }
 
-  // The heading follows days_ago, so a task nobody has touched for three weeks
-  // never claims "yesterday".
-  const ago = recap.days_ago;
-  const heading =
-    ago === 0 ? t("workspace.recap.today")
-    : ago === 1 ? t("workspace.recap.yesterday")
-    : ago !== null && ago < 7 ? t("workspace.recap.daysAgo", { n: ago })
-    : t("workspace.recap.onDate", { date: recap.day });
+  const heading = recapHeadingText(recap, t);
 
   return (
-    <div className="border-b bg-muted/20 px-5 py-2.5">
+    <div className="px-5 py-2.5">
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
         <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
           {heading}
@@ -918,14 +1381,26 @@ function ResumeBrief(
   );
 }
 
-function OutcomeSummary({ task, dashTask, dashError, blocker, delivery, deliveryError, latestSuccess }: { task: TaskManifest; dashTask: DashboardTask | null; dashError: boolean; blocker: string | null; delivery: Delivery | null; deliveryError: boolean; latestSuccess: ExecutionRun | null }) {
+function OutcomeSummary({ task, dashTask, dashError, blocker, delivery, deliveryError, latestSuccess }: { task: TaskManifest; dashTask: DashboardTask | null; dashError: boolean; blocker: TaskBlockerClaim; delivery: Delivery | null; deliveryError: boolean; latestSuccess: ExecutionRun | null }) {
   const { t, te } = useI18n();
   const next = dashTask?.next_action ?? null;
   const total = dashTask?.total_weight ?? 0;
   const verified = dashTask?.verified_weight ?? 0;
   const pct = total ? Math.round((verified * 100) / total) : 0;
   const stuck = task.state === "blocked" || task.state === "failed";
-  const blockerText = blocker ?? (stuck ? t("workspace.header.blockedNoDetail") : null);
+  // Two sources, deliberately, and they are not the same claim. The title comes
+  // from the task-scoped attention view (the single source for every attention
+  // claim on this screen). `stuck` comes from the task manifest's own lifecycle
+  // state, which is authoritative on its own and needs no attention item to be
+  // true — a blocked task with no readable item still says it is blocked, without
+  // detail. Nothing here re-derives "is a gate open?" from a second attention read.
+  const blockerText = blocker.kind === "blocker"
+    ? blocker.title
+    : stuck ? t("workspace.header.blockedNoDetail") : null;
+  // No answer yet about a blocker, on a task whose own state does not already say
+  // it is stuck. It must not fall through to "next step: X": that reads as "nothing
+  // is in the way", which is the claim the read cannot support.
+  const blockerUnknown = blocker.kind === "loading" || blocker.kind === "unknown";
   const done = task.state === "done";
   const outcomeLine = firstMeaningfulLine(latestSuccess?.stdout_tail ?? "");
   const fileCount = delivery?.fileCount ?? 0;
@@ -981,6 +1456,8 @@ function OutcomeSummary({ task, dashTask, dashError, blocker, delivery, delivery
             <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{t("workspace.summary.next")}</p>
             {blockerText ? (
               <p className="mt-0.5 text-sm font-medium text-orange-600 dark:text-orange-400">{blockerText}</p>
+            ) : blockerUnknown ? (
+              <p className="mt-0.5 text-sm text-muted-foreground">{blocker.kind === "loading" ? "—" : t("workspace.header.unavailable")}</p>
             ) : next ? (
               next.action === "none"
                 ? <p className="mt-0.5 inline-flex items-center gap-1 text-sm text-emerald-600 dark:text-emerald-400"><CircleCheck className="size-3.5" />{t("workspace.summary.done")}</p>
@@ -1226,24 +1703,41 @@ function RunPanel({ task, latestRun }: { task: TaskManifest; latestRun: RunSumma
   );
 }
 
-function AttentionPanel({ items }: { items: AttentionItem[] }) {
+function AttentionPanel({ view }: { view: TaskAttentionView<AttentionItem> }) {
   const { t, te } = useI18n();
   return (
     <PanelShell href="/attention" hrefLabel={t("workspace.panels.openFull")}>
-      {items.length === 0 ? (
-        <p className="text-sm text-muted-foreground">{t("workspace.panels.attention.none")}</p>
+      {view.kind === "loading" || view.kind === "unreadable" || view.kind === "none" ? (
+        /* Three different facts, three different sentences. This panel used to
+           collapse them all into "nothing needs you on this task" by falling back
+           to the parent's capped global list — which is not authoritative for one
+           task, and made the page contradict its own Continue gate. */
+        <p className="text-sm text-muted-foreground">{t(TASK_ATTENTION_NOTICE_KEY[view.kind])}</p>
       ) : (
-        <ul className="space-y-2">
-          {items.map((item) => (
-            <li key={item.item_id} className="flex items-start gap-2 rounded-md bg-muted/40 px-2 py-1.5">
-              <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-orange-500" />
-              <div className="min-w-0">
-                <p className="text-sm leading-snug">{item.title}</p>
-                <p className="text-[11px] text-muted-foreground">{te("attentionKind", item.kind)} · {te("urgency", item.urgency)}</p>
-              </div>
-            </li>
-          ))}
-        </ul>
+        <div className="space-y-2">
+          {view.kind === "partial" && (
+            /* The read came back at the limit, so this list may be missing items.
+               Shown, because what we have is real and worth acting on; labelled,
+               because "these are the ones waiting" would be a claim the read
+               cannot support. The Continue gate treats the count as unknown. */
+            <p className="text-xs text-muted-foreground">{t("workspace.panels.attention.partial")}</p>
+          )}
+          {view.items.length === 0 ? (
+            <p className="text-sm text-muted-foreground">{t("workspace.panels.attention.partialEmpty")}</p>
+          ) : (
+            <ul className="space-y-2">
+              {view.items.map((item) => (
+                <li key={item.item_id} className="flex items-start gap-2 rounded-md bg-muted/40 px-2 py-1.5">
+                  <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-orange-500" />
+                  <div className="min-w-0">
+                    <p className="text-sm leading-snug">{item.title}</p>
+                    <p className="text-[11px] text-muted-foreground">{te("attentionKind", item.kind)} · {te("urgency", item.urgency)}</p>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
       )}
     </PanelShell>
   );

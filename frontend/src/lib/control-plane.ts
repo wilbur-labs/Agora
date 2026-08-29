@@ -113,10 +113,51 @@ export interface RequirementSpec extends Required<Omit<RequirementSpecInput, "cr
 }
 
 export class ApiError extends Error {
-  constructor(public status: number, message: string) {
+  constructor(
+    public status: number,
+    message: string,
+    /**
+     * The control plane's machine-readable discriminator for this failure, when
+     * it sent one. Several distinct refusals share a status code (409 covers a
+     * stale version, a lost race, an already-running run, and an open gate), and
+     * their messages are prose — so a caller that has to say different things
+     * needs a code rather than a substring match. null means none was sent.
+     */
+    public code: string | null = null,
+  ) {
     super(message);
     this.name = "ApiError";
   }
+}
+
+/**
+ * Build an ApiError from a failed response.
+ *
+ * FastAPI's `detail` is usually a string. Where one status has to carry several
+ * meanings the control plane sends an object instead — `{code, message, …}` — and
+ * that shape is unwrapped here so the human still sees prose and the caller gets
+ * the code. An unrecognised object is stringified rather than dropped, because a
+ * detail we cannot parse is still the only thing the server said.
+ *
+ * Shared by every `request` helper in this app: two copies of this parsing would
+ * be two chances for one of them to lose the code.
+ */
+export async function apiErrorFrom(response: Response): Promise<ApiError> {
+  let message = `Request failed (${response.status})`;
+  let code: string | null = null;
+  try {
+    const payload = await response.json();
+    const detail = payload?.detail;
+    if (typeof detail === "string") {
+      message = detail;
+    } else if (detail && typeof detail === "object") {
+      if (typeof detail.code === "string") code = detail.code;
+      message = typeof detail.message === "string" ? detail.message : JSON.stringify(detail);
+    }
+  } catch {
+    // Keep the status-based fallback for non-JSON responses.
+  }
+  return new ApiError(response.status, message, code);
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -125,15 +166,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers: { "Content-Type": "application/json", ...init?.headers },
   });
   if (!response.ok) {
-    let message = `Request failed (${response.status})`;
-    try {
-      const payload = await response.json();
-      if (typeof payload.detail === "string") message = payload.detail;
-      else if (payload.detail) message = JSON.stringify(payload.detail);
-    } catch {
-      // Keep the status-based fallback for non-JSON responses.
-    }
-    throw new ApiError(response.status, message);
+    throw await apiErrorFrom(response);
   }
   return response.json() as Promise<T>;
 }
@@ -154,8 +187,26 @@ export interface AttentionItem {
   title: string;
 }
 
-export function listOpenAttention(): Promise<AttentionItem[]> {
-  return request("/api/attention?state=open&limit=500");
+// The server caps this endpoint at 500 items per page (`limit` has le=500), so
+// this read cannot be widened — it can only be reported honestly.
+export const OPEN_ATTENTION_PAGE_LIMIT = 500;
+
+/**
+ * One page of the global open-attention list, with whether it may have been cut
+ * off. A full page is indistinguishable from "there is more", so `truncated` is
+ * true at the cap: callers must then treat "this task is absent from `items`" as
+ * unknown, never as "this task has no open gate".
+ */
+export interface OpenAttentionPage {
+  items: AttentionItem[];
+  truncated: boolean;
+}
+
+export async function listOpenAttention(): Promise<OpenAttentionPage> {
+  const items = await request<AttentionItem[]>(
+    `/api/attention?state=open&limit=${OPEN_ATTENTION_PAGE_LIMIT}`,
+  );
+  return { items, truncated: items.length >= OPEN_ATTENTION_PAGE_LIMIT };
 }
 
 export function createTask(input: CreateTaskInput): Promise<TaskManifest> {

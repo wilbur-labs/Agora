@@ -439,12 +439,15 @@ def test_runs_sharing_a_worktree_are_serialized(tmp_path):
          "import os,time;p=str(os.getpid());open(p+'.txt','w').write(p);time.sleep(0.35)"],
     )
     task = _planned_task(tasks)
+    # Two tasks: the same project+adapter resolves to one worktree either way,
+    # and a single task holds at most one unfinished worker run.
+    other = _planned_task(tasks)
     first = dispatcher.queue(CreateRunRequest(
         task_id=task.task_id, adapter="codex", prompt="a",
         timeout_seconds=30, expected_task_version=2))
     second = dispatcher.queue(CreateRunRequest(
-        task_id=task.task_id, adapter="codex", prompt="b",
-        timeout_seconds=30, expected_task_version=tasks.get(task.task_id).version))
+        task_id=other.task_id, adapter="codex", prompt="b",
+        timeout_seconds=30, expected_task_version=2))
 
     async def both():
         return await asyncio.gather(

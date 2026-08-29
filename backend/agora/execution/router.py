@@ -46,7 +46,13 @@ from .models import (
     RunSummary,
     TERMINAL_RUN_STATES,
 )
-from .store import ExecutionStore, RunConflictError, RunNotFoundError, RunValidationError
+from .store import (
+    ExecutionStore,
+    RunConflictError,
+    RunGateError,
+    RunNotFoundError,
+    RunValidationError,
+)
 
 
 class HandoffResponse(BaseModel):
@@ -194,6 +200,16 @@ async def create_run(
         return run
     except (TaskNotFoundError, RunNotFoundError) as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from None
+    except RunGateError as exc:
+        # Still a 409, but with a machine-readable body: "wait for the run that is
+        # already going" and "settle the gate that is waiting for you" need
+        # different words and a different action, and a client cannot tell them
+        # apart from prose. Must precede the RunConflictError arm — it is a
+        # subclass, so the broad arm would swallow it and drop the code.
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            {"code": exc.code, "message": str(exc), "items": exc.items},
+        ) from None
     except RunConflictError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from None
     except RunValidationError as exc:
@@ -205,15 +221,23 @@ def list_runs(
     task_id: str | None = Query(default=None, max_length=128),
     project_id: str | None = Query(default=None, max_length=128),
     state_filter: RunState | None = Query(default=None, alias="state"),
+    # Several states in one request, e.g. ?states=queued&states=running. Additive:
+    # `state` keeps working unchanged. It exists because "is any run of this task
+    # unsettled?" asked as two requests is not one snapshot — a run moving
+    # queued -> running between them is in neither answer.
+    states_filter: list[RunState] | None = Query(default=None, alias="states"),
     adapter: str | None = Query(default=None, max_length=128, pattern=r"^[a-z][a-z0-9_-]*$"),
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     store: ExecutionStore = Depends(get_execution_store),
 ):
-    return store.list(
-        task_id=task_id, project_id=project_id, state=state_filter,
-        adapter=adapter, limit=limit, offset=offset,
-    )
+    try:
+        return store.list(
+            task_id=task_id, project_id=project_id, state=state_filter, states=states_filter,
+            adapter=adapter, limit=limit, offset=offset,
+        )
+    except RunValidationError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from None
 
 
 @router.get("/runs/{run_id}", response_model=ExecutionRun)

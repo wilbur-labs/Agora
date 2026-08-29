@@ -11,10 +11,26 @@ export const workspace = {
       allProjects: "All projects",
       groups: {
         needsYou: "Needs you",
+        unknown: "Attention unknown",
         running: "Running",
         review: "Review",
         done: "Done",
       },
+      // Shown when the global open-attention page did not come back as a complete
+      // answer. Each must read as a limit of the read, not as a property of the
+      // tasks — and must name the outcome that actually occurred: a failed read is
+      // not a reached cap, and saying so was a concrete, wrong explanation.
+      attentionPending: "Open attention items have not been read yet, so whether these tasks need you is not known. Open a task to see its own gates.",
+      attentionCapped: "Open attention items reached the {limit}-item read limit, so there are more than were read and whether these tasks need you is not known. Open a task to see its own gates.",
+      attentionUnreadable: "Open attention items could not be read, so whether these tasks need you is not known. Open a task to see its own gates.",
+      // The other three reads of the same refresh, each speaking only for itself.
+      // A failed sibling costs the rail freshness, not knowledge of the attention
+      // gates — so none of these borrows the wording above, which was written
+      // about a different read and was once printed about a read that succeeded.
+      tasksUnreadable: "The task list could not be read, so tasks may be missing from this list or out of date.",
+      projectsUnreadable: "The project list could not be read, so the project filter may be out of date.",
+      runsUnreadable: "Run status could not be read, so the run dots and activity times shown may be out of date.",
+      unknownSubtitle: "{state} · attention not known",
       empty: "No tasks yet — create one to begin.",
       noMatch: "No tasks match your search.",
       relative: {
@@ -76,6 +92,98 @@ export const workspace = {
         answered: "You answered {count}",
         handedOff: "Work handed off",
         noted: "{count} note(s) added",
+      },
+    },
+    // The Continue action that sits with the Resume Brief: it acts on what that
+    // panel says, so its wording lives next to the recap's.
+    continue: {
+      action: "Continue with Codex",
+      close: "Close the Continue panel",
+      panelTitle: "What Codex will be asked to do",
+      panelHint: "Seeded from what this task recorded. Edit it — nothing is sent until you press start.",
+      reseed: "Reset to the seeded prompt",
+      start: "Start Codex run",
+      starting: "Starting…",
+      provisioning: "Creating the Codex worktree…",
+      cancel: "Cancel",
+      count: "{n} / {limit}",
+      adapterNote: "Runs as Codex, in this project's Codex worktree.",
+      blocked: {
+        dispatching: "Starting a run…",
+        // The control plane only accepts a run for a planned or running task, so
+        // saying why beats firing a request that cannot succeed.
+        taskNotRunnable: "Only a planned or running task can be continued — this one is {state}.",
+        runActive: "Already running — a run for this task hasn't finished.",
+        runsUnknown: "This task's runs couldn't be read, so whether one is already running is unknown. Refresh before starting another.",
+        // A task stays "running" while a review's approval is waiting, so state
+        // and runs alone would say "go ahead" right at a human gate.
+        attentionOpen: "Something on this task is waiting for you — answer it in Attention before starting another run.",
+        attentionUnknown: "What this task is waiting on couldn't be read, so whether something needs you is unknown. Refresh before starting another run.",
+        // The auto-review handoff: the worker run is already terminal, but the
+        // review it triggers is not queued yet, so nothing is active and no gate
+        // exists. Starting a run here would jump the review gate.
+        followUpPending: "That run just finished — waiting to see whether a review starts. Give it a moment before starting another run.",
+      },
+      worktree: {
+        checking: "Checking the Codex worktree…",
+        ready: "Codex worktree ready on {branch}.",
+        willProvision: "The Codex worktree doesn't exist yet — it will be created before the run starts.",
+        provisioning: "The Codex worktree is still being created. Wait for it to finish.",
+        // A failed read is not an absence: offering to "create" a worktree that
+        // may already hold work is exactly the wrong move here.
+        unreadable: "The Codex worktree's status couldn't be read, so whether it exists is unknown — that is not the same as missing. {detail}",
+        foreign: "The Codex worktree path holds something Agora didn't create, so it can't be used.",
+        notGit: "The project folder isn't a git repository, so no worktree can be created.",
+        unprovisionable: "The Codex worktree can't be prepared: {detail}",
+      },
+      errors: {
+        alreadyRunning: "A run for this task is already active, so this one was not started.",
+        // The control plane's Run -> Gate refusal. Its message names the exact
+        // item(s) and how to clear them, so it is shown rather than paraphrased.
+        gateOpen: "This task has a gate waiting for you, so nothing was started. {detail}",
+        reviewActive: "This task's review hasn't finished, so nothing was started. {detail}",
+        taskChanged: "The task changed underneath this page, so nothing was started. Refresh and try again.",
+        // A 409 whose re-read failed: something refused the dispatch and we cannot
+        // say what. Notably it must not borrow taskChanged's "nothing was started"
+        // certainty — the refusal may well have been a run that is executing.
+        conflictUnknown: "The control plane refused to start the run, and re-reading this task's runs failed too — so why it refused, and whether a run is executing, are both unknown. Refresh before trying again. ({detail})",
+        taskGone: "The task or its project no longer exists, so nothing was started. ({detail})",
+        rejected: "The control plane rejected the run, so nothing was started: {detail}",
+        provisionFailed: "The Codex worktree couldn't be created, so nothing was started: {detail}",
+        worktreeNotReady: "The Codex worktree still isn't ready, so nothing was started: {detail}",
+        // The three uncertain outcomes: the request got no usable answer, so what
+        // happened on the server is established only by re-reading the runs.
+        startedUnconfirmed: "The reply never came back, but a run for this task is now active — treat it as started and watch it below rather than starting another. ({detail})",
+        startUnknown: "The reply never came back, and re-reading this task's runs failed too — so whether a run started is unknown, not \"no\". Refresh before trying again. ({detail})",
+        transportFailed: "The request didn't get an answer, and no run for this task is active now. It may never have reached the control plane, or the run it created may have already finished — check the timeline before retrying. ({detail})",
+        unknown: "The run couldn't be started: {detail}",
+        // Said alongside the failure above when this click did create the
+        // worktree: the worktree change stuck, the run did not.
+        afterProvision: "The Codex worktree was created and is ready — only the run failed to start, and nothing is running now.",
+        // Same, for an outcome that does not establish that. Claiming "nothing is
+        // running" here is exactly the sentence that would be false while a run
+        // executes.
+        afterProvisionUnsure: "The Codex worktree was created and is ready. Whether a run started could not be confirmed — check the runs below before starting another.",
+      },
+      seed: {
+        goalLabel: "Task goal:",
+        descriptionLabel: "Task notes:",
+        acceptanceLabel: "Done means:",
+        recapUnavailable: "Where this task was left off could not be read, so it is not summarized here. Check the task timeline before assuming anything about it.",
+        recapNever: "Nothing has been recorded on this task yet.",
+        recapNoItems: "That day had activity, but nothing that could be summarized.",
+        // The recap was trimmed. Said in the prompt because the agent has no other
+        // way to learn that the history it was handed is incomplete.
+        recapMore: "This summary is incomplete: {n} more recorded item(s) from that day are not listed here.",
+        recapPartial: "More happened that day than these records cover, so treat the summary above as partial.",
+        nextLabel: "Recorded next step:",
+        nextUnknown: "The recorded next step could not be read.",
+        instruction: "Continue this task from that point, in this worktree. If anything above is ambiguous or contradicts what you find, stop and say what you need instead of guessing.",
+        truncated: "\n\n[Seed cut to fit the prompt limit.]",
+        // Used when text below the cut was kept: the marker sits at the cut point,
+        // so the prompt states that its middle is missing instead of reading as if
+        // the body and the closing instruction were continuous.
+        truncatedMiddle: "\n\n[Part of this seed was cut to fit the prompt limit — the task notes, the acceptance criteria, or the recap above may be incomplete or stop mid-sentence. What follows was kept in full. Check the task in Agora before relying on anything above.]\n",
       },
     },
     summary: {
@@ -183,6 +291,9 @@ export const workspace = {
       },
       attention: {
         none: "Nothing needs you on this task.",
+        loading: "Checking what needs you…",
+        partial: "There may be more waiting than shown — this list hit its limit.",
+        partialEmpty: "This list hit its limit, so whether anything needs you can't be said.",
       },
       changes: {
         none: "No deliverable yet.",
@@ -219,10 +330,18 @@ export const workspace = {
       allProjects: "全部项目",
       groups: {
         needsYou: "需你处理",
+        unknown: "待确认",
         running: "运行中",
         review: "待评审",
         done: "已完成",
       },
+      attentionPending: "尚未读取未处理事项，因此无法判断这些任务是否需你处理。打开任务可查看它自己的关卡。",
+      attentionCapped: "未处理事项已达到 {limit} 条读取上限，还有未读到的事项，因此无法判断这些任务是否需你处理。打开任务可查看它自己的关卡。",
+      attentionUnreadable: "未处理事项读取失败，因此无法判断这些任务是否需你处理。打开任务可查看它自己的关卡。",
+      tasksUnreadable: "任务列表读取失败，此列表可能缺少任务或已过时。",
+      projectsUnreadable: "项目列表读取失败，项目筛选可能已过时。",
+      runsUnreadable: "运行状态读取失败，此处显示的运行状态点与活动时间可能已过时。",
+      unknownSubtitle: "{state} · 是否需你处理未知",
       empty: "还没有任务——创建一个开始。",
       noMatch: "没有匹配的任务。",
       relative: {
@@ -279,6 +398,70 @@ export const workspace = {
         answered: "你回应了 {count} 项",
         handedOff: "工作已交付",
         noted: "新增 {count} 条说明",
+      },
+    },
+    continue: {
+      action: "用 Codex 继续",
+      close: "关闭继续面板",
+      panelTitle: "将要交给 Codex 的内容",
+      panelHint: "内容取自这个任务已记录的信息。可以修改——在你点击开始之前不会发送任何东西。",
+      reseed: "恢复为自动生成的内容",
+      start: "开始 Codex 运行",
+      starting: "启动中…",
+      provisioning: "正在创建 Codex 工作树…",
+      cancel: "取消",
+      count: "{n} / {limit}",
+      adapterNote: "以 Codex 运行，在本项目的 Codex 工作树中。",
+      blocked: {
+        dispatching: "正在启动运行…",
+        taskNotRunnable: "只有处于「计划就绪」或「运行中」的任务才能继续——当前是{state}。",
+        runActive: "已在运行——这个任务还有未结束的运行。",
+        runsUnknown: "读取这个任务的运行记录失败，因此无法判断是否已有运行在进行。请先刷新再启动新的运行。",
+        attentionOpen: "这个任务上有事项在等你处理——请先在「待你处理」中回应，再启动新的运行。",
+        attentionUnknown: "读取这个任务的待处理事项失败，因此无法判断是否有事项在等你。请先刷新再启动新的运行。",
+        followUpPending: "刚结束的运行正在等待评审是否启动。请稍候再启动新的运行。",
+      },
+      worktree: {
+        checking: "正在检查 Codex 工作树…",
+        ready: "Codex 工作树就绪，分支 {branch}。",
+        willProvision: "Codex 工作树尚不存在——将在运行开始前创建。",
+        provisioning: "Codex 工作树正在创建中，请等待完成。",
+        unreadable: "读取 Codex 工作树状态失败，因此它是否存在属于未知——这与「不存在」不是一回事。{detail}",
+        foreign: "Codex 工作树路径上是 Agora 之外创建的内容，无法使用。",
+        notGit: "项目目录不是 git 仓库，无法创建工作树。",
+        unprovisionable: "无法准备 Codex 工作树：{detail}",
+      },
+      errors: {
+        alreadyRunning: "这个任务已有运行在进行，因此本次没有启动。",
+        gateOpen: "这个任务上有一道门在等你处理，因此没有启动任何运行。{detail}",
+        reviewActive: "这个任务的评审还没有结束，因此没有启动任何运行。{detail}",
+        taskChanged: "任务在本页面之外发生了变化，因此没有启动任何运行。请刷新后重试。",
+        conflictUnknown: "控制平面拒绝了这次运行，而重新读取这个任务的运行记录也失败了——因此拒绝的原因，以及现在是否有运行在执行，都属于未知。请先刷新再重试。（{detail}）",
+        taskGone: "任务或其所属项目已不存在，因此没有启动任何运行。（{detail}）",
+        rejected: "控制平面拒绝了这次运行，没有启动：{detail}",
+        provisionFailed: "无法创建 Codex 工作树，因此没有启动任何运行：{detail}",
+        worktreeNotReady: "Codex 工作树仍未就绪，因此没有启动任何运行：{detail}",
+        startedUnconfirmed: "没有收到回复，但这个任务现在有运行在进行——请按「已启动」处理并在下方观察，不要再启动一次。（{detail}）",
+        startUnknown: "没有收到回复，重新读取这个任务的运行记录也失败了——因此运行是否已启动属于未知，而不是「没有启动」。请先刷新再重试。（{detail}）",
+        transportFailed: "这次请求没有收到回复，而现在这个任务没有运行在进行。可能请求根本没有到达控制平面，也可能它创建的运行已经结束——请先查看时间线再重试。（{detail}）",
+        unknown: "无法启动运行：{detail}",
+        afterProvision: "Codex 工作树已创建并就绪——只是运行没能启动，现在没有任何运行在进行。",
+        afterProvisionUnsure: "Codex 工作树已创建并就绪。运行是否已启动无法确认——请先查看下方的运行记录，再决定是否重新启动。",
+      },
+      seed: {
+        goalLabel: "任务目标：",
+        descriptionLabel: "任务说明：",
+        acceptanceLabel: "完成的标准：",
+        recapUnavailable: "无法读取这个任务上次停在哪里，因此这里没有总结。在做任何假设之前，请先查看任务时间线。",
+        recapNever: "这个任务还没有任何记录。",
+        recapNoItems: "那天有活动，但没有可总结的内容。",
+        recapMore: "这份总结不完整：那天还有 {n} 项已记录的内容没有列在这里。",
+        recapPartial: "那天发生的比这些记录覆盖的更多，请把上面的总结当作不完整的。",
+        nextLabel: "已记录的下一步：",
+        nextUnknown: "无法读取已记录的下一步。",
+        instruction: "请在这个工作树中，从上面所述的位置继续这个任务。如果上面有含糊之处，或与你实际看到的情况矛盾，请停下并说明你需要什么，不要猜测。",
+        truncated: "\n\n[为符合长度上限，内容已被截断。]",
+        truncatedMiddle: "\n\n[为符合长度上限，这份内容的一部分被截去了——上面的任务说明、完成标准或工作回顾可能不完整，也可能在句子中间断开。下面的内容是完整保留的。在依据上面的内容行动之前，请先在 Agora 中核对这个任务。]\n",
       },
     },
     summary: {
@@ -384,6 +567,9 @@ export const workspace = {
       },
       attention: {
         none: "此任务当前没有待你处理的事项。",
+        loading: "正在确认是否有待你处理的事项……",
+        partial: "可能还有未显示的事项——这份列表已达上限。",
+        partialEmpty: "这份列表已达上限,因此无法判断是否有待你处理的事项。",
       },
       changes: {
         none: "尚无交付物。",

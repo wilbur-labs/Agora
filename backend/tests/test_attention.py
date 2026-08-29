@@ -155,9 +155,74 @@ def test_attention_api_lifecycle_and_conflicts(tmp_path):
         app.dependency_overrides.clear()
 
 
-def _insert_active_run(tasks: TaskStore, task_id: str, project_id: str = "alpha") -> str:
+def test_create_once_is_an_exact_existence_test_not_a_scan(tmp_path):
+    """The idempotency test for a fixed-title item must not depend on a page size.
+
+    The caller that needs this (``ExecutionDispatcher._block_review_owed``) used to
+    ask for the first 50 open blockers on the task and look for its own title among
+    them. Attention ordering puts critical items ahead of its high-urgency one, so
+    50 critical blockers scoped to the same run hid the existing item and a
+    redelivery created a duplicate with the identical key. A capped scan cannot
+    answer an existence question — and the read and the insert have to be one
+    transaction, which a caller reading through ``list`` cannot arrange.
+    """
+    tasks, store, task = _system(tmp_path)
+    run_id = _insert_active_run(tasks, task.task_id)
+    keyed = dict(task_id=task.task_id, run_id=run_id, kind="blocker", urgency="high",
+                 title="Cross-review did not start", body="first", requester="agora-review",
+                 options=[], context={})
+
+    first = store.create(CreateAttentionRequest(**keyed))
+    # Enough same-run, same-kind items to push the existing one out of any page the
+    # caller might have asked for, and sorted ahead of it by urgency.
+    for index in range(60):
+        store.create(CreateAttentionRequest(
+            **{**keyed, "urgency": "critical", "title": f"Unrelated blocker {index}"}
+        ))
+
+    again, created = store.create_once(CreateAttentionRequest(**{**keyed, "body": "second"}))
+
+    assert created is False
+    assert again.item_id == first.item_id
+    # Not rewritten: the first item is the one a human may already be reading, and
+    # for a gating kind it is the one that has been holding the task.
+    assert again.body == "first" and again.version == first.version
+    matching = [
+        item for item in store.list(task_id=task.task_id, state=AttentionState.OPEN, limit=200)
+        if item.title == keyed["title"]
+    ]
+    assert len(matching) == 1
+
+    # A settled item is not an existing gate, so the next occurrence is recorded.
+    store.cancel(first.item_id, CancelAttentionRequest(expected_version=first.version))
+    replacement, created = store.create_once(CreateAttentionRequest(**{**keyed, "body": "third"}))
+    assert created is True and replacement.item_id != first.item_id
+
+    # Neither is an open row whose expiry has already passed: it gates nothing (see
+    # ExecutionStore._open_gate_items), so it must not suppress an item that would.
+    stale = store.create(CreateAttentionRequest(**{
+        **keyed, "title": "Expiring gate",
+        "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(),
+    }))
+    with tasks._transaction() as db:
+        db.execute(
+            "UPDATE attention_items SET expires_at = ? WHERE item_id = ?",
+            ((datetime.now(timezone.utc) - timedelta(hours=1)).isoformat(), stale.item_id),
+        )
+    fresh, created = store.create_once(CreateAttentionRequest(**{**keyed, "title": "Expiring gate"}))
+    assert created is True and fresh.item_id != stale.item_id
+
+    # And the key is the whole key: a different run_id is a different item.
+    other_run = _insert_active_run(tasks, task.task_id, run_id="run_second")
+    scoped, created = store.create_once(CreateAttentionRequest(**{**keyed, "run_id": other_run}))
+    assert created is True and scoped.run_id == other_run
+
+
+def _insert_active_run(
+    tasks: TaskStore, task_id: str, project_id: str = "alpha", *, run_id: str | None = None
+) -> str:
     now = datetime.now(timezone.utc).isoformat()
-    run_id = f"run_{task_id[-8:]}"
+    run_id = run_id or f"run_{task_id[-8:]}"
     with tasks._transaction() as db:
         db.execute(
             """INSERT INTO execution_runs
