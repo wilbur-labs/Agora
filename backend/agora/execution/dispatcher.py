@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from agora.projects import ProjectRegistry
+from agora.fsprobe import PathProbe, probe_path
 from agora.orchestration.runtime import RuntimeLaunchError, resolve_runtime_command
 from agora.orchestration.provider_usage import RuntimeResultFormat, normalize_native_output
 from agora.tasks.store import TaskNotFoundError, TaskStore
@@ -58,6 +59,20 @@ from .security import redact_text
 
 _REVIEW_PROMPT_BUDGET = 12_000
 _REVIEW_FILE_CHARS = 1_500
+
+
+def workspace_unavailable_reason(probe: PathProbe) -> str:
+    """Why a workspace cannot be used, distinguishing gone from unobservable.
+
+    "workspace not found" is a factual claim, so only a definite absence may carry
+    it. A stat that could not be completed is unknown and says so, because the two
+    call for opposite responses: reprovision, versus fix the permission.
+    """
+    if probe.absent:
+        return "workspace not found"
+    if probe.unknown:
+        return f"workspace could not be inspected ({probe.reason()})"
+    return "workspace is not a directory"
 
 
 class ExecutionDispatcher:
@@ -449,10 +464,17 @@ class ExecutionDispatcher:
                     run_id, RunState.FAILED, expected_version=run.version, exit_code=None,
                     stdout_tail="", stderr_tail="", error_message="workspace is no longer allowed",
                 )
-            if not workspace.is_dir():
+            workspace_probe = probe_path(workspace)
+            if not workspace_probe.is_dir():
+                # The run fails either way, but the reason it records has to be the
+                # reason. `is_dir()` answered False both for a workspace that is gone
+                # and for one this process could not stat, so an ACL-denied worktree
+                # was recorded as "not found" and sent the operator looking for a
+                # directory that is still there.
                 return self.store.finish(
                     run_id, RunState.FAILED, expected_version=run.version, exit_code=None,
-                    stdout_tail="", stderr_tail="", error_message="workspace not found",
+                    stdout_tail="", stderr_tail="",
+                    error_message=workspace_unavailable_reason(workspace_probe),
                 )
 
             try:
@@ -463,10 +485,22 @@ class ExecutionDispatcher:
             # Resolve again immediately before launch. A local writer can still swap a
             # component after this check on platforms without directory-handle cwd APIs.
             workspace = workspace.resolve()
-            if not self._workspace_is_allowed(workspace, project.root) or not workspace.is_dir():
+            recheck = probe_path(workspace)
+            if not self._workspace_is_allowed(workspace, project.root):
+                changed = "workspace changed before process start"
+            elif recheck.is_dir():
+                changed = None
+            elif recheck.unknown:
+                # Confirmed a directory a moment ago and now unobservable. Fail closed
+                # either way, but do not report an unreadable workspace as a changed
+                # one: the operator would go looking for a swap that never happened.
+                changed = f"workspace became unreadable before process start ({recheck.reason()})"
+            else:
+                changed = "workspace changed before process start"
+            if changed is not None:
                 return self.store.finish(
                     run_id, RunState.FAILED, expected_version=running.version, exit_code=None,
-                    stdout_tail="", stderr_tail="", error_message="workspace changed before process start",
+                    stdout_tail="", stderr_tail="", error_message=changed,
                 )
             # Never launch an agent unless the workspace is exactly this project/
             # adapter's provisioned linked worktree: its own top-level, a linked

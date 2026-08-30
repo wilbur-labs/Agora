@@ -56,7 +56,13 @@ export const workspace = {
       noTasksPrompt: "No tasks yet. Create one to open a workspace.",
     },
     project: {
-      strip: "{done}/{total} done · {verified}% verified",
+      // S3: no `{verified}%` any more. The verified percentage came from
+      // `metrics.verified_pct`, which counts a criterion as verified from any
+      // historical successful run of its task — so a requirements change makes new
+      // criteria read as already verified by a run that predates them. The strip now
+      // carries the task tally (a count of task states, which is what it says) and
+      // the snapshot-driven progress bar beside it.
+      strip: "{done}/{total} done",
       next: "Project next",
       forTask: "· {title}",
       allDone: "All tasks done or cancelled",
@@ -196,7 +202,33 @@ export const workspace = {
     },
     summary: {
       did: "What it did",
-      nothingYet: "Nothing produced yet.",
+      nothingYet: "No successful run is on record for this task yet.",
+      // The capped/partial run history reaching the header too: "nothing was
+      // produced" is a claim about the whole history, and this page holds one page
+      // of it. R3 — `runsTruncated` stopped the right column claiming "never ran"
+      // while the header still printed "Nothing produced yet" from the same read.
+      producedUnknown: "Whether anything was produced can't be said — this task's runs couldn't be read in full.",
+      // S1. A run succeeded and left nothing behind that this header can show: no
+      // printable output and no files in the task's handoff. It used to share
+      // `nothingYet` with "no successful run exists", which is a different result —
+      // this one means a run *ran*, which is either a verified no-op or an agent that
+      // did nothing, and both are things to act on rather than to read as "not
+      // started yet". The wording is bounded by what is read here: the run's own
+      // deliverable snapshot lives on the run card, so this does not claim the run
+      // wrote no files anywhere.
+      producedNothing: "A run succeeded but printed nothing, and this task's handoff lists no files. What it wrote, if anything, is on the run in the timeline.",
+      // The same successful, silent run when no handoff has been read. Delivery is
+      // fetched only for a task that is done, so a zero count is usually "not asked"
+      // — claiming "lists no files" from it would be the same false absence one step
+      // over.
+      producedFilesNotRead: "A run succeeded but printed nothing. No handoff has been read for this task, so files are not counted here — see the run in the timeline.",
+      producedFilesUnreadable: "A run succeeded but printed nothing, and this task's handoff could not be read.",
+      // No answer yet about this task's runs. Deliberately a sentence, not the em
+      // dash it used to be: under a heading that asks "what it did", a lone dash is
+      // indistinguishable from a rendered empty value, and this block is where an
+      // unknown must not look like an absence. The numeric cells on the right keep
+      // their dash — a labelled figure that has not arrived reads as pending there.
+      producedLoading: "Reading this task's runs…",
       files: "delivered {count} file(s)",
       trust: "Trustworthy completion",
       blocker: "Blocker",
@@ -249,6 +281,23 @@ export const workspace = {
         requirements: "Requirements",
         scenarios: "Acceptance scenarios",
       },
+      // S2: runs are nested rather than joined by connector lines — a review run is
+      // indented under the worker run it reviews, and the top level lists worker runs
+      // only. These sentences exist because nesting can hide two things, and neither
+      // may be hidden: a nested run's own failure, and a run this page cannot place.
+      nested: {
+        label: "On this run",
+        // Indentation de-emphasises; a failed review under a succeeded worker run is
+        // the case a person most needs to see, so the unit says it out loud.
+        failed: "{count} nested run(s) failed — read them below.",
+        // A run whose parent is not in this page. Not dropped, and not presented as a
+        // work unit of its own: the run is real, its place is unknown.
+        unplacedTitle: "Runs that could not be placed",
+        unplacedParentNotLoaded: "This review's run is not in the loaded history (the newest {limit} runs), so it is shown on its own rather than under the run it reviews.",
+        unplacedNamesNoRun: "This review run records no run that it reviews, so there is nothing to nest it under.",
+        unplacedNamesItself: "This review run records itself as the run it reviews, which cannot be nested.",
+        unplacedChainNotRooted: "This review run reviews another review, and following that chain never reaches a run this page can place (it loops, or it leads outside the loaded history), so it is shown on its own.",
+      },
       run: {
         title: "{adapter} run",
         titleReview: "{adapter} review",
@@ -276,11 +325,70 @@ export const workspace = {
         loadingFile: "loading…",
       },
     },
-    tabs: {
-      requirements: "Requirements",
-      run: "Run",
-      attention: "Attention",
-      changes: "Changes",
+    // The requirements strip in the header stack: the task's contract, moved off the
+    // right column (which now belongs to the run) without losing anything.
+    //
+    // There is no `tabs` block any more, and no `panels.run` block: the right column
+    // is two derived states rather than four selectable tabs, so the tab labels and
+    // the "latest run" summary they fronted no longer name anything on screen. A
+    // dictionary that still carries them invites the next reader to put them back.
+    requirements: {
+      label: "Requirements",
+      loading: "Loading the spec…",
+      scenarioCount: "{count} acceptance scenario(s)",
+    },
+    // The right column, in its two states. Every sentence here has to be true of the
+    // read it came from: "no run" and "couldn't tell" are different lines on purpose.
+    column: {
+      openRuns: "All runs",
+      title: {
+        loading: "Run",
+        unreadable: "Run",
+        none: "Run",
+        live: "Running now",
+        settled: "This run's changes",
+      },
+      loading: "Checking whether a run is in progress…",
+      unreadable: "Couldn't read this task's runs, so whether one is in progress can't be said. Nothing below is a claim that it isn't.",
+      none: "This task has no runs yet. Use Continue above to start one.",
+      liveWithoutRecord: "{count} run(s) of this task have not finished, and their records haven't arrived yet. Output will appear here as it is read.",
+      maybeNotLatest: "Some of this task's runs couldn't be read, so this may not be the most recent one.",
+      live: {
+        header: "{adapter} is running",
+        alsoActive: "{count} other run(s) of this task are also unfinished.",
+        noOutputYet: "No output captured yet.",
+      },
+      changes: {
+        header: "{adapter} delivered",
+      },
+      gate: {
+        label: "Before this is done",
+        actionRequired: "{count} item(s) need an answer from you.",
+        reviewRunning: "{adapter} is cross-reviewing this run.",
+        unknown: "Whether anything is waiting on this run can't be said yet.",
+        // Deliberately not "no review exists" and not a prediction. Nothing on
+        // record accounts for the review of this run, and whether automatic review
+        // is even on is not something this page can see.
+        reviewNotAccounted: "Nothing on record accounts for the independent review of this run.",
+        clear: "No gate is open on this task.",
+        answerThem: "Answer in Attention",
+        duringRun: "{count} item(s) need an answer from you while this runs.",
+        unreadableDuringRun: "Couldn't read whether anything needs you on this task.",
+      },
+      review: {
+        notWorker: "This run is not an implementation run, so no cross-review is expected for it.",
+        runDidNotSucceed: "This run didn't succeed, so no cross-review was started for it.",
+        unknown: "Whether a cross-review accounts for this run can't be said: this task's run list was incomplete.",
+        gateUnread: "Whether a cross-review accounts for this run can't be said: its approvals and blockers couldn't be read.",
+        active: "The cross-review by {adapter} hasn't finished yet.",
+        gateOpen: "The cross-review raised {count} item(s) for you to settle on this run.",
+        gateSettled: "The cross-review's {count} item(s) on this run have been settled by you.",
+        // The two arrangements the control plane's `cause` labels distinguish. A
+        // review run that finished is not itself the review being accounted for:
+        // the approval or blocker it was supposed to raise is.
+        noGateAfterReview: "A cross-review by {adapter} ended {state} but recorded no approval or blocker on this run, so nothing accounts for it.",
+        noGateNoReview: "No cross-review run and no approval or blocker are recorded against this run.",
+      },
     },
     panels: {
       openFull: "Open full page",
@@ -290,12 +398,6 @@ export const workspace = {
         state: "Spec {state} · rev {rev}",
         scenarios: "Acceptance scenarios",
         summary: "Summary",
-      },
-      run: {
-        none: "No runs yet.",
-        latest: "Latest run",
-        status: "{adapter} · {state}",
-        started: "Started {when}",
       },
       attention: {
         none: "Nothing needs you on this task.",
@@ -308,6 +410,11 @@ export const workspace = {
         delivered: "Delivered {count} file(s)",
         commit: "Commit {sha}",
         uncommitted: "Not committed",
+        // The handoff's own file paths. They had no home after the changes tab was
+        // removed: the count and the commit were rendered and the list they came
+        // from was fetched and dropped (R4).
+        files: "Files delivered",
+        moreFiles: "…and {count} more.",
       },
     },
     create: {
@@ -375,7 +482,7 @@ export const workspace = {
       noTasksPrompt: "还没有任务。创建一个以打开工作台。",
     },
     project: {
-      strip: "{done}/{total} 完成 · 已验证 {verified}%",
+      strip: "{done}/{total} 完成",
       next: "项目下一步",
       forTask: "· {title}",
       allDone: "所有任务已完成或取消",
@@ -475,7 +582,12 @@ export const workspace = {
     },
     summary: {
       did: "做了什么",
-      nothingYet: "尚未产出结果。",
+      nothingYet: "这个任务还没有成功的运行记录。",
+      producedUnknown: "无法判断是否有产出——此任务的运行记录未能完整读取。",
+      producedNothing: "有一次运行成功了,但没有任何输出,而这个任务的交接记录里也没有文件。它究竟写了什么,请看时间线中的那次运行。",
+      producedFilesNotRead: "有一次运行成功了,但没有任何输出。这个任务还没有读取到交接记录,因此这里不统计文件——请看时间线中的那次运行。",
+      producedFilesUnreadable: "有一次运行成功了,但没有任何输出,而这个任务的交接记录无法读取。",
+      producedLoading: "正在读取这个任务的运行记录……",
       files: "交付 {count} 个文件",
       trust: "可信完成度",
       blocker: "阻塞",
@@ -526,6 +638,15 @@ export const workspace = {
         requirements: "需求",
         scenarios: "验收场景",
       },
+      nested: {
+        label: "属于这次运行",
+        failed: "有 {count} 次嵌套运行失败——请在下方查看。",
+        unplacedTitle: "无法归位的运行",
+        unplacedParentNotLoaded: "这次评审所对应的运行不在已加载的历史里(最新 {limit} 条),因此它单独显示,而不是挂在被评审的运行下面。",
+        unplacedNamesNoRun: "这次评审运行没有记录它评审的是哪次运行,因此无法归位。",
+        unplacedNamesItself: "这次评审运行把自己记为被评审的运行,无法归位。",
+        unplacedChainNotRooted: "这次评审运行评审的是另一次评审,沿这条链一直追下去也找不到本页能够归位的运行(出现环,或者链指向已加载历史之外),因此它单独显示。",
+      },
       run: {
         title: "{adapter} 运行",
         titleReview: "{adapter} 评审",
@@ -553,11 +674,55 @@ export const workspace = {
         loadingFile: "加载中…",
       },
     },
-    tabs: {
-      requirements: "需求",
-      run: "运行",
-      attention: "关注",
-      changes: "变更",
+    requirements: {
+      label: "需求",
+      loading: "正在加载需求规格……",
+      scenarioCount: "{count} 条验收场景",
+    },
+    column: {
+      openRuns: "全部运行",
+      title: {
+        loading: "运行",
+        unreadable: "运行",
+        none: "运行",
+        live: "正在运行",
+        settled: "本次运行的改动",
+      },
+      loading: "正在确认是否有运行在进行中……",
+      unreadable: "无法读取此任务的运行记录,因此无法判断是否有运行正在进行。下面的内容不代表没有运行。",
+      none: "此任务尚无任何运行。可用上方的“继续”发起一次。",
+      liveWithoutRecord: "此任务有 {count} 次运行尚未结束,但记录还没读到。输出会在读到后显示在这里。",
+      maybeNotLatest: "此任务有部分运行未能读取,因此这可能不是最近的一次。",
+      live: {
+        header: "{adapter} 正在运行",
+        alsoActive: "此任务还有 {count} 次运行尚未结束。",
+        noOutputYet: "尚未捕获到任何输出。",
+      },
+      changes: {
+        header: "{adapter} 的交付",
+      },
+      gate: {
+        label: "在完成之前",
+        actionRequired: "有 {count} 项待你处理。",
+        reviewRunning: "{adapter} 正在对这次运行做交叉评审。",
+        unknown: "暂时无法判断这次运行是否还有待处理的事项。",
+        reviewNotAccounted: "没有任何记录能说明这次运行已经过独立评审。",
+        clear: "此任务当前没有未处理的门禁。",
+        answerThem: "去“关注”处理",
+        duringRun: "运行期间有 {count} 项待你处理。",
+        unreadableDuringRun: "无法读取此任务是否有待你处理的事项。",
+      },
+      review: {
+        notWorker: "这次运行不是实现运行,因此不会有针对它的交叉评审。",
+        runDidNotSucceed: "这次运行没有成功,因此没有为它启动交叉评审。",
+        unknown: "无法判断这次运行是否已由交叉评审承接:此任务的运行列表不完整。",
+        gateUnread: "无法判断这次运行是否已由交叉评审承接:未能读取它的审批与阻塞项。",
+        active: "{adapter} 的交叉评审尚未结束。",
+        gateOpen: "交叉评审针对这次运行提出了 {count} 项待你处理的事项。",
+        gateSettled: "交叉评审针对这次运行提出的 {count} 项事项已由你处理完毕。",
+        noGateAfterReview: "{adapter} 的交叉评审以 {state} 结束,但没有针对这次运行记录任何审批或阻塞项,因此这次评审并未被承接。",
+        noGateNoReview: "没有记录到针对这次运行的交叉评审运行,也没有任何审批或阻塞项。",
+      },
     },
     panels: {
       openFull: "打开完整页面",
@@ -567,12 +732,6 @@ export const workspace = {
         state: "规格 {state} · 修订 {rev}",
         scenarios: "验收场景",
         summary: "摘要",
-      },
-      run: {
-        none: "尚无运行。",
-        latest: "最近一次运行",
-        status: "{adapter} · {state}",
-        started: "开始于 {when}",
       },
       attention: {
         none: "此任务当前没有待你处理的事项。",
@@ -585,6 +744,8 @@ export const workspace = {
         delivered: "已交付 {count} 个文件",
         commit: "提交 {sha}",
         uncommitted: "未提交",
+        files: "交付的文件",
+        moreFiles: "……另有 {count} 个。",
       },
     },
     create: {

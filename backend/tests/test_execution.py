@@ -19,6 +19,7 @@ from fastapi.testclient import TestClient
 
 import agora.api.app as app_module
 from agora.api.app import app
+from agora.fsprobe import PathProbe
 from agora.execution.adapters import ExecutionAdapter, build_adapter_registry
 from agora.execution.dispatcher import ExecutionDispatcher, redact_output
 from agora.execution.models import (
@@ -3826,6 +3827,26 @@ def test_dispatch_failure_missing_workspace_and_recovery(tmp_path):
         )
     recovered = store.recover_abandoned()
     assert recovered[0].state == RunState.ABANDONED
+
+
+def test_an_unreadable_workspace_fails_the_run_without_calling_it_missing(tmp_path, monkeypatch):
+    """Fail closed either way, but record the reason that is true.
+
+    `workspace.is_dir()` answered False both for a worktree that is gone and for one
+    this process could not stat, so an ACL-denied workspace was recorded as "workspace
+    not found" — sending the operator to reprovision a directory that is still there
+    instead of to fix a permission.
+    """
+    tasks, store, dispatcher = _system(tmp_path, [sys.executable, "-c", "print('never runs')"])
+    task = _planned_task(tasks)
+    queued = dispatcher.queue(_request(task.task_id))
+    monkeypatch.setattr(
+        "agora.execution.dispatcher.probe_path",
+        lambda path, **kwargs: PathProbe("unknown", error=PermissionError(13, "denied")),
+    )
+    failed = asyncio.run(dispatcher.execute(queued.run_id))
+    assert failed.state == RunState.FAILED
+    assert failed.error_message == "workspace could not be inspected (PermissionError)"
 
 
 def test_timeout_and_cancel_running_process(tmp_path):

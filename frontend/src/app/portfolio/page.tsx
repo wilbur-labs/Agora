@@ -31,6 +31,8 @@ import {
   type TaskState,
 } from "@/lib/control-plane";
 import { listRuns, type RunState, type RunSummary } from "@/lib/execution";
+import { progressBarOf } from "@/lib/progress-snapshot";
+import { ProgressSnapshotBar } from "@/components/progress-snapshot-bar";
 import { useI18n } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
@@ -316,7 +318,14 @@ function ProjectCockpit({ dashboard, onEditCharter }: { dashboard: ProjectDashbo
         <Button variant="outline" size="sm" onClick={onEditCharter}><Pencil className="size-3.5" /> {t("portfolio.cockpit.charter.edit")}</Button>
       </div>
 
-      {/* Three metrics: produced progress vs human-verified completion vs health. */}
+      {/* Produced progress, snapshot-driven completion, and health.
+          The middle tile used to be `metrics.verified_pct`. It is gone from the
+          display layer by recorded decision: that percentage counts a criterion as
+          verified from any historical successful run of its task, so criteria added
+          by a later requirements change read as verified by a run that predates
+          them. The tile now renders the project's RESUME progress snapshot — done
+          items only in the number, in-progress as a translucent second segment — and
+          renders no number at all when there is no snapshot to count. */}
       <div className="grid gap-3 sm:grid-cols-3">
         <MetricTile
           label={t("portfolio.cockpit.metrics.progress")}
@@ -324,12 +333,20 @@ function ProjectCockpit({ dashboard, onEditCharter }: { dashboard: ProjectDashbo
           sub={t("portfolio.cockpit.metrics.weight", { done: metrics.produced_weight, total: metrics.total_weight })}
           barClass="bg-blue-500"
         />
-        <MetricTile
-          label={t("portfolio.cockpit.metrics.verified")}
-          pct={metrics.verified_pct}
-          sub={t("portfolio.cockpit.metrics.weight", { done: metrics.verified_weight, total: metrics.total_weight })}
-          barClass="bg-emerald-500"
-        />
+        <div className="rounded-xl border bg-muted/30 p-3">
+          <p className="text-xs font-medium text-muted-foreground">{t("common.progress.label")}</p>
+          <ProgressSnapshotBar
+            bar={progressBarOf({
+              snapshot: dashboard.progress_snapshot,
+              // This component only renders with a dashboard in hand; the page above
+              // owns the loading and failed states.
+              dashboardLoaded: true,
+              dashboardReadFailed: false,
+            })}
+            source={dashboard.progress_snapshot?.source}
+            className="mt-1"
+          />
+        </div>
         <div className={cn("rounded-xl border p-3", attention ? "border-orange-500/40 bg-orange-500/5" : "bg-muted/30")}>
           <p className="text-xs font-medium text-muted-foreground">{t("portfolio.cockpit.metrics.health")}</p>
           <p className={cn("mt-2 flex items-center gap-1.5 text-lg font-semibold", attention ? "text-orange-600 dark:text-orange-400" : "text-emerald-600 dark:text-emerald-400")}>

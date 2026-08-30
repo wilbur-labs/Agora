@@ -522,6 +522,84 @@ def test_a_missing_source_is_still_recognised_as_absent(tmp_path):
     assert list(registry.list_projects()) == ["alpha"]
 
 
+def test_an_undecodable_source_is_unknown_not_present(tmp_path):
+    """Bytes that are not text mean the read never completed.
+
+    ``source_present`` is True only when the source was read. A UnicodeDecodeError
+    is raised part-way through decoding, so nothing about the file's content was
+    ever observed; calling that "present" reports an observation that was not made.
+    """
+    source = tmp_path / ".agora" / "projects.yaml"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    # A UTF-16 encoded document: valid YAML text, undecodable as UTF-8.
+    source.write_bytes("projects:\n  alpha:\n    root: x\n".encode("utf-16"))
+
+    with pytest.raises(ProjectImportError) as err:
+        read_project_yaml(source, project_root=tmp_path)
+    assert not isinstance(err.value, ProjectImportSourceMissing)
+    assert err.value.source_state == "unknown"
+
+
+def test_an_undecodable_source_fails_closed_and_reports_unknown(tmp_path):
+    """Unknown must not unlock seeding, and must not render as absence."""
+    source = tmp_path / ".agora" / "projects.yaml"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(b"\xff\xfe\x00projects:")
+
+    with pytest.raises(ProjectImportError) as err:
+        _registry(tmp_path)
+    assert err.value.source_state == "unknown"
+    store = ProjectStore(resolve_control_plane_db_path(_config(tmp_path), project_root=tmp_path))
+    assert store.count() == 0
+
+    # With projects already stored the registry keeps serving and reports unknown.
+    _write_yaml(tmp_path)
+    _registry(tmp_path)
+    source.write_bytes(b"\xff\xfe\x00projects:")
+    recovered = _registry(tmp_path)
+    assert sorted(recovered.list_projects()) == ["alpha", "beta"]
+    status = recovered.import_status()
+    assert status["error"] is not None
+    assert status["source_present"] is None
+
+
+def test_every_import_error_that_reports_present_has_read_the_source(tmp_path):
+    """The ``present`` default is only correct after the read completes.
+
+    Guards the class of bug this test file was extended for: a raise site added
+    before ``read_text`` returns would inherit ``source_state='present'`` and claim
+    an observation nobody made. Every failure before that point must be explicit.
+    """
+    import ast
+    import inspect
+
+    from agora.projects import importer as importer_module
+
+    tree = ast.parse(inspect.getsource(importer_module))
+    read_fn = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "read_project_yaml"
+    )
+    # The try/except around read_text is the only place presence is not yet known.
+    read_try = next(node for node in read_fn.body if isinstance(node, ast.Try))
+    for handler in read_try.handlers:
+        raises = [n for n in ast.walk(handler) if isinstance(n, ast.Raise)]
+        assert raises, "an unhandled read failure would fall through as success"
+        for raise_node in raises:
+            call = raise_node.exc
+            assert isinstance(call, ast.Call)
+            name = getattr(call.func, "id", "")
+            if name == "ProjectImportSourceMissing":
+                continue  # absent by construction
+            keywords = {kw.arg: kw.value for kw in call.keywords}
+            assert "source_state" in keywords, (
+                f"{name} raised before the read completed must state source_state"
+            )
+            assert isinstance(keywords["source_state"], ast.Constant)
+            assert keywords["source_state"].value == "unknown"
+
+
 def test_a_change_made_and_reverted_through_agora_still_beats_the_file(tmp_path):
     """The reviewer's second reproduction: change a value and change it back.
 

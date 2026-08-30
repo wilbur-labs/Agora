@@ -14,6 +14,7 @@ from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
 from agora.config.settings import get_config
+from agora.fsprobe import probe_path
 from agora.projects import ProjectRegistry
 from agora.tasks.models import TaskManifest
 from agora.tasks.router import get_project_registry, get_task_store
@@ -35,7 +36,7 @@ from .deliverables import (
     read_file,
     resolve_confined,
 )
-from .dispatcher import ExecutionDispatcher
+from .dispatcher import ExecutionDispatcher, workspace_unavailable_reason
 from .handoff import HandoffError, hand_off
 from .models import (
     AdapterCapability,
@@ -277,6 +278,7 @@ def run_deliverables(
 
     base = {"run_id": run_id, "workspace": str(workspace)}
     snapshot = store.deliverable_snapshot(run_id)
+    live_workspace = probe_path(workspace)
     if snapshot is not None:
         # Serving stored data, so the worktree-shape checks below do not gate this
         # list — they gate filesystem reads, and there is no filesystem read here.
@@ -292,7 +294,9 @@ def run_deliverables(
             "truncated": bool(snapshot.get("truncated")),
             "source": "snapshot",
             "captured_at": run.finished_at,
-            "content_available": workspace.is_dir() and _ready_worktree_for_run(registry, run),
+            # A capability, not an existence claim: when the worktree cannot even be
+            # stat'd, content genuinely cannot be served, so False stays true here.
+            "content_available": bool(live_workspace.is_dir()) and _ready_worktree_for_run(registry, run),
         }
     if run.state in TERMINAL_RUN_STATES:
         return {
@@ -300,8 +304,15 @@ def run_deliverables(
             "unavailable": "this run ended without a deliverable snapshot; its files are not recoverable",
         }
 
-    if not workspace.is_dir():
-        return {**base, "files": [], "source": "live", "unavailable": "workspace not found"}
+    if not live_workspace.is_dir():
+        # Absence and "could not be stat'd" are different answers, and the operator's
+        # next move differs: reprovision, versus fix a permission. `is_dir()` collapsed
+        # them into "workspace not found".
+        return {
+            **base, "files": [], "source": "live",
+            "unavailable": workspace_unavailable_reason(live_workspace),
+        }
+
     if not _ready_worktree_for_run(registry, run):
         return {**base, "files": [], "source": "live", "unavailable": "workspace is not a provisioned worktree"}
     return {**base, "files": list_changes(workspace), "source": "live"}

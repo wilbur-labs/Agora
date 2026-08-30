@@ -32,6 +32,27 @@ export const common = {
       loading: "Loading",
       empty: "Nothing to show yet.",
     },
+    // The project progress bar (lib/progress-snapshot.ts). Shared, because the same
+    // bar is the answer on the workspace strip and in the portfolio cockpit, and two
+    // copies of these sentences would let the two surfaces disagree about what a
+    // missing snapshot means. Every sentence names the read it came from: none of
+    // them may be readable as "no progress has been made".
+    progress: {
+      label: "Progress",
+      // The counted items behind the percentage, so the number is checkable.
+      counts: "{done} done · {inProgress} in progress · {todo} to do",
+      // Present and tracking nothing yet — not a missing snapshot, and not 0%.
+      noItems: "The progress snapshot tracks no items yet.",
+      // No snapshot at all. Says where one would be read from, so it reads as a
+      // thing that can be created rather than as a failure.
+      noSnapshot: "No progress snapshot for this project ({source}), so no progress figure is shown.",
+      // Read fine, and it does track items — in markers this reader does not count.
+      // The honest sentence names the reader, not the project: saying "no items" about
+      // a file full of checkboxes would be false.
+      markersNotCounted: "The progress snapshot ({source}) uses checklist markers this reader does not count, so no progress figure is shown.",
+      unreadable: "The progress snapshot could not be read, so progress is not known.",
+      notReported: "This server does not report a progress snapshot, so progress is not known.",
+    },
   },
   zh: {
     brand: {
@@ -61,6 +82,15 @@ export const common = {
     state: {
       loading: "加载中",
       empty: "暂无内容。",
+    },
+    progress: {
+      label: "进度",
+      counts: "已完成 {done} · 进行中 {inProgress} · 待办 {todo}",
+      noItems: "进度快照中还没有登记任何条目。",
+      noSnapshot: "这个项目没有进度快照（{source}），因此不显示任何进度数字。",
+      markersNotCounted: "进度快照（{source}）使用的清单标记不在本读取器的统计范围内,因此不显示任何进度数字。",
+      unreadable: "进度快照无法读取,因此进度未知。",
+      notReported: "这个服务端不提供进度快照,因此进度未知。",
     },
   },
 } as const;

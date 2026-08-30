@@ -233,7 +233,7 @@ function WorkspacesCard({ overview, onReload, onError }: { overview: SettingsOve
               <span className="font-semibold">{project.name}</span>
               <Badge variant="outline">{project.project_id}</Badge>
               {project.project_id === overview.projects.current && <Badge variant="secondary">{t("settings.workspaces.current")}</Badge>}
-              <StatusDot ok={project.root_is_git} on={t("settings.workspaces.git")} off={t("settings.workspaces.notGit")} />
+              <StatusDot ok={project.root_is_git} on={t("settings.workspaces.git")} off={t("settings.workspaces.notGit")} unknown={t("settings.workspaces.gitUnknown")} />
             </div>
             <p className="mt-2 break-all font-mono text-[11px] text-muted-foreground">{project.root}</p>
             <p className="mt-1 text-[11px] text-muted-foreground">{t("settings.workspaces.agents", { worker: project.worker_agent, reviewer: project.reviewer_agent })}</p>
@@ -242,7 +242,12 @@ function WorkspacesCard({ overview, onReload, onError }: { overview: SettingsOve
                 <div key={ws.adapter} className="flex flex-wrap items-center gap-2 text-xs">
                   <span className="w-14 shrink-0 capitalize text-muted-foreground">{ws.adapter}</span>
                   <span className="break-all font-mono text-[11px]">{ws.path}</span>
-                  <StatusDot ok={ws.exists && ws.writable} on={ws.writable ? t("settings.workspaces.writable") : t("settings.workspaces.exists")} off={ws.exists ? t("settings.workspaces.readonly") : t("settings.workspaces.missing")} />
+                  <StatusDot
+                    ok={ws.exists === null || ws.writable === null ? null : ws.exists && ws.writable}
+                    on={ws.writable ? t("settings.workspaces.writable") : t("settings.workspaces.exists")}
+                    off={ws.exists ? t("settings.workspaces.readonly") : t("settings.workspaces.missing")}
+                    unknown={t("settings.workspaces.stateUnknown")}
+                  />
                 </div>
               ))}
             </div>
@@ -362,11 +367,17 @@ function CountRow({ label, counts }: { label: string; counts: Record<string, num
   );
 }
 
-function StatusDot({ ok, on, off }: { ok: boolean; on: string; off: string }) {
+function StatusDot({ ok, on, off, unknown }: { ok: boolean | null; on: string; off: string; unknown: string }) {
+  // Three states, because the backend now reports three. A null folded into `off`
+  // would say "missing" about a path nobody could read — the false claim this dot
+  // exists to avoid making.
+  const label = ok === null ? unknown : ok ? on : off;
+  const tone = ok === null ? "text-amber-600 dark:text-amber-400" : ok ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground";
+  const dot = ok === null ? "bg-amber-500" : ok ? "bg-emerald-500" : "bg-muted-foreground/50";
   return (
-    <span className={cn("flex items-center gap-1 text-[11px]", ok ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground")}>
-      <span className={cn("size-1.5 rounded-full", ok ? "bg-emerald-500" : "bg-muted-foreground/50")} />
-      {ok ? on : off}
+    <span className={cn("flex items-center gap-1 text-[11px]", tone)}>
+      <span className={cn("size-1.5 rounded-full", dot)} />
+      {label}
     </span>
   );
 }

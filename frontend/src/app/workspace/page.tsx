@@ -86,6 +86,32 @@ import {
   type TaskAttentionView,
   type TaskBlockerClaim,
 } from "@/lib/task-attention";
+import {
+  GATE_UNKNOWN_REASON_KEY,
+  GATE_VERDICT_KEY,
+  gateVerdict,
+  latestDeliveredOf,
+  outcomeClaimNotice,
+  outcomeClaimOf,
+  reviewStandingNotice,
+  reviewStandingOf,
+  runColumnOf,
+  runRole,
+  ROLE_WORKER,
+  type DeliveredResult,
+  type GateVerdict,
+  type ReviewStanding,
+  type RunColumn,
+} from "@/lib/run-column";
+import {
+  FAILED_RUN_STATES,
+  nestedFailureCount,
+  runTreeOf,
+  type RunUnit,
+  type UnplacedRun,
+} from "@/lib/run-tree";
+import { progressBarOf } from "@/lib/progress-snapshot";
+import { ProgressSnapshotBar } from "@/components/progress-snapshot-bar";
 import { useI18n, type Translate, type TranslateEnum } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
@@ -335,7 +361,7 @@ export default function WorkspacePage() {
       <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
         {error && <div className="m-4 shrink-0 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{t("workspace.errors.loadFailed", { error })}</div>}
         {selectedTask ? (
-          <TaskWorkspace key={selectedTask.task_id} refreshNonce={refreshNonce} task={selectedTask} latestRun={latestRunByTask.get(selectedTask.task_id) ?? null} onTaskMayHaveChanged={load} />
+          <TaskWorkspace key={selectedTask.task_id} refreshNonce={refreshNonce} task={selectedTask} onTaskMayHaveChanged={load} />
         ) : (
           <EmptyWorkspace hasTasks={tasks.length > 0} />
         )}
@@ -490,9 +516,11 @@ function EmptyWorkspace({ hasTasks }: { hasTasks: boolean }) {
   );
 }
 
-type Tab = "requirements" | "run" | "attention" | "changes";
-const TABS: Tab[] = ["requirements", "run", "attention", "changes"];
-
+// How many of this task's runs the history read asks for. The right column is
+// derived from this page, so the cap matters: a task with more runs than this
+// leaves the read truncated, and a truncated page cannot say which run is the
+// latest or that no review exists (see lib/run-column.ts).
+const RUN_HISTORY_LIMIT = 100;
 // Retry window for a rollover boundary that is already in the past — see the
 // rollover effect below. Wide enough that an offline page costs one request a
 // minute at worst, short enough that a page recovers the day within one.
@@ -523,6 +551,17 @@ const FOLLOW_UP_WINDOW_MS = 30_000;
 // gate is open".
 const TASK_ATTENTION_LIMIT = 500;
 
+// How many of ONE run's attention items to ask for when checking whether the review
+// path has raised its gate for it. A run will never have this many, which is the
+// point: a full page may have been cut off, and a cut-off page cannot say the gate
+// item is absent (see `ReviewGateFacts` in lib/run-column.ts).
+const REVIEW_GATE_LIMIT = 100;
+
+// How many of the handoff's delivered paths the gate block lists before it says how
+// many more there are. Enough to recognise the delivery, short enough not to push
+// the gate itself off the column.
+const HANDOFF_FILES_SHOWN = 12;
+
 // The parent's global attention list is deliberately NOT passed in, in any form.
 // It is one capped page across every project, so it is not authoritative for one
 // task, and substituting it when this component's own task-scoped read had no
@@ -535,7 +574,14 @@ const TASK_ATTENTION_LIMIT = 500;
 // appeared at all. This component asks its own question (loadTaskAttention) and
 // every task-level attention claim on this screen — panel, Continue gate, and
 // blocker line — derives from that one answer (lib/task-attention.ts).
-function TaskWorkspace({ task, latestRun, refreshNonce, onTaskMayHaveChanged }: { task: TaskManifest; latestRun: RunSummary | null; refreshNonce: number; onTaskMayHaveChanged: () => void }) {
+// The parent's `latestRun` summary is deliberately NOT a prop any more. It was the
+// right column's "Run" tab, and that tab is gone: the column is now derived from
+// this component's own task-scoped reads (lib/run-column.ts), which know the
+// difference between "no run is unsettled" and "whether one is could not be read".
+// The parent's summary comes from a capped, global run page and cannot make that
+// distinction — it would be the rail's projection standing in for the task's own
+// answer, which is the substitution this file has had to remove twice already.
+function TaskWorkspace({ task, refreshNonce, onTaskMayHaveChanged }: { task: TaskManifest; refreshNonce: number; onTaskMayHaveChanged: () => void }) {
   const { t, te } = useI18n();
   const [dashboard, setDashboard] = useState<ProjectDashboard | null>(null);
   const [dashError, setDashError] = useState(false);
@@ -556,12 +602,23 @@ function TaskWorkspace({ task, latestRun, refreshNonce, onTaskMayHaveChanged }: 
   // running" — an unknown presented as an absence, on the one question that
   // decides whether a second run may be dispatched.
   const [runsError, setRunsError] = useState(false);
+  // Whether that page came back at its cap. A truncated history cannot say which
+  // run is the latest, nor that no review run exists for a worker run — both are
+  // claims about the whole list. Tracked separately from `runsError` because "some
+  // records could not be read" and "there are more records than were read" are
+  // different facts about the same read.
+  const [runsTruncated, setRunsTruncated] = useState(false);
   // The task's unsettled runs, asked as their own question rather than filtered
   // out of the page of recent history above: that page is capped, so a long-lived
   // task can fill it with terminal runs while an older one is still queued, and
   // an active run missing from it is not an absence. null = no answer yet, or the
   // read failed — both unknown.
   const [activeRuns, setActiveRuns] = useState<RunSummary[] | null>(null);
+  // Whether that read failed, as opposed to not having answered yet. Both leave
+  // `activeRuns` null and both are unknown to the Continue gate, but the right
+  // column has to *say* which: a spinner and "couldn't tell whether a run is
+  // running" are different sentences, and neither is "nothing is running".
+  const [activeRunsError, setActiveRunsError] = useState(false);
   // This task's own open attention items. Asked here, task-scoped, rather than
   // taken from the parent's global list: that list is one capped page, so past
   // the cap a task whose approval sits beyond it would read as "no open gate"
@@ -576,9 +633,20 @@ function TaskWorkspace({ task, latestRun, refreshNonce, onTaskMayHaveChanged }: 
   // The task-scoped read came back full, so it may have been cut off. "Not in a
   // page that may be truncated" is not "not there", so this reads as unknown too.
   const [taskAttentionTruncated, setTaskAttentionTruncated] = useState(false);
+  // The review path's own gate items for ONE worker run, in EVERY state — the fact
+  // `_reviews_owed` releases on (`_has_review_gate_item`), and the reason this is a
+  // second read rather than a filter over `taskAttention`: that read asks for
+  // `state=open`, and the item that releases the obligation is most often one the
+  // human has already responded to or cancelled. Reading absence out of the open
+  // list is what let the column say "clear" for a run the backend still owes a
+  // review for. Carried with the run id it was read for, so an answer for the
+  // previous run is never counted against the current one.
+  const [reviewGate, setReviewGate] = useState<AttentionItem[] | null>(null);
+  const [reviewGateFor, setReviewGateFor] = useState<string | null>(null);
+  const [reviewGateError, setReviewGateError] = useState(false);
+  const [reviewGateTruncated, setReviewGateTruncated] = useState(false);
   // When set, the follow-up watch below is armed until this timestamp.
   const [followUpUntil, setFollowUpUntil] = useState<number | null>(null);
-  const [tab, setTab] = useState<Tab>("requirements");
 
   // Where the task was left off. Reusable because posting a note changes the
   // answer: the recap would otherwise keep saying "yesterday" while the timeline
@@ -640,7 +708,7 @@ function TaskWorkspace({ task, latestRun, refreshNonce, onTaskMayHaveChanged }: 
   const loadRuns = useCallback((signal?: AbortSignal) => {
     const token = ++runsRequest.current;
     const stale = () => signal?.aborted || token !== runsRequest.current;
-    return listRuns({ task_id: task.task_id, limit: 100 }, signal)
+    return listRuns({ task_id: task.task_id, limit: RUN_HISTORY_LIMIT }, signal)
       .then((summaries) =>
         Promise.all(summaries.map((summary) => getRun(summary.run_id, signal).catch(() => null)))
           .then((details) => {
@@ -648,6 +716,9 @@ function TaskWorkspace({ task, latestRun, refreshNonce, onTaskMayHaveChanged }: 
             const loaded = details.filter((run): run is ExecutionRun => run !== null);
             setRuns(loaded);
             setRunsError(loaded.length !== summaries.length);
+            // At the cap the page is "at least these runs", so nothing derived from
+            // it may claim to be about all of them.
+            setRunsTruncated(summaries.length >= RUN_HISTORY_LIMIT);
           }),
       )
       .catch(() => { if (!stale()) setRunsError(true); });
@@ -671,9 +742,13 @@ function TaskWorkspace({ task, latestRun, refreshNonce, onTaskMayHaveChanged }: 
       .then((summaries) => {
         if (stale()) return null;
         setActiveRuns(summaries);
+        setActiveRunsError(false);
         return summaries as RunSummary[] | null;
       })
-      .catch(() => { if (!stale()) setActiveRuns(null); return null; });
+      .catch(() => {
+        if (!stale()) { setActiveRuns(null); setActiveRunsError(true); }
+        return null;
+      });
   }, [task.task_id]);
 
   // "Is a human gate open on this task?" — its own task-scoped request, so the
@@ -784,22 +859,19 @@ function TaskWorkspace({ task, latestRun, refreshNonce, onTaskMayHaveChanged }: 
     return () => document.removeEventListener("visibilitychange", onVisible);
   }, [loadRecap]);
 
-  // The latest successful *worker* run is what "produced" the current result.
-  // In the auto-review flow the review run finishes after the worker run it
-  // reviews, so an unfiltered "latest success" shows the review verdict instead
-  // of the implementation. Role rule, identical to dispatcher.py and
-  // handoff.py: a missing role is a legacy worker run, but anything present
-  // must equal "worker" exactly — an unknown or future role is never presented
-  // as the delivered result.
-  const latestSuccess = useMemo(() => {
-    const ok = (runs ?? []).filter(
-      (r) =>
-        r.state === "succeeded" &&
-        String((r.result_metadata as Record<string, unknown>)?.agora_role ?? "worker") === "worker",
-    );
-    ok.sort((a, b) => (a.finished_at ?? a.queued_at).localeCompare(b.finished_at ?? b.queued_at));
-    return ok.at(-1) ?? null;
-  }, [runs]);
+  // The latest successful *worker* run is what "produced" the current result — or
+  // the reason no such answer exists. In the auto-review flow the review run
+  // finishes after the worker run it reviews, so an unfiltered "latest success"
+  // shows the review verdict instead of the implementation; and the run page this
+  // is filtered from is capped and partially readable, so "there is no success" is
+  // a claim only a complete read may make. Both rules live in
+  // lib/run-column.ts (`latestDeliveredOf`) rather than here, which is R3: the
+  // truncation flag now applies on every path that consumes the capped history,
+  // not only inside runColumnOf.
+  const latestSuccess = useMemo<DeliveredResult<ExecutionRun>>(
+    () => latestDeliveredOf({ runs, runsReadFailed: runsError, runsTruncated }),
+    [runs, runsError, runsTruncated],
+  );
 
   // Runs that have not settled: the authoritative active-run read, plus anything
   // non-terminal this view already holds (a run dispatched a moment ago is known
@@ -827,6 +899,17 @@ function TaskWorkspace({ task, latestRun, refreshNonce, onTaskMayHaveChanged }: 
         activeRunKey.split(",").map((runId) => getRun(runId, ctrl.signal).catch(() => null)),
       );
       if (ctrl.signal.aborted) return;
+      // R2: re-observe the human gate on every tick, not only when a run settles.
+      // The loop used to refresh run records alone, so an approval or a question the
+      // agent raised *mid-run* was invisible until the run reached a terminal state.
+      // The live column says nothing when the attention read is in flight or empty —
+      // that silence rule stays, because an empty banner reads as "nothing needs
+      // you" — but presence has to be re-observed while presence can change, and a
+      // question raised mid-run is the most time-critical item this product has.
+      // Signalled, so it is dropped when this effect retires; the terminal branch
+      // below re-reads unsignalled and, being the newer request, wins the token race
+      // in loadTaskAttention.
+      void loadTaskAttention(ctrl.signal);
       const updates = fresh.filter((run): run is ExecutionRun => run !== null);
       if (updates.length > 0) {
         setRuns((current) => mergeRunUpdates(current, updates));
@@ -938,6 +1021,97 @@ function TaskWorkspace({ task, latestRun, refreshNonce, onTaskMayHaveChanged }: 
   // component.
   const blockerClaim = useMemo(() => taskBlockerClaim(attentionView), [attentionView]);
 
+  // Which of the two states the right column is in, derived from this task's runs
+  // and from nothing the view can override — no stored tab, no default. See
+  // lib/run-column.ts for why the four unreadable/loading shapes are distinct.
+  const runColumn = useMemo<RunColumn<ExecutionRun>>(
+    () => runColumnOf({
+      runs,
+      runsReadFailed: runsError,
+      runsTruncated,
+      activeRunIds: activeRuns === null ? null : activeRuns.map((run) => run.run_id),
+      activeReadFailed: activeRunsError,
+    }),
+    [runs, runsError, runsTruncated, activeRuns, activeRunsError],
+  );
+
+  // The run whose review gate is worth asking about: the settled column's run, when
+  // it is a successful worker run. Nothing else can owe a review, and
+  // `reviewStandingOf` answers those cases without touching this read.
+  const gateRunId = runColumn.kind === "settled"
+    && runRole(runColumn.run) === ROLE_WORKER
+    && runColumn.run.state === "succeeded"
+    ? runColumn.run.run_id
+    : null;
+
+  // Read that run's approvals and blockers in every state. This is the one fact the
+  // control plane releases the review obligation on, so the column derives its
+  // standing from it instead of from the review run's state — which the backend is
+  // explicit does not account for a review, however it ended.
+  useEffect(() => {
+    // Nothing to ask about. The stale answer for a previous run is deliberately left
+    // in place rather than cleared here: `reviewStandingOf` compares `forRunId` with
+    // the run it is judging and treats a mismatch as "not read", so an answer about
+    // another run can never be counted against this one — and clearing it
+    // synchronously in an effect only buys a cascading render.
+    if (gateRunId === null) return;
+    const ctrl = new AbortController();
+    // No `state` filter, deliberately: a responded or cancelled item is exactly what
+    // releases the obligation, and asking only for open ones is how "absent from the
+    // open list" became "no gate was ever raised".
+    listAttention({ task_id: task.task_id, run_id: gateRunId, limit: REVIEW_GATE_LIMIT }, ctrl.signal)
+      .then((items) => {
+        if (ctrl.signal.aborted) return;
+        setReviewGate(items);
+        setReviewGateFor(gateRunId);
+        setReviewGateError(false);
+        setReviewGateTruncated(items.length >= REVIEW_GATE_LIMIT);
+      })
+      .catch(() => {
+        if (ctrl.signal.aborted) return;
+        // Unknown, not empty: the column must not read a failed request as "no gate
+        // item exists". `reviewGateFor` is still recorded so the facts belong to this
+        // run rather than looking like an answer that never arrived.
+        setReviewGate(null);
+        setReviewGateFor(gateRunId);
+        setReviewGateError(true);
+        setReviewGateTruncated(false);
+      });
+    return () => ctrl.abort();
+  // taskAttention: when the open-item read changes, this run's items may have been
+  // responded to or cancelled, and the two reads must not disagree about the same
+  // item. It is written only by loadTaskAttention, so this cannot self-trigger.
+  }, [gateRunId, task.task_id, refreshNonce, taskAttention]);
+
+  // What accounts for the independent cross-review of the run the settled column is
+  // showing. Only meaningful in that state, so it is null otherwise rather than
+  // computed against a run that is still producing output.
+  const reviewStanding = useMemo<ReviewStanding | null>(
+    () => runColumn.kind !== "settled"
+      ? null
+      : reviewStandingOf({
+        run: runColumn.run,
+        runs,
+        runsReadFailed: runsError,
+        runsTruncated,
+        gate: {
+          items: reviewGate,
+          readFailed: reviewGateError,
+          truncated: reviewGateTruncated,
+          forRunId: reviewGateFor,
+        },
+      }),
+    [runColumn, runs, runsError, runsTruncated, reviewGate, reviewGateError, reviewGateTruncated, reviewGateFor],
+  );
+
+  // The gate headline: what stands between that run and done. Built from the same
+  // attention view the Continue gate and the blocker line read, so the column
+  // cannot disagree with the rest of the page about whether a gate is open.
+  const verdict = useMemo<GateVerdict | null>(
+    () => reviewStanding === null ? null : gateVerdict({ attention: attentionView, review: reviewStanding }),
+    [attentionView, reviewStanding],
+  );
+
   // What the Continue action seeds its prompt with: the recap's day and items as
   // this view already renders them, plus the task's own goal and recorded next
   // step. Unreadable facts travel as "unavailable" so the seed says so instead of
@@ -995,30 +1169,30 @@ function TaskWorkspace({ task, latestRun, refreshNonce, onTaskMayHaveChanged }: 
           onTaskMayHaveChanged={onTaskMayHaveChanged}
         />
       </div>
-      <OutcomeSummary task={task} dashTask={dashTask} dashError={dashError} blocker={blockerClaim} delivery={delivery} deliveryError={deliveryError} latestSuccess={latestSuccess} />
+      <OutcomeSummary task={task} dashTask={dashTask} dashError={dashError} blocker={blockerClaim} delivery={delivery} deliveryError={deliveryError} deliveryAsked={task.state === "done"} latestSuccess={latestSuccess} />
+      {/* Requirements: the task's contract, not "what is happening now", so it is
+          NOT in the right column any more. It sits here, directly under the
+          outcome header whose Trust cell scores the very criteria it lists, as a
+          collapsed strip that opens in place. Nothing was dropped — the full spec,
+          its state, its revision and its acceptance scenarios are all still here,
+          plus the deep link to the Requirements page. */}
+      <RequirementsStrip task={task} specs={specs} error={specsError} />
       <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
         {/* Center: the unified, chat-like task timeline + message box. */}
-        <TimelineColumn taskId={task.task_id} events={events} runs={runs} specs={specs} onPosted={() => { loadEvents(); loadRecap(); }} />
-        {/* Right: result + control tabs (read-only, deep-link to full pages). */}
-        <div className="flex min-h-0 w-full flex-col border-t lg:w-[400px] lg:border-l lg:border-t-0">
-          <div className="flex gap-1 border-b bg-background/90 px-4 py-2">
-            {TABS.map((item) => (
-              <button
-                key={item}
-                onClick={() => setTab(item)}
-                className={cn("rounded-lg px-2.5 py-1.5 text-xs font-medium transition-colors", tab === item ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground")}
-              >
-                {t(`workspace.tabs.${item}`)}
-              </button>
-            ))}
-          </div>
-          <div className="min-h-0 flex-1 overflow-y-auto p-4">
-            {tab === "requirements" && <RequirementsPanel task={task} specs={specs} error={specsError} />}
-            {tab === "run" && <RunPanel task={task} latestRun={latestRun} />}
-            {tab === "attention" && <AttentionPanel view={attentionView} />}
-            {tab === "changes" && <ChangesPanel task={task} delivery={delivery} deliveryError={deliveryError} />}
-          </div>
-        </div>
+        <TimelineColumn taskId={task.task_id} events={events} runs={runs} specs={specs} runHistoryLimit={RUN_HISTORY_LIMIT} onPosted={() => { loadEvents(); loadRecap(); }} />
+        {/* Right: the run. While one is unsettled the column IS its output; once it
+            settles the column IS what it changed plus the gate before done. Which
+            of the two is decided by run state alone (lib/run-column.ts). */}
+        <RunColumnPane
+          task={task}
+          column={runColumn}
+          attention={attentionView}
+          review={reviewStanding}
+          verdict={verdict}
+          delivery={delivery}
+          deliveryError={deliveryError}
+          deliveryAsked={task.state === "done"}
+        />
       </div>
     </div>
   );
@@ -1027,11 +1201,25 @@ function TaskWorkspace({ task, latestRun, refreshNonce, onTaskMayHaveChanged }: 
 // The unified task timeline: the whole task process as one readable, chat-like
 // stream (requirement drafting/approval, stage changes, runs, review, handoff,
 // and the human's own notes), with a message box to continue or correct course.
+//
+// S2: runs appear as **work units**, not as process launches. A worker run is a
+// top-level entry and the review run(s) recorded against it are nested inside it —
+// no connector lines, which is the recorded decision and its reason (the relation is
+// already in the data, and drawn lines become spaghetti). Ordering is by work unit:
+// a unit sits at its worker run's queue time, and a review does not get its own slot
+// in the stream.
+//
+// The third entry kind is the one that keeps this honest. `runTreeOf` returns runs it
+// could not place — a review whose reviewed run is past the 100-run cap or lost to a
+// failed detail read, or one that records no reviewed run at all — and they are
+// rendered, with the reason. Dropping them would turn a partial read into a
+// disappearance.
 type TimelineItem =
   | { kind: "event"; at: string; key: string; event: TaskEvent }
-  | { kind: "run"; at: string; key: string; run: ExecutionRun };
+  | { kind: "unit"; at: string; key: string; unit: RunUnit<ExecutionRun> }
+  | { kind: "unplaced"; at: string; key: string; unplaced: UnplacedRun<ExecutionRun> };
 
-function TimelineColumn({ taskId, events, runs, specs, onPosted }: { taskId: string; events: TaskEvent[] | null; runs: ExecutionRun[] | null; specs: RequirementSpec[] | null; onPosted: () => void }) {
+function TimelineColumn({ taskId, events, runs, specs, runHistoryLimit, onPosted }: { taskId: string; events: TaskEvent[] | null; runs: ExecutionRun[] | null; specs: RequirementSpec[] | null; runHistoryLimit: number; onPosted: () => void }) {
   const { t, te } = useI18n();
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
@@ -1043,17 +1231,33 @@ function TimelineColumn({ taskId, events, runs, specs, onPosted }: { taskId: str
   }, [specs]);
 
   // The run.* lifecycle events are noise once we show the actual run cards, so
-  // drop them and interleave one rich run card per run (by its queue time).
+  // drop them and interleave one work unit per worker run (by its queue time),
+  // plus any run the tree could not place.
   const items = useMemo<TimelineItem[]>(() => {
     const out: TimelineItem[] = [];
     for (const e of events ?? []) {
       if (e.event_type.startsWith("run.")) continue;
       out.push({ kind: "event", at: e.created_at, key: e.event_id, event: e });
     }
-    for (const r of runs ?? []) {
-      out.push({ kind: "run", at: r.queued_at, key: r.run_id, run: r });
+    const tree = runTreeOf(runs);
+    for (const unit of tree.units) {
+      out.push({ kind: "unit", at: unit.run.queued_at, key: unit.run.run_id, unit });
     }
-    return out.sort((a, b) => a.at.localeCompare(b.at));
+    for (const unplaced of tree.unplaceable) {
+      out.push({ kind: "unplaced", at: unplaced.run.queued_at, key: unplaced.run.run_id, unplaced });
+    }
+    // One sort over the whole stream, and the run tie-break has to be applied here to
+    // be the global rule the tree documents: units and unplaceable runs are pushed as
+    // two groups, so on a shared queue time a timestamp-only sort would order a
+    // top-level run against an unplaceable review by which group was appended first,
+    // not by run id. Events are not runs and keep their arrival order on a tie
+    // (Array.prototype.sort is stable).
+    return out.sort((a, b) => {
+      const byTime = a.at.localeCompare(b.at);
+      if (byTime !== 0) return byTime;
+      // `key` is the run id for both run-bearing kinds.
+      return a.kind === "event" || b.kind === "event" ? 0 : a.key.localeCompare(b.key);
+    });
   }, [events, runs]);
 
   // Keep the newest entry in view as the stream grows.
@@ -1085,7 +1289,9 @@ function TimelineColumn({ taskId, events, runs, specs, onPosted }: { taskId: str
         ) : (
           items.map((item) => item.kind === "event"
             ? <TimelineEntry key={item.key} event={item.event} spec={specForEvent(item.event, specsById)} t={t} te={te} />
-            : <RunCard key={item.key} run={item.run} t={t} te={te} />)
+            : item.kind === "unit"
+              ? <RunWorkUnit key={item.key} unit={item.unit} t={t} te={te} />
+              : <UnplacedRunEntry key={item.key} unplaced={item.unplaced} runHistoryLimit={runHistoryLimit} t={t} te={te} />)
         )}
       </div>
       <div className="border-t bg-background p-3">
@@ -1217,6 +1423,15 @@ function SpecBlock({ spec, t }: { spec: RequirementSpec; t: Translate }) {
 // is this whole project and what's its next move?".
 function ProjectStrip({ dashboard, dashError }: { dashboard: ProjectDashboard | null; dashError: boolean }) {
   const { t, te } = useI18n();
+  // S3: the progress figure comes from the project's RESUME progress snapshot, and
+  // from nothing else. Derived before the early return below so the rule that a
+  // failed dashboard read is *unknown* (never 0%, never "no snapshot") is applied by
+  // one function rather than by the branch order of this component.
+  const bar = progressBarOf({
+    snapshot: dashboard?.progress_snapshot,
+    dashboardLoaded: dashboard !== null,
+    dashboardReadFailed: dashError,
+  });
   if (!dashboard) {
     return <div className="border-b bg-muted/30 px-5 py-2 text-xs text-muted-foreground">{dashError ? t("workspace.project.unavailable") : "…"}</div>;
   }
@@ -1226,7 +1441,13 @@ function ProjectStrip({ dashboard, dashError }: { dashboard: ProjectDashboard | 
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b bg-muted/30 px-5 py-2 text-xs">
       <span className="inline-flex items-center gap-1.5 font-semibold"><Network className="size-3.5 text-primary" />{dashboard.name}</span>
-      <span className="text-muted-foreground">{t("workspace.project.strip", { done, total, verified: dashboard.metrics.verified_pct })}</span>
+      <span className="text-muted-foreground">{t("workspace.project.strip", { done, total })}</span>
+      {/* The bar replaces the verified percentage that used to be in the line above.
+          That number came from `metrics.verified_pct`, which reads a criterion as
+          verified from any historical successful run of its task — so new criteria
+          added by a requirements change are reported as verified by a run that
+          predates them. Rewording it could not have fixed it; the source had to go. */}
+      <ProgressSnapshotBar bar={bar} source={dashboard.progress_snapshot?.source} compact />
       <span className="text-muted-foreground/50">·</span>
       {next.action === "none" ? (
         <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400"><CircleCheck className="size-3.5" />{t("workspace.project.allDone")}</span>
@@ -1381,7 +1602,7 @@ function ResumeBrief(
   );
 }
 
-function OutcomeSummary({ task, dashTask, dashError, blocker, delivery, deliveryError, latestSuccess }: { task: TaskManifest; dashTask: DashboardTask | null; dashError: boolean; blocker: TaskBlockerClaim; delivery: Delivery | null; deliveryError: boolean; latestSuccess: ExecutionRun | null }) {
+function OutcomeSummary({ task, dashTask, dashError, blocker, delivery, deliveryError, deliveryAsked, latestSuccess }: { task: TaskManifest; dashTask: DashboardTask | null; dashError: boolean; blocker: TaskBlockerClaim; delivery: Delivery | null; deliveryError: boolean; deliveryAsked: boolean; latestSuccess: DeliveredResult<ExecutionRun> }) {
   const { t, te } = useI18n();
   const next = dashTask?.next_action ?? null;
   const total = dashTask?.total_weight ?? 0;
@@ -1402,8 +1623,26 @@ function OutcomeSummary({ task, dashTask, dashError, blocker, delivery, delivery
   // is in the way", which is the claim the read cannot support.
   const blockerUnknown = blocker.kind === "loading" || blocker.kind === "unknown";
   const done = task.state === "done";
-  const outcomeLine = firstMeaningfulLine(latestSuccess?.stdout_tail ?? "");
+  // The delivered result, as the claim it is (R3). `run` is a success that was
+  // actually found — real whatever else the capped page dropped — and `certain` is
+  // whether it is provably the *latest* one. `unknown` is the case that used to
+  // print "Nothing produced yet": no success in a page that was truncated or that
+  // lost records is not "nothing was produced".
+  const produced = latestSuccess.kind === "run" ? latestSuccess.run : null;
+  const producedUncertain = latestSuccess.kind === "run" && !latestSuccess.certain;
+  const outcomeLine = firstMeaningfulLine(produced?.stdout_tail ?? "");
   const fileCount = delivery?.fileCount ?? 0;
+  // S1: which of the six distinguishable outcomes this is, decided in
+  // lib/run-column.ts. `deliveryAsked` travels because the task's handoff is only
+  // fetched for a done task, so a zero file count here is usually "not asked" — and
+  // "the handoff lists no files" may only be said when it was actually read.
+  const outcomeNotice = outcomeClaimNotice(outcomeClaimOf({
+    delivered: latestSuccess,
+    hasOutcomeLine: outcomeLine !== "",
+    fileCount,
+    filesKnown: deliveryAsked && !deliveryError && delivery !== null,
+    deliveryReadFailed: deliveryError,
+  }));
 
   return (
     <header className="border-b bg-card px-5 py-4">
@@ -1419,21 +1658,36 @@ function OutcomeSummary({ task, dashTask, dashError, blocker, delivery, delivery
         {/* What it did — the concrete outcome, not a log. */}
         <div className="rounded-xl border bg-muted/30 p-3 md:col-span-2">
           <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{t("workspace.summary.did")}</p>
-          {outcomeLine || fileCount > 0 ? (
+          {outcomeNotice === null ? (
             <div className="mt-1 space-y-1">
               {outcomeLine && <p className="text-sm leading-relaxed">{outcomeLine}</p>}
               <p className="text-xs text-muted-foreground">
-                {latestSuccess && <span>· {latestSuccess.adapter}</span>}
+                {produced && <span>· {produced.adapter}</span>}
                 {fileCount > 0 && <span> · {t("workspace.summary.files", { count: fileCount })}{delivery?.commit ? ` · ${delivery.commit.slice(0, 8)}` : ""}</span>}
                 {deliveryError && <span> · {t("workspace.summary.deliveryUnknown")}</span>}
               </p>
             </div>
           ) : (
-            <p className="mt-1 text-sm text-muted-foreground">
-              {/* D-6: a failed delivery read used to land here as "nothing
-                  produced yet". An absence and an unknown are different. */}
-              {deliveryError ? t("workspace.panels.unavailable") : t("workspace.summary.nothingYet")}
-            </p>
+            <div className="mt-1 space-y-1">
+              {/* One sentence per distinguishable outcome, chosen in
+                  lib/run-column.ts (`outcomeClaimOf`). S1: "a run succeeded and
+                  recorded nothing" is no longer the same sentence as "no successful
+                  run is on record" — they were collapsed here while the data told
+                  them apart. D-6 and R3 (a failed delivery read, a truncated run
+                  page) keep their own sentences for the same reason. */}
+              <p className="text-sm text-muted-foreground">{t(outcomeNotice)}</p>
+              {produced && (
+                /* The run is real even when it recorded nothing, so it is still
+                   named — otherwise the sentence above reads as being about no run
+                   at all. */
+                <p className="text-xs text-muted-foreground">· {produced.adapter}</p>
+              )}
+            </div>
+          )}
+          {producedUncertain && (
+            /* The success below is real; its primacy is not — the same sentence the
+               right column shows over a settled run it cannot prove is the newest. */
+            <p className="mt-1 text-[11px] leading-snug text-muted-foreground">{t("workspace.column.maybeNotLatest")}</p>
           )}
         </div>
 
@@ -1480,6 +1734,67 @@ function firstMeaningfulLine(text: string): string {
   return "";
 }
 
+// One work unit in the timeline: a run, and the runs recorded against it indented
+// underneath.
+//
+// Nesting costs prominence, so two things are done to stop it costing *information*.
+// Each nested run keeps its own full card, state badge included — nothing is
+// summarized away. And a failure among them is stated on the unit itself, because a
+// failed review under a succeeded worker run is exactly the pairing a person has to
+// notice and exactly the one indentation would bury.
+function RunWorkUnit({ unit, t, te }: { unit: RunUnit<ExecutionRun>; t: Translate; te: TranslateEnum }) {
+  const failedNested = nestedFailureCount(unit);
+  return (
+    <div className="space-y-2">
+      <RunCard run={unit.run} t={t} te={te} />
+      {unit.nested.length > 0 && (
+        <div className="ml-4 space-y-2 border-l-2 pl-3">
+          <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+            {t("workspace.timeline.nested.label")}
+          </p>
+          {failedNested > 0 && (
+            <p className="text-[11px] font-medium text-red-600 dark:text-red-400">
+              {t("workspace.timeline.nested.failed", { count: failedNested })}
+            </p>
+          )}
+          {unit.nested.map((run) => <RunCard key={run.run_id} run={run} t={t} te={te} />)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** The sentence for each reason a run could not be nested; one per reason, no sharing. */
+const UNPLACED_RUN_KEY: Record<UnplacedRun<ExecutionRun>["because"], string> = {
+  parentNotLoaded: "workspace.timeline.nested.unplacedParentNotLoaded",
+  namesNoRun: "workspace.timeline.nested.unplacedNamesNoRun",
+  namesItself: "workspace.timeline.nested.unplacedNamesItself",
+  chainNotRooted: "workspace.timeline.nested.unplacedChainNotRooted",
+};
+
+// A run the tree could not place, shown in full with the reason it stands alone.
+// This is the whole point of `unplaceable`: the run page is capped and partially
+// readable, so "the run this reviews is not here" is ordinary — and it means the
+// placement is unknown, not that the run does not exist. Rendering it at the top
+// level *without* the reason would be the other error, quietly promoting a review to
+// a work unit of its own.
+function UnplacedRunEntry(
+  { unplaced, runHistoryLimit, t, te }:
+  { unplaced: UnplacedRun<ExecutionRun>; runHistoryLimit: number; t: Translate; te: TranslateEnum },
+) {
+  return (
+    <div className="space-y-1 rounded-xl border border-dashed p-2">
+      <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+        {t("workspace.timeline.nested.unplacedTitle")}
+      </p>
+      <p className="text-[11px] leading-snug text-muted-foreground">
+        {t(UNPLACED_RUN_KEY[unplaced.because], { limit: runHistoryLimit })}
+      </p>
+      <RunCard run={unplaced.run} t={t} te={te} />
+    </div>
+  );
+}
+
 // A run rendered as the substance it is: the prompt the agent got, its actual
 // terminal output, the failure (if any), and the files it changed.
 function RunCard({ run, t, te }: { run: ExecutionRun; t: Translate; te: TranslateEnum }) {
@@ -1489,7 +1804,10 @@ function RunCard({ run, t, te }: { run: ExecutionRun; t: Translate; te: Translat
   // frozen snapshot, the still-moving worktree, or unknown changes what we may
   // honestly claim about it.
   const [delivered, setDelivered] = useState<RunDeliverables | "loading" | null>(null);
-  const failed = run.state === "failed" || run.state === "timed_out" || run.state === "abandoned";
+  // One definition of "failed", shared with the work-unit header that reports a
+  // nested failure — two lists would let a card and its parent disagree about
+  // whether the run under it failed.
+  const failed = FAILED_RUN_STATES.has(run.state);
   const isReview = String((run.result_metadata as Record<string, unknown>)?.agora_role ?? "") === "review";
   const out = (run.stdout_tail || "").trimEnd();
   const err = (run.stderr_tail || "").trimEnd();
@@ -1639,133 +1957,465 @@ function FileRow(
   );
 }
 
-function PanelShell({ href, hrefLabel, children }: { href: string; hrefLabel: string; children: React.ReactNode }) {
-  return (
-    <div className="space-y-3">
-      <div className="rounded-xl border bg-card p-4">{children}</div>
-      <Link href={href} className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline">
-        {hrefLabel} <ExternalLink className="size-3" />
-      </Link>
-    </div>
-  );
-}
-
-function RequirementsPanel({ task, specs, error }: { task: TaskManifest; specs: RequirementSpec[] | null; error: boolean }) {
+// ---------------------------------------------------------------------------
+// Requirements — moved OFF the right column.
+//
+// The recorded UI decision gives the right column to the run: its live output
+// while it is unsettled, its changes and its gate once it settles. Requirements
+// are neither. They are the task's contract: what it is for, and what counts as
+// done. They do not change while a run executes and they are not what a person is
+// looking at when they glance at the column mid-run.
+//
+// They are NOT dropped, and they are not demoted to a link. They live here, in the
+// header stack, immediately under the outcome summary whose "Trust" cell scores the
+// very acceptance criteria this strip lists — the two facts belong next to each
+// other, and reading one without the other is how "3/7 verified" becomes a number
+// with no referent. Collapsed by default because it is a contract, not a signal;
+// one click opens the whole spec in place, and the deep link to the Requirements
+// page is unchanged.
+//
+// The three-state honesty is unchanged from the panel this replaces: a failed read
+// says so, no spec says so, and neither is presented as the other.
+// ---------------------------------------------------------------------------
+function RequirementsStrip({ task, specs, error }: { task: TaskManifest; specs: RequirementSpec[] | null; error: boolean }) {
   const { t, te } = useI18n();
+  const [open, setOpen] = useState(false);
   const latest = specs && specs.length > 0 ? specs[0] : null;
+  const summaryLine = error
+    ? t("workspace.panels.unavailable")
+    : specs === null
+      ? t("workspace.requirements.loading")
+      : !latest
+        ? t("workspace.panels.requirements.none")
+        : t("workspace.panels.requirements.state", { state: te("status", latest.state), rev: latest.revision });
+
   return (
-    <PanelShell href={`/requirements?task=${encodeURIComponent(task.task_id)}`} hrefLabel={t("workspace.panels.openFull")}>
-      {error ? (
-        <p className="text-sm text-muted-foreground">{t("workspace.panels.unavailable")}</p>
-      ) : !latest ? (
-        <p className="text-sm text-muted-foreground">{t("workspace.panels.requirements.none")}</p>
-      ) : (
-        <div className="space-y-3">
-          <p className="text-xs font-medium text-muted-foreground">{t("workspace.panels.requirements.state", { state: te("status", latest.state), rev: latest.revision })}</p>
-          {latest.summary && <p className="text-sm leading-relaxed">{latest.summary}</p>}
-          {latest.acceptance_scenarios.length > 0 && (
-            <div>
-              <p className="text-xs font-medium text-muted-foreground">{t("workspace.panels.requirements.scenarios")} ({latest.acceptance_scenarios.length})</p>
-              <ul className="mt-1 space-y-1 text-sm">
-                {latest.acceptance_scenarios.map((s) => (
-                  <li key={s.scenario_id} className="rounded-md bg-muted/40 px-2 py-1 text-xs leading-relaxed">
-                    <span className="font-medium">{s.given}</span> → {s.when} → <span className="font-medium">{s.then}</span>
-                  </li>
-                ))}
-              </ul>
+    <div className="border-b bg-background/60">
+      <div className="flex items-center gap-2 px-5 py-2">
+        <button
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+          className="flex min-w-0 flex-1 items-center gap-2 text-left text-xs text-muted-foreground hover:text-foreground"
+        >
+          <ChevronDown className={cn("size-3 shrink-0 transition-transform", open && "rotate-180")} />
+          <span className="font-medium uppercase tracking-wide">{t("workspace.requirements.label")}</span>
+          <span className="min-w-0 truncate">{summaryLine}</span>
+          {latest && latest.acceptance_scenarios.length > 0 && (
+            <span className="shrink-0">· {t("workspace.requirements.scenarioCount", { count: latest.acceptance_scenarios.length })}</span>
+          )}
+        </button>
+        <Link href={`/requirements?task=${encodeURIComponent(task.task_id)}`} className="inline-flex shrink-0 items-center gap-1 text-xs font-medium text-primary hover:underline">
+          {t("workspace.panels.openFull")} <ExternalLink className="size-3" />
+        </Link>
+      </div>
+      {open && (
+        <div className="border-t px-5 py-3">
+          {error ? (
+            <p className="text-sm text-muted-foreground">{t("workspace.panels.unavailable")}</p>
+          ) : specs === null ? (
+            <p className="text-sm text-muted-foreground">{t("workspace.requirements.loading")}</p>
+          ) : !latest ? (
+            <p className="text-sm text-muted-foreground">{t("workspace.panels.requirements.none")}</p>
+          ) : (
+            <div className="space-y-3">
+              {latest.summary && <p className="text-sm leading-relaxed">{latest.summary}</p>}
+              {latest.acceptance_scenarios.length > 0 && (
+                <div>
+                  <p className="text-xs font-medium text-muted-foreground">{t("workspace.panels.requirements.scenarios")} ({latest.acceptance_scenarios.length})</p>
+                  <ul className="mt-1 space-y-1 text-sm">
+                    {latest.acceptance_scenarios.map((s) => (
+                      <li key={s.scenario_id} className="rounded-md bg-muted/40 px-2 py-1 text-xs leading-relaxed">
+                        <span className="font-medium">{s.given}</span> → {s.when} → <span className="font-medium">{s.then}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </div>
           )}
         </div>
       )}
-    </PanelShell>
+    </div>
   );
 }
 
-function RunPanel({ task, latestRun }: { task: TaskManifest; latestRun: RunSummary | null }) {
-  const { t, te } = useI18n();
-  return (
-    <PanelShell href={`/runs?task=${encodeURIComponent(task.task_id)}`} hrefLabel={t("workspace.panels.openFull")}>
-      {!latestRun ? (
-        <p className="text-sm text-muted-foreground">{t("workspace.panels.run.none")}</p>
-      ) : (
-        <div className="space-y-1.5">
-          <p className="text-xs font-medium text-muted-foreground">{t("workspace.panels.run.latest")}</p>
-          <p className="flex items-center gap-2 text-sm font-medium">
-            <span className={cn("size-2 rounded-full", RUN_TONE[latestRun.state])} />
-            {t("workspace.panels.run.status", { adapter: latestRun.adapter, state: te("runState", latestRun.state) })}
-          </p>
-          {(latestRun.started_at || latestRun.queued_at) && (
-            <p className="text-xs text-muted-foreground">{t("workspace.panels.run.started", { when: relTime(latestRun.started_at ?? latestRun.queued_at, t) })}</p>
-          )}
-        </div>
-      )}
-    </PanelShell>
-  );
-}
+// ---------------------------------------------------------------------------
+// The right column: two states, chosen by run state.
+//
+// Not a tab bar. The column answers "what is happening right now": while a run of
+// this task is unsettled it IS that run's output; once it settles it IS what that
+// run changed plus the gate standing between it and done. The selection is derived
+// in lib/run-column.ts and there is nothing here to click that changes it — a
+// stored tab index is exactly what let this surface show a requirements document
+// while a run was executing.
+//
+// "Live" means the run's real output, updating as the existing 2.5s poll updates
+// it. No streaming, no websocket, no PTY: the poll already merges fresh records
+// into `runs`, so this re-renders with them.
+// ---------------------------------------------------------------------------
+const COLUMN_TITLE_KEY: Record<RunColumn<ExecutionRun>["kind"], string> = {
+  loading: "workspace.column.title.loading",
+  unreadable: "workspace.column.title.unreadable",
+  none: "workspace.column.title.none",
+  live: "workspace.column.title.live",
+  liveWithoutRecord: "workspace.column.title.live",
+  settled: "workspace.column.title.settled",
+};
 
-function AttentionPanel({ view }: { view: TaskAttentionView<AttentionItem> }) {
-  const { t, te } = useI18n();
-  return (
-    <PanelShell href="/attention" hrefLabel={t("workspace.panels.openFull")}>
-      {view.kind === "loading" || view.kind === "unreadable" || view.kind === "none" ? (
-        /* Three different facts, three different sentences. This panel used to
-           collapse them all into "nothing needs you on this task" by falling back
-           to the parent's capped global list — which is not authoritative for one
-           task, and made the page contradict its own Continue gate. */
-        <p className="text-sm text-muted-foreground">{t(TASK_ATTENTION_NOTICE_KEY[view.kind])}</p>
-      ) : (
-        <div className="space-y-2">
-          {view.kind === "partial" && (
-            /* The read came back at the limit, so this list may be missing items.
-               Shown, because what we have is real and worth acting on; labelled,
-               because "these are the ones waiting" would be a claim the read
-               cannot support. The Continue gate treats the count as unknown. */
-            <p className="text-xs text-muted-foreground">{t("workspace.panels.attention.partial")}</p>
-          )}
-          {view.items.length === 0 ? (
-            <p className="text-sm text-muted-foreground">{t("workspace.panels.attention.partialEmpty")}</p>
-          ) : (
-            <ul className="space-y-2">
-              {view.items.map((item) => (
-                <li key={item.item_id} className="flex items-start gap-2 rounded-md bg-muted/40 px-2 py-1.5">
-                  <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-orange-500" />
-                  <div className="min-w-0">
-                    <p className="text-sm leading-snug">{item.title}</p>
-                    <p className="text-[11px] text-muted-foreground">{te("attentionKind", item.kind)} · {te("urgency", item.urgency)}</p>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      )}
-    </PanelShell>
-  );
-}
-
-function ChangesPanel({ task, delivery, deliveryError }: { task: TaskManifest; delivery: Delivery | null; deliveryError: boolean }) {
+function RunColumnPane({
+  task, column, attention, review, verdict, delivery, deliveryError, deliveryAsked,
+}: {
+  task: TaskManifest;
+  column: RunColumn<ExecutionRun>;
+  attention: TaskAttentionView<AttentionItem>;
+  review: ReviewStanding | null;
+  verdict: GateVerdict | null;
+  delivery: Delivery | null;
+  deliveryError: boolean;
+  deliveryAsked: boolean;
+}) {
   const { t } = useI18n();
   return (
-    <PanelShell href={`/runs?task=${encodeURIComponent(task.task_id)}`} hrefLabel={t("workspace.panels.openFull")}>
-      {deliveryError ? (
-        /* A failed read is not an absence. Without this the summary above says
-           "unavailable" while this panel says "no changes" — the same page
-           contradicting itself about the same fact. */
-        <p className="text-sm text-muted-foreground">{t("workspace.panels.unavailable")}</p>
-      ) : !delivery || (delivery.fileCount === 0 && !delivery.commit) ? (
-        <p className="text-sm text-muted-foreground">{t("workspace.panels.changes.none")}</p>
+    <div className="flex min-h-0 w-full flex-col border-t lg:w-[400px] lg:border-l lg:border-t-0">
+      <div className="flex items-center gap-2 border-b bg-background/90 px-4 py-2">
+        <span className="text-xs font-semibold uppercase tracking-wide">{t(COLUMN_TITLE_KEY[column.kind])}</span>
+        <Link href={`/runs?task=${encodeURIComponent(task.task_id)}`} className="ml-auto inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline">
+          {t("workspace.column.openRuns")} <ExternalLink className="size-3" />
+        </Link>
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto p-4">
+        {column.kind === "loading" && (
+          <p className="text-sm text-muted-foreground">{t("workspace.column.loading")}</p>
+        )}
+        {column.kind === "unreadable" && (
+          /* The read failed, so whether a run is executing right now is not known.
+             It must not fall through to a settled snapshot: that would present a
+             finished run as the present state of a task that may be running. */
+          <p className="text-sm text-muted-foreground">{t("workspace.column.unreadable")}</p>
+        )}
+        {column.kind === "none" && (
+          <p className="text-sm text-muted-foreground">{t("workspace.column.none")}</p>
+        )}
+        {column.kind === "liveWithoutRecord" && (
+          <div className="space-y-3">
+            <LiveGateBanner attention={attention} />
+            {/* A run IS unsettled and its record is not in hand yet (dispatched a
+                moment ago, or the history read failed). Saying so beats both
+                silence and a stale snapshot. */}
+            <p className="text-sm text-muted-foreground">{t("workspace.column.liveWithoutRecord", { count: column.count })}</p>
+          </div>
+        )}
+        {column.kind === "live" && (
+          <div className="space-y-3">
+            <LiveGateBanner attention={attention} />
+            <LiveRun run={column.run} alsoActive={column.alsoActive} />
+          </div>
+        )}
+        {column.kind === "settled" && (
+          <div className="space-y-4">
+            {!column.latestCertain && (
+              /* The history read was partial, so "this is the latest run" is not a
+                 claim it can make. The run below is real; its primacy is not. */
+              <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-[11px] leading-snug text-amber-700 dark:text-amber-400">
+                {t("workspace.column.maybeNotLatest")}
+              </p>
+            )}
+            <SettledRunChanges run={column.run} />
+            <GateBlock
+              verdict={verdict}
+              review={review}
+              attention={attention}
+              delivery={delivery}
+              deliveryError={deliveryError}
+              deliveryAsked={deliveryAsked}
+            />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The one thing the live column still says about human gates.
+ *
+ * A question the agent raised *while it was running* is the single most
+ * time-critical item in this product, and the live column is what a person is
+ * looking at when it appears. So presence is surfaced here — never absence: this
+ * renders only for items that were actually observed, or to say the attention read
+ * failed. It says nothing at all when the read is merely in flight or came back
+ * empty, because the live column makes no claim about gates and an empty banner
+ * would be read as one. The full list, and the count, live in the settled state.
+ */
+function LiveGateBanner({ attention }: { attention: TaskAttentionView<AttentionItem> }) {
+  const { t } = useI18n();
+  const observed = (attention.kind === "open" || attention.kind === "partial") ? attention.items.length : 0;
+  if (observed === 0 && attention.kind !== "unreadable") return null;
+  return (
+    <Link
+      href="/attention"
+      className="flex items-start gap-2 rounded-lg border border-orange-500/40 bg-orange-500/10 px-2 py-1.5 text-xs leading-snug text-orange-700 hover:bg-orange-500/15 dark:text-orange-400"
+    >
+      <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+      <span>
+        {attention.kind === "unreadable"
+          ? t("workspace.column.gate.unreadableDuringRun")
+          : t("workspace.column.gate.duringRun", { count: observed })}
+      </span>
+    </Link>
+  );
+}
+
+/**
+ * The unsettled run, as the column's whole content: what it was asked to do, and
+ * what it is printing. The output pane scrolls itself and follows the tail, so a
+ * run that keeps writing does not push the rest of the column away.
+ */
+function LiveRun({ run, alsoActive }: { run: ExecutionRun; alsoActive: number }) {
+  const { t, te } = useI18n();
+  const [showPrompt, setShowPrompt] = useState(false);
+  const out = (run.stdout_tail || "").trimEnd();
+  const err = (run.stderr_tail || "").trimEnd();
+  const outRef = useRef<HTMLPreElement>(null);
+  // Follow the tail as the poll merges new output in. Length, not the string, so a
+  // re-render that changed nothing does not fight a user who scrolled up.
+  useEffect(() => {
+    const el = outRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [out.length]);
+
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className={cn("size-2 shrink-0 animate-pulse rounded-full", RUN_TONE[run.state])} />
+        <span className="text-sm font-semibold">{t("workspace.column.live.header", { adapter: run.adapter })}</span>
+        <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">{te("runState", run.state)}</span>
+        <span className="ml-auto text-[11px] text-muted-foreground">{relTime(run.started_at ?? run.queued_at, t)}</span>
+      </div>
+      {alsoActive > 0 && (
+        /* More than one run of this task has not settled. The column shows the
+           newest; saying how many others there are keeps it from reading as "this
+           is the only thing happening". */
+        <p className="text-[11px] text-muted-foreground">{t("workspace.column.live.alsoActive", { count: alsoActive })}</p>
+      )}
+      {run.prompt && (
+        <div>
+          <button onClick={() => setShowPrompt((v) => !v)} className="flex items-center gap-1 text-[11px] font-medium text-muted-foreground hover:text-foreground">
+            <ChevronDown className={cn("size-3 transition-transform", showPrompt && "rotate-180")} /> {t("workspace.timeline.run.prompt")}
+          </button>
+          {showPrompt && <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted/50 p-2 text-xs leading-relaxed">{run.prompt}</pre>}
+        </div>
+      )}
+      <div>
+        <p className="mb-1 text-[11px] font-medium text-muted-foreground">{t("workspace.timeline.run.output")}</p>
+        {out ? (
+          <pre ref={outRef} className="max-h-[28rem] overflow-auto whitespace-pre rounded-lg bg-zinc-950 p-3 text-xs leading-relaxed text-zinc-100">{out}</pre>
+        ) : (
+          /* Nothing has been captured YET — a queued run has no output at all, and
+             that is not the same claim as a finished run that printed nothing. */
+          <p className="text-xs text-muted-foreground">{t("workspace.column.live.noOutputYet")}</p>
+        )}
+      </div>
+      {err && (
+        <div>
+          <p className="mb-1 text-[11px] font-medium text-muted-foreground">{t("workspace.timeline.run.stderr")}</p>
+          <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-red-500/5 p-2 text-xs leading-relaxed text-red-700 dark:text-red-300">{err}</pre>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * What the settled run changed: its own frozen deliverables snapshot, loaded for
+ * this state rather than hidden behind a "show files" click — in the settled column
+ * the changes ARE the content.
+ *
+ * Every honesty rule from the run card is kept, because they are the same facts:
+ * `source: "none"` means the list was never recorded and is not guessed from the
+ * worktree; `truncated` means "at least these"; `content_available === false`
+ * means the paths are still true but nothing can be opened. A failed read is its
+ * own sentence and never "no files changed".
+ */
+function SettledRunChanges({ run }: { run: ExecutionRun }) {
+  const { t, te } = useI18n();
+  // Keyed by the run it answers for, so a response that arrives after the column
+  // has moved to a different run cannot be shown as that run's files — and so the
+  // reset to "loading" is a derivation rather than a write inside the effect.
+  const [loaded, setLoaded] = useState<{ runId: string; value: RunDeliverables | "failed" } | null>(null);
+  useEffect(() => {
+    const ctrl = new AbortController();
+    getRunDeliverables(run.run_id, ctrl.signal)
+      .then((value) => { if (!ctrl.signal.aborted) setLoaded({ runId: run.run_id, value }); })
+      .catch(() => { if (!ctrl.signal.aborted) setLoaded({ runId: run.run_id, value: "failed" }); });
+    return () => ctrl.abort();
+  }, [run.run_id]);
+  const delivered: RunDeliverables | "loading" | "failed" =
+    loaded !== null && loaded.runId === run.run_id ? loaded.value : "loading";
+  const failed = run.state === "failed" || run.state === "timed_out" || run.state === "abandoned";
+  const files = delivered !== "loading" && delivered !== "failed" ? delivered.files : [];
+
+  return (
+    <section className="space-y-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className={cn("size-2 shrink-0 rounded-full", RUN_TONE[run.state])} />
+        <span className="text-sm font-semibold">{t("workspace.column.changes.header", { adapter: run.adapter })}</span>
+        <span className={cn("rounded px-1.5 py-0.5 text-[11px] font-medium", failed ? "bg-red-500/10 text-red-600 dark:text-red-400" : "bg-muted text-muted-foreground")}>{te("runState", run.state)}</span>
+        <span className="ml-auto text-[11px] text-muted-foreground">{relTime(run.finished_at ?? run.started_at ?? run.queued_at, t)}</span>
+      </div>
+      {failed && (run.error_message || run.stderr_tail) && (
+        <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-red-500/5 p-2 text-xs leading-relaxed text-red-700 dark:text-red-300">{run.error_message || run.stderr_tail.trimEnd()}</pre>
+      )}
+      {delivered === "loading" ? (
+        <p className="text-xs text-muted-foreground">{t("workspace.timeline.run.loadingFiles")}</p>
+      ) : delivered === "failed" ? (
+        <p className="text-xs text-muted-foreground">{t("workspace.panels.unavailable")}</p>
+      ) : delivered.source === "none" ? (
+        <p className="text-xs text-muted-foreground">{t("workspace.timeline.run.noSnapshot")}</p>
+      ) : files.length === 0 ? (
+        <p className="text-xs text-muted-foreground">{t("workspace.timeline.run.noFiles")}</p>
       ) : (
-        <div className="space-y-2">
-          <p className="text-sm font-medium">{t("workspace.panels.changes.delivered", { count: delivery.fileCount })}</p>
-          <p className="text-xs text-muted-foreground">{delivery.commit ? t("workspace.panels.changes.commit", { sha: delivery.commit.slice(0, 8) }) : t("workspace.panels.changes.uncommitted")}</p>
-          {delivery.files.length > 0 && (
-            <ul className="space-y-0.5 text-xs">
-              {delivery.files.map((file) => <li key={file} className="truncate rounded bg-muted/40 px-2 py-0.5 font-mono">{file}</li>)}
-            </ul>
+        <div>
+          <p className="mb-1 text-[11px] font-medium text-muted-foreground">{t("workspace.timeline.run.files", { count: files.length })}</p>
+          <ul className="space-y-0.5 text-xs">
+            {files.map((f) => (
+              <FileRow key={f.path} runId={run.run_id} file={f} openable={canOpenDeliverable(delivered, f)} t={t} />
+            ))}
+          </ul>
+          {delivered.content_available === false && (
+            <p className="mt-1 text-[11px] text-muted-foreground">{t("workspace.timeline.run.gone")}</p>
+          )}
+          {delivered.truncated && (
+            <p className="mt-1 text-[11px] text-muted-foreground">{t("workspace.timeline.run.partial")}</p>
           )}
         </div>
       )}
-    </PanelShell>
+    </section>
+  );
+}
+
+/**
+ * The gate: what stands between this settled run and done.
+ *
+ * Three facts, each with its own sentence and none allowed to stand in for
+ * another — the headline verdict, what is on record about the independent review,
+ * and the open attention items themselves (the list the Attention tab used to
+ * hold, which is where it belongs: the gate IS the attention). The task's handoff
+ * delivery is shown only when it was actually read, because a task that has not
+ * reached `done` was never asked, and "no deliverable yet" about a question nobody
+ * put is an absence invented out of an unknown.
+ */
+function GateBlock({ verdict, review, attention, delivery, deliveryError, deliveryAsked }: {
+  verdict: GateVerdict | null;
+  review: ReviewStanding | null;
+  attention: TaskAttentionView<AttentionItem>;
+  delivery: Delivery | null;
+  deliveryError: boolean;
+  deliveryAsked: boolean;
+}) {
+  const { t, te } = useI18n();
+  if (verdict === null || review === null) return null;
+  const reviewNotice = reviewStandingNotice(review, (state) => te("runState", state));
+  return (
+    <section className="space-y-2 rounded-xl border bg-card p-3">
+      <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{t("workspace.column.gate.label")}</p>
+      <p className={cn("text-sm font-medium",
+        verdict.kind === "actionRequired" ? "text-orange-600 dark:text-orange-400"
+          : verdict.kind === "clear" ? "text-emerald-600 dark:text-emerald-400"
+            : verdict.kind === "reviewNotAccounted" ? "text-amber-700 dark:text-amber-400"
+              : "text-foreground")}>
+        {t(GATE_VERDICT_KEY[verdict.kind], verdict.kind === "actionRequired"
+          ? { count: verdict.count }
+          : verdict.kind === "reviewRunning" ? { adapter: verdict.adapter } : {})}
+      </p>
+      {verdict.kind === "unknown" && (
+        /* Which read could not answer, in its own words. One shared "unavailable"
+           is how a failed request came to wear the page cap's explanation. */
+        <p className="text-xs text-muted-foreground">{t(GATE_UNKNOWN_REASON_KEY[verdict.reason])}</p>
+      )}
+      <p className="text-xs text-muted-foreground">{t(reviewNotice.key, reviewNotice.vars)}</p>
+      <AttentionList view={attention} />
+      {deliveryAsked && (
+        deliveryError ? (
+          <p className="text-xs text-muted-foreground">{t("workspace.panels.unavailable")}</p>
+        ) : !delivery || (delivery.fileCount === 0 && !delivery.commit) ? (
+          <p className="text-xs text-muted-foreground">{t("workspace.panels.changes.none")}</p>
+        ) : (
+          <div className="space-y-1">
+            <p className="text-xs text-muted-foreground">
+              {t("workspace.panels.changes.delivered", { count: delivery.fileCount })}
+              {" · "}
+              {delivery.commit ? t("workspace.panels.changes.commit", { sha: delivery.commit.slice(0, 8) }) : t("workspace.panels.changes.uncommitted")}
+            </p>
+            {/* R4: the handoff's file *paths* were still fetched and then rendered
+                nowhere — the changes tab that listed them is gone, and a count is not
+                the list. "Recoverable through the timeline card" is a different
+                artifact (that card shows a run's worktree snapshot; this is what the
+                handoff bound to the task), so the paths get their home back here. */}
+            {delivery.files.length > 0 && (
+              <>
+                <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{t("workspace.panels.changes.files")}</p>
+                <ul className="space-y-0.5">
+                  {delivery.files.slice(0, HANDOFF_FILES_SHOWN).map((path) => (
+                    <li key={path} className="truncate font-mono text-[11px] text-muted-foreground" title={path}>{path}</li>
+                  ))}
+                </ul>
+                {delivery.files.length > HANDOFF_FILES_SHOWN && (
+                  <p className="text-[11px] text-muted-foreground">
+                    {t("workspace.panels.changes.moreFiles", { count: delivery.files.length - HANDOFF_FILES_SHOWN })}
+                  </p>
+                )}
+              </>
+            )}
+            {delivery.fileCount > delivery.files.length && (
+              /* The count comes from the handoff payload's own `file_count`, which can
+                 exceed the paths it recorded. Say so rather than letting the shorter
+                 list read as the whole delivery. */
+              <p className="text-[11px] text-muted-foreground">{t("workspace.timeline.run.partial")}</p>
+            )}
+          </div>
+        )
+      )}
+    </section>
+  );
+}
+
+/**
+ * This task's open gate items, from the one task-scoped attention view every other
+ * attention claim on the page derives from. Unchanged in substance from the panel
+ * it replaces: three different facts get three different sentences, a truncated
+ * page shows its items and says the count cannot be trusted, and nothing here ever
+ * reports an unknown as "nothing needs you".
+ */
+function AttentionList({ view }: { view: TaskAttentionView<AttentionItem> }) {
+  const { t, te } = useI18n();
+  if (view.kind === "loading" || view.kind === "unreadable" || view.kind === "none") {
+    return <p className="text-xs text-muted-foreground">{t(TASK_ATTENTION_NOTICE_KEY[view.kind])}</p>;
+  }
+  return (
+    <div className="space-y-1.5">
+      {view.kind === "partial" && (
+        <p className="text-[11px] text-muted-foreground">{t("workspace.panels.attention.partial")}</p>
+      )}
+      {view.items.length === 0 ? (
+        <p className="text-xs text-muted-foreground">{t("workspace.panels.attention.partialEmpty")}</p>
+      ) : (
+        <ul className="space-y-1.5">
+          {view.items.map((item) => (
+            <li key={item.item_id} className="flex items-start gap-2 rounded-md bg-muted/40 px-2 py-1.5">
+              <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-orange-500" />
+              <div className="min-w-0">
+                <p className="text-sm leading-snug">{item.title}</p>
+                <p className="text-[11px] text-muted-foreground">{te("attentionKind", item.kind)} · {te("urgency", item.urgency)}</p>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+      <Link href="/attention" className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline">
+        {t("workspace.column.gate.answerThem")} <ExternalLink className="size-3" />
+      </Link>
+    </div>
   );
 }
 

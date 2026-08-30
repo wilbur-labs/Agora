@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from agora.config.settings import resolve_control_plane_db_path
+from agora.fsprobe import probe_path
 
 from .importer import (
     ProjectImportError,
@@ -262,9 +263,28 @@ class ProjectRegistry:
         """Create a new project as a subfolder of the configured projects root."""
         root = self.projects_base() / project_id
         # Never adopt (and later git-init) a pre-existing non-empty directory:
-        # it may hold unmanaged files the control plane must not touch.
-        if root.exists() and root.is_dir() and any(root.iterdir()):
-            raise ValueError(f"Project directory already exists and is not empty: {root}")
+        # it may hold unmanaged files the control plane must not touch. This was
+        # ``root.exists() and root.is_dir() and any(root.iterdir())``, which let an
+        # *inaccessible* directory through the guard: exists() answers False for a
+        # stat this process may not complete, so a directory full of unmanaged files
+        # behind a denying ACL read as a safely empty path and was adopted. A guard
+        # that protects unknown contents cannot treat "could not look" as "nothing
+        # there", so an unobservable path refuses instead.
+        probe = probe_path(root)
+        if probe.unknown:
+            raise ValueError(
+                f"Project directory cannot be inspected, so it may not be empty: {root} ({probe.reason()})"
+            )
+        if probe.is_dir():
+            try:
+                occupied = any(root.iterdir())
+            except OSError as exc:
+                raise ValueError(
+                    f"Project directory cannot be inspected, so it may not be empty: {root} "
+                    f"({type(exc).__name__})"
+                ) from exc
+            if occupied:
+                raise ValueError(f"Project directory already exists and is not empty: {root}")
         return self.add(
             project_id,
             root,

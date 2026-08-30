@@ -1,5 +1,11 @@
 import { getApiBase } from "@/lib/api";
 import { apiErrorFrom } from "@/lib/control-plane";
+// One definition of "this run has settled". It lives in run-column.ts because the
+// right column's whole state machine turns on it and that module must stay
+// importable by `node --test` (no React, no "@/" aliases); listing the states here
+// as well would be a second copy, and the copy that drifted would decide whether a
+// live run is rendered as a finished one.
+import { SETTLED_RUN_STATES } from "./run-column";
 
 export type RunState =
   | "queued"
@@ -21,9 +27,7 @@ export interface AdapterCapability {
   detail: string;
 }
 
-export const TERMINAL_RUN_STATES: ReadonlySet<RunState> = new Set([
-  "succeeded", "failed", "timed_out", "cancelled", "abandoned",
-]);
+export const TERMINAL_RUN_STATES: ReadonlySet<RunState> = SETTLED_RUN_STATES as ReadonlySet<RunState>;
 
 export interface RunSummary {
   run_id: string;

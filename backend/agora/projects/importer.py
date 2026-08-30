@@ -74,9 +74,15 @@ class ProjectImportError(RuntimeError):
     apart will show "no projects" for a broken file.
 
     ``source_state`` records what is actually known about the file: ``present``
-    when it was opened and read but did not make sense, ``absent`` only for a
-    definite "no such file", and ``unknown`` when the open itself failed for any
-    other reason. Only ``absent`` may be treated as "there is no source".
+    only when the whole file was read as text and then did not make sense,
+    ``absent`` only for a definite "no such file", and ``unknown`` whenever the
+    read did not complete — a permission error, an I/O error, or bytes that are not
+    decodable text. Only ``absent`` may be treated as "there is no source", and
+    ``unknown`` may not be treated as either.
+
+    The default is ``present`` because most raise sites are content checks that run
+    after the text is in hand. Any raise site reached before the read completes
+    must pass ``source_state`` explicitly.
     """
 
     def __init__(self, source: Path | str, reason: str, *, source_state: str = "present"):
@@ -197,10 +203,10 @@ def read_project_yaml(path: str | Path, *, project_root: Path) -> _ParsedDocumen
     projects: this file's only purpose is to list projects, so a copy listing
     none is far more likely truncated than intentional.
 
-    The file is opened rather than probed. ``Path.exists()`` answers False for
+    The file is opened and read, not probed. ``Path.exists()`` answers False for
     stat failures that are not absence at all, so only ``FileNotFoundError``
-    yields :class:`ProjectImportSourceMissing`; anything else is unknown and fails
-    closed.
+    yields :class:`ProjectImportSourceMissing`; every other failure to complete the
+    read — permission, I/O, undecodable bytes — is unknown and fails closed.
     """
     source = Path(path)
     try:
@@ -208,7 +214,13 @@ def read_project_yaml(path: str | Path, *, project_root: Path) -> _ParsedDocumen
     except FileNotFoundError as exc:
         raise ProjectImportSourceMissing(source) from exc
     except UnicodeDecodeError as exc:
-        raise ProjectImportError(source, "not valid UTF-8 text") from exc
+        # The read itself did not complete, so nothing was observed about the
+        # source beyond "some bytes exist". Reporting it as present would claim an
+        # observation that was never made: a file whose bytes cannot be decoded
+        # has not been read, and "present" here means read. Unknown, not present.
+        raise ProjectImportError(
+            source, "not valid UTF-8 text", source_state="unknown"
+        ) from exc
     except OSError as exc:
         raise ProjectImportError(
             source, f"unreadable ({type(exc).__name__})", source_state="unknown"

@@ -1,4 +1,5 @@
 import { getApiBase } from "@/lib/api";
+import type { ProgressSnapshotLike } from "@/lib/progress-snapshot";
 
 export type TaskState =
   | "backlog"
@@ -181,10 +182,20 @@ export interface AttentionItem {
   item_id: string;
   project_id: string;
   task_id: string;
+  // The run this item was raised against, when it was raised against one. Carried
+  // because it is load-bearing, not decorative: the review path scopes its approval
+  // and its blocker to the *worker run* they gate, and that pairing — with
+  // `requester` below — is the fact the control plane releases a run's review
+  // obligation on (`_has_review_gate_item`). A UI that drops it can only guess.
+  run_id: string | null;
   kind: AttentionKind;
   state: string;
   urgency: string;
   title: string;
+  // Who raised it. `agora-review` is a reserved requester the API refuses in public
+  // input, which is what makes it readable as Agora's own review gate rather than as
+  // any item that happens to be shaped like one.
+  requester: string;
 }
 
 // The server caps this endpoint at 500 items per page (`limit` has le=500), so
@@ -419,16 +430,25 @@ export interface RuntimeCapabilities {
 export interface WorkspaceInfo {
   adapter: string;
   path: string;
-  exists: boolean;
-  writable: boolean;
+  /**
+   * True when the workspace directory was observed, false only for a definite
+   * "no such directory", null when the probe could not tell the two apart (a
+   * denying ACL, an I/O error). An unreadable workspace is not a missing one, and
+   * the two call for opposite responses, so null must render as unknown.
+   */
+  exists: boolean | null;
+  /** Null whenever `exists` is: writability of a directory that was never observed. */
+  writable: boolean | null;
 }
 
 export interface ProjectSettings {
   project_id: string;
   name: string;
   root: string;
-  root_exists: boolean;
-  root_is_git: boolean;
+  /** True / false / null — see `WorkspaceInfo.exists`. Null is unknown, not missing. */
+  root_exists: boolean | null;
+  /** True / false / null. Null means the `.git` entry could not be observed at all. */
+  root_is_git: boolean | null;
   worker_agent: string;
   reviewer_agent: string;
   workspaces: WorkspaceInfo[];
@@ -599,6 +619,12 @@ export interface ProjectDashboard {
   name: string;
   charter: Charter;
   metrics: DashboardMetrics;
+  // The progress bar's source: the project's RESUME progress snapshot, counted (see
+  // lib/progress-snapshot.ts). Optional in the *type* on purpose — a server older
+  // than this UI sends no such field, and that has to be distinguishable from a
+  // project that keeps no snapshot, which is why `progressBarOf` treats `undefined`
+  // as unknown rather than as an absence.
+  progress_snapshot?: ProgressSnapshotLike | null;
   next_action: ProjectNextAction;
   tasks: DashboardTask[];
   truncated: boolean;

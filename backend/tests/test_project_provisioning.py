@@ -5,16 +5,22 @@ from __future__ import annotations
 import asyncio
 import shutil
 import subprocess
+from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
 
 from agora.api.app import app
+from agora.api.settings_router import _projects_overview
 from agora.execution.deliverables import _is_provisioned_worktree
+from agora.fsprobe import PathProbe
 from agora.projects import ProjectRegistry
 from agora.tasks.router import get_project_registry
 from agora.workspaces.models import ProvisionRequest
 from agora.workspaces.provisioner import WorkspaceProvisioner, WorkspaceValidationError
+
+from tests.acl_support import deny_self_traverse, restore_traverse
 
 GIT = shutil.which("git")
 pytestmark = pytest.mark.skipif(GIT is None, reason="git is required for provisioning")
@@ -54,6 +60,29 @@ def _registry(tmp_path) -> ProjectRegistry:
     registry = ProjectRegistry(config)
     registry.set_projects_base(tmp_path / "base")
     return registry
+
+
+def _owned_project(registry: ProjectRegistry, root: Path, project_id: str):
+    """A project the calling test builds for itself.
+
+    A test that asserts "this root is not a repository" or "this directory is
+    refused" must own the directory it is talking about. The project the registry
+    seeds from configuration is not owned by the test: it is whatever the store
+    already held, and on a shared control-plane database that is the real Agora
+    project, whose root *is* a git repository. Asserting a definite negative about
+    it pins nothing and turns the outcome into a function of which tests ran first.
+    """
+    return registry.add(project_id, root)
+
+
+def _owned_id(prefix: str) -> str:
+    """A project id no other test can already have taken.
+
+    The store a test's registry resolves to is not guaranteed to be empty, so a
+    fixed id can collide with a row another test wrote — which would refuse the
+    creation for the wrong reason and read as a failure of what is being pinned.
+    """
+    return f"{prefix}{uuid4().hex[:8]}"
 
 
 def test_charter_endpoint_sets_and_returns(tmp_path):
@@ -241,6 +270,44 @@ def test_dashboard_next_action_never_hides_a_blocker_past_the_page(tmp_path, mon
         app.dependency_overrides.clear()
 
 
+def test_dashboard_carries_the_progress_snapshot_as_its_own_claim(tmp_path):
+    """The progress bar's source travels with the dashboard, and says which of the
+    three answers it is. The bar renders no number unless `available` is true, so a
+    field that were merely missing would be read as "no snapshot" — the reason this
+    key is always present."""
+    from agora.projects.progress_snapshot import SNAPSHOT_RELATIVE_PATH
+    from agora.tasks.router import get_project_registry, get_task_store
+    from agora.tasks.store import TaskStore
+    from agora.execution.router import get_execution_store
+    from agora.execution.store import ExecutionStore
+
+    registry = _registry(tmp_path)
+    tasks = TaskStore(tmp_path / "snap.db")
+    runs = ExecutionStore(tasks)
+
+    app.dependency_overrides[get_project_registry] = lambda: registry
+    app.dependency_overrides[get_task_store] = lambda: tasks
+    app.dependency_overrides[get_execution_store] = lambda: runs
+    client = TestClient(app)
+    try:
+        # No snapshot on disk yet: absent, with no counts to render.
+        body = client.get("/api/projects/agora/dashboard").json()
+        assert body["progress_snapshot"]["available"] is False
+        assert body["progress_snapshot"]["reason"] == "absent"
+        assert body["progress_snapshot"]["done"] is None
+
+        path = registry.get("agora").root / SNAPSHOT_RELATIVE_PATH
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("- \u2705 a\n- \u2705 b\n- \U0001f535 c\n- \u2b1c d\n", encoding="utf-8")
+        body = client.get("/api/projects/agora/dashboard").json()
+        snapshot = body["progress_snapshot"]
+        assert snapshot["available"] is True
+        assert (snapshot["done"], snapshot["in_progress"], snapshot["todo"]) == (2, 1, 1)
+        assert snapshot["source"] == SNAPSHOT_RELATIVE_PATH.as_posix()
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_create_project_provisions_linked_worktrees_inside_outer_repo(tmp_path):
     registry = _registry(tmp_path)
     outer_head_before = _git("rev-parse", "HEAD", cwd=tmp_path)
@@ -258,7 +325,6 @@ def test_create_project_provisions_linked_worktrees_inside_outer_repo(tmp_path):
         project = registry.get("demo")
         # The project root is its OWN repo, not the outer one.
         top = _git("rev-parse", "--show-toplevel", cwd=project.root)
-        from pathlib import Path
         assert Path(top).resolve() == project.root.resolve()
         # Each workspace is a linked worktree of the project (not the outer repo).
         for adapter, workspace in project.workspaces.items():
@@ -286,6 +352,107 @@ def test_create_project_rejects_preexisting_nonempty_dir(tmp_path):
         assert not (squatter / ".git").exists()  # never git-inited an unmanaged dir
     finally:
         app.dependency_overrides.clear()
+
+
+def test_create_project_refuses_a_directory_it_cannot_inspect(tmp_path, monkeypatch):
+    """An unreadable directory is not an empty one, and this guard protects contents.
+
+    The check was `root.exists() and root.is_dir() and any(root.iterdir())`, and
+    `exists()` answers False for a stat this process may not complete. So a directory
+    full of unmanaged files behind a denying ACL passed the guard and was adopted and
+    git-inited — the exact outcome the guard exists to prevent. "Could not look" must
+    refuse, not proceed.
+    """
+    registry = _registry(tmp_path)
+    monkeypatch.setattr(
+        "agora.projects.registry.probe_path",
+        lambda path, **kwargs: PathProbe("unknown", error=PermissionError(13, "denied")),
+    )
+    with pytest.raises(ValueError, match="cannot be inspected"):
+        registry.create_project("demo", "Demo")
+    # Nothing was created on the way to the refusal.
+    assert not (registry.projects_base() / "demo" / ".git").exists()
+
+
+def test_create_project_refuses_a_directory_denied_by_the_filesystem(tmp_path):
+    """The same refusal with the OS enforcing the denial, where the platform allows it."""
+    registry = _registry(tmp_path)
+    # Base and project id are this test's own, created here: what is asserted is the
+    # refusal of a directory this test made and denied itself, never a directory the
+    # registry was configured with or that another test left in the store.
+    base = registry.set_projects_base(tmp_path / "denied-base")
+    project_id = _owned_id("denied")
+    squatter = base / project_id
+    squatter.mkdir(parents=True)
+    (squatter / "user-file.txt").write_text("do not touch", encoding="utf-8")
+    if not deny_self_traverse(base):
+        pytest.skip("this platform/account cannot deny itself traversal")
+    try:
+        try:
+            registry.create_project(project_id, "Demo")
+        except ValueError as exc:
+            assert "cannot be inspected" in str(exc) or "not empty" in str(exc)
+        else:
+            pytest.skip("the deny did not take effect for this token (elevated or bypassed)")
+    finally:
+        # Restored before the assertions below and before pytest tears the temporary
+        # tree down: a denial left in place would make the directory unreadable and
+        # undeletable, so the test would leave garbage behind in the temp root.
+        restore_traverse(base)
+    # The unmanaged file survived and the directory was never turned into a repo.
+    assert (squatter / "user-file.txt").read_text(encoding="utf-8") == "do not touch"
+    assert not (squatter / ".git").exists()
+
+
+def test_projects_overview_reports_unknown_rather_than_missing(tmp_path, monkeypatch):
+    """Settings must not tell the operator a path is missing when it could not be read.
+
+    `root_exists`, `root_is_git` and each workspace's `exists` were `is_dir()`/`exists()`
+    booleans, so an ACL-denied root rendered as "missing" — a settled fact that sends
+    someone to recreate a directory that is already there. They are tri-state now, and
+    `writable` follows `exists`: the old code probed the *parent* whenever `is_dir()` was
+    False, which could report an unreadable workspace as writable.
+    """
+    registry = _registry(tmp_path)
+    monkeypatch.setattr(
+        "agora.api.settings_router.probe_path",
+        lambda path, **kwargs: PathProbe("unknown", error=PermissionError(13, "denied")),
+    )
+    item = next(i for i in _projects_overview(registry)["items"] if i["project_id"] == "agora")
+    assert item["root_exists"] is None
+    assert item["root_is_git"] is None
+    assert item["workspaces"], "the fixture project has workspaces to report on"
+    for workspace in item["workspaces"]:
+        assert workspace["exists"] is None
+        assert workspace["writable"] is None
+
+
+def test_projects_overview_still_answers_definitely_when_it_can(tmp_path):
+    # The tri-state must not make everything unknown: the UI keeps both of its confident
+    # renderings, so a real absence is still False and a real directory still True.
+    # The project asserted about is built here: "there is no `.git` under this root" is
+    # only a fact about a root this test owns, and the seeded configured project's root
+    # may well be a real repository.
+    registry = _registry(tmp_path)
+    project_id = _owned_id("overview")
+    project = _owned_project(registry, tmp_path / "base" / project_id, project_id)
+
+    def item() -> dict:
+        return next(
+            i
+            for i in _projects_overview(registry)["items"]
+            if i["project_id"] == project.project_id
+        )
+
+    # Nothing at `<root>/.git` yet, and that is a definite negative rather than unknown.
+    assert item()["root_is_git"] is False
+    (project.root / ".git").mkdir(parents=True, exist_ok=True)
+    after = item()
+    assert after["root_is_git"] is True
+    assert after["root_exists"] is True
+    # The registry creates each adapter's workspace directory, so these are observed.
+    assert after["workspaces"], "the fixture project has workspaces to report on"
+    assert all(workspace["exists"] is True for workspace in after["workspaces"])
 
 
 def test_direct_provision_on_nested_nonrepo_root_is_rejected(tmp_path):

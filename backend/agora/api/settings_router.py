@@ -20,6 +20,7 @@ from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, field_validator
 
 from agora.config.settings import get_config
+from agora.fsprobe import PathProbe, probe_path
 from agora.tasks.router import get_project_registry, get_task_store
 from agora.tasks.store import TaskStore
 from agora.execution.adapters import build_adapter_registry
@@ -334,6 +335,7 @@ def project_dashboard(
     criteria + progress vs verified-completion, and the project-wide rollup."""
     from agora.execution.dispatcher import ROLE_KEY, ROLE_REVIEW, ROLE_WORKER
     from agora.execution.models import RunState
+    from agora.projects.progress_snapshot import read_progress_snapshot
     from agora.requirements.models import SpecState
     from agora.requirements.store import RequirementStore
     from agora.tasks.models import TaskState
@@ -444,6 +446,14 @@ def project_dashboard(
         "name": project.name,
         "charter": _charter_view(project.charter),
         "metrics": metrics,
+        # The progress bar's data source, kept separate from `metrics` because it is
+        # a different kind of claim: `metrics` is derived from run/task signals (and
+        # `verified_pct` inherits a known defect — see projects/progress_snapshot.py),
+        # while this is the human-maintained snapshot, counted. Always present in the
+        # response, carrying either counts or the reason there are none, so the UI can
+        # tell "no snapshot" from "could not be read" from "not reported by this
+        # server" without deriving any of them from a missing field.
+        "progress_snapshot": read_progress_snapshot(project.root).payload(),
         "next_action": project_next_action(action_items, partial=truncated),
         "tasks": task_views,
         "truncated": truncated,
@@ -585,23 +595,25 @@ def _projects_overview(registry: ProjectRegistry) -> dict[str, Any]:
     current = registry.current_project_id()
     items = []
     for project_id, project in sorted(registry.list_projects().items()):
+        # Tri-state on purpose: True, False, or None for "could not tell". These were
+        # `is_dir()` / `exists()`, which answer False both for nothing-is-there and for
+        # a stat this process may not complete, so a root behind a denying ACL was
+        # reported to Settings as missing — a settled fact that sends the operator to
+        # recreate a directory that is in fact there. See `agora.fsprobe`.
+        root = probe_path(project.root)
+        git = probe_path(project.root / ".git")
         items.append(
             {
                 "project_id": project_id,
                 "name": project.name,
                 "root": str(project.root),
-                "root_exists": project.root.is_dir(),
-                "root_is_git": (project.root / ".git").exists(),
+                "root_exists": root.is_dir(),
+                "root_is_git": git.exists(),
                 "worker_agent": project.worker_agent,
                 "reviewer_agent": project.reviewer_agent,
                 "charter": _charter_view(project.charter),
                 "workspaces": [
-                    {
-                        "adapter": adapter,
-                        "path": str(path),
-                        "exists": path.is_dir(),
-                        "writable": _writable(path),
-                    }
+                    _workspace_view(adapter, path)
                     for adapter, path in sorted(project.workspaces.items())
                 ],
             }
@@ -670,9 +682,35 @@ def _control_plane_auth(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _writable(path: Path) -> bool:
-    probe = path if path.is_dir() else path.parent
+def _workspace_view(adapter: str, path: Path) -> dict[str, Any]:
+    """One agent workspace, with "could not tell" reported as ``None`` rather than False.
+
+    ``writable`` is unknown whenever ``exists`` is: the old code probed the *parent*
+    whenever ``path.is_dir()`` was False, so an unreadable workspace directory was
+    tested for the writability of its parent and could be reported as a writable
+    workspace that does not exist. Neither half of that is an observation of the
+    workspace.
+    """
+    probe = probe_path(path)
+    exists = probe.is_dir()
+    return {
+        "adapter": adapter,
+        "path": str(path),
+        "exists": exists,
+        "writable": None if exists is None else _writable(path, probe),
+    }
+
+
+def _writable(path: Path, probe: PathProbe) -> bool:
+    """Whether a workspace can be written: the directory itself, or where it would go.
+
+    Called only when ``probe`` observed the path, so the fallback to the parent is a
+    genuine "can this be created here" and not a stand-in for an unread directory.
+    A False from ``os.access`` is an answer about permission, which is the question
+    asked here — unlike a False from an existence probe, which is not an answer at all.
+    """
+    target = path if probe.is_dir() else path.parent
     try:
-        return os.access(probe, os.W_OK)
+        return os.access(target, os.W_OK)
     except OSError:
         return False
