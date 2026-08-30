@@ -29,6 +29,9 @@ def _running_system(tmp_path):
 
 
 def _review_approval(store: AttentionStore, task_id: str):
+    # internal=True: REVIEW_REQUESTER is the control plane's own requester and is
+    # refused from public input (RESERVED_REQUESTERS), so simulating the item the
+    # dispatcher raises means creating it the way the dispatcher does.
     return store.create(
         CreateAttentionRequest(
             task_id=task_id,
@@ -36,7 +39,8 @@ def _review_approval(store: AttentionStore, task_id: str):
             title="评审完成,待你批准(评审:claude)",
             body="Looks correct.",
             requester=REVIEW_REQUESTER,
-        )
+        ),
+        internal=True,
     )
 
 

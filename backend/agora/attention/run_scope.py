@@ -27,6 +27,9 @@ here:
   created through ``AttentionStore.create`` and has no bridge row, so this is a
   second, redundant guard rather than the load-bearing one — redundant on
   purpose, because the cost of getting this wrong is losing a human decision.
+  (Redundant by rule since L1: ``create_bridge_event`` refuses the control plane's
+  reserved requesters, so a bridge-origin item cannot carry this one at all. It
+  could before, when the requester was whatever the vendor payload said.)
 
 A review gate outlives its run; a permission prompt does not. That asymmetry is
 the whole content of this module.

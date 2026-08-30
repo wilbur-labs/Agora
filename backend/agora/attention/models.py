@@ -13,6 +13,27 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 # the task when a human settles it) agree on how to recognise a review item.
 REVIEW_REQUESTER = "agora-review"
 
+#: Requesters the control plane owns. It stamps them on the items *it* raises, and
+#: it then reads them back as **its own authority**:
+#:
+#: - ``ExecutionStore._has_review_gate_item`` treats a ``REVIEW_REQUESTER`` blocker
+#:   or approval scoped to a worker run as the review gate for that run, so its
+#:   existence stands down the derived "this task owes a review" refusal.
+#: - ``agora.attention.review_gate.settle_review_approval`` advances a task to
+#:   ``verified`` when a human approves a ``REVIEW_REQUESTER`` approval.
+#: - ``agora.attention.run_scope`` exempts ``REVIEW_REQUESTER`` items from being
+#:   settled with their run.
+#:
+#: A requester a client can set is therefore a client-settable authority marker,
+#: which is the third one this slice has found: ``agora_role`` in run metadata was
+#: the first (``RESERVED_METADATA_KEYS``), forgeable through ``POST /api/runs``. The
+#: same shape closes this one — the value is refused in public input and only
+#: Agora's internal paths may write it (``AttentionStore.create(...,
+#: internal=True)``). Refused rather than rewritten, for the reason
+#: ``RESERVED_METADATA_KEYS`` gives: a caller sending one is confused or hostile,
+#: and quietly substituting a different requester would hide which.
+RESERVED_REQUESTERS = frozenset({REVIEW_REQUESTER})
+
 
 class AttentionKind(str, Enum):
     QUESTION = "question"

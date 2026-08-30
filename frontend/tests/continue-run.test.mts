@@ -323,6 +323,44 @@ test("a coded 409 is a gate refusal, not 'the task changed'", () => {
   );
 });
 
+test("the review-owed refusal is its own answer, not 'the task changed'", () => {
+  // The control plane now also refuses inside the handoff window: the previous
+  // worker run succeeded and its independent review has not been created yet. The
+  // run count is zero there — nothing is active — so deriving the reason from it
+  // would report "the task changed underneath this page", which is neither true
+  // nor actionable. The refusal releases itself when the review appears, so the
+  // message is "wait and retry", and that is only sayable from the code.
+  assert.deepEqual(
+    classifyDispatchFailure({
+      status: 409,
+      detail: "Worker run run_1 succeeded and its independent cross-review has not been created yet…",
+      activeRunCount: 0,
+      conflictCode: RUN_GATE_CODES.reviewOwed,
+    }),
+    {
+      kind: "reviewOwed",
+      detail: "Worker run run_1 succeeded and its independent cross-review has not been created yet…",
+    },
+  );
+  // It stands without the re-read, like the other two coded refusals.
+  assert.deepEqual(
+    classifyDispatchFailure({
+      status: 409, detail: "owed", activeRunCount: null, rereadFailed: true,
+      conflictCode: RUN_GATE_CODES.reviewOwed,
+    }),
+    { kind: "reviewOwed", detail: "owed" },
+  );
+  // And it establishes that nothing is running: the create transaction refused
+  // before inserting anything, and what is owed is a run that does not exist.
+  assert.equal(confirmsNothingRunning({ kind: "reviewOwed", detail: "owed" }), true);
+  assert.equal(
+    provisionNoteKey({ kind: "reviewOwed", detail: "owed" }),
+    "workspace.continue.errors.afterProvision",
+  );
+  // Every refusal kind has a message key; a new kind without one renders blank.
+  assert.equal(DISPATCH_FAILURE_KEY.reviewOwed, "workspace.continue.errors.reviewOwed");
+});
+
 test("an uncertain POST is answered by re-reading the runs, not by assuming absence", () => {
   // The hole: the server created and scheduled the run, and the reply was lost.
   // Only 409 used to trigger a re-read, so the page kept its stale zero count and

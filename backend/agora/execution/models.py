@@ -43,6 +43,33 @@ ROLE_WORKER = "worker"
 ROLE_REVIEW = "review"
 REVIEWS_RUN_KEY = "reviews_run_id"
 
+#: Fixed title of the "no cross-review conclusion is on record" blocker raised by
+#: ``ExecutionDispatcher._block_review_owed``. Fixed on purpose: it is the
+#: idempotency key (with the task, the run it is scoped to, and the requester), so
+#: a retry updates nothing and piles up nothing, and the varying detail lives in
+#: the body.
+#:
+#: It says "no conclusion", not "did not start" (P1, 2026-08-30). It used to read
+#: 跨评审未能启动 ("the cross-review failed to start"), which was true of the only
+#: causes that existed when it was written — the three ``_dispatch_review`` failures
+#: — and became false when this slice attached the same item to
+#: ``REVIEW_OWED_NO_GATE_ITEM``, where the review *did* start, ran, and lost only its
+#: gate write, and to ``REVIEW_OWED_REVIEW_CANCELLED``, where it may have started and
+#: been stopped partway. What holds for every cause is that no review decision is on
+#: record, which is also the fact ``ExecutionStore._has_review_gate_item`` releases
+#: on. Which review, if any, ever ran is said in the cause-specific reason.
+#:
+#: It lives here rather than on the dispatcher because ``ExecutionStore`` has to
+#: know that this blocker exists — the derived "a review is owed" refusal stands
+#: down once the review path has recorded a human-clearable blocker for that run
+#: (see ``ExecutionStore._reviews_owed``) — and importing the dispatcher from the
+#: store would be a cycle. The store matches on
+#: ``(task_id, run_id, requester, kind)`` rather than on this string, because a
+#: title is redacted on insert and a comparison against a redacted copy is a
+#: second thing to keep in step; the constant is shared so both sides still name
+#: one item rather than two.
+REVIEW_OWED_BLOCKER_TITLE = "跨评审没有留下结论,需要你处理"
+
 #: The task version this run was validated against, recorded by
 #: ``ExecutionStore.create`` in the transaction that inserts the run — after the
 #: planned -> running bump that same transaction may perform, so it is the version
@@ -59,15 +86,55 @@ REVIEWS_RUN_KEY = "reviews_run_id"
 #: hand) can only be lifecycle-checked; see ``_task_refusal``.
 TASK_VERSION_KEY = "task_version"
 
-#: Metadata keys the control plane owns. They decide which run gates which other
-#: run (see ExecutionStore._reject_second_active_run), so a client that could set
-#: them could name a role that matches nothing and slip a second concurrent paid
-#: run past the same-role guard — or, for ``task_version``, claim a version the
-#: task never had and walk past the staleness check. Refused on input, exactly as
+#: The run's **identity**: what the control plane decided this run *is*, written
+#: by ``ExecutionStore.create`` in the transaction that inserts the row and never
+#: again. It is not the run's result, and the two live in the same
+#: ``result_metadata`` JSON column only because that column is where a run's
+#: non-tabular facts are kept.
+#:
+#: Everything in this slice reads identity to decide which run gates which other
+#: run: the same-role overlap guard, the "this task is under review" refusal, the
+#: derived "this task owes a review" predicate, the resume sweep's role ordering,
+#: and ``_task_refusal``'s staleness check. So identity has two protections, one
+#: per direction:
+#:
+#: - a client may not **set** it (``RESERVED_METADATA_KEYS`` below, refused by
+#:   ``CreateRunRequest``): a settable role names a role nothing matches and slips
+#:   a second concurrent paid run past the same-role guard, and a settable
+#:   ``task_version`` claims a version the task never had.
+#: - a *result* write may not **clear or change** it
+#:   (``ExecutionStore._identity_preserved``): the column is written wholesale, so
+#:   a settle that carried only a result — the whole of a pre-launch failure, where
+#:   there is no result at all — used to overwrite the identity with ``{}``. A
+#:   review run that failed before it started then read as the task's latest
+#:   *worker* run, the derived predicate concluded no review was owed, and the next
+#:   worker run walked straight past the review gate. A gate defeated by a field
+#:   being cleared somewhere else entirely.
+IDENTITY_METADATA_KEYS = frozenset({ROLE_KEY, REVIEWS_RUN_KEY, TASK_VERSION_KEY})
+
+#: Metadata keys the control plane owns, refused in client input. The same set as
+#: ``IDENTITY_METADATA_KEYS`` **by construction, not by coincidence**: a key is
+#: refused from a client exactly because the server owns it, so one list cannot
+#: drift from the other. Refused rather than silently rewritten, exactly as
 #: AppendEventRequest refuses reserved event types: a client sending one is
-#: confused or hostile, and silently rewriting its request would hide which of the
-#: two happened.
-RESERVED_METADATA_KEYS = frozenset({ROLE_KEY, REVIEWS_RUN_KEY, TASK_VERSION_KEY})
+#: confused or hostile, and quietly fixing its request would hide which of the two
+#: happened.
+RESERVED_METADATA_KEYS = IDENTITY_METADATA_KEYS
+
+
+def identity_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
+    """The server-owned identity keys a *stored* run's metadata carries.
+
+    Only the keys that are actually present: a row written before a key existed
+    (or by hand) records no answer for it, and inventing a default here would
+    manufacture identity for a run the control plane never gave one. ``role_of``
+    and ``task_version_of`` are where the "what does absence mean?" question is
+    answered, each for its own key.
+    """
+    return {
+        key: value for key, value in (metadata or {}).items()
+        if key in IDENTITY_METADATA_KEYS
+    }
 
 
 def role_of(metadata: dict[str, Any] | None) -> str:

@@ -142,6 +142,14 @@ export const workspace = {
         // item(s) and how to clear them, so it is shown rather than paraphrased.
         gateOpen: "This task has a gate waiting for you, so nothing was started. {detail}",
         reviewActive: "This task's review hasn't finished, so nothing was started. {detail}",
+        // The auto-review handoff, refused by the control plane rather than
+        // guessed at by a timer: the last worker run succeeded and no independent
+        // review accounts for it — the review may not exist yet, or one may have
+        // ended without reviewing anything, or without leaving a gate to settle.
+        // Says "worker run", not "run": the refusal is about the last succeeded
+        // *worker* run, and a review run may well be the more recent row.
+        reviewOwed:
+          "No independent review accounts for the last worker run yet, so nothing was started. {detail}",
         taskChanged: "The task changed underneath this page, so nothing was started. Refresh and try again.",
         // A 409 whose re-read failed: something refused the dispatch and we cannot
         // say what. Notably it must not borrow taskChanged's "nothing was started"
@@ -435,6 +443,7 @@ export const workspace = {
         alreadyRunning: "这个任务已有运行在进行，因此本次没有启动。",
         gateOpen: "这个任务上有一道门在等你处理，因此没有启动任何运行。{detail}",
         reviewActive: "这个任务的评审还没有结束，因此没有启动任何运行。{detail}",
+        reviewOwed: "上一次实现运行还没有任何独立评审算数，因此没有启动任何运行。{detail}",
         taskChanged: "任务在本页面之外发生了变化，因此没有启动任何运行。请刷新后重试。",
         conflictUnknown: "控制平面拒绝了这次运行，而重新读取这个任务的运行记录也失败了——因此拒绝的原因，以及现在是否有运行在执行，都属于未知。请先刷新再重试。（{detail}）",
         taskGone: "任务或其所属项目已不存在，因此没有启动任何运行。（{detail}）",

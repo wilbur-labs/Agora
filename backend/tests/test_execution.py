@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import ast
 import json
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -9,17 +11,21 @@ import sys
 import uuid
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
+import agora.api.app as app_module
 from agora.api.app import app
 from agora.execution.adapters import ExecutionAdapter, build_adapter_registry
 from agora.execution.dispatcher import ExecutionDispatcher, redact_output
 from agora.execution.models import (
     CancelRunRequest,
     CreateRunRequest,
+    REVIEWS_RUN_KEY,
+    ROLE_KEY,
     ROLE_REVIEW,
     ROLE_WORKER,
     RunState,
@@ -29,6 +35,10 @@ from agora.execution.store import (
     ExecutionStore,
     GATE_CODE_ATTENTION_OPEN,
     GATE_CODE_REVIEW_ACTIVE,
+    GATE_CODE_REVIEW_OWED,
+    REVIEW_OWED_NO_GATE_ITEM,
+    REVIEW_OWED_NO_REVIEW_RUN,
+    REVIEW_OWED_REVIEW_CANCELLED,
     RunConflictError,
     RunGateError,
     RunValidationError,
@@ -36,9 +46,11 @@ from agora.execution.store import (
 from agora.projects import ProjectRegistry
 from agora.tasks.models import AppendEventRequest, CreateTaskRequest, TaskState
 from agora.tasks.store import TaskStore
-from agora.attention.store import AttentionStore
+from agora.attention.store import AttentionStore, AttentionValidationError
+from agora.attention.router import get_attention_store
 from agora.attention.run_scope import ORPHANED_PROMPT_REASON
 from agora.attention.bridges.models import BridgeEventRequest, BridgeVendor, DeliveryMode
+from agora.attention.bridges.normalize import normalize_hook_event
 from agora.attention.models import (
     AttentionKind,
     AttentionState,
@@ -783,7 +795,7 @@ def test_a_worker_run_is_refused_while_a_human_gate_is_open(tmp_path):
         return attention.create(CreateAttentionRequest(
             task_id=task.task_id, kind=kind, urgency=AttentionUrgency.NORMAL,
             title=title, requester="agora-review", **extra,
-        ))
+        ), internal=True)
 
     approval = raise_item(AttentionKind.APPROVAL, "Review finished, approve it")
     # The task version is untouched by the gate, which is exactly why the version
@@ -830,10 +842,18 @@ def test_a_worker_run_is_refused_while_a_human_gate_is_open(tmp_path):
     second = dispatcher.queue(_request(task.task_id, version=3))
     store.cancel(second.run_id, CancelRunRequest(expected_version=second.version))
 
-    # A question does NOT gate: it binds to no artifact and settles no decision,
-    # and a better-prompted run is often the answer. Promoting it would turn every
-    # unanswered mid-run Codex permission question into a task-level lockout.
-    raise_item(AttentionKind.QUESTION, "Which database should this use?")
+    # A question gates too, as of 2026-08-30. It used to be exempt on the ground
+    # that it binds to no artifact and settles no decision — but a new run started
+    # while the question is unanswered proceeds on an unanswered assumption, which
+    # makes asking pointless. Answering it is the release (see
+    # test_an_open_question_gates_the_next_worker_run for the full set).
+    question = raise_item(AttentionKind.QUESTION, "Which database should this use?")
+    with pytest.raises(RunGateError, match="open gate item") as asked:
+        dispatcher.queue(_request(task.task_id, version=3))
+    assert asked.value.items[0]["kind"] == "question"
+    attention.respond(question.item_id, RespondAttentionRequest(
+        action=ResponseAction.ANSWER, response="postgres", expected_version=question.version,
+    ))
     third = dispatcher.queue(_request(task.task_id, version=3))
     store.cancel(third.run_id, CancelRunRequest(expected_version=third.version))
 
@@ -852,13 +872,14 @@ def test_a_worker_run_is_refused_while_a_human_gate_is_open(tmp_path):
 
 
 def test_a_worker_run_is_refused_while_the_review_run_is_unsettled(tmp_path):
-    """The half of Run -> Gate ordering that IS atomically enforceable.
+    """The half of Run -> Gate ordering enforceable from a row that already exists.
 
     A review run is a row in this database, readable in the create transaction.
     Without this check a worker run created while its predecessor's review executes
     is refused by nothing: the same-role guard only compares worker against worker.
-    The gap between a worker run settling and its review being *queued* is not
-    enforceable here and is left to the client window — see the ADR.
+    The gap between a worker run settling and its review being *queued* has no such
+    row, and is refused by the derived predicate instead — see
+    test_a_worker_run_is_refused_while_its_predecessor_owes_a_review.
     """
     tasks, store, dispatcher = _system(tmp_path, [sys.executable, "-c", "print('ok')"])
     task = _planned_task(tasks)
@@ -900,7 +921,7 @@ def test_the_gate_refusal_reaches_the_client_as_a_distinguishable_409(tmp_path):
     item = attention.create(CreateAttentionRequest(
         task_id=task.task_id, kind=AttentionKind.APPROVAL, title="Approve the review",
         requester="agora-review",
-    ))
+    ), internal=True)
     dispatcher.schedule = lambda run_id: None  # type: ignore[method-assign]
     app.dependency_overrides[get_execution_store] = lambda: store
     app.dependency_overrides[get_execution_dispatcher] = lambda: dispatcher
@@ -1094,7 +1115,7 @@ def test_the_review_gate_survives_the_orphaned_prompt_sweep(tmp_path):
         task_id=task.task_id, run_id=scoped_review.run_id, kind=AttentionKind.APPROVAL,
         urgency=AttentionUrgency.NORMAL, title="Approve this review",
         requester=REVIEW_REQUESTER,
-    ))
+    ), internal=True)
     assert attention.require(scoped_gate.item_id).state.value == "open"
     scoped_running = store.start(scoped_review.run_id, expected_version=scoped_review.version)
     store.finish(scoped_review.run_id, RunState.SUCCEEDED,
@@ -1127,7 +1148,7 @@ def test_the_review_gate_survives_the_orphaned_prompt_sweep(tmp_path):
         task_id=task.task_id, run_id=worker.run_id, kind=AttentionKind.APPROVAL,
         urgency=AttentionUrgency.NORMAL, title="Review finished, approve it",
         requester=REVIEW_REQUESTER,
-    ))
+    ), internal=True)
 
     # Both runs it is scoped to are terminal. It is still open, and it still gates.
     assert attention.require(gate.item_id).state.value == "open"
@@ -1175,18 +1196,36 @@ def test_the_review_gate_survives_the_orphaned_prompt_sweep(tmp_path):
     assert dispatcher.queue(_request(task.task_id, version=3)).state == RunState.QUEUED
 
 
-def _insert_queued_run(tasks: TaskStore, task_id: str, *, role: str | None, adapter="codex"):
+def _insert_queued_run(
+    tasks: TaskStore, task_id: str, *, role: str | None, adapter="codex",
+    task_version: int | None = -1,
+):
     """A persisted QUEUED row of the shape an older database — or a crash — leaves
-    behind: inserted without passing through ``create``'s gates."""
+    behind: inserted without passing through ``create``'s gates.
+
+    ``task_version`` defaults to the task's version *at insert time*, which is what
+    ``create`` would have recorded, so a row is only missing that key when a test
+    asks for it (``task_version=None``). Since N2 a row with no recorded version is
+    refused rather than lifecycle-checked only, so the two cases have to be
+    distinguishable here; before N2 every row this helper made was version-less and
+    the difference did not show.
+    """
     run_id = f"run_persisted_{uuid.uuid4().hex[:8]}"
-    metadata = "{}" if role is None else json.dumps({"agora_role": role})
+    if task_version == -1:
+        current = tasks.get(task_id)
+        task_version = None if current is None else current.version
+    metadata: dict = {}
+    if role is not None:
+        metadata["agora_role"] = role
+    if task_version is not None:
+        metadata["task_version"] = task_version
     with tasks._transaction() as db:
         db.execute(
             """INSERT INTO execution_runs
                (run_id, task_id, project_id, adapter, state, prompt, workspace, command,
                 timeout_seconds, result_metadata, version, queued_at, actor)
                VALUES (?, ?, 'alpha', ?, 'queued', 'go', '.', '[]', 10, ?, 1, ?, 'user')""",
-            (run_id, task_id, adapter, metadata,
+            (run_id, task_id, adapter, json.dumps(metadata),
              datetime.now(timezone.utc).isoformat()),
         )
     return run_id
@@ -1230,7 +1269,7 @@ def test_resume_revalidates_persisted_queued_runs_instead_of_scheduling_them_bli
     gate = attention.create(CreateAttentionRequest(
         task_id=gated_task.task_id, kind=AttentionKind.APPROVAL,
         title="Approve the review", requester=REVIEW_REQUESTER,
-    ))
+    ), internal=True)
     blocked_by_gate = _insert_queued_run(tasks, gated_task.task_id, role="worker")
 
     # 3. Two queued worker rows on one task: the older one wins, deterministically.
@@ -1244,7 +1283,7 @@ def test_resume_revalidates_persisted_queued_runs_instead_of_scheduling_them_bli
     attention.create(CreateAttentionRequest(
         task_id=review_gated.task_id, kind=AttentionKind.BLOCKER,
         title="Review said no", requester=REVIEW_REQUESTER,
-    ))
+    ), internal=True)
     queued_review = _insert_queued_run(tasks, review_gated.task_id, role="review")
 
     # 5. A role this build cannot schedule fails closed rather than slipping past
@@ -1336,6 +1375,21 @@ def test_resume_re_asks_the_task_questions_of_a_queued_run(tmp_path):
     ``verified`` by the review gate — and after its version had moved, which is the
     exact condition on which ``create`` refuses the identical request. Both
     questions are now asked of the task that exists now.
+
+    **Case 3 pins the opposite of what it used to (N2, 2026-08-30).** It previously
+    asserted that a row recording *no* task version is **admitted** — that
+    ``_task_refusal`` skips the check it cannot answer and schedules the run. That
+    expectation was wrong, and this test was protecting the defect: unknown authority
+    was being read as permission. A version-less queued row is reachable without
+    anyone editing a database — an older Agora persisted it — and the task can then
+    be edited or moved ``running -> blocked -> running``, bumping its version, with
+    nothing able to say which version the run was validated against. Admitting it
+    launches an agent against a prompt and a worktree built for state that no longer
+    exists, which is exactly what the recorded-version check exists to prevent, and
+    "the row is probably fine" is not something this transaction can read. So unknown
+    now **refuses**, with a reason naming the version it could not check against, and
+    the run is settled CANCELLED like every other refusal here. Every run ``create``
+    makes records the version, so no run this build creates reaches that branch.
     """
     tasks, store, dispatcher = _system(tmp_path, [sys.executable, "-c", "print('ok')"])
     scheduled: list[str] = []
@@ -1356,17 +1410,19 @@ def test_resume_re_asks_the_task_questions_of_a_queued_run(tmp_path):
     tasks.transition(moved.task_id, TaskState.RUNNING, actor="user", expected_version=4)
 
     # 3. A row that records no task version at all — an older database, or one
-    #    edited by hand. Unknown is reported by skipping the question it cannot
-    #    answer, not by refusing every persisted row: the task is running, so it
-    #    resumes.
-    legacy_ok = _planned_task(tasks)
-    legacy_run = _insert_queued_run(tasks, legacy_ok.task_id, role="worker")
-    tasks.transition(legacy_ok.task_id, TaskState.RUNNING, actor="user", expected_version=2)
+    #    edited by hand. Unknown authority fails closed: it cannot be checked, so it
+    #    is refused rather than admitted. The task here is perfectly healthy, which
+    #    is the point — nothing about the *task* is wrong, and the run is still
+    #    refused because nothing can say what it was validated against.
+    legacy = _planned_task(tasks)
+    legacy_run = _insert_queued_run(tasks, legacy.task_id, role="worker", task_version=None)
 
-    # 4. ...but a row with no recorded version is still lifecycle-checked, which is
-    #    the half of the question it *can* answer.
+    # 4. ...and the lifecycle question still comes first, so a version-less row on a
+    #    task that has left planned/running is refused for the task, not the version.
     legacy_dead = _planned_task(tasks)
-    legacy_cancelled = _insert_queued_run(tasks, legacy_dead.task_id, role="worker")
+    legacy_cancelled = _insert_queued_run(
+        tasks, legacy_dead.task_id, role="worker", task_version=None
+    )
     tasks.cancel(legacy_dead.task_id, expected_version=2)
 
     # 5. A queued *review* is asked the same questions. A review of a cancelled
@@ -1376,17 +1432,24 @@ def test_resume_re_asks_the_task_questions_of_a_queued_run(tmp_path):
     dead_review = _insert_queued_run(tasks, dead_review_task.task_id, role="review")
     tasks.cancel(dead_review_task.task_id, expected_version=2)
 
-    # 6. The control: unchanged task, matching version, resumed.
+    # 6. The control: unchanged task, matching version, resumed. A persisted row that
+    #    *does* record the current version resumes too — the refusal in case 3 is
+    #    about the version being unknown, not about the row being hand-inserted.
     fine = _planned_task(tasks)
     healthy = dispatcher.queue(_request(fine.task_id))
+    persisted_ok = _planned_task(tasks)
+    persisted_run = _insert_queued_run(tasks, persisted_ok.task_id, role="worker")
 
     refused = dispatcher.resume_queued()
 
     by_run = {entry["run_id"]: entry["reason"] for entry in refused}
-    assert set(by_run) == {doomed.run_id, stale.run_id, legacy_cancelled, dead_review}
-    assert set(scheduled) == {legacy_run, healthy.run_id}
+    assert set(by_run) == {
+        doomed.run_id, stale.run_id, legacy_run, legacy_cancelled, dead_review
+    }
+    assert set(scheduled) == {healthy.run_id, persisted_run}
     assert "its task is cancelled" in by_run[doomed.run_id]
     assert "version 3 to 5" in by_run[stale.run_id]
+    assert "records no task version" in by_run[legacy_run]
     assert "its task is cancelled" in by_run[legacy_cancelled]
     assert "its task is cancelled" in by_run[dead_review]
     for run_id in by_run:
@@ -1460,7 +1523,7 @@ def test_a_gate_opened_while_a_run_waited_is_asked_again_at_launch(tmp_path):
     gate = attention.create(CreateAttentionRequest(
         task_id=task.task_id, kind=AttentionKind.APPROVAL,
         title="Approve the review", requester=REVIEW_REQUESTER,
-    ))
+    ), internal=True)
 
     settled = asyncio.run(dispatcher.execute(run.run_id))
 
@@ -1498,7 +1561,7 @@ def test_a_gate_opened_while_a_run_waited_is_asked_again_at_launch(tmp_path):
     attention.create(CreateAttentionRequest(
         task_id=task.task_id, kind=AttentionKind.BLOCKER,
         title="Review said no", requester=REVIEW_REQUESTER,
-    ))
+    ), internal=True)
     review = dispatcher.queue(
         CreateRunRequest(task_id=task.task_id, adapter="codex", prompt="review",
                          timeout_seconds=10, expected_task_version=2),
@@ -1512,18 +1575,101 @@ def test_a_gate_opened_while_a_run_waited_is_asked_again_at_launch(tmp_path):
     #    ``create`` does — the review is the evidence the gate decides on.
     tasks, store, dispatcher = _system(tmp_path / "under-review", launched)
     task = _planned_task(tasks)
-    worker = _insert_queued_run(tasks, task.task_id, role="worker")
     review = dispatcher.queue(
         CreateRunRequest(task_id=task.task_id, adapter="codex", prompt="review",
                          timeout_seconds=10, expected_task_version=2),
         role=ROLE_REVIEW,
     )
+    # Inserted after the review, so it records the version the review's
+    # planned -> running bump left behind. Before N2 a version-less row skipped the
+    # version question; now it would be refused for that instead of for the review,
+    # and this case is about the review.
+    worker = _insert_queued_run(tasks, task.task_id, role="worker")
     store.start(review.run_id, expected_version=review.version)
 
     reason = store.revalidate_before_launch(worker)
 
     assert reason is not None and review.run_id in reason
     assert store.require(worker).state == RunState.CANCELLED
+
+
+def test_a_generic_question_scoped_to_a_queued_run_still_gates_it(tmp_path):
+    """The re-validation exclusion is cut by provable **origin**, not by ``run_id`` (M2).
+
+    ``_open_gate_items`` drops the items a queued run raised *itself*, so a run does
+    not wait behind its own vendor permission prompt. That was implemented as
+    ``run_id <> ?``, which is only equivalent while every item carrying a run's id
+    came from that run's bridge — and since D1 made ``kind=question`` gate, it does
+    not. ``POST /api/attention`` takes ``kind``, ``requester`` and ``run_id`` from the
+    client, so a *generic* question about the queued run was excluded by the same
+    rule: the run launched with an unanswered question about it and proceeded on a
+    guess, which is exactly what D1 exists to prevent.
+
+    The fix is the distinction ``agora.attention.run_scope`` already makes: exclude
+    only items with a row in ``attention_bridge_events`` for this run. Both halves are
+    asserted here, at both re-validations — the generic question gates, the run's own
+    bridge prompt still does not.
+    """
+    launched = [sys.executable, "-c", "open('launched.txt', 'w').write('x')"]
+
+    # 1. At launch: a generic question naming the queued run refuses it.
+    tasks, store, dispatcher = _system(tmp_path / "launch", launched)
+    attention = AttentionStore(tasks)
+    task = _planned_task(tasks)
+    run = dispatcher.queue(_request(task.task_id))
+    asked = attention.create(CreateAttentionRequest(
+        task_id=task.task_id, run_id=run.run_id, kind=AttentionKind.QUESTION,
+        title="Which database should this run migrate?", requester="operator",
+    ))
+
+    settled = asyncio.run(dispatcher.execute(run.run_id))
+
+    assert settled.state == RunState.CANCELLED
+    assert settled.error_message.startswith("Not launched: ")
+    assert asked.item_id in settled.error_message
+    assert not (dispatcher.projects.get("alpha").workspaces["codex"] / "launched.txt").exists()
+    # Answering it is the exit, as it is for every gate item.
+    attention.respond(asked.item_id, RespondAttentionRequest(
+        action=ResponseAction.APPROVE, expected_version=asked.version,
+    ))
+    retry = dispatcher.queue(_request(task.task_id, version=3))
+    assert asyncio.run(dispatcher.execute(retry.run_id)).state == RunState.SUCCEEDED
+
+    # 2. At launch: the run's OWN bridge prompt is still not a gate on it. Same kind
+    #    of row, same run_id — only the origin differs, which is the whole point.
+    tasks, store, dispatcher = _system(tmp_path / "own-bridge", launched)
+    attention = AttentionStore(tasks)
+    task = _planned_task(tasks)
+    run = dispatcher.queue(_request(task.task_id))
+    _bridge_prompt(attention, task.task_id, run.run_id, rpc_id=21)
+
+    assert store.revalidate_before_launch(run.run_id) is None
+    assert asyncio.run(dispatcher.execute(run.run_id)).state == RunState.SUCCEEDED
+
+    # 3. The resume sweep reads the same helper, so both halves hold there too.
+    tasks, store, dispatcher = _system(tmp_path / "resume", launched)
+    attention = AttentionStore(tasks)
+
+    bridged = _planned_task(tasks)
+    admitted = _insert_queued_run(tasks, bridged.task_id, role="worker")
+    _bridge_prompt(attention, bridged.task_id, admitted, rpc_id=22)
+
+    questioned = _planned_task(tasks)
+    refused_run = _insert_queued_run(tasks, questioned.task_id, role="worker")
+    question = attention.create(CreateAttentionRequest(
+        task_id=questioned.task_id, run_id=refused_run, kind=AttentionKind.QUESTION,
+        title="Which schema does this run target?", requester="operator",
+    ))
+
+    scheduled: list[str] = []
+    dispatcher.schedule = lambda run_id: scheduled.append(run_id)  # type: ignore[method-assign]
+    refused = dispatcher.resume_queued()
+
+    assert scheduled == [admitted]
+    assert store.require(admitted).state == RunState.QUEUED
+    assert [entry["run_id"] for entry in refused] == [refused_run]
+    assert question.item_id in refused[0]["reason"]
+    assert store.require(refused_run).state == RunState.CANCELLED
 
 
 def test_a_queued_run_whose_task_row_is_gone_fails_closed(tmp_path):
@@ -1790,8 +1936,1727 @@ def test_every_cross_review_dispatch_failure_is_recorded_as_a_blocker(tmp_path):
     assert "attention store is unavailable" in items[0].body
 
 
+# --- D1: an unanswered question gates the next worker run --------------------
+
+
+def test_an_open_question_gates_the_next_worker_run(tmp_path):
+    """``question`` joins ``GATING_ATTENTION_KINDS``.
+
+    The rule it replaces argued that a question binds to no artifact and settles no
+    decision, so answering it later is legitimate. The answer to "later" turned out
+    to be "by a run that already guessed": an agent that asked the human something,
+    got no answer, and is followed by a new run proceeds on an *unanswered
+    assumption*, which makes asking pointless.
+
+    Release conditions asserted here: answering it, and cancelling it. Together
+    they are what actually makes gating this kind safe — a ``question`` is
+    **always human-clearable** — and they hold for an item from any producer,
+    including the generic ``POST /api/attention`` used here, which writes no
+    bridge row and is therefore never settled with any run. (The *additional*
+    release that only bridge-origin questions have — the run that asked settling —
+    is ``test_only_a_bridge_question_is_settled_with_its_run``.)
+    """
+    tasks, store, dispatcher = _system(tmp_path, [sys.executable, "-c", "print('ok')"])
+    attention = AttentionStore(tasks)
+    task = _planned_task(tasks)
+    first = dispatcher.queue(_request(task.task_id))
+    running = store.start(first.run_id, expected_version=first.version)
+    store.finish(first.run_id, RunState.SUCCEEDED, expected_version=running.version,
+                 exit_code=0, stdout_tail="asked a question", stderr_tail="")
+
+    question = attention.create(CreateAttentionRequest(
+        task_id=task.task_id, kind=AttentionKind.QUESTION,
+        title="Which cache backend should this use?", requester="codex",
+    ))
+
+    with pytest.raises(RunGateError, match="open gate item") as gated:
+        dispatcher.queue(_request(task.task_id, version=3))
+    assert gated.value.code == GATE_CODE_ATTENTION_OPEN
+    assert gated.value.items == [{
+        "item_id": question.item_id, "kind": "question",
+        "title": "Which cache backend should this use?",
+    }]
+    # The refusal says how to clear it, which is the whole point of gating a
+    # question rather than only refusing to offer the button.
+    assert "answer" in str(gated.value)
+
+    # Release 1: answering it.
+    attention.respond(question.item_id, RespondAttentionRequest(
+        action=ResponseAction.ANSWER, response="redis", expected_version=question.version,
+    ))
+    assert dispatcher.queue(_request(task.task_id, version=3)).state == RunState.QUEUED
+
+    # Release 2: cancelling it, on a second task so the run above does not confound
+    # the answer.
+    other = _planned_task(tasks)
+    dropped = attention.create(CreateAttentionRequest(
+        task_id=other.task_id, kind=AttentionKind.QUESTION, title="Which region?",
+        requester="codex",
+    ))
+    with pytest.raises(RunGateError):
+        dispatcher.queue(_request(other.task_id))
+    attention.cancel(dropped.item_id, CancelAttentionRequest(expected_version=dropped.version))
+    assert dispatcher.queue(_request(other.task_id)).state == RunState.QUEUED
+
+
+def test_only_a_bridge_question_is_settled_with_its_run(tmp_path):
+    """The release a bridge-origin ``question`` has, and the one a generic one does
+    not.
+
+    ``bridges/normalize.normalize_hook_event`` is the only *runtime* producer of
+    ``kind=question`` — a non-permission hook event delivered during a run — and an
+    item it raises goes in through ``create_bridge_event``, which writes the
+    ``attention_bridge_events`` row that ``settle_bridge_attention_for_run`` joins
+    on. So that item is cancelled in the same transaction that settles its run,
+    exactly as a permission ``approval`` is (section 1a of
+    docs/architecture/run-gate-ordering-v1.md).
+
+    **This is not true of every question, and the safety of gating the kind does not
+    rest on it.** The generic ``POST /api/attention`` -> ``AttentionStore.create``
+    takes ``kind`` and ``requester`` from the client and writes no bridge row, so
+    the run-scoped sweep never touches such an item — asserted below alongside the
+    bridge one, because the earlier docstring here claimed the absolute ("every
+    runtime question is bridge-origin, so every question settles with its run") and
+    a false safety argument is what the next person relaxing this rule would rely
+    on. What makes gating safe is that a question is always human-clearable:
+    answerable or cancellable through the Attention page for as long as it exists
+    (``test_an_open_question_gates_the_next_worker_run``).
+    """
+    tasks, store, dispatcher = _system(tmp_path, [sys.executable, "-c", "print('ok')"])
+    attention = AttentionStore(tasks)
+    task = _planned_task(tasks)
+    run = dispatcher.queue(_request(task.task_id))
+
+    # The producer itself, not a hand-built item: a hook event that is not a
+    # permission request normalizes to kind=question.
+    event = normalize_hook_event(
+        BridgeVendor.KIRO, {"hook_event_name": "notification", "tool_name": "fs_write",
+                            "message": "Which directory should this go in?"},
+        task_id=task.task_id, run_id=run.run_id,
+    )
+    assert event.kind == AttentionKind.QUESTION
+    item_id = attention.create_bridge_event(event).item_id
+    assert attention.require(item_id).expires_at is None  # nothing sweeps it later
+
+    # The other producer, scoped to the same run: no bridge row, so the sweep below
+    # must leave it exactly as it is.
+    generic = attention.create(CreateAttentionRequest(
+        task_id=task.task_id, run_id=run.run_id, kind=AttentionKind.QUESTION,
+        title="Which region should this deploy to?", requester="operator",
+    ))
+
+    running = store.start(run.run_id, expected_version=run.version)
+    store.finish(run.run_id, RunState.SUCCEEDED, expected_version=running.version,
+                 exit_code=0, stdout_tail="done", stderr_tail="")
+
+    settled = attention.require(item_id)
+    assert settled.state == AttentionState.CANCELLED
+    assert settled.cancellation_reason == ORPHANED_PROMPT_REASON
+    # The generic question is still open, and still gating: it is human-clearable,
+    # which is the actual safety property, but nothing settles it with a run.
+    assert attention.require(generic.item_id).state == AttentionState.OPEN
+    with pytest.raises(RunGateError, match="open gate item") as gated:
+        dispatcher.queue(_request(task.task_id, version=3))
+    assert gated.value.items == [{
+        "item_id": generic.item_id, "kind": "question",
+        "title": "Which region should this deploy to?",
+    }]
+    # And cancelling it — the human exit that every question has — releases the gate,
+    # so this is not the section 1a lockout.
+    attention.cancel(generic.item_id, CancelAttentionRequest(expected_version=generic.version))
+    assert dispatcher.queue(_request(task.task_id, version=3)).state == RunState.QUEUED
+
+
+# --- D2: the handoff window between a worker settling and its review ---------
+
+
+def _settled_worker_run(dispatcher, store, task_id: str, *, state=RunState.SUCCEEDED, version: int = 2):
+    """A terminal worker run with no review anywhere near it: the handoff gap.
+
+    Built through the store rather than by awaiting ``execute``, because the gap *is*
+    the moment after ``finish`` and before ``_dispatch_review``: going through the
+    dispatcher would run the dispatch (or record its blocker) and close the window
+    the test is about.
+    """
+    run = dispatcher.queue(_request(task_id, version=version))
+    running = store.start(run.run_id, expected_version=run.version)
+    store.finish(run.run_id, state, expected_version=running.version,
+                 exit_code=0 if state == RunState.SUCCEEDED else 1,
+                 stdout_tail="implemented it", stderr_tail="")
+    return run
+
+
+def test_a_worker_run_is_refused_while_its_predecessor_owes_a_review(tmp_path):
+    """The gap a reviewer reproduced through the API.
+
+    ``_reject_active_review`` reads a review *row*, so it says nothing in the window
+    where the worker run is terminal and ``_dispatch_review`` has not inserted one
+    yet: no run is active, no gate is open, and the create transaction accepted
+    another worker run on unreviewed work. The fact is now *derived* inside that
+    transaction — a terminal SUCCEEDED worker run that no review run references,
+    with auto-review on — rather than written as a marker that could leak.
+
+    Release asserted here: the review run appearing. Nothing is written, so nothing
+    has to be swept.
+    """
+    tasks, store, dispatcher = _system(
+        tmp_path, [sys.executable, "-c", "print('ok')"], auto_review=True,
+    )
+    task = _planned_task(tasks)
+    worker = _settled_worker_run(dispatcher, store, task.task_id)
+
+    with pytest.raises(RunGateError, match="owes a review") as gated:
+        dispatcher.queue(_request(task.task_id, version=3))
+    assert gated.value.code == GATE_CODE_REVIEW_OWED
+    assert gated.value.items == [{"run_id": worker.run_id, "state": "succeeded"}]
+    assert "cancelling that blocker" in str(gated.value)  # it says how to clear it
+
+    # The review run appears. The predicate goes false on its own; from here the
+    # unsettled-review refusal takes over, which is a different answer.
+    review = dispatcher.queue(
+        CreateRunRequest(task_id=task.task_id, adapter="codex", prompt="review it",
+                         timeout_seconds=10, expected_task_version=3),
+        role=ROLE_REVIEW, reviews_run_id=worker.run_id,
+    )
+    with pytest.raises(RunGateError) as under_review:
+        dispatcher.queue(_request(task.task_id, version=3))
+    assert under_review.value.code == GATE_CODE_REVIEW_ACTIVE
+
+    # And once that review has settled *and its gate item exists*, nothing is owed.
+    # The gate item is the release, not the review run's state: a review run that
+    # succeeded is evidence a review happened, and the approval is the human gate
+    # its outcome raises — see the L2 regression below for what the run's state
+    # alone used to be allowed to claim.
+    review_running = store.start(review.run_id, expected_version=review.version)
+    settled = store.finish(review.run_id, RunState.SUCCEEDED,
+                           expected_version=review_running.version,
+                           exit_code=0, stdout_tail="no findings", stderr_tail="")
+    asyncio.run(dispatcher._after_run(settled, ROLE_REVIEW, worker.run_id))
+    approval = AttentionStore(tasks).list(task_id=task.task_id, state=AttentionState.OPEN)[0]
+    assert approval.kind == AttentionKind.APPROVAL and approval.run_id == worker.run_id
+    assert store.reviews_owed() == []
+    # That approval is itself an open gate, so settle it the way a human would
+    # before asking for the next worker run.
+    AttentionStore(tasks).respond(approval.item_id, RespondAttentionRequest(
+        action=ResponseAction.APPROVE, expected_version=approval.version,
+    ))
+    assert dispatcher.queue(_request(task.task_id, version=3)).state == RunState.QUEUED
+
+
+def test_no_review_is_owed_when_auto_review_is_off(tmp_path):
+    """``auto_review`` is dispatcher configuration the store cannot read, so the
+    flag is passed into the create transaction and the derived question is asked
+    there. With the flag off no review would ever have been dispatched, so claiming
+    one is owed would refuse a run for a review that could never arrive."""
+    tasks, store, dispatcher = _system(tmp_path, [sys.executable, "-c", "print('ok')"])
+    assert dispatcher.auto_review is False
+    task = _planned_task(tasks)
+    _settled_worker_run(dispatcher, store, task.task_id)
+
+    assert dispatcher.queue(_request(task.task_id, version=3)).state == RunState.QUEUED
+    # And the reconciliation matches the predicate exactly: with the flag off it
+    # records nothing, rather than blocking tasks for a review nobody asked for.
+    assert dispatcher.reconcile_reviews_owed() == []
+    assert AttentionStore(tasks).list(task_id=task.task_id) == []
+
+
+def test_an_unsuccessful_worker_run_owes_no_review(tmp_path):
+    """Matched to ``_dispatch_review``'s own trigger: ``_after_run`` dispatches a
+    review only for a worker run that SUCCEEDED. A predicate that claimed a review
+    was owed for a failed, timed-out or cancelled run would refuse every retry of
+    exactly the run a human needs to retry."""
+    for name, state in (
+        ("failed", RunState.FAILED),
+        ("timed-out", RunState.TIMED_OUT),
+    ):
+        tasks, store, dispatcher = _system(
+            tmp_path / name, [sys.executable, "-c", "print('ok')"], auto_review=True,
+        )
+        task = _planned_task(tasks)
+        _settled_worker_run(dispatcher, store, task.task_id, state=state)
+        assert dispatcher.queue(_request(task.task_id, version=3)).state == RunState.QUEUED, name
+        assert dispatcher.reconcile_reviews_owed() == [], name
+
+    # Cancelled, which does not go through finish() at all.
+    tasks, store, dispatcher = _system(
+        tmp_path / "cancelled", [sys.executable, "-c", "print('ok')"], auto_review=True,
+    )
+    task = _planned_task(tasks)
+    run = dispatcher.queue(_request(task.task_id))
+    store.cancel(run.run_id, CancelRunRequest(expected_version=run.version))
+    assert dispatcher.queue(_request(task.task_id, version=3)).state == RunState.QUEUED
+    assert dispatcher.reconcile_reviews_owed() == []
+
+
+def test_only_the_latest_terminal_worker_run_can_owe_a_review(tmp_path):
+    """An older unreviewed run is not one a review would be dispatched for.
+
+    ``_after_run`` dispatches for the run that just settled, so the predicate reads
+    the task's most recent terminal worker run and no other. This also bounds what
+    turning ``auto_review`` on over an existing database can raise: one item per
+    task, not one per historical run.
+    """
+    tasks, store, dispatcher = _system(
+        tmp_path, [sys.executable, "-c", "print('ok')"], auto_review=True,
+    )
+    task = _planned_task(tasks)
+    first = _settled_worker_run(dispatcher, store, task.task_id)
+    review = dispatcher.queue(
+        CreateRunRequest(task_id=task.task_id, adapter="codex", prompt="review it",
+                         timeout_seconds=10, expected_task_version=3),
+        role=ROLE_REVIEW, reviews_run_id=first.run_id,
+    )
+    review_running = store.start(review.run_id, expected_version=review.version)
+    reviewed = store.finish(review.run_id, RunState.SUCCEEDED,
+                            expected_version=review_running.version,
+                            exit_code=0, stdout_tail="no findings", stderr_tail="",
+                            result_metadata={"usage": {"total": 11}})
+    # The gate item that review raises, without which the review is owed again (L2).
+    asyncio.run(dispatcher._after_run(reviewed, ROLE_REVIEW, first.run_id))
+    approval = AttentionStore(tasks).list(task_id=task.task_id, state=AttentionState.OPEN)[0]
+    AttentionStore(tasks).respond(approval.item_id, RespondAttentionRequest(
+        action=ResponseAction.APPROVE, expected_version=approval.version,
+    ))
+
+    # A second worker run that FAILED is now the latest: nothing is owed, even
+    # though `first` is still succeeded and reviewed.
+    _settled_worker_run(dispatcher, store, task.task_id, state=RunState.FAILED, version=3)
+    assert dispatcher.reconcile_reviews_owed() == []
+    assert dispatcher.queue(_request(task.task_id, version=3)).state == RunState.QUEUED
+
+
+def test_a_task_that_can_no_longer_run_owes_no_review(tmp_path):
+    """``create`` refuses any run — worker or review — for a task outside
+    planned/running, so a review could not have been dispatched for one that has
+    left them: claiming a review is owed there would claim one that would never
+    have happened. It also keeps the startup reconciliation from writing blockers
+    onto tasks that are already done, which is inbox noise a human clears for
+    nothing."""
+    tasks, store, dispatcher = _system(
+        tmp_path, [sys.executable, "-c", "print('ok')"], auto_review=True,
+    )
+    task = _planned_task(tasks)
+    _settled_worker_run(dispatcher, store, task.task_id)
+    with tasks._transaction() as db:
+        db.execute("UPDATE tasks SET state = ? WHERE task_id = ?",
+                   (TaskState.VERIFIED.value, task.task_id))
+
+    assert dispatcher.reconcile_reviews_owed() == []
+    assert AttentionStore(tasks).list(task_id=task.task_id) == []
+
+
+def test_a_review_lost_to_a_crash_is_reconciled_into_a_blocker_at_startup(tmp_path):
+    """The one release condition the derived refusal cannot read for itself.
+
+    If the process dies between the worker run settling and ``_dispatch_review``
+    running, nothing will ever insert the review and nothing recorded a blocker — so
+    the predicate stays true forever and no worker run could start on that task
+    again. That is the lockout this slice keeps producing, so it is reconciled at
+    startup: ``reconcile_reviews_owed`` records the blocker that says what happened
+    (chosen over re-dispatching, because ``_review_prompt`` reads the *live*
+    worktree and after a restart that directory is no longer guaranteed to hold what
+    the run delivered).
+
+    The blocker is the exit: it gates by itself, it names the two ways out, and once
+    it exists the derived refusal stands down for that run — so clearing it clears
+    everything rather than one of two gates.
+    """
+    tasks, store, dispatcher = _system(
+        tmp_path, [sys.executable, "-c", "print('ok')"], auto_review=True,
+    )
+    attention = AttentionStore(tasks)
+    task = _planned_task(tasks)
+    worker = _settled_worker_run(dispatcher, store, task.task_id)
+    with pytest.raises(RunGateError) as before:
+        dispatcher.queue(_request(task.task_id, version=3))
+    assert before.value.code == GATE_CODE_REVIEW_OWED
+
+    # Restart.
+    assert dispatcher.reconcile_reviews_owed() == [
+        {"task_id": task.task_id, "run_id": worker.run_id,
+         "cause": REVIEW_OWED_NO_REVIEW_RUN}
+    ]
+    items = attention.list(task_id=task.task_id, state=AttentionState.OPEN)
+    assert len(items) == 1
+    blocker = items[0]
+    assert blocker.kind == AttentionKind.BLOCKER
+    assert blocker.requester == REVIEW_REQUESTER
+    assert blocker.run_id == worker.run_id  # scoped to the run whose review is missing
+    assert blocker.title == dispatcher.REVIEW_FAILED_TITLE
+    assert dispatcher.REVIEW_OWED_AFTER_RESTART_REASON in blocker.body
+
+    # The refusal is now the blocker, which names itself and how to clear it.
+    with pytest.raises(RunGateError, match="open gate item") as after:
+        dispatcher.queue(_request(task.task_id, version=3))
+    assert after.value.code == GATE_CODE_ATTENTION_OPEN
+    assert after.value.items[0]["item_id"] == blocker.item_id
+
+    # A second restart records nothing more: the recorded blocker is what the
+    # predicate reads, so the two cannot pile up.
+    assert dispatcher.reconcile_reviews_owed() == []
+    assert [item.item_id for item in attention.list(
+        task_id=task.task_id, state=AttentionState.OPEN)] == [blocker.item_id]
+
+    # Cancelling it releases BOTH gates — the blocker because it is no longer open,
+    # and the derived refusal because the review path has now been accounted for.
+    attention.cancel(blocker.item_id, CancelAttentionRequest(expected_version=blocker.version))
+    assert dispatcher.queue(_request(task.task_id, version=3)).state == RunState.QUEUED
+
+
+def test_review_owed_text_claims_only_what_holds_for_every_cause(tmp_path):
+    """The strings, checked as claims. This is the check rounds O3/P1-P4 lacked.
+
+    Every earlier round of this slice shipped a human-facing sentence that was false,
+    and no test caught one, because the tests assert that a constant *appears* in an
+    item's body and never what the sentence says. Three properties are pinned here,
+    each of them a defect that actually shipped:
+
+    1. **No exit nobody has.** ``ROLE_REVIEW`` is a server-side argument to
+       ``ExecutionStore.create`` and ``_dispatch_review`` is its only production
+       caller, so no string may tell a human to dispatch a review.
+    2. **Nothing attached to every cause may claim what only some causes support.**
+       The title and the generic body are shared by all five causes, and for
+       ``REVIEW_OWED_NO_GATE_ITEM`` the review started, ran and reached a conclusion
+       whose gate write failed. So "the cross-review failed to start" and "no review
+       has seen this work" are both out; what holds everywhere is that no review
+       decision is on record.
+    3. **A stated limit comes from the constant that enforces it.** The body's
+       description of what a later review can cover is built from
+       ``_REVIEW_FILE_CHARS``/``_REVIEW_PROMPT_BUDGET``/``MAX_FILES``, so editing a
+       bound edits the sentence.
+    """
+    from agora.execution.dispatcher import (
+        _REVIEW_FILE_CHARS,
+        _REVIEW_PROMPT_BUDGET,
+    )
+    from agora.execution.deliverables import MAX_FILES as _MAX_FILES
+
+    tasks, store, dispatcher = _system(
+        tmp_path, [sys.executable, "-c", "print('ok')"], auto_review=True,
+    )
+    attention = AttentionStore(tasks)
+    task = _planned_task(tasks)
+    worker = _settled_worker_run(dispatcher, store, task.task_id)
+    # The cause where a review *did* run: the title and the generic body are shared
+    # with it, so it is the one that decides what they may say.
+    review = dispatcher.queue(
+        CreateRunRequest(task_id=task.task_id, adapter="codex", prompt="review it",
+                         timeout_seconds=10, expected_task_version=3),
+        role=ROLE_REVIEW, reviews_run_id=worker.run_id,
+    )
+    running = store.start(review.run_id, expected_version=review.version)
+    store.finish(review.run_id, RunState.SUCCEEDED, expected_version=running.version,
+                 exit_code=0, stdout_tail="one finding", stderr_tail="")
+    assert store.reviews_owed(task_id=task.task_id)[0]["cause"] == REVIEW_OWED_NO_GATE_ITEM
+    assert dispatcher.reconcile_reviews_owed() != []
+    blocker = attention.list(task_id=task.task_id, state=AttentionState.OPEN)[0]
+
+    reasons = list(dispatcher.REVIEW_OWED_REASONS.values())
+
+    # (1) No sentence anywhere offers dispatching a review. The one place the phrase
+    # may appear is where the body says it is *not* an exit.
+    for text in [blocker.title, *reasons]:
+        assert "派发一次评审" not in text and "派发评审" not in text
+    assert blocker.body.count("再派发一次评审") == 1
+    assert "因此“再派发一次评审”不是一个出口" in blocker.body
+
+    # (2) Neither the shared title nor the shared body claims the review never
+    # started or that nobody looked at the work.
+    assert "未能启动" not in blocker.title and "未能启动" not in blocker.body
+    assert "没有任何评审看过" not in blocker.body
+    assert "没有任何独立交叉评审的结论被记录下来" in blocker.body
+    # ...and the cause-specific reason is where that review's own fate is stated.
+    assert dispatcher.REVIEW_OWED_WITHOUT_GATE_REASON in blocker.body
+
+    # (3) The stated coverage limit is the bound the code enforces.
+    for bound in (_REVIEW_FILE_CHARS, _REVIEW_PROMPT_BUDGET, _MAX_FILES):
+        assert str(bound) in blocker.body
+    assert "有上限的采样" in blocker.body
+
+
+def test_a_failed_review_dispatch_does_not_double_gate_with_the_derived_refusal(tmp_path):
+    """The two guards must not add up to a task with no exit.
+
+    ``_block_review_owed`` records a blocker whose body promises that cancelling it
+    lets the task accept another implementation run. If the derived refusal also
+    fired, cancelling would clear one gate and leave the other standing with nothing
+    left to act on — the shape of every lockout this slice has produced. So a run
+    the review path has already accounted for is not owed a review, whatever state
+    that item is in.
+    """
+    tasks, store, dispatcher = _system(
+        tmp_path, [sys.executable, "-c", "print('ok')"], auto_review=True,
+    )
+    attention = AttentionStore(tasks)
+    task = _planned_task(tasks)
+    worker = dispatcher.queue(_request(task.task_id))
+    # claude is alpha's reviewer and is disabled in this registry, so the real
+    # dispatch failure path runs: no review run, one durable blocker.
+    finished = asyncio.run(dispatcher.execute(worker.run_id))
+    assert finished.state == RunState.SUCCEEDED
+    blocker = attention.list(task_id=task.task_id, state=AttentionState.OPEN)[0]
+
+    with pytest.raises(RunGateError) as gated:
+        dispatcher.queue(_request(task.task_id, version=3))
+    assert gated.value.code == GATE_CODE_ATTENTION_OPEN  # the blocker, not the predicate
+
+    attention.cancel(blocker.item_id, CancelAttentionRequest(expected_version=blocker.version))
+    assert dispatcher.queue(_request(task.task_id, version=3)).state == RunState.QUEUED
+
+
+# --- K1: a run's identity is not a result, and survives every terminal path ---
+
+
+def _identity_of(store, run_id: str) -> dict:
+    """The three server-set identity keys a stored run carries, as stored."""
+    metadata = store.require(run_id).result_metadata
+    return {
+        key: metadata[key] for key in ("agora_role", "reviews_run_id", "task_version")
+        if key in metadata
+    }
+
+
+def test_a_review_that_fails_before_it_starts_still_owes_a_review(tmp_path):
+    """The scenario that defeated the whole review gate through one cleared field.
+
+    A QUEUED review run can end before it ever starts: the adapter is no longer
+    configured, the workspace is gone, the pre-launch checks refuse it. Every one of
+    those paths in ``ExecutionDispatcher.execute`` settles the run with ``finish``
+    and no result at all — and ``finish`` used to write ``result_metadata or {}``,
+    which replaced the identity ``create`` had written with ``{}``. The failed review
+    then had no ``agora_role``, so ``_reviews_owed``'s
+    ``COALESCE(json_extract(..., '$.agora_role'), 'worker')`` read it as the task's
+    most recent *worker* run — state ``failed``, therefore nothing owed — and the
+    next worker run walked past the review gate onto unreviewed work.
+
+    Two things are asserted, because the fix needed both. The identity survives the
+    settle (K1), *and* a review run that ended without reviewing anything does not
+    discharge the obligation by existing (``_has_accounting_review_run``): with the
+    identity restored but the old "a row in any state counts" rule, the preserved
+    link would have been read as "a review exists" and the gate would still have
+    stood open.
+    """
+    tasks, store, dispatcher = _system(
+        tmp_path, [sys.executable, "-c", "print('ok')"], auto_review=True,
+    )
+    attention = AttentionStore(tasks)
+    task = _planned_task(tasks)
+    worker = _settled_worker_run(dispatcher, store, task.task_id)
+    review = dispatcher.queue(
+        CreateRunRequest(task_id=task.task_id, adapter="codex", prompt="review it",
+                         timeout_seconds=10, expected_task_version=3),
+        role=ROLE_REVIEW, reviews_run_id=worker.run_id,
+    )
+    assert store.reviews_owed() == []  # the queued review accounts for it
+
+    # The pre-launch failure, exactly as execute() records it: still QUEUED, no
+    # process, no result, no deliverables.
+    failed = store.finish(review.run_id, RunState.FAILED, expected_version=review.version,
+                          exit_code=None, stdout_tail="", stderr_tail="",
+                          error_message="workspace not found")
+    assert failed.state == RunState.FAILED
+    # The identity is still there: this is a review run, and it is still linked to
+    # the worker run it was created to review.
+    assert failed.result_metadata[ROLE_KEY] == ROLE_REVIEW
+    assert failed.result_metadata[REVIEWS_RUN_KEY] == worker.run_id
+    assert failed.result_metadata["task_version"] == 3
+
+    # So a review is still owed for the worker run — not for the failed review,
+    # which is not a worker run and never was. A review run *is* linked to it, and
+    # left no gate item, which is the cause the reconciliation reports.
+    assert store.reviews_owed() == [
+        {"task_id": task.task_id, "run_id": worker.run_id,
+         "cause": REVIEW_OWED_NO_GATE_ITEM}
+    ]
+
+    # And the next worker run is refused, in the create transaction.
+    with pytest.raises(RunGateError, match="owes a review") as owed:
+        dispatcher.queue(_request(task.task_id, version=3))
+    assert owed.value.code == GATE_CODE_REVIEW_OWED
+    assert owed.value.items == [{"run_id": worker.run_id, "state": "succeeded"}]
+
+    # Not a one-way door: the startup reconciliation turns it into the blocker that
+    # says what happened, the predicate stands down for that run so the two never
+    # gate at once, and cancelling the blocker releases everything.
+    assert dispatcher.reconcile_reviews_owed() == [
+        {"task_id": task.task_id, "run_id": worker.run_id,
+         "cause": REVIEW_OWED_NO_GATE_ITEM}
+    ]
+    blocker = attention.list(task_id=task.task_id, state=AttentionState.OPEN)[0]
+    assert blocker.kind == AttentionKind.BLOCKER and blocker.run_id == worker.run_id
+    # The reason names the arrangement actually found — a review run that ended and
+    # recorded nothing — rather than the crash window, which is a different fact.
+    assert dispatcher.REVIEW_OWED_WITHOUT_GATE_REASON in blocker.body
+    assert store.reviews_owed() == []
+    with pytest.raises(RunGateError) as after:
+        dispatcher.queue(_request(task.task_id, version=3))
+    assert after.value.code == GATE_CODE_ATTENTION_OPEN
+    attention.cancel(blocker.item_id, CancelAttentionRequest(expected_version=blocker.version))
+    assert dispatcher.queue(_request(task.task_id, version=3)).state == RunState.QUEUED
+
+
+def test_a_shutdown_cancelled_review_still_owes_a_review(tmp_path):
+    """N1 (2026-08-30): a cancelled review used to satisfy the obligation by itself.
+
+    ``_has_accounting_review_run`` counted ``cancelled`` alongside the unsettled
+    states, on the reasoning that cancelling a review is a human's decision the
+    control plane does not override — and that telling a human's cancel from a
+    sweep's would mean parsing a recorded reason string. The premise assumed a human.
+    ``ExecutionDispatcher.shutdown`` cancels every scheduled run through
+    ``_settle_unstarted``, so an ordinary restart in the window between a worker run
+    succeeding and its review starting cancelled that review automatically, with no
+    approval and no blocker written anywhere. The next start then read
+    ``reviews_owed() == []`` and admitted a new worker run: no review had run, no gate
+    item existed, and nothing said so.
+
+    Reproduced here end to end — succeed a worker, dispatch the auto-review, shut the
+    dispatcher down before it starts, then ask the questions a restart asks. And the
+    exit does not need a reason string: what a cancelled review has in common with a
+    failed one is that it produced no gate item, which this database records directly.
+    """
+    tasks, store, dispatcher = _system(
+        tmp_path, [sys.executable, "-c", "print('ok')"], auto_review=True,
+    )
+    attention = AttentionStore(tasks)
+    task = _planned_task(tasks)
+    worker = _settled_worker_run(dispatcher, store, task.task_id)
+    review = dispatcher.queue(
+        CreateRunRequest(task_id=task.task_id, adapter="codex", prompt="review it",
+                         timeout_seconds=10, expected_task_version=3),
+        role=ROLE_REVIEW, reviews_run_id=worker.run_id,
+    )
+    assert store.reviews_owed() == []  # the queued review accounts for it
+
+    # Shutdown, with the review still QUEUED. This is _settle_unstarted's sweep, not
+    # a human: no approval, no blocker, nobody asked anything.
+    async def stop():
+        dispatcher.schedule(review.run_id)
+        await dispatcher.shutdown()
+
+    asyncio.run(stop())
+    assert store.require(review.run_id).state == RunState.CANCELLED
+
+    # The reported symptom was that a restart here saw ``reviews_owed() == []`` **and**
+    # no gate item anywhere, and admitted a new worker run. Both halves are now false.
+    # The sweep recorded the gate item at the moment it cancelled, so the human hears
+    # about it now rather than at the next start — and the blocker says the review was
+    # stopped rather than that its gate writes failed, which is a different fact
+    # pointing at a different thing to do.
+    blocker = attention.list(task_id=task.task_id, state=AttentionState.OPEN)[0]
+    assert blocker.kind == AttentionKind.BLOCKER and blocker.run_id == worker.run_id
+    assert dispatcher.REVIEW_OWED_CANCELLED_REASON in blocker.body
+
+    # With that item recorded the derived predicate stands down, so the two never gate
+    # at once: what refuses the next worker run is the blocker, with its two exits.
+    # (``reviews_owed`` reporting the cancelled cause is pinned by the next test,
+    # which cancels through the store alone — the shape a hard kill leaves.)
+    assert store.reviews_owed() == []
+    with pytest.raises(RunGateError) as gated:
+        dispatcher.queue(_request(task.task_id, version=3))
+    assert gated.value.code == GATE_CODE_ATTENTION_OPEN
+    assert store.list(task_id=task.task_id, state=RunState.QUEUED) == []
+    attention.cancel(blocker.item_id, CancelAttentionRequest(expected_version=blocker.version))
+    assert dispatcher.queue(_request(task.task_id, version=3)).state == RunState.QUEUED
+
+
+def test_the_startup_reconciliation_notices_a_cancelled_review(tmp_path):
+    """The other half of N1: the shape has to survive a hard kill too.
+
+    ``_settle_unstarted`` writes the blocker for the cancellation it performs, but a
+    process that is killed outright — or one whose write fails — leaves the cancelled
+    review with no gate item and nothing pending. That arrangement cannot resolve
+    itself: no later event writes anything, and every reading of the run table says a
+    review exists. So ``reconcile_reviews_owed`` has to see it at the next start, and
+    it has to say which arrangement it found: ``REVIEW_OWED_REVIEW_CANCELLED``, not
+    the "both gate writes failed" sentence, which describes something else.
+    """
+    tasks, store, dispatcher = _system(
+        tmp_path, [sys.executable, "-c", "print('ok')"], auto_review=True,
+    )
+    attention = AttentionStore(tasks)
+    task = _planned_task(tasks)
+    worker = _settled_worker_run(dispatcher, store, task.task_id)
+    review = dispatcher.queue(
+        CreateRunRequest(task_id=task.task_id, adapter="codex", prompt="review it",
+                         timeout_seconds=10, expected_task_version=3),
+        role=ROLE_REVIEW, reviews_run_id=worker.run_id,
+    )
+    # Cancelled through the store alone: the dispatcher never got to record anything,
+    # which is what a kill -9 in that moment leaves behind.
+    store.cancel(review.run_id, CancelRunRequest(expected_version=review.version))
+    assert attention.list(task_id=task.task_id) == []
+
+    recorded = dispatcher.reconcile_reviews_owed()
+
+    assert recorded == [
+        {"task_id": task.task_id, "run_id": worker.run_id,
+         "cause": REVIEW_OWED_REVIEW_CANCELLED}
+    ]
+    blocker = attention.list(task_id=task.task_id, state=AttentionState.OPEN)[0]
+    assert blocker.run_id == worker.run_id
+    assert dispatcher.REVIEW_OWED_CANCELLED_REASON in blocker.body
+    assert dispatcher.REVIEW_OWED_WITHOUT_GATE_REASON not in blocker.body
+    # Idempotent with the live path: recording it twice leaves one item.
+    assert dispatcher.reconcile_reviews_owed() == []
+    assert len(attention.list(task_id=task.task_id)) == 1
+
+
+def test_a_human_cancelling_a_review_gets_the_blocker_that_releases_it(tmp_path):
+    """A human's cancel is still honoured — by being *recorded*, not by vanishing.
+
+    N1 removed ``cancelled`` from the states that account for the review, and the
+    release for the obligation is a gate item, which cancelling a run writes none of.
+    Left there, a human who cancelled a review inside a live process would have a
+    task refusing worker runs with ``review_owed`` and nothing in their inbox to act
+    on until the next restart's reconciliation — a worse door than the one N1 closed.
+    So ``ExecutionDispatcher.cancel`` records the blocker at the moment of the cancel,
+    and the human has the two exits that exist immediately: clear the item and accept
+    the work with no review decision on record, or clear it and dispatch another
+    *worker* run, whose own automatic cross-review follows. No endpoint dispatches a
+    review run on its own, so "dispatch another review" is not one of them (O3/P3).
+    """
+    tasks, store, dispatcher = _system(
+        tmp_path, [sys.executable, "-c", "print('ok')"], auto_review=True,
+    )
+    attention = AttentionStore(tasks)
+    task = _planned_task(tasks)
+    worker = _settled_worker_run(dispatcher, store, task.task_id)
+    review = dispatcher.queue(
+        CreateRunRequest(task_id=task.task_id, adapter="codex", prompt="review it",
+                         timeout_seconds=10, expected_task_version=3),
+        role=ROLE_REVIEW, reviews_run_id=worker.run_id,
+    )
+
+    cancelled = asyncio.run(dispatcher.cancel(
+        review.run_id,
+        CancelRunRequest(expected_version=review.version, reason="I read it myself"),
+    ))
+
+    assert cancelled.state == RunState.CANCELLED
+    blocker = attention.list(task_id=task.task_id, state=AttentionState.OPEN)[0]
+    assert blocker.kind == AttentionKind.BLOCKER and blocker.run_id == worker.run_id
+    assert dispatcher.REVIEW_OWED_CANCELLED_REASON in blocker.body
+    # One item, one exit, no restart needed.
+    assert store.reviews_owed() == []
+    attention.cancel(blocker.item_id, CancelAttentionRequest(
+        expected_version=blocker.version, reason="taking it unreviewed",
+    ))
+    assert dispatcher.queue(_request(task.task_id, version=3)).state == RunState.QUEUED
+
+
+def test_cancelling_a_worker_run_raises_no_review_blocker(tmp_path):
+    """The scope of the cancel-time write: review runs only.
+
+    A cancelled *worker* run owes nothing — the obligation belongs to a worker run
+    that succeeded — so raising a blocker when one is cancelled would put an item in
+    front of a human at a moment that has nothing to do with it, and would gate the
+    retry of the very run they just stopped.
+    """
+    tasks, store, dispatcher = _system(
+        tmp_path, [sys.executable, "-c", "print('ok')"], auto_review=True,
+    )
+    task = _planned_task(tasks)
+    run = dispatcher.queue(_request(task.task_id))
+
+    cancelled = asyncio.run(dispatcher.cancel(
+        run.run_id, CancelRunRequest(expected_version=run.version, reason="wrong prompt"),
+    ))
+
+    assert cancelled.state == RunState.CANCELLED
+    assert AttentionStore(tasks).list(task_id=task.task_id) == []
+    assert store.reviews_owed() == []
+    assert dispatcher.queue(_request(task.task_id, version=3)).state == RunState.QUEUED
+
+
+def test_terminal_worker_runs_that_cannot_be_ordered_fail_closed(tmp_path):
+    """N3 (2026-08-30): an unknown ``finished_at`` was manufactured into an ordering.
+
+    ``_reviews_owed`` ranked a task's terminal worker runs with
+    ``ORDER BY COALESCE(finished_at, '')``, which does not mean "unknown" — it means
+    "older than every real timestamp". So an older **failed** worker run with a real
+    timestamp outranked a newer **succeeded** one whose timestamp was missing, became
+    the task's "latest terminal worker", and the not-succeeded branch concluded no
+    review was owed. Another worker run was then admitted on unreviewed work, out of
+    a sort order chosen because it happened to look safe.
+
+    Being unable to order the runs now fails closed instead: a row with no usable
+    ``finished_at`` has no rank at all, and when one exists this method stops claiming
+    to know which run is latest and nominates the newest succeeded run it can still
+    *identify* — the last one in ``rowid`` order — rather than letting a row in another
+    state displace it. Exactly one run is nominated either way; the lifetime bound on
+    that nomination is ``test_unorderable_terminal_runs_owe_one_review_for_the_task_
+    lifetime`` (O1).
+    """
+    tasks, store, dispatcher = _system(
+        tmp_path, [sys.executable, "-c", "print('ok')"], auto_review=True,
+    )
+    task = _planned_task(tasks)
+    # The succeeded run comes first and is the one that owes a review...
+    succeeded = _settled_worker_run(dispatcher, store, task.task_id)
+    # ...and a later failed worker run keeps a real timestamp. Retries are allowed
+    # once the predecessor settled, so this needs the gate item out of the way; the
+    # arrangement being tested is the *ordering*, so insert the row directly.
+    failed = _insert_queued_run(tasks, task.task_id, role="worker")
+    with tasks._transaction() as db:
+        db.execute(
+            "UPDATE execution_runs SET state = 'failed', finished_at = ? WHERE run_id = ?",
+            ("2099-01-01T00:00:00+00:00", failed),
+        )
+        # The succeeded run's timestamp is gone: an older Agora, or a hand edit.
+        db.execute(
+            "UPDATE execution_runs SET finished_at = NULL WHERE run_id = ?",
+            (succeeded.run_id,),
+        )
+
+    # The failed row is the only orderable one, and under the old rule it was the
+    # "latest terminal worker", so nothing was owed.
+    assert store.reviews_owed() == [
+        {"task_id": task.task_id, "run_id": succeeded.run_id,
+         "cause": REVIEW_OWED_NO_REVIEW_RUN}
+    ]
+    with pytest.raises(RunGateError, match="owes a review") as gated:
+        dispatcher.queue(_request(task.task_id, version=3))
+    assert gated.value.code == GATE_CODE_REVIEW_OWED
+    assert gated.value.items == [{"run_id": succeeded.run_id, "state": "succeeded"}]
+
+    # A readable chronology still means exactly one run is examined: give the
+    # succeeded run a timestamp *older* than the failed one and nothing is owed,
+    # because the latest terminal worker run really did not succeed.
+    with tasks._transaction() as db:
+        db.execute(
+            "UPDATE execution_runs SET finished_at = ? WHERE run_id = ?",
+            ("2000-01-01T00:00:00+00:00", succeeded.run_id),
+        )
+    assert store.reviews_owed() == []
+    assert dispatcher.queue(_request(task.task_id, version=3)).state == RunState.QUEUED
+
+
+def test_unorderable_terminal_runs_owe_one_review_for_the_task_lifetime(tmp_path):
+    """O1 (round 5, 2026-08-30): N3's fix bounded one call, not the task.
+
+    The first version of the unusable-chronology branch made **every** succeeded
+    terminal worker run a candidate and returned the first one that was still owed,
+    with a ``break`` after it. That bounds a single invocation and nothing longer,
+    which is not the bound the ADR claimed. Reproduced across successive starts:
+
+        INITIAL [run A] / RECONCILE_1 [run A] / AFTER_1 [run B] /
+        RECONCILE_2 [run B] / AFTER_2 []
+
+    Once the reconciliation had recorded the blocker for A, the next start skipped A —
+    it now had a gate item — and walked back to B, so N historical successes produced
+    N blockers over N starts with several open at once. It also falsified "one cancel
+    clears it": cancelling A's item released the obligation for A only, and the next
+    worker attempt was refused for B, which had no item yet.
+
+    The nominee is now chosen from the rows *before* any release question is asked, so
+    it does not move: the newest succeeded row that can still be identified, and no
+    fallback to an older one. One item, one cancel, for as long as no new terminal
+    worker row is recorded.
+    """
+    tasks, store, dispatcher = _system(
+        tmp_path, [sys.executable, "-c", "print('ok')"], auto_review=True,
+    )
+    attention = AttentionStore(tasks)
+    task = _planned_task(tasks)
+    # Two succeeded worker runs, and no usable chronology: the newer row has no
+    # ``finished_at`` at all (an older Agora, or a hand edit), which is the branch.
+    older = _settled_worker_run(dispatcher, store, task.task_id)
+    newer = _insert_queued_run(tasks, task.task_id, role="worker")
+    with tasks._transaction() as db:
+        db.execute("UPDATE execution_runs SET state = 'succeeded' WHERE run_id = ?", (newer,))
+
+    assert store.reviews_owed() == [
+        {"task_id": task.task_id, "run_id": newer, "cause": REVIEW_OWED_NO_REVIEW_RUN}
+    ]
+    assert [owed["run_id"] for owed in dispatcher.reconcile_reviews_owed()] == [newer]
+    # The second start records nothing: under the old rule it walked back to ``older``
+    # and raised a second blocker for the same arrangement.
+    assert dispatcher.reconcile_reviews_owed() == []
+    assert store.reviews_owed() == []
+    blockers = attention.list(task_id=task.task_id, state=AttentionState.OPEN)
+    assert [item.run_id for item in blockers] == [newer]
+    assert older.run_id != newer
+
+    # One cancel is the whole exit, which is what the ADR now claims and what the
+    # walk-back made false.
+    only = blockers[0]
+    attention.cancel(only.item_id, CancelAttentionRequest(
+        expected_version=only.version, reason="taking it unreviewed",
+    ))
+    assert dispatcher.queue(_request(task.task_id, version=3)).state == RunState.QUEUED
+
+
+def test_a_failed_review_that_raised_its_blocker_does_not_gate_twice(tmp_path):
+    """The other side of the narrowed rule: a review that failed *after* launch.
+
+    ``_after_run`` raises the "review did not complete" blocker for it, scoped to the
+    worker run, and ``_has_review_gate_item`` stands the derived predicate down —
+    so the human sees one gate with one exit, exactly as before this change. The
+    narrowing only bites where nothing was recorded at all.
+    """
+    tasks, store, dispatcher = _system(
+        tmp_path, [sys.executable, "-c", "print('ok')"], auto_review=True,
+    )
+    attention = AttentionStore(tasks)
+    task = _planned_task(tasks)
+    worker = _settled_worker_run(dispatcher, store, task.task_id)
+    review = dispatcher.queue(
+        CreateRunRequest(task_id=task.task_id, adapter="codex", prompt="review it",
+                         timeout_seconds=10, expected_task_version=3),
+        role=ROLE_REVIEW, reviews_run_id=worker.run_id,
+    )
+    running = store.start(review.run_id, expected_version=review.version)
+    failed = store.finish(review.run_id, RunState.FAILED, expected_version=running.version,
+                          exit_code=1, stdout_tail="", stderr_tail="reviewer crashed",
+                          error_message="process exited with a non-zero status")
+    asyncio.run(dispatcher._after_run(failed, ROLE_REVIEW, worker.run_id))
+
+    blocker = attention.list(task_id=task.task_id, state=AttentionState.OPEN)[0]
+    assert blocker.kind == AttentionKind.BLOCKER and blocker.run_id == worker.run_id
+    assert store.reviews_owed() == []  # the blocker accounts for it, so not both
+    with pytest.raises(RunGateError) as gated_again:
+        dispatcher.queue(_request(task.task_id, version=3))
+    assert gated_again.value.code == GATE_CODE_ATTENTION_OPEN
+    attention.cancel(blocker.item_id, CancelAttentionRequest(expected_version=blocker.version))
+    assert dispatcher.queue(_request(task.task_id, version=3)).state == RunState.QUEUED
+
+
+# --- L2: a review run is evidence; the human gate is a separate fact ----------
+
+
+def test_a_succeeded_review_that_recorded_no_gate_item_still_owes_a_review(tmp_path, monkeypatch):
+    """A review that ran and left nothing to decide is not a review that happened.
+
+    ``_after_run`` writes the approval when a review run succeeds, and
+    ``_record_review_failure`` writes a blocker if that fails. Both writes can fail —
+    the Attention store is a different transaction on the same database, and the
+    fallback is reached precisely when something is already wrong. The accounting
+    then had a SUCCEEDED review run, no approval and no blocker: it concluded the
+    review was satisfied *from the run's state alone*, nothing was pending for a
+    human anywhere, and the next worker run built on work nobody had been asked to
+    accept. Evidence (a run happened) is not the gate (a decision is pending), and
+    the Run -> Artifact/Evidence -> Gate line depends on the two staying apart.
+
+    So ``succeeded`` no longer accounts for the obligation by itself; the gate item
+    the outcome raises does. A review run that produced no gate item is worse than no
+    review at all, because it looks finished — and after a restart the run table is
+    the only thing left saying so, which is why the startup reconciliation has to
+    cover this case too.
+    """
+    tasks, store, dispatcher = _system(
+        tmp_path, [sys.executable, "-c", "print('ok')"], auto_review=True,
+    )
+    attention = AttentionStore(tasks)
+    task = _planned_task(tasks)
+    worker = _settled_worker_run(dispatcher, store, task.task_id)
+    review = dispatcher.queue(
+        CreateRunRequest(task_id=task.task_id, adapter="codex", prompt="review it",
+                         timeout_seconds=10, expected_task_version=3),
+        role=ROLE_REVIEW, reviews_run_id=worker.run_id,
+    )
+    running = store.start(review.run_id, expected_version=review.version)
+    reviewed = store.finish(review.run_id, RunState.SUCCEEDED, expected_version=running.version,
+                            exit_code=0, stdout_tail="two findings", stderr_tail="")
+
+    # Both gate writes fail: the approval, and then the fallback blocker. This is the
+    # real orchestration path, not a hand-built database — ``_after_run`` swallows
+    # the first failure into ``_record_review_failure``, which swallows the second.
+    def _unwritable(*args, **kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(AttentionStore, "create", _unwritable)
+    monkeypatch.setattr(AttentionStore, "create_once", _unwritable)
+    asyncio.run(dispatcher._after_run(reviewed, ROLE_REVIEW, worker.run_id))
+    monkeypatch.undo()
+
+    # The run row says the review succeeded. Nothing anywhere asks a human anything.
+    assert store.require(review.run_id).state == RunState.SUCCEEDED
+    assert attention.list(task_id=task.task_id) == []
+
+    # The review is therefore owed again, and the next worker run is refused.
+    assert store.reviews_owed() == [
+        {"task_id": task.task_id, "run_id": worker.run_id,
+         "cause": REVIEW_OWED_NO_GATE_ITEM}
+    ]
+    with pytest.raises(RunGateError, match="owes a review") as owed_again:
+        dispatcher.queue(_request(task.task_id, version=3))
+    assert owed_again.value.code == GATE_CODE_REVIEW_OWED
+
+    # Restart: the only thing that can notice this arrangement records the blocker,
+    # with the reason that describes *this* cause rather than the crash window.
+    assert dispatcher.reconcile_reviews_owed() == [
+        {"task_id": task.task_id, "run_id": worker.run_id,
+         "cause": REVIEW_OWED_NO_GATE_ITEM}
+    ]
+    raised = attention.list(task_id=task.task_id, state=AttentionState.OPEN)[0]
+    assert raised.kind == AttentionKind.BLOCKER and raised.run_id == worker.run_id
+    assert dispatcher.REVIEW_OWED_WITHOUT_GATE_REASON in raised.body
+    assert dispatcher.REVIEW_OWED_AFTER_RESTART_REASON not in raised.body
+
+    # And it is the one exit, not one of two: the predicate stands down for that run.
+    assert store.reviews_owed() == []
+    attention.cancel(raised.item_id, CancelAttentionRequest(expected_version=raised.version))
+    assert dispatcher.queue(_request(task.task_id, version=3)).state == RunState.QUEUED
+
+
+def test_an_incomplete_reconciliation_does_not_resume_a_worker_onto_unreviewed_work(
+    tmp_path, monkeypatch
+):
+    """``start_recovery`` continued into the resume sweep after a reconciliation that
+    did not finish (M1).
+
+    The order was right and that was not enough. ``reconcile_reviews_owed`` swallows
+    its own failures by design — the ``reviews_owed`` read can fail outright, and a
+    per-task blocker write that fails is skipped so one unrecordable task does not
+    cost the rest theirs — and ``start_recovery`` then called ``resume_queued``
+    anyway. The sweep judged the queue against blockers that were never written, and
+    ``revalidate_queued`` did not compute ``review_owed`` at all, so a persisted
+    QUEUED worker was scheduled onto work that succeeded and was never reviewed.
+
+    **Chosen fix: the resume path derives the refusal itself**, rather than refusing
+    to resume when a bookkeeping flag says the reconciliation was incomplete. It asks
+    the hazard instead of a proxy for it, so it needs no knowledge of *which* tasks a
+    failed reconciliation would have covered, and every unaffected queued run still
+    resumes. In the ordinary path it changes nothing: the blocker is a gate item, and
+    once that item exists the derived question stands down
+    (``_has_review_gate_item``), so the gate answers first — case 3 asserts that the
+    two answers stay distinguishable.
+
+    **What the operator sees**: the queued run is settled CANCELLED with the reason
+    on its own row and on the task's timeline, it is named in
+    ``start_recovery``'s ``queued_runs_refused``, and the reconciliation's own
+    incompleteness is reported per task in ``reviews_owed_unrecorded`` and printed by
+    ``lifespan``. "The queue just did not resume" is not one of the outcomes.
+    """
+    command = [sys.executable, "-c", "print('ok')"]
+
+    # 1. The blocker write fails. The run is still refused, and the failure is named.
+    tasks, store, dispatcher = _system(tmp_path / "unwritable", command, auto_review=True)
+    task = _planned_task(tasks)
+    worker = _settled_worker_run(dispatcher, store, task.task_id)
+    queued = _insert_queued_run(tasks, task.task_id, role="worker")
+    scheduled: list[str] = []
+    dispatcher.schedule = lambda run_id: scheduled.append(run_id)  # type: ignore[method-assign]
+
+    def _unwritable(**kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(dispatcher, "_block_review_owed", _unwritable)
+    receipt = dispatcher.start_recovery()
+
+    assert receipt["reviews_owed_reconciled"] == []
+    assert AttentionStore(tasks).list(task_id=task.task_id) == []  # no gate was raised
+    assert [
+        (entry["run_id"], entry["cause"]) for entry in receipt["reviews_owed_unrecorded"]
+    ] == [(worker.run_id, REVIEW_OWED_NO_REVIEW_RUN)]
+    assert "OperationalError" in receipt["reviews_owed_unrecorded"][0]["error"]
+    # The defect: this used to be scheduled.
+    assert scheduled == []
+    assert [entry["run_id"] for entry in receipt["queued_runs_refused"]] == [queued]
+    assert "owes a review" in receipt["queued_runs_refused"][0]["reason"]
+    refused_run = store.require(queued)
+    assert refused_run.state == RunState.CANCELLED
+    assert worker.run_id in refused_run.error_message
+    assert "run.cancelled" in [event.event_type for event in tasks.events(task.task_id)]
+
+    # 2. The other half of an incomplete reconciliation: the read itself fails, so
+    #    nothing is even known to be owed. The refusal is derived inside the sweep's
+    #    own transaction, so it does not depend on that read having succeeded.
+    tasks, store, dispatcher = _system(tmp_path / "unreadable", command, auto_review=True)
+    task = _planned_task(tasks)
+    worker = _settled_worker_run(dispatcher, store, task.task_id)
+    queued = _insert_queued_run(tasks, task.task_id, role="worker")
+    scheduled = []
+    dispatcher.schedule = lambda run_id: scheduled.append(run_id)  # type: ignore[method-assign]
+
+    def _unreadable():
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(store, "reviews_owed", _unreadable)
+    receipt = dispatcher.start_recovery()
+
+    assert "OperationalError" in receipt["reviews_owed_unreadable"]
+    assert scheduled == []
+    assert store.require(queued).state == RunState.CANCELLED
+
+    # 3. The reconciliation succeeding is unchanged, and the two answers stay
+    #    distinguishable: the run is refused by the *blocker* the reconciliation
+    #    raised, named by item id, not by the derived question — which stands down
+    #    once that item exists so a human has one gate with one exit.
+    tasks, store, dispatcher = _system(tmp_path / "recorded", command, auto_review=True)
+    task = _planned_task(tasks)
+    worker = _settled_worker_run(dispatcher, store, task.task_id)
+    queued = _insert_queued_run(tasks, task.task_id, role="worker")
+    scheduled = []
+    dispatcher.schedule = lambda run_id: scheduled.append(run_id)  # type: ignore[method-assign]
+
+    receipt = dispatcher.start_recovery()
+
+    assert [entry["run_id"] for entry in receipt["reviews_owed_reconciled"]] == [worker.run_id]
+    assert receipt["reviews_owed_unrecorded"] == []
+    blocker = AttentionStore(tasks).list(task_id=task.task_id, state=AttentionState.OPEN)[0]
+    assert scheduled == []
+    reason = receipt["queued_runs_refused"][0]["reason"]
+    assert blocker.item_id in reason and "owes a review" not in reason
+
+    # 4. With auto_review off nothing can be owed, so the question is not asked at
+    #    all and a persisted queued worker on a succeeded run still resumes.
+    tasks, store, dispatcher = _system(tmp_path / "off", command)
+    task = _planned_task(tasks)
+    _settled_worker_run(dispatcher, store, task.task_id)
+    queued = _insert_queued_run(tasks, task.task_id, role="worker")
+    scheduled = []
+    dispatcher.schedule = lambda run_id: scheduled.append(run_id)  # type: ignore[method-assign]
+
+    assert dispatcher.resume_queued() == []
+    assert scheduled == [queued]
+
+
+def test_a_cause_with_no_recorded_reason_is_skipped_rather_than_mislabelled(tmp_path):
+    """The reconciliation has one true sentence per cause, and no default.
+
+    A cause nobody has decided what to say about would otherwise be recorded with
+    whichever reason happened to be the fallback — a blocker describing something
+    that did not happen, which is the class of defect L4 was. Skipping leaves the
+    derived refusal standing, which is the visible failure this path exists to
+    produce.
+    """
+    tasks, store, dispatcher = _system(
+        tmp_path, [sys.executable, "-c", "print('ok')"], auto_review=True,
+    )
+    task = _planned_task(tasks)
+    worker = _settled_worker_run(dispatcher, store, task.task_id)
+    store.reviews_owed = lambda: [  # type: ignore[method-assign]
+        {"task_id": task.task_id, "run_id": worker.run_id, "cause": "something_new"}
+    ]
+
+    assert dispatcher.reconcile_reviews_owed() == []
+    assert AttentionStore(tasks).list(task_id=task.task_id) == []
+    assert set(dispatcher.REVIEW_OWED_REASONS) == {
+        REVIEW_OWED_NO_REVIEW_RUN, REVIEW_OWED_NO_GATE_ITEM, REVIEW_OWED_REVIEW_CANCELLED
+    }
+
+
+# --- L1: the control plane's requester is not a field a client may set --------
+
+
+def test_the_control_plane_requester_cannot_be_claimed_through_the_public_api(tmp_path):
+    """A forged Attention item must not be able to release the review obligation.
+
+    ``requester`` is an authority marker: ``_has_review_gate_item`` reads a
+    ``REVIEW_REQUESTER`` blocker or approval scoped to a worker run as *Agora's own*
+    review gate, so its existence in any state stands the derived refusal down. But
+    ``POST /api/attention`` took ``requester`` from the client, so a caller could
+    write that row itself, cancel it, and start a worker run whose predecessor was
+    never reviewed and never gated — the third client-settable authority marker in
+    this slice, after ``agora_role`` in run metadata.
+
+    The fix has the same shape as that one: the value is refused in public input and
+    only Agora's internal paths may write it. Refused, not rewritten — a caller
+    sending it is confused or hostile, and quietly substituting a requester would
+    hide which.
+
+    Residual, stated because it cannot be closed here: a row **already stored** by a
+    build that predates this check is indistinguishable from a genuine one. Every
+    column a client could set (``requester``, ``kind``, ``run_id``, ``title``,
+    ``body``, ``context``) is one the internal path sets the same way, and the item's
+    ``attention.created`` event records that same requester as its actor. So this test
+    pins the property the fix actually delivers — no sequence of public API calls can
+    produce a releasing row — and not a claim about databases written before it.
+    """
+    tasks, store, dispatcher = _system(
+        tmp_path, [sys.executable, "-c", "print('ok')"], auto_review=True,
+    )
+    attention = AttentionStore(tasks)
+    task = _planned_task(tasks)
+    worker = _settled_worker_run(dispatcher, store, task.task_id)
+    owed = [{"task_id": task.task_id, "run_id": worker.run_id,
+             "cause": REVIEW_OWED_NO_REVIEW_RUN}]
+    assert store.reviews_owed() == owed
+
+    forged = CreateAttentionRequest(
+        task_id=task.task_id, run_id=worker.run_id, kind=AttentionKind.BLOCKER,
+        urgency=AttentionUrgency.HIGH, title="Cross-review did not start",
+        requester=REVIEW_REQUESTER,
+    )
+
+    # 1. The public API refuses it, and says which value it refused.
+    app.dependency_overrides[get_attention_store] = lambda: attention
+    try:
+        with TestClient(app) as client:
+            refused = client.post("/api/attention", json=forged.model_dump(mode="json"))
+            assert refused.status_code == 422
+            assert "reserved for the control plane" in refused.json()["detail"]
+            # An approval is refused for the same reason: settling one advances the
+            # task to verified (agora.attention.review_gate).
+            approval = client.post("/api/attention", json={
+                **forged.model_dump(mode="json"), "kind": "approval",
+                "title": "Review finished, approve it",
+            })
+            assert approval.status_code == 422
+    finally:
+        app.dependency_overrides.clear()
+
+    # 2. So does the store itself, for any caller that has not said it is internal —
+    #    the default is closed, so a new caller cannot forget the argument into a
+    #    forgery. A vendor bridge event is never the control plane and has no opt-out
+    #    at all.
+    with pytest.raises(AttentionValidationError, match="reserved"):
+        attention.create(forged)
+    with pytest.raises(AttentionValidationError, match="reserved"):
+        attention.create_once(forged)
+    with pytest.raises(AttentionValidationError, match="reserved"):
+        attention.create_bridge_event(BridgeEventRequest(
+            vendor=BridgeVendor.CLAUDE, task_id=task.task_id, run_id=worker.run_id,
+            vendor_event_id="evt-1", kind=AttentionKind.BLOCKER,
+            title="Cross-review did not start", requester=REVIEW_REQUESTER,
+            delivery_mode=DeliveryMode.CAPTURE_ONLY,
+        ))
+
+    # 3. Nothing was written, so the obligation still stands and the worker run the
+    #    forgery was for is still refused.
+    assert attention.list(task_id=task.task_id) == []
+    assert store.reviews_owed() == owed
+    with pytest.raises(RunGateError) as still_gated:
+        dispatcher.queue(_request(task.task_id, version=3))
+    assert still_gated.value.code == GATE_CODE_REVIEW_OWED
+
+    # 4. The internal path still can, and its item is what releases the obligation —
+    #    the marker still means something, which is the point of refusing it above.
+    genuine, created = attention.create_once(forged, internal=True)
+    assert created is True and genuine.requester == REVIEW_REQUESTER
+    assert store.reviews_owed() == []
+
+
+def test_every_terminal_path_preserves_a_runs_identity(tmp_path):
+    """Identity is set by ``create`` and survives every way a run can end.
+
+    One case per terminal path, because the bug was a single path clearing a field
+    every other path reads: ``finish`` with a result and without one, ``cancel``,
+    ``record_cancelled_output`` (which writes a settled row again), ``abandon``, and
+    the queued-cancel settle inside ``revalidate_queued``.
+    """
+    tasks, store, dispatcher = _system(tmp_path, [sys.executable, "-c", "print('ok')"])
+    dispatcher.schedule = lambda run_id: None  # type: ignore[method-assign]
+
+    def _review(task_id, worker_run_id, *, version=3):
+        return dispatcher.queue(
+            CreateRunRequest(task_id=task_id, adapter="codex", prompt="review it",
+                             timeout_seconds=10, expected_task_version=version),
+            role=ROLE_REVIEW, reviews_run_id=worker_run_id,
+        )
+
+    # 1. finish() carrying a result: the result is recorded, identity is not touched.
+    first = _planned_task(tasks)
+    worker_one = dispatcher.queue(_request(first.task_id))
+    review_one = _review(first.task_id, worker_one.run_id)
+    running = store.start(review_one.run_id, expected_version=review_one.version)
+    settled = store.finish(review_one.run_id, RunState.SUCCEEDED,
+                           expected_version=running.version, exit_code=0,
+                           stdout_tail="no findings", stderr_tail="",
+                           result_metadata={"usage": {"total": 12}})
+    assert settled.result_metadata["usage"] == {"total": 12}
+    assert _identity_of(store, review_one.run_id) == {
+        "agora_role": ROLE_REVIEW, "reviews_run_id": worker_one.run_id, "task_version": 3,
+    }
+
+    # 2. finish() with no result at all — the pre-launch failure shape.
+    second = _planned_task(tasks)
+    worker_two = dispatcher.queue(_request(second.task_id))
+    review_two = _review(second.task_id, worker_two.run_id)
+    store.finish(review_two.run_id, RunState.FAILED, expected_version=review_two.version,
+                 exit_code=None, stdout_tail="", stderr_tail="",
+                 error_message="adapter is no longer configured")
+    assert _identity_of(store, review_two.run_id) == {
+        "agora_role": ROLE_REVIEW, "reviews_run_id": worker_two.run_id, "task_version": 3,
+    }
+
+    # 3. cancel(), and 4. record_cancelled_output() writing that settled row again.
+    third = _planned_task(tasks)
+    worker_three = dispatcher.queue(_request(third.task_id))
+    review_three = _review(third.task_id, worker_three.run_id)
+    cancelled = store.cancel(review_three.run_id,
+                             CancelRunRequest(expected_version=review_three.version,
+                                              reason="human changed their mind"))
+    assert _identity_of(store, review_three.run_id) == {
+        "agora_role": ROLE_REVIEW, "reviews_run_id": worker_three.run_id, "task_version": 3,
+    }
+    store.record_cancelled_output(review_three.run_id, expected_version=cancelled.version,
+                                  stdout_tail="partial", stderr_tail="", exit_code=None,
+                                  deliverables={"files": [], "truncated": False})
+    assert _identity_of(store, review_three.run_id) == {
+        "agora_role": ROLE_REVIEW, "reviews_run_id": worker_three.run_id, "task_version": 3,
+    }
+
+    # 5. abandon(), the restart path for a run whose process we lost.
+    fourth = _planned_task(tasks)
+    worker_four = dispatcher.queue(_request(fourth.task_id))
+    review_four = _review(fourth.task_id, worker_four.run_id)
+    started = store.start(review_four.run_id, expected_version=review_four.version)
+    store.abandon(review_four.run_id, expected_version=started.version,
+                  reason="Agora restarted while the process was running")
+    assert _identity_of(store, review_four.run_id) == {
+        "agora_role": ROLE_REVIEW, "reviews_run_id": worker_four.run_id, "task_version": 3,
+    }
+
+    # 6. The queued-cancel settle: the sweep refuses a queued run and cancels it
+    #    inside its own transaction, without going through _transition at all.
+    fifth = _planned_task(tasks)
+    worker_five = dispatcher.queue(_request(fifth.task_id))
+    review_five = _review(fifth.task_id, worker_five.run_id)
+    tasks.cancel(fifth.task_id, expected_version=3)  # so the sweep refuses both rows
+    refused = {entry["run_id"] for entry in dispatcher.resume_queued()}
+    assert {worker_five.run_id, review_five.run_id} <= refused
+    assert store.require(review_five.run_id).state == RunState.CANCELLED
+    assert _identity_of(store, review_five.run_id) == {
+        "agora_role": ROLE_REVIEW, "reviews_run_id": worker_five.run_id, "task_version": 3,
+    }
+    assert _identity_of(store, worker_five.run_id) == {
+        "agora_role": ROLE_WORKER, "task_version": 3,
+    }
+
+
+def test_a_result_write_may_not_carry_identity(tmp_path):
+    """A caller that sends identity with a result is refused, loudly.
+
+    Not merged over and not ignored: the dispatcher used to re-send ``agora_role``
+    with every successful settle, which is what made identity look like something a
+    result write carries — and so made the paths that had *no* result look like they
+    were merely omitting an optional field rather than erasing the field the gates
+    read. The run is left exactly as it was, because a refused write writes nothing.
+    """
+    tasks, store, dispatcher = _system(tmp_path, [sys.executable, "-c", "print('ok')"])
+    task = _planned_task(tasks)
+    run = dispatcher.queue(_request(task.task_id))
+    running = store.start(run.run_id, expected_version=run.version)
+
+    for offered in ({ROLE_KEY: ROLE_REVIEW}, {ROLE_KEY: ROLE_WORKER},
+                    {REVIEWS_RUN_KEY: "run_whatever"}, {"task_version": 99}):
+        with pytest.raises(RunValidationError, match="identity key"):
+            store.finish(run.run_id, RunState.SUCCEEDED, expected_version=running.version,
+                         exit_code=0, stdout_tail="done", stderr_tail="",
+                         result_metadata=offered)
+    still = store.require(run.run_id)
+    assert still.state == RunState.RUNNING
+    assert still.version == running.version
+    assert _identity_of(store, run.run_id) == {"agora_role": ROLE_WORKER, "task_version": 3}
+
+
+#: Stands in for an f-string's interpolated part when the SQL of a statement is
+#: reassembled from the AST. It is not valid SQL, which is the point: it marks a
+#: place the check cannot read rather than pretending the text is complete.
+_SQL_INTERPOLATION = "\x00{}\x00"
+
+#: Any *mention* of the column anywhere in a statement, which is what the check
+#: below keys on — not "an assignment", and not scoped to a clause. Note the
+#: leading ``\b``: it does not match inside ``_write_result_metadata``, so the
+#: writer's own name is never a false positive.
+_NAMES_RESULT_METADATA = re.compile(r"\bresult_metadata\b", re.IGNORECASE)
+_UPDATES_RUNS = re.compile(r"\bUPDATE\s+execution_runs\b", re.IGNORECASE)
+
+#: The one function in ``agora/execution/store.py`` whose UPDATE may name
+#: ``result_metadata``. Structural, not stylistic: the column has a single writer,
+#: which is where ``_identity_preserved`` is called.
+_RESULT_METADATA_WRITER = "_write_result_metadata"
+
+
+def _sql_literals(tree: ast.AST) -> list[tuple[str, str]]:
+    """``(enclosing function, SQL text)`` for every string literal in a module.
+
+    Reading literals from the **AST** rather than from the file text is what makes
+    the guard below unfussy about how a string is written: adjacent string literals
+    are concatenated by the parser itself, so a statement split as
+    ``"UPDATE ... SET result_" "metadata = ?"`` arrives here as one value. An
+    f-string is one node too, with its interpolated parts marked (they are the parts
+    a static reader cannot resolve).
+    """
+    found: list[tuple[str, str]] = []
+
+    def walk(node: ast.AST, scope: str) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                walk(child, child.name)
+                continue
+            if isinstance(child, ast.Constant) and isinstance(child.value, str):
+                found.append((scope, child.value))
+                continue
+            if isinstance(child, ast.JoinedStr):
+                # Handled whole, and NOT descended into: its literal fragments on
+                # their own would each read as a complete statement and the
+                # interpolation between them would vanish.
+                found.append((scope, "".join(
+                    part.value if isinstance(part, ast.Constant) and isinstance(part.value, str)
+                    else _SQL_INTERPOLATION
+                    for part in child.values
+                )))
+                continue
+            walk(child, scope)
+
+    walk(tree, "<module>")
+    return found
+
+
+def test_no_raw_sql_write_of_result_metadata():
+    """``result_metadata`` has exactly one writer in ``store.py``, and no other
+    UPDATE of ``execution_runs`` there so much as names the column.
+
+    ``result_metadata`` carries a run's identity, which every gate in ``store.py``
+    reads, and the column is written wholesale — so a second statement assigning it
+    can erase the identity without touching a line of gate logic, which is how a
+    QUEUED review run silently lost its ``agora_role`` (K1).
+
+    **This check is a backstop, not the guarantee.** The guarantee is structural:
+    ``ExecutionStore._write_result_metadata`` owns the column and is where
+    ``_identity_preserved`` is called; ``_transition`` delegates to it. Three earlier
+    revisions of this test tried instead to decide whether a SET clause *assigned*
+    the column, and each was defeated by a form of SQL its parser could not read —
+    the last one (M3) cut the statement at the first ``WHERE``, so
+
+        UPDATE execution_runs SET x = (SELECT ... WHERE ...), result_metadata = ? WHERE ...
+
+    hid the assignment behind a subquery's own ``WHERE`` and passed. Removing the
+    parser removes that whole class of hole.
+
+    **What it actually checks**, stated exactly:
+
+    - String literals come from the module's **AST**, so adjacent-literal splitting
+      cannot hide a statement, and an f-string is read as one value with its
+      interpolations marked.
+    - Every literal containing ``UPDATE execution_runs`` is examined. If it *mentions*
+      ``result_metadata`` anywhere at all — assignment or not, before or after any
+      ``WHERE``, at any nesting depth — it must be in ``_write_result_metadata``.
+      Being position-independent is the whole improvement: there is no clause to
+      truncate and no nesting to respect.
+    - The writer's own statement must be a plain literal (no interpolation), there
+      must be exactly one of them, and the writer must call ``_identity_preserved``.
+    - A statement whose text is built from an interpolation cannot be read at all, so
+      it is refused in any function that names ``result_metadata`` — **with no
+      exemption** since N4 (2026-08-30). The previous revision exempted such a
+      statement in a function that delegates to the writer, and ``_transition`` was
+      exactly that: it built its SET list from an update dict *and* called the writer,
+      so a reviewer added ``updates["result_metadata"] = ...`` there and this test
+      reported ``offenders=[]`` with every structural assertion below still satisfied.
+      The fix was not a smarter guard (this is its fifth revision). ``_transition``'s
+      dynamic ``UPDATE`` moved to ``ExecutionStore._write_transition_columns``, whose
+      body never names the column and whose vocabulary is the fixed
+      ``_TRANSITION_COLUMNS`` list; a key outside that list raises. So the exemption
+      had nothing left to cover and is gone, and the two remaining interpolated
+      statements (that one and ``record_cancelled_output``'s ``{snapshot_sql}``) pass
+      because neither function mentions the column at all.
+
+    **What it does not check**, so nobody relies on more than is here:
+
+    - SQL assembled with ``+``, from a module constant, or by a helper returning
+      fragments — anything other than adjacent literals and f-strings.
+    - Writes to the column from outside ``store.py``, and writes issued by a caller
+      holding a raw connection.
+    - Whether ``_identity_preserved`` is called *for* the statement rather than
+      merely in the same function.
+
+    Verified by mutation on 2026-08-30, in five styles: a ``SET result_metadata =
+    :meta`` sweep (named parameter); the same statement split across adjacent
+    literals as ``"... result_" "metadata=COALESCE(json(:meta), ...)"`` (no spaces,
+    wrapped value); a dynamic ``SET {assignments}`` whose column dict included the
+    column; the M3 style the fourth revision missed — an assignment placed
+    after a subquery's own ``WHERE`` inside the SET list of ``_cancel_locked``; and the
+    N4 style the fifth revision missed — ``updates["result_metadata"] = ...`` inside
+    ``_transition``, which now cannot be written at all
+    (``test_a_transition_may_not_write_result_metadata`` is the assertion that it
+    raises, and this test's ``_TRANSITION_COLUMNS`` check is why the SET list cannot
+    name it). Each one makes a test fail, naming the function or the column;
+    reverting it makes the suite pass.
+
+    The N4 style is the one to be careful about when re-verifying: until O2 (round 5,
+    2026-08-30) it failed *only* in unrelated tests that happen to perform a
+    transition, because neither named guard exercised ``_transition`` itself — the
+    companion test called ``_write_transition_columns`` with its own dict. That test
+    now performs one real transition, so the mutation fails a test that names the
+    property rather than 57 that do not.
+    """
+    module = Path(__file__).resolve().parents[1] / "agora" / "execution" / "store.py"
+    source = module.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    functions = {
+        node.name: ast.unparse(node)
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    offenders: list[str] = []
+    checked = 0
+    writer_statements = 0
+    for scope, sql in _sql_literals(tree):
+        if not _UPDATES_RUNS.search(sql):
+            continue
+        checked += 1
+        body = functions.get(scope, "")
+        unreadable = _SQL_INTERPOLATION in sql
+        if _NAMES_RESULT_METADATA.search(sql):
+            if scope != _RESULT_METADATA_WRITER:
+                offenders.append(
+                    f"{scope}: an UPDATE of execution_runs names result_metadata; only "
+                    f"{_RESULT_METADATA_WRITER} may write that column"
+                )
+            elif unreadable:
+                offenders.append(
+                    f"{scope}: the writer's own statement is built from an interpolation, "
+                    "so this check can no longer read which column it writes"
+                )
+            else:
+                writer_statements += 1
+            continue
+        if unreadable and _NAMES_RESULT_METADATA.search(body):
+            offenders.append(
+                f"{scope}: SET clause is built dynamically in a function that names "
+                "result_metadata, so this check cannot read which column it writes"
+            )
+    assert not offenders, "raw result_metadata write(s): " + "; ".join(offenders)
+    # The structure itself, asserted rather than assumed: one writer, one statement,
+    # and the identity check inside it.
+    assert writer_statements == 1, (
+        f"expected exactly one UPDATE naming result_metadata (in {_RESULT_METADATA_WRITER}), "
+        f"saw {writer_statements}"
+    )
+    assert "_identity_preserved" in functions.get(_RESULT_METADATA_WRITER, "")
+    # _transition must still reach the column through the writer; if it stopped
+    # doing so, every terminal path would silently stop recording a result.
+    assert _RESULT_METADATA_WRITER in functions.get("_transition", "")
+    # ...and the dynamic statement it delegates *from* must not be able to name the
+    # column. This is what replaced the exemption above (N4): the vocabulary of the
+    # only interpolated UPDATE in the module is this fixed list.
+    assert "result_metadata" not in ExecutionStore._TRANSITION_COLUMNS
+    # The guard is worthless if it stopped finding the statements it reasons about.
+    assert checked >= 4, f"expected the module's UPDATE execution_runs statements, saw {checked}"
+
+
+def test_a_transition_may_not_write_result_metadata(tmp_path):
+    """The structural half of N4, asserted behaviourally rather than by reading SQL.
+
+    ``_transition`` builds its SET list dynamically, so ``test_no_raw_sql_write_of_
+    result_metadata`` above cannot read which columns it writes — and its previous
+    revision therefore *exempted* it, on the ground that it delegates to
+    ``_write_result_metadata``. A reviewer added one line, ``updates["result_metadata"]
+    = ...``, and that guard reported no offenders: a second writer of the identity
+    column, admitted by the exemption.
+
+    The exemption is gone because the hole is gone. ``ExecutionStore._TRANSITION_
+    COLUMNS`` is the whole vocabulary of that statement and does not contain the
+    column, and a key outside the list raises instead of being dropped — dropping it
+    would silently discard a write the caller believed it made. This test is the
+    assertion that it raises, so the reviewer's mutation now fails here rather than
+    passing everywhere.
+
+    **Second half, added by O2 in round 5 (2026-08-30): it goes through
+    ``_transition``.** The first assertion below calls ``_write_transition_columns``
+    directly with a dict this test wrote, which proves the refusal exists but not that
+    the production path is subject to it — so the N4 mutation
+    (``updates["result_metadata"] = "{}"`` inside ``_transition``) left this test and
+    ``test_no_raw_sql_write_of_result_metadata`` both passing, and was caught only by
+    the 57 unrelated tests that happen to perform a transition. A loud failure in
+    tests about something else is a coincidence, not a guard: nothing named the
+    property, so nothing would have kept it. The cancel below is a real
+    ``_transition``, so the mutation now fails a test that says what it protects, and
+    the identity assertion after it covers the other shape of the same mistake — the
+    column being *added* to ``_TRANSITION_COLUMNS`` so the write is admitted and
+    erases ``agora_role`` wholesale.
+    """
+    tasks, store, dispatcher = _system(tmp_path, [sys.executable, "-c", "print('ok')"])
+    task = _planned_task(tasks)
+    run = dispatcher.queue(_request(task.task_id))
+
+    with pytest.raises(RunValidationError) as refused:
+        with store._transaction() as db:
+            store._write_transition_columns(
+                db,
+                run_id=run.run_id,
+                expected_version=run.version,
+                updates={"state": RunState.CANCELLED.value, "result_metadata": "{}"},
+            )
+    assert "result_metadata" in str(refused.value)
+    assert _RESULT_METADATA_WRITER in str(refused.value)
+    # Refused, not partially applied: the transaction rolled back with the run intact.
+    assert store.require(run.run_id).state == RunState.QUEUED
+    assert _identity_of(store, run.run_id) == {"agora_role": ROLE_WORKER, "task_version": 3}
+
+    # And the production path is subject to the same refusal: one real transition
+    # through ``_transition``, which must settle the run and leave its identity
+    # exactly as ``create`` wrote it.
+    settled = store.cancel(run.run_id, CancelRunRequest(
+        expected_version=run.version, reason="one real transition, on purpose",
+    ))
+    assert settled.state == RunState.CANCELLED
+    assert _identity_of(store, run.run_id) == {"agora_role": ROLE_WORKER, "task_version": 3}
+
+
+def test_startup_reconciles_reviews_owed_before_resuming_queued_runs(monkeypatch):
+    """The reconciliation is only a fix if it runs, and it has to run first.
+
+    Before the API serves, so no client can observe the unreleasable state, and
+    before ``resume_queued``, so a blocker it raises is visible to the sweep that
+    refuses queued worker runs on a gated task.
+
+    ``lifespan`` makes **one** call, and the order lives in the real
+    ``ExecutionDispatcher.start_recovery`` — borrowed unbound by the stub below, so
+    this test exercises the production sequencing function rather than a copy of its
+    order. Two statements in ``lifespan`` pinned by a test caught a reordering in
+    that one file and nothing else; ``resume_queued``'s own guard is what makes a
+    reordering anywhere fail loudly
+    (``test_resume_queued_refuses_to_run_before_the_reconciliation``).
+    """
+    calls: list[str] = []
+
+    class _Dispatcher:
+        auto_review = True
+        reviews_owed_unreadable = None
+        reviews_owed_unrecorded: list = []
+        start_recovery = ExecutionDispatcher.start_recovery
+
+        def reconcile_reviews_owed(self):
+            calls.append("reconcile")
+            return []
+
+        def resume_queued(self):
+            calls.append("resume")
+            return []
+
+        async def shutdown(self):
+            calls.append("shutdown")
+
+    class _Supervisor:
+        def start(self):
+            calls.append("supervisor")
+
+        async def shutdown(self):
+            pass
+
+    factory = lru_cache(maxsize=1)(lambda: _Dispatcher())
+    monkeypatch.setattr(app_module, "get_execution_dispatcher", factory)
+    monkeypatch.setattr(app_module, "get_workflow_supervisor", lambda: _Supervisor())
+    monkeypatch.setattr(app_module, "initialize_control_plane_store", lambda: None)
+
+    async def drive():
+        async with app_module.lifespan(app_module.app):
+            pass
+
+    asyncio.run(drive())
+    assert calls[:2] == ["reconcile", "resume"]
+
+
+def test_resume_queued_refuses_to_run_before_the_reconciliation(tmp_path):
+    """The ordering is enforced in the code, not only by statement order.
+
+    ``reconcile_reviews_owed`` raises the gates ``resume_queued`` judges the
+    persisted queue against, so going first means admitting a queued worker run on a
+    task that is about to be gated. Reaching the sweep first is a bug in the caller,
+    and it now says so instead of quietly admitting runs. Scoped to ``auto_review``,
+    which is exactly when the reconciliation has anything to raise.
+    """
+    tasks, store, dispatcher = _system(
+        tmp_path, [sys.executable, "-c", "print('ok')"], auto_review=True,
+    )
+    dispatcher.schedule = lambda run_id: None  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="before reconcile_reviews_owed"):
+        dispatcher.resume_queued()
+
+    # start_recovery is the sequence, and it returns the receipt for both steps.
+    receipt = dispatcher.start_recovery()
+    assert receipt == {
+        "reviews_owed_reconciled": [],
+        "reviews_owed_unreadable": None,
+        "reviews_owed_unrecorded": [],
+        "queued_runs_refused": [],
+    }
+    assert dispatcher.resume_queued() == []  # allowed now, and idempotent
+
+    # With auto_review off nothing can be owed, so there is no order to get wrong
+    # and the sweep is callable on its own (as several tests here do).
+    _, _, no_review = _system(tmp_path / "off", [sys.executable, "-c", "print('ok')"])
+    no_review.schedule = lambda run_id: None  # type: ignore[method-assign]
+    assert no_review.resume_queued() == []
+
+
+def test_an_unreadable_reviews_owed_read_is_recorded_and_does_not_stop_startup(tmp_path, monkeypatch):
+    """The read was the one unwrapped call on a path that promises to keep serving.
+
+    ``reconcile_reviews_owed`` wraps the per-task blocker write so one unrecordable
+    task cannot cost the others theirs — but the read that finds those tasks was
+    bare, so a database it could not read propagated out of ``lifespan``: the API
+    never served and ``resume_queued`` never ran, which is the opposite of what the
+    method's own docstring promised. It is guarded now, and the failure is *recorded*
+    rather than skipped: an unreadable reconciliation is a fact about this process,
+    because every task it would have recorded a blocker for stays refused with
+    ``review_owed`` until a later start reads it.
+    """
+    tasks, store, dispatcher = _system(
+        tmp_path, [sys.executable, "-c", "print('ok')"], auto_review=True,
+    )
+    dispatcher.schedule = lambda run_id: None  # type: ignore[method-assign]
+    task = _planned_task(tasks)
+    queued = dispatcher.queue(_request(task.task_id))
+
+    def _unreadable():
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(store, "reviews_owed", _unreadable)
+    receipt = dispatcher.start_recovery()
+
+    assert receipt["reviews_owed_reconciled"] == []
+    assert "OperationalError" in receipt["reviews_owed_unreadable"]
+    assert dispatcher.reviews_owed_unreadable == receipt["reviews_owed_unreadable"]
+    # The rest of startup still happened: the sweep ran and the queued run survives.
+    assert receipt["queued_runs_refused"] == []
+    assert store.require(queued.run_id).state == RunState.QUEUED
+    # And no Attention item was invented for a read that produced nothing.
+    assert AttentionStore(tasks).list(task_id=task.task_id) == []
+
+
+def test_lifespan_reports_an_unreadable_reconciliation_to_the_operator(monkeypatch, capsys):
+    """A reconciliation that could not run is surfaced, not swallowed.
+
+    stderr is the only channel available here — the failure *is* a database read, so
+    there is nowhere durable to write it — and it is the operator's channel at
+    startup. Serving continues either way; the point is that nobody has to infer
+    from a later ``review_owed`` refusal that the reconciliation never ran.
+    """
+    class _Dispatcher:
+        auto_review = True
+        reviews_owed_unreadable = "OperationalError: database is locked"
+        reviews_owed_unrecorded: list = []
+        start_recovery = ExecutionDispatcher.start_recovery
+
+        def reconcile_reviews_owed(self):
+            return []
+
+        def resume_queued(self):
+            return []
+
+        async def shutdown(self):
+            pass
+
+    class _Supervisor:
+        def start(self):
+            pass
+
+        async def shutdown(self):
+            pass
+
+    factory = lru_cache(maxsize=1)(lambda: _Dispatcher())
+    monkeypatch.setattr(app_module, "get_execution_dispatcher", factory)
+    monkeypatch.setattr(app_module, "get_workflow_supervisor", lambda: _Supervisor())
+    monkeypatch.setattr(app_module, "initialize_control_plane_store", lambda: None)
+
+    async def drive():
+        async with app_module.lifespan(app_module.app):
+            pass
+
+    asyncio.run(drive())
+
+    reported = capsys.readouterr().err
+    assert "reconciliation could not run" in reported
+    assert "database is locked" in reported
+
+
 def test_run_gate_conflict_codes_mirrored_by_the_frontend():
-    """frontend/src/lib/continue-run.ts hardcodes these two 409 codes in
+    """frontend/src/lib/continue-run.ts hardcodes these 409 codes in
     RUN_GATE_CODES, because a client cannot ask the server what its own refusal
     means. Nothing at runtime keeps the two in step, so this test is the alarm: if
     it fails, that file is what has to be updated."""
@@ -1801,6 +3666,7 @@ def test_run_gate_conflict_codes_mirrored_by_the_frontend():
     source = mirror.read_text(encoding="utf-8")
     assert f'attentionOpen: "{GATE_CODE_ATTENTION_OPEN}"' in source
     assert f'reviewActive: "{GATE_CODE_REVIEW_ACTIVE}"' in source
+    assert f'reviewOwed: "{GATE_CODE_REVIEW_OWED}"' in source
 
 
 def test_run_contract_constants_mirrored_by_the_frontend(tmp_path):

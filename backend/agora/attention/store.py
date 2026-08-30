@@ -17,7 +17,7 @@ from agora.tasks.store import TaskStore
 from .models import (
     AttentionItem, AttentionKind, AttentionState, AttentionUrgency,
     CancelAttentionRequest, CreateAttentionRequest, RespondAttentionRequest,
-    ResponseAction,
+    RESERVED_REQUESTERS, ResponseAction,
 )
 from .schema import initialize_attention_schema
 from .bridges.models import (
@@ -71,13 +71,54 @@ class AttentionStore:
         finally:
             db.close()
 
-    def create(self, request: CreateAttentionRequest) -> AttentionItem:
+    def create(self, request: CreateAttentionRequest, *, internal: bool = False) -> AttentionItem:
+        """Create one attention item.
+
+        ``internal`` says the caller is Agora itself, and it is the only way to
+        write a requester the control plane treats as its own authority
+        (``RESERVED_REQUESTERS``). It defaults to **False**, so a new caller — and
+        every public router, which passes nothing — fails closed: the guard has to
+        be opted out of deliberately, in code, exactly as ``role=ROLE_REVIEW`` is an
+        argument only the internal review dispatch passes to
+        ``ExecutionStore.create``.
+
+        The check lives here, in the store, rather than on
+        ``CreateAttentionRequest``: the dispatcher builds the same request model for
+        the items it raises, so a validator on the model could not tell the two
+        apart, and this is the single writer every creation path goes through.
+        """
+        self._reject_reserved_requester(request.requester, internal=internal)
         now = utc_now()
         with self._transaction() as db:
             item_id = self._insert_locked(db, request, now=now)
         return self.require(item_id)
 
-    def create_once(self, request: CreateAttentionRequest) -> tuple[AttentionItem, bool]:
+    @staticmethod
+    def _reject_reserved_requester(requester: str, *, internal: bool) -> None:
+        """Refuse a control-plane requester from a caller that is not the control plane.
+
+        ``requester`` is an authority marker: the review gate and the derived
+        review-owed refusal both read ``REVIEW_REQUESTER`` back as "Agora raised
+        this". ``POST /api/attention`` takes the field from the client, so before
+        this check a caller could write the control plane's own review blocker for a
+        worker run, cancel it, and walk past the review gate — the run's review was
+        then never created and nothing was left to notice it. It could equally write
+        the review *approval*, which a human's approve turns into a task advancing to
+        ``verified``.
+
+        Refused at the boundary rather than distrusted at the read: a gate that has
+        to guess which of its own markers are genuine has no marker at all.
+        """
+        if internal:
+            return
+        if requester in RESERVED_REQUESTERS:
+            raise AttentionValidationError(
+                f"requester {requester!r} is reserved for the control plane"
+            )
+
+    def create_once(
+        self, request: CreateAttentionRequest, *, internal: bool = False
+    ) -> tuple[AttentionItem, bool]:
         """Create this item unless an equal OPEN one already exists.
 
         Returns ``(item, created)``: the existing item and False when one is
@@ -100,7 +141,13 @@ class AttentionStore:
         holding the task); rewriting its body would move a record under them. The
         varying detail of a later occurrence belongs on the task timeline, which
         records every attempt anyway.
+
+        ``internal`` is the same server-side argument ``create`` documents, with the
+        same closed default: only Agora's own paths may claim a requester in
+        ``RESERVED_REQUESTERS``. ``ExecutionDispatcher._block_review_owed`` is the
+        one production caller and passes it.
         """
+        self._reject_reserved_requester(request.requester, internal=internal)
         now = utc_now()
         with self._transaction() as db:
             row = db.execute(
@@ -157,7 +204,15 @@ class AttentionStore:
     def create_bridge_event(
         self, request: BridgeEventRequest, *, trusted_bidirectional: bool = False,
     ) -> BridgeEventReceipt:
-        """Atomically deduplicate a vendor event and create its attention item."""
+        """Atomically deduplicate a vendor event and create its attention item.
+
+        A vendor event is never the control plane, so a reserved requester is
+        refused here with no opt-out. The item this writes outlives the run it is
+        scoped to, so a bridge item claiming ``REVIEW_REQUESTER`` on a *running*
+        worker run would become that run's forged review gate the moment it
+        succeeded.
+        """
+        self._reject_reserved_requester(request.requester, internal=False)
         if request.delivery_mode == DeliveryMode.BIDIRECTIONAL and not trusted_bidirectional:
             raise AttentionValidationError("Public hook ingestion supports capture_only events")
         now = utc_now()

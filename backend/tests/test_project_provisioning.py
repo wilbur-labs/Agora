@@ -129,7 +129,7 @@ def test_project_dashboard_progress_vs_verified(tmp_path):
     )
     run = runs.start(run.run_id, expected_version=run.version)
     runs.finish(run.run_id, RunState.SUCCEEDED, expected_version=run.version, exit_code=0,
-                stdout_tail="done", stderr_tail="", result_metadata={"agora_role": "worker"})
+                stdout_tail="done", stderr_tail="")
     with tasks._transaction() as db:
         db.execute("UPDATE tasks SET state=? WHERE task_id=?", (TaskState.DONE.value, t.task_id))
 

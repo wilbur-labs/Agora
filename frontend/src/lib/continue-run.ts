@@ -274,6 +274,12 @@ export type DispatchFailure =
   | { kind: "alreadyRunning" }
   | { kind: "gateOpen"; detail: string }
   | { kind: "reviewActive"; detail: string }
+  /**
+   * No independent review accounts for the previous worker run: none was created,
+   * or one was and it ended without reviewing anything, or it finished and left no
+   * approval to decide on.
+   */
+  | { kind: "reviewOwed"; detail: string }
   | { kind: "taskChanged" }
   /** A 409 whose re-read failed: something refused it, and we cannot say what. */
   | { kind: "conflictUnknown"; detail: string }
@@ -293,6 +299,7 @@ export const DISPATCH_FAILURE_KEY: Record<DispatchFailure["kind"], string> = {
   alreadyRunning: "workspace.continue.errors.alreadyRunning",
   gateOpen: "workspace.continue.errors.gateOpen",
   reviewActive: "workspace.continue.errors.reviewActive",
+  reviewOwed: "workspace.continue.errors.reviewOwed",
   taskChanged: "workspace.continue.errors.taskChanged",
   conflictUnknown: "workspace.continue.errors.conflictUnknown",
   taskGone: "workspace.continue.errors.taskGone",
@@ -308,14 +315,15 @@ export const DISPATCH_FAILURE_KEY: Record<DispatchFailure["kind"], string> = {
 /**
  * The control plane's 409 discriminators for a Run -> Gate ordering refusal.
  *
- * Mirrors GATE_CODE_ATTENTION_OPEN / GATE_CODE_REVIEW_ACTIVE in
- * backend/agora/execution/store.py. Nothing at runtime keeps the two in step, so
+ * Mirrors GATE_CODE_ATTENTION_OPEN / GATE_CODE_REVIEW_ACTIVE / GATE_CODE_REVIEW_OWED
+ * in backend/agora/execution/store.py. Nothing at runtime keeps the two in step, so
  * the backend owns the alarm: `test_run_gate_conflict_codes_mirrored_by_the_frontend`
  * in backend/tests/test_execution.py asserts these strings and names this file.
  */
 export const RUN_GATE_CODES = {
   attentionOpen: "attention_gate_open",
   reviewActive: "review_run_active",
+  reviewOwed: "review_owed",
 } as const;
 
 /**
@@ -375,6 +383,11 @@ export function classifyDispatchFailure(input: {
     // it stands whether or not the re-read worked.
     if (input.conflictCode === RUN_GATE_CODES.attentionOpen) return { kind: "gateOpen", detail };
     if (input.conflictCode === RUN_GATE_CODES.reviewActive) return { kind: "reviewActive", detail };
+    // The handoff window the client's own `followUpArmed` timer only guesses at,
+    // now answered by the control plane: the last worker run succeeded and no
+    // independent review accounts for it — the review may not exist yet, or one may
+    // have ended without reviewing anything, or without leaving a gate to settle.
+    if (input.conflictCode === RUN_GATE_CODES.reviewOwed) return { kind: "reviewOwed", detail };
     if (countUnknown) return { kind: "conflictUnknown", detail };
     return input.activeRunCount !== null && input.activeRunCount > 0
       ? { kind: "alreadyRunning" }
@@ -412,6 +425,13 @@ export function confirmsNothingRunning(failure: DispatchFailure): boolean {
     case "gateOpen":
       // The create transaction refused before inserting a run, and a gate is not
       // a run. The same-role case is `alreadyRunning`, which is excluded below.
+      return true;
+    case "reviewOwed":
+      // Same: refused inside the create transaction, before any insert. Not because
+      // the owed review "does not exist" — a review run that failed before it could
+      // review anything does exist — but because an *unsettled* review run is a
+      // different refusal (`reviewActive`), so this code is only sent when no run of
+      // this task is executing.
       return true;
     default:
       // alreadyRunning / reviewActive: a run IS active. conflictUnknown: something

@@ -5966,3 +5966,143 @@ recorded in the ADR rather than described as covered.
 `portfolio/page.tsx`'s `bucketOf` has the rail's defect, reading an empty kind set
 from the same capped page as "nothing waiting". It is a separate surface with its
 own taxonomy and is left as its own item rather than half-fixed here.
+
+## Both gates hold the order, and what it cost to make them
+
+The maintainer decided on 2026-08-30 that neither case may start a new run: an
+unanswered question gates a task the same way an approval or a blocker does, and
+the window between a worker run settling and its review being queued is closed
+rather than left to the client's timer.
+
+`question` gates because a run started while the agent's question is unanswered
+proceeds on an unanswered assumption, which makes asking pointless. The safety
+argument is that such an item is always human-clearable — **not**, as the code
+first said, that every question auto-settles with its run. Only bridge-origin
+questions do; `POST /api/attention` writes no bridge row and nothing settles
+those with any run. The absolute was wrong and is corrected wherever it was
+stated, because the next person relaxing this rule will rely on the sentence that
+is written down.
+
+The review debt is derived, never written: a task owes a review when its most
+recent terminal worker run succeeded and no gate item — the approval a review
+raises, or the blocker every path that produced no review records — is scoped to
+it. Nothing to leak on a crash, and startup reconciliation records the blocker
+rather than dispatching a review, because `_review_prompt` reads the worker's
+live worktree and worktrees are reused per project and adapter: a boot-time
+review can review the wrong content and report a verdict on it.
+
+### Five rounds, and what each defeated
+
+The gates were defeated four times before they held.
+
+A review that failed **before it started** had its `agora_role` and
+`reviews_run_id` cleared by `finish()` writing an empty result, after which the
+derived question read that row as the latest *worker* run, saw `failed`, and
+concluded nothing was owed. A run's identity is now carried across every write
+that carries a result, and one private writer owns that column.
+
+The evidence releasing the debt was **forgeable**: `POST /api/attention` accepted
+the control plane's own requester, so a caller could write the review-failure
+blocker itself and then cancel it. That is the third time in this work a field
+used as an authority marker turned out to be client-settable — after `agora_role`
+in run metadata, and after the generic attention API was noticed and treated as a
+documentation problem rather than a forgery path. The rule is that such a field is
+refused at the boundary, never adjudicated at the point of use.
+
+A **succeeded review run was counted as a gate that was never established** —
+when both the approval and its fallback blocker failed to write, the accounting
+concluded from the run's state alone. Review evidence and a human gate are
+different facts and the ordering depends on them staying different.
+
+An **incomplete reconciliation still resumed the queue**. A prior round had asked
+whether the empty list returned by an unreadable reconcile is read as "nothing
+owes a review"; it is not, and that check was clean. The defect was one step
+further on — the continuation, not the value.
+
+### A residual that was accepted twice, and was wrong
+
+"A cancelled review still accounts for the review" was recorded as an accepted
+residual in two separate rounds, on the reasoning that separating a human's cancel
+from a sweep's would mean parsing a reason string. The premise was false: shutdown
+cancels queued reviews automatically, so an ordinary restart admitted a worker run
+onto work no review had ever seen. Two further parts of the reasoning were also
+wrong — the fix never needed to distinguish the cancels, since what a cancelled
+review shares with a failed one is that it produced no gate item; and the exit the
+residual named, re-dispatching the review, is not an exit any human has, because
+no endpoint dispatches a review run.
+
+Accepting a residual is a claim, and it needs the same scrutiny as a fix: write
+down the premise it rests on, then check whether the system itself has a path that
+satisfies that premise.
+
+### Unknowns
+
+Three more places treated an unknown as an absence or a permission, which is now
+the eleventh, twelfth and thirteenth in this work: a missing `task_version` skipped
+the version check entirely (with a test asserting that admission), an unusable
+`finished_at` was ranked as oldest and could hide the newest successful run behind
+an older failed one, and the gate exclusion dropped every item carrying the judged
+run's id rather than only the prompts that run provably raised.
+
+### The guard that would not hold
+
+A test asserting no raw write of `result_metadata` was revised five times. Two
+string literals missed named parameters and split literals; an AST check truncated
+its own SET clause at the first `WHERE`, so a nested subquery hid the assignment;
+and the version that tied a statement to its enclosing function exempted the one
+function that both builds a dynamic statement and calls the writer. It was retired
+in favour of making the column unwritable from anywhere else: one private writer
+owns it, and `_transition`'s dynamic update is built from a fixed allowlist that
+cannot name it. Worth recording that the mutation is now caught loudly by every
+test that performs a transition, but still not by a test that names the property.
+
+Scanning source text to enforce an invariant fails in the direction of a green
+light. Making the invariant unexpressible does not.
+
+### The text was the least-reviewed thing here
+
+Six rounds found the logic and then kept finding the sentences. The safety
+argument for gating `question` was an absolute that was false. Correcting the
+user-facing strings left the same premise in three comments, then a fourth. The
+fix for a residual that named an exit nobody has wrote that same exit into the
+message a human reads. The caveat added to be honest about a later review's
+coverage overstated it — a later review does not read the worktree, it reads a
+prompt bounded at 1,500 characters per file and 12,000 overall.
+
+The cause is worth recording plainly: the analysis and the human-facing text are
+different artifacts produced by the same change, and only one of them was under
+review. Rounds asked whether the logic was right; nobody was asked to read the
+sentences as claims. A caveat is a claim. A docstring a maintainer would follow is
+an instruction. A refusal message names an action, and that action either exists
+or it does not.
+
+`test_review_owed_text_claims_only_what_holds_for_every_cause` is the check every
+prior round lacked: it builds the cause that decides what the shared strings may
+say and asserts the strings do not overclaim. Verified by mutation — restoring any
+of the three earlier wordings fails it.
+
+One instance of this class is recorded and not fixed: `_raise_review_attention`'s
+approval title says the review completed, on the strength of exit code zero, which
+AGENTS.md says is not semantic success. It is outside this change and is left as
+the next one to correct.
+
+Backend 882 collected, 882 passed (861 at the start of this increment). Frontend
+66 collected, 66 passed; tsc, eslint, build and the schema check clean.
+
+Review: six rounds, both gates. Codex ran the first two and hit its usage limit
+twice more, after which the independent gate was GPT-5.6 Sol through Kiro CLI —
+the same model Codex runs, so the reviewer was never the model that wrote the
+code. P1 counts by round: 1, 2, 2, 1, 2, 1.
+
+Twice the two gates read the same code and only one found the defect, because they
+asked different questions. Whether the empty list from an unreadable reconcile is
+misread: clean, and correct — the defect was the continuation after it. Whether
+N3's break bounds one blocker per invocation: clean, and correct — the defect was
+the lifetime bound. Two reviewers are worth having for the questions they differ
+on, not for the models they are.
+
+Next safe action: close W0(b) by demonstrating the loop end to end — dispatch a run
+through the live Continue path, let it settle, advance the clock, and assert the
+recap names yesterday's step. The recap already reports a run's outcome from the
+run record rather than from events, so what this needs is the demonstration, and
+whatever gap the demonstration exposes.

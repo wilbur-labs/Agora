@@ -1,4 +1,5 @@
 """FastAPI application."""
+import sys
 from pathlib import Path
 from contextlib import asynccontextmanager
 
@@ -26,7 +27,36 @@ from agora.api.settings_router import router as settings_router
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     initialize_control_plane_store()
-    get_execution_dispatcher().resume_queued()
+    # One call, because the two steps behind it are ordered by a real dependency
+    # and not by taste: reconcile_reviews_owed raises the gates that resume_queued
+    # judges the persisted queue against, and both have to finish before the API
+    # serves. The order lives in the dispatcher (ExecutionDispatcher.start_recovery,
+    # and resume_queued refuses to run first), so it cannot be lost by editing this
+    # file.
+    recovery = get_execution_dispatcher().start_recovery()
+    if recovery["reviews_owed_unreadable"] is not None:
+        # A reconciliation that could not run is a fact, not a no-op: the tasks it
+        # would have recorded a blocker for stay refused with `review_owed` until a
+        # later start reads them, and nobody can act on that without being told.
+        # stderr is the operator's channel at startup (uvicorn's console), and it is
+        # the only one available here — the failure is the database read itself, so
+        # there is nowhere durable to write it.
+        print(
+            "agora: startup review-owed reconciliation could not run: "
+            f"{recovery['reviews_owed_unreadable']}",
+            file=sys.stderr,
+        )
+    for unrecorded in recovery["reviews_owed_unrecorded"]:
+        # The same fact one task at a time: this run owes a review and the human
+        # blocker saying so could not be written. The gate itself is safe without it
+        # — `_resume_refusal` derives the refusal (M1) — so what is lost is the inbox
+        # item, which is exactly the thing an operator would otherwise wait for.
+        print(
+            "agora: startup review-owed reconciliation could not record a blocker for "
+            f"task {unrecorded.get('task_id')} run {unrecorded.get('run_id')} "
+            f"(cause {unrecorded.get('cause')}): {unrecorded.get('error')}",
+            file=sys.stderr,
+        )
     supervisor = get_workflow_supervisor()
     supervisor.start()
     yield
