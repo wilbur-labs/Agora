@@ -33,6 +33,10 @@ export const settings = {
       baseHint: "New projects are created as subfolders here.",
       baseBrowse: "Browse…",
       baseBrowseUnavailable: "The folder picker is only available when the server runs on a machine with a desktop. Type the path instead.",
+      importError:
+        "Projects are stored in Agora's own database. The import file {source} could not be used ({reason}), so nothing in it was applied. The list below is what the database holds; the file is left on disk unchanged.",
+      importConflicts:
+        "{count} project(s) in {source} differ from what Agora has stored. Agora kept its stored values and left the file unchanged: {projects}.",
       baseSave: "Save",
       baseSaved: "Saved",
       agents: "Developer: {worker} · Reviewer: {reviewer}",
@@ -112,6 +116,10 @@ export const settings = {
       baseHint: "新项目会作为子文件夹建在这里。",
       baseBrowse: "浏览…",
       baseBrowseUnavailable: "仅当服务器跑在有桌面的机器上时才能用文件夹选择器。请改为手动输入路径。",
+      importError:
+        "项目现在存在 Agora 自己的数据库里。导入文件 {source} 无法采用（{reason}），其中的内容一条也没有生效。下面列出的是数据库里的内容；磁盘上的文件保持原样。",
+      importConflicts:
+        "{source} 里有 {count} 个项目与 Agora 已存的值不一致。Agora 保留了自己存的值，也没有改动该文件：{projects}。",
       baseSave: "保存",
       baseSaved: "已保存",
       agents: "开发:{worker} · 评审:{reviewer}",

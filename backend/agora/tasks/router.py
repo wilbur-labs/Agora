@@ -9,7 +9,7 @@ from fastapi.concurrency import run_in_threadpool
 
 from . import clarify
 
-from agora.config.settings import get_config
+from agora.config.settings import get_config, resolve_control_plane_db_path
 from agora.projects import ProjectRegistry
 
 from .models import (
@@ -32,10 +32,7 @@ router = APIRouter(prefix="/tasks", tags=["tasks"])
 
 @lru_cache(maxsize=1)
 def get_task_store() -> TaskStore:
-    cfg = get_config()
-    data_dir = Path(cfg.get("memory", {}).get("data_dir", "./data"))
-    db_path = cfg.get("control_plane", {}).get("db_path", data_dir / "agora.db")
-    return TaskStore(db_path)
+    return TaskStore(resolve_control_plane_db_path(get_config()))
 
 
 def get_project_registry() -> ProjectRegistry:

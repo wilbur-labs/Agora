@@ -117,9 +117,12 @@ def test_foreign_directory_and_path_escape_are_rejected(tmp_path, git_project):
 
     outside = tmp_path / "outside"
     project = registry.get("alpha")
+    # A separate control-plane store: projects live in the database now, so a
+    # second registry sharing the first one's state directory would resolve
+    # "alpha" from the first registry's row and never see the escaped workspace.
     escaped_config = {
         "projects": {
-            "registry_path": str(tmp_path / "escaped.yaml"),
+            "registry_path": str(tmp_path / "escaped-state" / "projects.yaml"),
             "default": "alpha",
             "projects": {"alpha": {"root": str(project.root), "workspaces": {"codex": str(outside)}}},
         }

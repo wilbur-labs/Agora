@@ -434,8 +434,35 @@ export interface ProjectSettings {
   workspaces: WorkspaceInfo[];
 }
 
+export interface ProjectImportStatus {
+  /** The YAML import source. Projects themselves live in the control-plane database. */
+  source: string;
+  /**
+   * What the last open of the source established: true if it was read, false only
+   * for a definite "no such file", null when the attempt could not tell the two
+   * apart. Not an existence probe — a source that cannot be read is not absent.
+   */
+  source_present: boolean | null;
+  /** Set when the source was reached but could not be read or understood. Never a shorter project list. */
+  error: string | null;
+  last_import: {
+    source: string;
+    imported: string[];
+    updated: string[];
+    unchanged: string[];
+    conflicts: { project_id: string; fields: string[] }[];
+    current_project_id: string | null;
+    projects_base: string | null;
+  } | null;
+}
+
 export interface SettingsOverview {
-  projects: { current: string; projects_base: string; items: ProjectSettings[] };
+  projects: {
+    current: string;
+    projects_base: string;
+    items: ProjectSettings[];
+    import_status: ProjectImportStatus;
+  };
   execution: {
     max_concurrent_global: number;
     max_concurrent_per_project: number;
@@ -483,6 +510,7 @@ export interface ProjectListItem {
 export interface ProjectList {
   current: string;
   projects_base: string;
+  import_status: ProjectImportStatus;
   items: ProjectListItem[];
 }
 

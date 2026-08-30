@@ -20,6 +20,7 @@ import {
   getSettingsOverview,
   pickProjectsFolder,
   setProjectsBase,
+  type ProjectImportStatus,
   type RuntimeCapabilities,
   type RuntimeCapability,
   type SettingsOverview,
@@ -224,6 +225,7 @@ function WorkspacesCard({ overview, onReload, onError }: { overview: SettingsOve
         </label>
         <p className="mt-1.5 text-[11px] text-muted-foreground">{t("settings.workspaces.baseHint")}</p>
       </div>
+      <ProjectImportNotice status={overview?.projects.import_status ?? null} />
       <div className="space-y-4">
         {overview?.projects.items.map((project) => (
           <div key={project.project_id} className="rounded-lg border p-4">
@@ -248,6 +250,34 @@ function WorkspacesCard({ overview, onReload, onError }: { overview: SettingsOve
         ))}
       </div>
     </Section>
+  );
+}
+
+/** Says out loud what the YAML import source did. Projects are stored in the
+ *  control-plane database, so a file that cannot be read must be reported as a
+ *  failure — it may never quietly shorten the list below. */
+function ProjectImportNotice({ status }: { status: ProjectImportStatus | null }) {
+  const { t } = useI18n();
+  if (!status) return null;
+  const conflicts = status.last_import?.conflicts ?? [];
+  if (!status.error && conflicts.length === 0) return null;
+  return (
+    <div className="mb-4 space-y-2">
+      {status.error && (
+        <p className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-[11px] leading-5 text-destructive">
+          {t("settings.workspaces.importError", { source: status.source, reason: status.error })}
+        </p>
+      )}
+      {conflicts.length > 0 && (
+        <p className="rounded-lg bg-amber-500/5 px-3 py-2 text-[11px] leading-5 text-amber-700 dark:text-amber-300">
+          {t("settings.workspaces.importConflicts", {
+            count: conflicts.length,
+            source: status.source,
+            projects: conflicts.map((c) => `${c.project_id} (${c.fields.join(", ")})`).join("; "),
+          })}
+        </p>
+      )}
+    </div>
   );
 }
 

@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
-from agora.config.settings import get_config
+from agora.config.settings import get_config, resolve_control_plane_db_path
 from agora.control_plane.auth import authenticate_control_plane_token
 from agora.control_plane.store import (
     ControlPlaneConflictError,
@@ -50,8 +50,7 @@ from .store import (
 
 def build_service(config: dict | None = None) -> TaskOrchestrationService:
     cfg = config or get_config()
-    data_dir = Path(cfg.get("memory", {}).get("data_dir", "./data"))
-    db_path = cfg.get("control_plane", {}).get("db_path", data_dir / "agora.db")
+    db_path = resolve_control_plane_db_path(cfg)
     orchestration = cfg.get("orchestration", {})
     return TaskOrchestrationService(
         TaskStore(db_path),

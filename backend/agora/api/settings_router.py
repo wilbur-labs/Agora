@@ -262,6 +262,7 @@ def list_projects(
     return {
         "current": registry.current_project_id(),
         "projects_base": str(registry.projects_base()),
+        "import_status": registry.import_status(),
         "items": [
             {
                 "project_id": pid,
@@ -605,7 +606,15 @@ def _projects_overview(registry: ProjectRegistry) -> dict[str, Any]:
                 ],
             }
         )
-    return {"current": current, "projects_base": str(registry.projects_base()), "items": items}
+    return {
+        "current": current,
+        "projects_base": str(registry.projects_base()),
+        "items": items,
+        # Projects are stored in the control-plane database. This says what the
+        # last read of the YAML import source did, so a file that cannot be
+        # parsed shows up as a reported failure and never as a shorter list.
+        "import_status": registry.import_status(),
+    }
 
 
 def _execution_limits(config: dict[str, Any]) -> dict[str, Any]:

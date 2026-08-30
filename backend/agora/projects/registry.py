@@ -1,38 +1,51 @@
-"""Multi-project registry for Agora control-plane state."""
+"""Multi-project registry for Agora control-plane state.
+
+The registry is the single reader and writer of projects for the whole product:
+the API routers, workspace provisioning, the execution dispatcher, the
+orchestration service, doctor and the research orchestrator all resolve projects
+through it. It used to keep them in `.agora/projects.yaml`; it now keeps them in
+the control-plane database and treats that YAML as an import source only. No code
+path outside `agora.projects.importer` reads or writes the file.
+"""
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import sys
 from pathlib import Path
 from typing import Any
 
-import yaml
+from agora.config.settings import resolve_control_plane_db_path
 
-# Default cross-review pairing: an implementer works, a different agent reviews.
-# codex declares code_change; claude declares correctness/safety review.
-DEFAULT_WORKER_AGENT = "codex"
-DEFAULT_REVIEWER_AGENT = "claude"
-KNOWN_AGENTS = ("codex", "claude", "kiro")
+from .importer import (
+    ProjectImportError,
+    ProjectImportResult,
+    ProjectImportSourceMissing,
+    import_projects_from_yaml,
+)
+from .models import (
+    DEFAULT_REVIEWER_AGENT,
+    DEFAULT_WORKER_AGENT,
+    KNOWN_AGENTS,
+    Project,
+    validate_agents,
+    validate_project_id,
+)
+from .store import (
+    ORIGIN_AGORA,
+    SETTING_LAST_IMPORT_ERROR,
+    SETTING_PROJECTS_BASE,
+    ProjectExistsError,
+    ProjectStore,
+)
 
-
-@dataclass(frozen=True)
-class Project:
-    project_id: str
-    name: str
-    root: Path
-    workspaces: dict[str, Path]
-    worker_agent: str = DEFAULT_WORKER_AGENT
-    reviewer_agent: str = DEFAULT_REVIEWER_AGENT
-    # Human-authored project definition (goal / non_goals / success_criteria).
-    # Agents never write it; it answers "what is this project ultimately for".
-    charter: dict[str, Any] = field(default_factory=dict)
-
-    @property
-    def agora_dir(self) -> Path:
-        return self.root / ".agora"
-
-    @property
-    def research_dir(self) -> Path:
-        return self.agora_dir / "research"
+__all__ = [
+    "DEFAULT_REVIEWER_AGENT",
+    "DEFAULT_WORKER_AGENT",
+    "KNOWN_AGENTS",
+    "Project",
+    "ProjectImportError",
+    "ProjectImportSourceMissing",
+    "ProjectRegistry",
+]
 
 
 class ProjectRegistry:
@@ -40,55 +53,186 @@ class ProjectRegistry:
         self.config = config or {}
         self.project_root = (project_root or Path(__file__).resolve().parents[3]).resolve()
         cfg = self.config.get("projects", {})
+        # Kept as `registry_path` for every existing caller, but it now names the
+        # *import source*, not the live store.
         self.registry_path = self._resolve_path(
             cfg.get("registry_path", self.project_root / ".agora" / "projects.yaml"),
             self.project_root,
         )
         self.default_project = cfg.get("default", "agora")
         self._configured_projects = cfg.get("projects", {})
-        self.ensure_exists()
+        self.store = ProjectStore(
+            resolve_control_plane_db_path(self.config, project_root=self.project_root)
+        )
+        self._import_result: ProjectImportResult | None = None
+        # What is known about the import source: "present" (read it), "absent"
+        # (definitely no such file) or "unknown" (the open failed some other way).
+        self._source_state = "unknown"
+        self.ensure_ready()
 
-    def ensure_exists(self) -> None:
-        self.registry_path.parent.mkdir(parents=True, exist_ok=True)
-        if self.registry_path.exists():
-            return
-        data = {
-            "current": self.default_project,
-            "projects": self._default_projects(),
+    # ------------------------------------------------------------------- setup
+
+    def ensure_ready(self) -> None:
+        """Make the store usable: import the YAML, then seed configured projects.
+
+        Never creates or modifies the import file — the old ``ensure_exists`` wrote
+        it, and this deliberately does not. If the file exists but cannot be
+        understood, the failure is raised when the store has no projects to serve
+        instead of returning an empty list; when the store does hold projects it
+        stays authoritative and the failure is recorded and reported through
+        :meth:`import_status`.
+
+        The source is opened, not probed. Only a definite ``FileNotFoundError``
+        counts as "there is no import source" and unlocks seeding of configured or
+        default projects. A permission error or any other stat/open failure is
+        unknown, and unknown fails closed: seeding defaults there would hand the
+        caller a normal-looking project list that is indistinguishable from a
+        machine that genuinely has no source.
+
+        Consequence this change deepened: constructing a registry runs this
+        method, so it writes project state into whatever control-plane database
+        ``resolve_control_plane_db_path`` resolves to — including from the API's
+        startup path, which builds a registry via the execution dispatcher. Tests
+        that construct a registry with a configuration naming no data root
+        therefore write projects into the same file their tasks and runs use. That
+        was already true of task and run state; this change extends it to projects
+        and to the current-project pointer, and the working-directory-relative
+        default makes "which database" depend on where the process was started.
+        See the same note on ``resolve_control_plane_db_path``.
+        """
+        try:
+            self._import_result = self.import_from_yaml()
+            self._source_state = "present"
+        except ProjectImportSourceMissing:
+            # A recorded failure from a file that is not there would be a claim
+            # about nothing, so it is cleared — but only for definite absence.
+            self._source_state = "absent"
+            self.store.clear_setting(SETTING_LAST_IMPORT_ERROR)
+            if self.store.count() == 0:
+                self._seed_configured_projects()
+        except ProjectImportError as exc:
+            self._source_state = exc.source_state
+            self.store.set_setting(SETTING_LAST_IMPORT_ERROR, str(exc))
+            if self.store.count() == 0:
+                raise
+        self._ensure_current_pointer()
+
+    def import_from_yaml(self, path: str | Path | None = None) -> ProjectImportResult:
+        """Import projects from the YAML import source into the store.
+
+        Idempotent and keyed by project_id. Raises :class:`ProjectImportError` if
+        the file cannot be read or understood.
+        """
+        source = Path(path) if path is not None else self.registry_path
+        result = import_projects_from_yaml(
+            self.store,
+            source,
+            project_root=self.project_root,
+            on_project_added=self._ensure_project_dirs,
+        )
+        self.store.clear_setting(SETTING_LAST_IMPORT_ERROR)
+        self._import_result = result
+        return result
+
+    def import_status(self) -> dict[str, Any]:
+        """What the last import of the YAML source did, for human-facing reporting.
+
+        ``error`` is set when the source was reached but could not be read or
+        understood. It is never conflated with "there are no projects".
+
+        ``source_present`` reports what the last open actually established: True if
+        the source was read, False only for a definite "no such file", and None
+        when the open failed in a way that does not distinguish the two. It is not
+        a fresh existence probe, because ``Path.exists()`` returns False for
+        failures that are not absence.
+        """
+        error = self.store.get_setting(SETTING_LAST_IMPORT_ERROR)
+        return {
+            "source": str(self.registry_path),
+            "source_present": {"present": True, "absent": False}.get(self._source_state),
+            "error": error,
+            "last_import": self._import_result.as_dict() if self._import_result else None,
         }
-        self._write(data)
-        for project in data["projects"].values():
+
+    def _seed_configured_projects(self) -> None:
+        """Seed from the inline `projects.projects` config block.
+
+        Only reached when the import source is definitely absent and the store is
+        empty, which is the first run of a fresh database on a machine that has no
+        import file. An unreadable source must never get here: seeding over one
+        would present invented defaults as the configuration.
+        """
+        for project_id, entry in (self._configured_projects or self._default_projects()).items():
+            if self.store.exists(project_id):
+                continue
+            root = self._resolve_path(entry["root"], self.project_root)
+            workspaces = {
+                key: self._resolve_path(value, root)
+                for key, value in (entry.get("workspaces") or {}).items()
+            }
+            project = self.store.insert(
+                project_id,
+                name=entry.get("name", project_id),
+                root=root,
+                # Whatever the configuration says, including nothing: seeding must
+                # not invent workspaces the configured project did not ask for.
+                workspaces=workspaces,
+                worker_agent=entry.get("worker_agent") or DEFAULT_WORKER_AGENT,
+                reviewer_agent=entry.get("reviewer_agent") or DEFAULT_REVIEWER_AGENT,
+                charter=dict(entry.get("charter") or {}),
+                origin=ORIGIN_AGORA,
+            )
             self._ensure_project_dirs(project)
 
+    def _ensure_current_pointer(self) -> None:
+        """Keep the pointer resolvable, and say so when it had to be moved.
+
+        The pointer may never name a missing project. A *stored* pointer that does
+        cannot be produced through this store — :meth:`ProjectStore.set_current_project_id`
+        fails closed and nothing deletes projects — so finding one means the
+        database was changed from outside, and repairing it without a word would
+        hide that the current project is no longer the one that was selected. A
+        *file* pointer naming a project the file does not list is a malformed
+        source and is rejected by the importer instead of being repaired here.
+
+        stderr is the operator's channel for a fact with nowhere durable to go:
+        this runs during startup and registry construction, before any request.
+        """
+        current = self.store.current_project_id()
+        if current is not None and self.store.exists(current):
+            return
+        for candidate in (self.default_project, *sorted(self.store.list_projects())):
+            if self.store.exists(candidate):
+                self.store.set_current_project_id(candidate)
+                if current is not None:
+                    print(
+                        f"agora: the stored current-project pointer named '{current}', which "
+                        f"the project store does not hold; selected '{candidate}' instead",
+                        file=sys.stderr,
+                    )
+                return
+
+    # ------------------------------------------------------------------- reads
+
     def list_projects(self) -> dict[str, Project]:
-        data = self._read()
-        return {pid: self._project(pid, value) for pid, value in data.get("projects", {}).items()}
+        return self.store.list_projects()
 
     def current_project_id(self) -> str:
-        data = self._read()
-        return data.get("current") or self.default_project
+        return self.store.current_project_id() or self.default_project
 
     def current_project(self) -> Project:
         return self.get(self.current_project_id())
 
     def get(self, project_id: str) -> Project:
-        data = self._read()
-        projects = data.get("projects", {})
-        if project_id not in projects:
-            raise KeyError(f"Unknown project: {project_id}")
-        return self._project(project_id, projects[project_id])
+        return self.store.require(project_id)
 
     def use(self, project_id: str) -> Project:
-        data = self._read()
-        if project_id not in data.get("projects", {}):
-            raise KeyError(f"Unknown project: {project_id}")
-        data["current"] = project_id
-        self._write(data)
+        self.store.set_current_project_id(project_id)
         return self.get(project_id)
 
     def projects_base(self) -> Path:
         """Single root under which new projects get their own subfolder."""
-        raw = self._read().get("projects_base")
+        raw = self.store.get_setting(SETTING_PROJECTS_BASE)
         if raw:
             return self._resolve_path(raw, self.project_root)
         return (self.project_root / "projects").resolve()
@@ -102,10 +246,10 @@ class ProjectRegistry:
         if resolved.exists() and not resolved.is_dir():
             raise ValueError("Projects root must be a directory")
         resolved.mkdir(parents=True, exist_ok=True)
-        data = self._read()
-        data["projects_base"] = str(resolved)
-        self._write(data)
+        self.store.set_setting(SETTING_PROJECTS_BASE, str(resolved))
         return resolved
+
+    # ------------------------------------------------------------------ writes
 
     def create_project(
         self,
@@ -138,44 +282,37 @@ class ProjectRegistry:
         worker_agent: str | None = None,
         reviewer_agent: str | None = None,
     ) -> Project:
-        if not project_id.replace("-", "").replace("_", "").isalnum():
-            raise ValueError("Project id must contain only letters, numbers, dashes, or underscores")
+        validate_project_id(project_id)
         worker = worker_agent or DEFAULT_WORKER_AGENT
         reviewer = reviewer_agent or DEFAULT_REVIEWER_AGENT
-        for role, value in (("worker_agent", worker), ("reviewer_agent", reviewer)):
-            if value not in KNOWN_AGENTS:
-                raise ValueError(f"{role} must be one of: {', '.join(KNOWN_AGENTS)}")
+        validate_agents(worker, reviewer)
         project_root = Path(root).expanduser().resolve()
-        data = self._read()
-        projects = data.setdefault("projects", {})
-        if project_id in projects:
-            raise ValueError(f"Project already exists: {project_id}")
-        projects[project_id] = {
-            "name": name or project_id,
-            "root": str(project_root),
-            "workspaces": self._default_workspaces(project_root),
-            "worker_agent": worker,
-            "reviewer_agent": reviewer,
-        }
-        self._ensure_project_dirs(projects[project_id])
-        self._write(data)
-        return self._project(project_id, projects[project_id])
+        try:
+            project = self.store.insert(
+                project_id,
+                name=name or project_id,
+                root=project_root,
+                workspaces={
+                    key: Path(value)
+                    for key, value in self._default_workspaces(project_root).items()
+                },
+                worker_agent=worker,
+                reviewer_agent=reviewer,
+                origin=ORIGIN_AGORA,
+            )
+        except ProjectExistsError as exc:
+            raise ValueError(str(exc)) from None
+        self._ensure_project_dirs(project)
+        return project
 
     def set_project_agents(
         self, project_id: str, *, worker_agent: str, reviewer_agent: str
     ) -> Project:
         """Update a project's worker/reviewer agent assignment."""
-        for role, value in (("worker_agent", worker_agent), ("reviewer_agent", reviewer_agent)):
-            if value not in KNOWN_AGENTS:
-                raise ValueError(f"{role} must be one of: {', '.join(KNOWN_AGENTS)}")
-        data = self._read()
-        projects = data.get("projects", {})
-        if project_id not in projects:
-            raise KeyError(f"Unknown project: {project_id}")
-        projects[project_id]["worker_agent"] = worker_agent
-        projects[project_id]["reviewer_agent"] = reviewer_agent
-        self._write(data)
-        return self._project(project_id, projects[project_id])
+        validate_agents(worker_agent, reviewer_agent)
+        return self.store.set_agents(
+            project_id, worker_agent=worker_agent, reviewer_agent=reviewer_agent
+        )
 
     def set_charter(
         self,
@@ -188,17 +325,14 @@ class ProjectRegistry:
         """Set a project's human-authored charter. This is the human-facing path
         to define the goal; no agent code path writes the charter. (Endpoint-level
         authentication is a 1.3 concern — see the charter route.)"""
-        data = self._read()
-        projects = data.get("projects", {})
-        if project_id not in projects:
-            raise KeyError(f"Unknown project: {project_id}")
-        projects[project_id]["charter"] = {
-            "goal": goal,
-            "non_goals": list(non_goals),
-            "success_criteria": list(success_criteria),
-        }
-        self._write(data)
-        return self._project(project_id, projects[project_id])
+        return self.store.set_charter(
+            project_id,
+            {
+                "goal": goal,
+                "non_goals": list(non_goals),
+                "success_criteria": list(success_criteria),
+            },
+        )
 
     def research_config(self, project: Project | None = None) -> dict[str, Any]:
         p = project or self.current_project()
@@ -207,29 +341,9 @@ class ProjectRegistry:
             "workspaces": {name: str(path) for name, path in p.workspaces.items()},
         }
 
-    def _read(self) -> dict[str, Any]:
-        if not self.registry_path.exists():
-            self.ensure_exists()
-        return yaml.safe_load(self.registry_path.read_text(encoding="utf-8")) or {}
-
-    def _write(self, data: dict[str, Any]) -> None:
-        self.registry_path.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
-
-    def _project(self, project_id: str, data: dict[str, Any]) -> Project:
-        root = self._resolve_path(data["root"], self.project_root)
-        return Project(
-            project_id=project_id,
-            name=data.get("name", project_id),
-            root=root,
-            workspaces={k: self._resolve_path(v, root) for k, v in data.get("workspaces", {}).items()},
-            worker_agent=data.get("worker_agent", DEFAULT_WORKER_AGENT),
-            reviewer_agent=data.get("reviewer_agent", DEFAULT_REVIEWER_AGENT),
-            charter=dict(data.get("charter") or {}),
-        )
+    # ---------------------------------------------------------------- internals
 
     def _default_projects(self) -> dict[str, Any]:
-        if self._configured_projects:
-            return self._configured_projects
         return {
             self.default_project: {
                 "name": "Agora",
@@ -246,8 +360,8 @@ class ProjectRegistry:
             "kiro": str(project_root / ".agora" / "workspaces" / "kiro"),
         }
 
-    def _ensure_project_dirs(self, data: dict[str, Any]) -> None:
-        project = self._project("_setup", data)
+    @staticmethod
+    def _ensure_project_dirs(project: Project) -> None:
         root = project.root
         (root / ".agora" / "research").mkdir(parents=True, exist_ok=True)
         (root / ".agora" / "decisions").mkdir(parents=True, exist_ok=True)
