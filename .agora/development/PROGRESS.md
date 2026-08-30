@@ -6106,3 +6106,71 @@ through the live Continue path, let it settle, advance the clock, and assert the
 recap names yesterday's step. The recap already reports a run's outcome from the
 run record rather than from events, so what this needs is the demonstration, and
 whatever gap the demonstration exposes.
+
+## W1 — projects in the database, and a workspace that says what is happening
+
+Four pieces, committed as 376eb9b and cf4994b. The plan called W1 the largest
+slice; reading the code first said otherwise. Run and task persistence already
+existed, and the three-column shell was already there. What was missing was
+projects, and the interactions the mockup review had decided and nobody had built.
+
+Projects lived in a YAML file while tasks and runs lived in SQLite, so a run could
+be gated, dispatched and settled against a project the database could not see. The
+store is now authoritative and the YAML is an import source that is never rewritten
+— it is the maintainer's own file, and it stays on disk so a bad import can be
+compared against it. Every finding on that import was one family of mistake:
+
+- Conflict detection and replacement were two statements, so a change made through
+  Agora between them was overwritten. They are one decision under a write lock now.
+- `yaml.safe_load` keeps the last of a repeated key, so a file with two `projects:`
+  blocks imported only the second and presented a shorter list as authoritative —
+  data loss reported as success. A strict loader rejects the file instead.
+- `Path.exists()` answers false for a permission failure exactly as for a missing
+  file, so an unreadable source read as absent and seeded defaults a caller could
+  not distinguish from a real list.
+- "The stored row matches its snapshot, so Agora did not change it" was false —
+  nothing marked an Agora write, so changing a value and changing it back defeated
+  the comparison. Rather than narrow the promise, the mechanism now earns it: every
+  write bumps a counter, and anything unprovable reads as touched.
+
+The right column stopped being four tabs and became the answer to "what is
+happening": a live run's output, or a settled run's deliverables and the gate. Six
+states, because the ways of not knowing are not one thing. Two claims had to be
+unlearned — that declining to mirror a backend rule licenses inventing one, and
+that the newest settled run is the one that produced something (an automatic
+review settles after its worker and its snapshot is empty).
+
+Runs nest by work unit. Retries do not nest, because nothing records a retry
+relation and inventing one would be a guess. A run whose parent chain does not end
+at a top-level worker is rendered with the reason it could not be placed, and a
+test pins that the rendered set equals the given set — including for a cycle.
+
+The progress bar reads the project's own snapshot and counts its markers. Only the
+counted variant carries a percentage. It also takes the display off the frozen
+control plane's verified percentage, which any historical success could set, so
+after a requirements change old work made new criteria read as already produced.
+
+Two absences that were not: an unstattable snapshot path read as "no snapshot",
+and this repository's own record — a thousand checkbox lines — read as a snapshot
+tracking nothing. Whether checkboxes should be counted is left open rather than
+settled by a mapping nobody asked for.
+
+`Path.exists()` was fixed twice in one night in two modules before it became a
+shared probe returning bool or None, so "I could not tell" is expressible in the
+type instead of lost at the call site. Three ACL tests skip on Windows: the deny
+that creates the condition cannot be reversed without elevation, and a test that
+creates state it cannot remove does not belong in a suite. The invariant is pinned
+by raising each error directly at three levels instead.
+
+Backend 958 collected, 951 passed, 7 skipped. Frontend 138 collected, 138 passed.
+
+Recorded and not fixed: tests entering the lifespan write to the live database,
+and which database that is depends on the working directory. W1 deepened both —
+project state now goes through the same path. That is the next thing to fix, and
+it is the reason a full-suite run should not be trusted while a dispatch is still
+writing files: one gate here ran against a half-written tree and reported two
+failures that did not exist.
+
+Next safe action: the test/live-database isolation, then W2's environment
+abstraction, for which projects now carry the note that root is a property of a
+project in an environment and never its identity.
