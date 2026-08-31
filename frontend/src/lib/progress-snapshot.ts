@@ -20,13 +20,22 @@
 //
 //   no snapshot        -> render nothing. Not 0%.
 //   counts unreadable  -> say so. Not 0%, and not "no snapshot" either.
-//   other markers      -> say the file uses markers the reader does not count. Not
-//                         "tracks no items": Agora's own snapshot is a thousand
-//                         checkbox lines, and calling that empty is a false claim.
+//   other marks        -> say the file uses marks the reader does not count. Not
+//                         "tracks no items", which would be a false claim about a
+//                         file that plainly records work.
+//   mixed conventions  -> say that. Counting either one alone reports a floor.
 //   counts read        -> a percentage, from `done` only.
 //
-// The types make the collapse unrepresentable: only the `counts` variant carries a
+// The types make the collapse unrepresentable: only the two count variants carry a
 // percentage at all, so no other outcome can render a number by accident.
+//
+// The two count variants exist because the two checklist conventions do not carry
+// the same information. Markers (✅/🔵/⬜) split the work three ways. Checkboxes
+// split it two ways — and that is a coarsening, not a gap: an item a human would
+// call in progress is written as an unchecked box, so the total is still exact and
+// so is `done / total`. What is missing is only the split of not-done, so
+// `countsDoneOnly` has no in-progress field at all rather than a zero standing in
+// for an unknown.
 //
 // Deliberately free of React and of "@/" path aliases: `node --test` executes the
 // companion test file (tests/progress-snapshot.test.mts) directly.
@@ -35,16 +44,33 @@
  * The snapshot as the dashboard reports it (backend:
  * `projects/progress_snapshot.py`). Counts are `null` whenever `available` is
  * false — the payload never carries a zero it does not mean.
+ *
+ * The one exception, and the reason `convention` exists: a snapshot written in
+ * Markdown checkboxes is available with `in_progress: null`, because that
+ * convention has no form for work in flight and a 0 there would assert there is
+ * none. `convention` is what tells this module to expect the null instead of
+ * reading it as a contradiction.
  */
 export interface ProgressSnapshotLike {
   available: boolean;
-  /** "absent" | "too_large" | "unreadable" when unavailable. */
+  /**
+   * "absent" | "too_large" | "unreadable" | "uncounted_markers" |
+   * "mixed_conventions" when unavailable.
+   */
   reason?: string | null;
   done?: number | null;
+  /** `null` under the `checkboxes` convention: unknown, never zero. */
   in_progress?: number | null;
+  /** Under `checkboxes` this is *not done*, which may include work in flight. */
   todo?: number | null;
   /** The path that was consulted, so the UI can name what it read. */
   source?: string | null;
+  /**
+   * Which convention the counts were read in: `markers` or `checkboxes`. Absent
+   * from a server older than this field, which is read as `markers` — the only
+   * shape that server could send.
+   */
+  convention?: string | null;
 }
 
 /** The reason the file yields no snapshot at all: `absent`, and only `absent`. */
@@ -57,6 +83,26 @@ export const SNAPSHOT_ABSENT_REASON = "absent";
  * reader and the file — not "no progress", and not "the file could not be read".
  */
 export const SNAPSHOT_UNCOUNTED_MARKERS_REASON = "uncounted_markers";
+
+/**
+ * The reason the file carries both checklist conventions at once (backend:
+ * `MIXED_CONVENTIONS_REASON`), so neither reading is the file's own and counting
+ * either one alone would report a floor.
+ */
+export const SNAPSHOT_MIXED_CONVENTIONS_REASON = "mixed_conventions";
+
+/** The three-bucket convention: ✅ / 🔵 / ⬜. */
+export const CONVENTION_MARKERS = "markers";
+
+/** The two-bucket convention: `[x]` / `[ ]`. Done and not-done, with no split. */
+export const CONVENTION_CHECKBOXES = "checkboxes";
+
+/**
+ * Read fine, and it lists no item of either convention. Its own value rather than an
+ * absent field, so that an absent field keeps meaning one thing only: a server that
+ * predates the field, whose counts this module will not vouch for.
+ */
+export const CONVENTION_NONE = "none";
 
 /**
  * What the bar shows.
@@ -82,7 +128,15 @@ export type ProgressBar =
       | "notReported"
       | "countsUnusable"
       /** Read fine; its checklist markers are not the ones the reader counts. */
-      | "markersNotCounted";
+      | "markersNotCounted"
+      /** Read fine; it carries both conventions, so neither count is the file's. */
+      | "mixedConventions"
+      /**
+       * The server did not say which convention it counted, so its counts cannot be
+       * shown to be the whole file. Older servers preferred markers in a mixed file
+       * and reported that count alone.
+       */
+      | "conventionNotReported";
   }
   | { kind: "empty"; because: "noSnapshot" | "noItems" }
   | {
@@ -95,6 +149,21 @@ export type ProgressBar =
     donePct: number;
     /** Width of the translucent segment, clamped so the two segments never exceed 100. */
     inProgressPct: number;
+  }
+  /**
+   * A checkbox snapshot: an exact total and an exact done percentage, with the
+   * not-done half unsplit. A separate variant rather than a `counts` with nulls in
+   * it, so a renderer cannot reach for an in-progress segment that has no number
+   * behind it — there is no `inProgress` or `inProgressPct` field to read, not even
+   * a zero. `notDone` is deliberately not called `todo`: it may hold work in
+   * flight, and the wording upstream has to say "not done", never "not started".
+   */
+  | {
+    kind: "countsDoneOnly";
+    done: number;
+    notDone: number;
+    total: number;
+    donePct: number;
   };
 
 /** The reads the bar is derived from. */
@@ -120,6 +189,19 @@ function usableCount(value: unknown): number | null {
   return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : null;
 }
 
+/**
+ * The reported percentage, done only.
+ *
+ * Rounding never erases a finished item: 1 of 300 is 1%, not 0%, because a 0% next
+ * to a non-empty done count reads as "nothing is done" — the same false absence this
+ * module exists to prevent, produced by arithmetic instead of by a missing field. It
+ * also never rounds up to 100 while anything is unfinished.
+ */
+function donePctOf(done: number, total: number): number {
+  if (done === 0) return 0;
+  return Math.min(Math.max(pct(done, total), 1), done === total ? 100 : 99);
+}
+
 export function progressBarOf(facts: ProgressBarFacts): ProgressBar {
   if (!facts.dashboardLoaded) {
     return facts.dashboardReadFailed
@@ -142,7 +224,57 @@ export function progressBarOf(facts: ProgressBarFacts): ProgressBar {
     if (snapshot.reason === SNAPSHOT_UNCOUNTED_MARKERS_REASON) {
       return { kind: "unknown", because: "markersNotCounted" };
     }
+    // Both conventions in one file: also read fine, also not a number, and its own
+    // sentence — "it mixes two conventions" is actionable in a way "unreadable" is not.
+    if (snapshot.reason === SNAPSHOT_MIXED_CONVENTIONS_REASON) {
+      return { kind: "unknown", because: "mixedConventions" };
+    }
     return { kind: "unknown", because: "snapshotUnread" };
+  }
+  // No `convention` at all is a server that predates the field, and its counts cannot
+  // be vouched for: that server preferred markers in a file that also had checkboxes
+  // and returned the marker count alone, so `- ✅ done` + `- [ ] pending` reached this
+  // module as done 1 of 1 and rendered 100% for a half-finished checklist. Reading the
+  // missing field as "markers" is what let that through — a missing field proving a
+  // fact about the file, which is the one inference this module exists to refuse. It
+  // costs the bar on every project served by an older backend, and that is the right
+  // side to be wrong on: a sentence saying the figure is unavailable is recoverable by
+  // upgrading, a confident 100% is not recoverable at all.
+  if (snapshot.convention === null || snapshot.convention === undefined) {
+    return { kind: "unknown", because: "conventionNotReported" };
+  }
+  const convention = snapshot.convention;
+  if (convention === CONVENTION_NONE) {
+    // Read fine, lists nothing. The counts are three zeros and there is no percentage
+    // of zero items — the same answer as an empty marker file, reached explicitly
+    // rather than by falling through a convention branch.
+    const done = usableCount(snapshot.done);
+    const inProgress = usableCount(snapshot.in_progress);
+    const todo = usableCount(snapshot.todo);
+    if (done === null || inProgress === null || todo === null) {
+      return { kind: "unknown", because: "countsUnusable" };
+    }
+    if (done + inProgress + todo > 0) {
+      // "No convention" with items counted in one is a contradiction in the payload.
+      return { kind: "unknown", because: "countsUnusable" };
+    }
+    return { kind: "empty", because: "noItems" };
+  }
+  if (convention === CONVENTION_CHECKBOXES) {
+    const done = usableCount(snapshot.done);
+    const notDone = usableCount(snapshot.todo);
+    // Under this convention `in_progress` must be absent. A number there is a
+    // contradiction in the payload, not a bucket to render.
+    const inProgressReported = snapshot.in_progress !== null && snapshot.in_progress !== undefined;
+    if (done === null || notDone === null || inProgressReported) {
+      return { kind: "unknown", because: "countsUnusable" };
+    }
+    const total = done + notDone;
+    if (total === 0) return { kind: "empty", because: "noItems" };
+    return { kind: "countsDoneOnly", done, notDone, total, donePct: donePctOf(done, total) };
+  }
+  if (convention !== CONVENTION_MARKERS) {
+    return { kind: "unknown", because: "countsUnusable" };
   }
   const done = usableCount(snapshot.done);
   const inProgress = usableCount(snapshot.in_progress);
@@ -157,11 +289,7 @@ export function progressBarOf(facts: ProgressBarFacts): ProgressBar {
   // A snapshot that tracks nothing yet. There is no percentage of zero items, and
   // 0% would claim there is work and none of it is done.
   if (total === 0) return { kind: "empty", because: "noItems" };
-  // Rounding never erases a finished item: 1 of 300 is 1%, not 0%, because a 0% next
-  // to a non-empty done count reads as "nothing is done" — the same false absence
-  // this module exists to prevent, produced by arithmetic instead of by a missing
-  // field. It also never rounds up to 100 while anything is unfinished.
-  const donePct = done === 0 ? 0 : Math.min(Math.max(pct(done, total), 1), done === total ? 100 : 99);
+  const donePct = donePctOf(done, total);
   const inProgressPct = inProgress === 0
     ? 0
     : Math.min(Math.max(pct(inProgress, total), 1), 100 - donePct);
@@ -180,4 +308,6 @@ export const PROGRESS_BAR_KEY: Record<
   notReported: "common.progress.notReported",
   countsUnusable: "common.progress.unreadable",
   markersNotCounted: "common.progress.markersNotCounted",
+  mixedConventions: "common.progress.mixedConventions",
+  conventionNotReported: "common.progress.conventionNotReported",
 };

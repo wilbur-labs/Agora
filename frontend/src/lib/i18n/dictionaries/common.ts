@@ -41,6 +41,10 @@ export const common = {
       label: "Progress",
       // The counted items behind the percentage, so the number is checkable.
       counts: "{done} done · {inProgress} in progress · {todo} to do",
+      // The same, for a snapshot written in checkboxes. "Not done" rather than "to
+      // do": that convention cannot say whether an unchecked item has been started,
+      // so calling it "to do" would state something the file never did.
+      countsDoneOnly: "{done} done · {notDone} not done",
       // Present and tracking nothing yet — not a missing snapshot, and not 0%.
       noItems: "The progress snapshot tracks no items yet.",
       // No snapshot at all. Says where one would be read from, so it reads as a
@@ -50,8 +54,14 @@ export const common = {
       // The honest sentence names the reader, not the project: saying "no items" about
       // a file full of checkboxes would be false.
       markersNotCounted: "The progress snapshot ({source}) uses checklist markers this reader does not count, so no progress figure is shown.",
+      // Both conventions in one file. Naming the fix is the point: counting either
+      // half alone would report a floor as a percentage.
+      mixedConventions: "The progress snapshot ({source}) mixes ✅/🔵/⬜ markers with [x] checkboxes, so counting either one alone would understate it. No progress figure is shown.",
       unreadable: "The progress snapshot could not be read, so progress is not known.",
       notReported: "This server does not report a progress snapshot, so progress is not known.",
+      // An older backend, whose counts came from a rule that could quietly leave part
+      // of a file out. Names the fix, because that is the only action available.
+      conventionNotReported: "This server does not report which checklist convention it counted, so its progress figure cannot be shown to cover the whole snapshot. Update the backend.",
     },
   },
   zh: {
@@ -86,11 +96,14 @@ export const common = {
     progress: {
       label: "进度",
       counts: "已完成 {done} · 进行中 {inProgress} · 待办 {todo}",
+      countsDoneOnly: "已完成 {done} · 未完成 {notDone}",
       noItems: "进度快照中还没有登记任何条目。",
       noSnapshot: "这个项目没有进度快照（{source}），因此不显示任何进度数字。",
       markersNotCounted: "进度快照（{source}）使用的清单标记不在本读取器的统计范围内,因此不显示任何进度数字。",
+      mixedConventions: "进度快照（{source}）同时混用了 ✅/🔵/⬜ 标记与 [x] 复选框，只按其中一种统计会少算，因此不显示任何进度数字。",
       unreadable: "进度快照无法读取,因此进度未知。",
       notReported: "这个服务端不提供进度快照,因此进度未知。",
+      conventionNotReported: "这个服务端没有说明它按哪种清单约定统计，无法确认它的进度数字覆盖了整份快照。请升级后端。",
     },
   },
 } as const;

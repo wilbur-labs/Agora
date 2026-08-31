@@ -9,6 +9,10 @@ dependencies = [
     "httpx>=0.27.0",
     "pyyaml>=6.0",
     "pydantic>=2.9.0",
+    # CommonMark block parsing for the RESUME progress snapshot reader. Hand-rolling
+    # the block context (fences, indented code, list nesting) produced a steady stream
+    # of miscounts — including one that read a file full of items as tracking nothing.
+    "markdown-it-py>=3.0,<5",
 ]
 
 [project.optional-dependencies]

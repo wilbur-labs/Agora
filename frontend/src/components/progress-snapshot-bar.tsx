@@ -31,11 +31,12 @@ export function ProgressSnapshotBar(
     return <span className={cn("text-xs text-muted-foreground", className)}>—</span>;
   }
 
-  if (bar.kind !== "counts") {
+  if (bar.kind !== "counts" && bar.kind !== "countsDoneOnly") {
     // Empty of numbers, deliberately. The sentence differs by reason because "this
-    // project keeps no snapshot", "the snapshot tracks nothing yet", "it uses markers
-    // this reader does not count", "it could not be read" and "this server does not
-    // report one" are different facts, and none of them is a progress figure.
+    // project keeps no snapshot", "the snapshot tracks nothing yet", "it uses marks
+    // this reader does not count", "it mixes two conventions", "it could not be read"
+    // and "this server does not report one" are different facts, and none of them is
+    // a progress figure.
     const key = PROGRESS_BAR_KEY[bar.because];
     return (
       <span className={cn("text-xs text-muted-foreground", className)}>
@@ -44,9 +45,13 @@ export function ProgressSnapshotBar(
     );
   }
 
-  const counts = t("common.progress.counts", {
-    done: bar.done, inProgress: bar.inProgress, todo: bar.todo,
-  });
+  // Each variant gets its own sentence, because the two conventions do not carry the
+  // same information: a checkbox snapshot knows what is done and what is not, and
+  // knows nothing about what is in flight. Saying "to do" for its remainder would
+  // turn an unknown into a claim — the one thing this bar exists not to do.
+  const counts = bar.kind === "counts"
+    ? t("common.progress.counts", { done: bar.done, inProgress: bar.inProgress, todo: bar.todo })
+    : t("common.progress.countsDoneOnly", { done: bar.done, notDone: bar.notDone });
   return (
     <span
       className={cn(compact ? "inline-flex items-center gap-2" : "block", className)}
@@ -65,9 +70,13 @@ export function ProgressSnapshotBar(
         aria-label={counts}
       >
         {/* Solid: done. Translucent: in progress. Two segments, never summed into one
-            number. */}
+            number — and on a checkbox snapshot the second segment is not drawn at
+            all, because there is no in-progress count to draw it from. A zero-width
+            segment would be this component inventing the zero the payload refused. */}
         <span className="h-full bg-emerald-500" style={{ width: `${bar.donePct}%` }} />
-        <span className="h-full bg-emerald-500/40" style={{ width: `${bar.inProgressPct}%` }} />
+        {bar.kind === "counts" && (
+          <span className="h-full bg-emerald-500/40" style={{ width: `${bar.inProgressPct}%` }} />
+        )}
       </span>
       {!compact && <span className="mt-1.5 block text-[11px] text-muted-foreground">{counts}</span>}
     </span>
