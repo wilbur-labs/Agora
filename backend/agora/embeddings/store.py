@@ -7,13 +7,22 @@ from pathlib import Path
 
 import numpy as np
 
-from agora.config.settings import get_config
+from agora.config.settings import config_dir, get_config
 
 
 class VectorStore:
     def __init__(self, db_path: str | Path | None = None):
         cfg = get_config().get("memory", {})
-        p = Path(db_path or cfg.get("data_dir", "./data")) / "vectors.db"
+        # `memory.data_dir` is anchored to config.yaml's directory here exactly as it
+        # is for the control-plane database, so one key does not mean two things. That
+        # is a statement about this key, not about the file: several other configured
+        # paths answer to other roots (see resolve_control_plane_db_path for the list).
+        # There is no ambiguity check to go with it and
+        # none is needed: nothing in `agora/` constructs this store, so there is no
+        # installation with data at the old location to be moved off. If that changes,
+        # this needs the same refusal `assert_no_database_ambiguity` provides.
+        root = Path(db_path or cfg.get("data_dir", "./data")).expanduser()
+        p = (root if root.is_absolute() else config_dir() / root) / "vectors.db"
         p.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(str(p))
         self.conn.execute(

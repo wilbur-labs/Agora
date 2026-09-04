@@ -68,6 +68,11 @@ def test_relative_registry_project_and_workspace_paths_are_repo_anchored(tmp_pat
     repo = tmp_path / "repo"
     repo.mkdir()
     config = {
+        # Named explicitly, because rule 3 no longer takes a per-caller base: which
+        # database an installation uses is decided by config.yaml's location, not by
+        # this registry's project_root, and a test that does not say which database it
+        # means would resolve to the real installation's.
+        "control_plane": {"db_path": str(tmp_path / "control-plane.db")},
         "projects": {
             "registry_path": ".agora/projects.yaml",
             "default": "agora",
@@ -77,7 +82,7 @@ def test_relative_registry_project_and_workspace_paths_are_repo_anchored(tmp_pat
                     "workspaces": {"codex": ".agora/workspaces/codex"},
                 }
             },
-        }
+        },
     }
 
     registry = ProjectRegistry(config, project_root=repo)

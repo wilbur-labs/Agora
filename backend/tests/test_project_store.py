@@ -83,7 +83,7 @@ def test_projects_live_in_the_same_database_file_as_tasks(tmp_path):
     _write_yaml(tmp_path)
     registry = _registry(tmp_path)
 
-    db_path = resolve_control_plane_db_path(_config(tmp_path), project_root=tmp_path)
+    db_path = resolve_control_plane_db_path(_config(tmp_path))
     assert registry.store.db_path == db_path
     assert TaskStore(db_path).db_path == registry.store.db_path
 
@@ -486,7 +486,7 @@ def test_an_unreadable_source_is_not_treated_as_an_absent_one(tmp_path):
     assert not isinstance(err.value, ProjectImportSourceMissing)
     assert err.value.source_state == "unknown"
 
-    store = ProjectStore(resolve_control_plane_db_path(_config(tmp_path), project_root=tmp_path))
+    store = ProjectStore(resolve_control_plane_db_path(_config(tmp_path)))
     assert store.count() == 0
     assert store.current_project_id() is None
 
@@ -549,7 +549,7 @@ def test_an_undecodable_source_fails_closed_and_reports_unknown(tmp_path):
     with pytest.raises(ProjectImportError) as err:
         _registry(tmp_path)
     assert err.value.source_state == "unknown"
-    store = ProjectStore(resolve_control_plane_db_path(_config(tmp_path), project_root=tmp_path))
+    store = ProjectStore(resolve_control_plane_db_path(_config(tmp_path)))
     assert store.count() == 0
 
     # With projects already stored the registry keeps serving and reports unknown.

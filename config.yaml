@@ -1,7 +1,29 @@
 # Agora 1.0 Task delivery control plane configuration
 
 projects:
-  # Relative paths are anchored to the Agora repository root.
+  # FOUR rules resolve the relative paths in this file. Which one applies depends on
+  # what a path is *for*, not on where it is written. (Earlier versions of this
+  # comment said "every path", then two rules, then three. Each was checked against
+  # part of the code and stated about all of it.)
+  #
+  #   1. anchored to this file's directory -- `control_plane.db_path`,
+  #      `memory.data_dir` (control-plane database *and* the embeddings store), and
+  #      the database placed beside `registry_path` when no data root is set.
+  #   2. anchored to ProjectRegistry.project_root (the Agora checkout) -- the
+  #      `registry_path` import file itself, each project's `root`, and
+  #      `execution.allowed_workspace_roots` (not written below, but supported; three
+  #      constructors anchor it). Keys absent from this file are still keys: an
+  #      earlier version of this comment enumerated only what is written here.
+  #   3. anchored to *that project's own resolved root* -- its `workspaces`. Not the
+  #      registry root: `importer._parse_project` resolves the root first and the
+  #      workspaces against it, so `root: sub` + `codex: .agora/ws` lands in
+  #      `<registry root>/sub/.agora/ws`.
+  #   4. `research.artifact_dir` and `research.workspaces` are **overwritten** from
+  #      the current project whenever this file has a `projects` key -- which it
+  #      does -- so the values written here are ignored, not resolved. Only a
+  #      configuration with no `projects` at all leaves them relative to the process.
+  #
+  # `registry_path` appears in rules 1 and 2 on purpose: one key, two consumers.
   registry_path: .agora/projects.yaml
   default: agora
   projects:
@@ -40,6 +62,11 @@ research:
       workspace_key: kiro
 
 # Active storage still reads this compatibility key as its generic data root.
+# Relative, so it resolves beside this file: <config.yaml's directory>/data/agora.db.
+# It used to follow the working directory, which made `make dev` from the repository
+# root and from backend/ two different control planes. If a database is still sitting
+# at the old location the API refuses to start and names both paths rather than
+# switching under you.
 memory:
   data_dir: ./data
 

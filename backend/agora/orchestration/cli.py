@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
-from agora.config.settings import get_config, resolve_control_plane_db_path
+from agora.config.settings import assert_no_database_ambiguity, get_config
 from agora.control_plane.auth import authenticate_control_plane_token
 from agora.control_plane.store import (
     ControlPlaneConflictError,
@@ -50,7 +50,11 @@ from .store import (
 
 def build_service(config: dict | None = None) -> TaskOrchestrationService:
     cfg = config or get_config()
-    db_path = resolve_control_plane_db_path(cfg)
+    # The same check the API runs, because this is the same database by a second
+    # door. Guarding only the API would make the refusal narrower than the claim:
+    # `agora task` would quietly open whichever file the new anchoring rule picks,
+    # which is the switch the check exists to prevent.
+    db_path = assert_no_database_ambiguity(cfg)
     orchestration = cfg.get("orchestration", {})
     return TaskOrchestrationService(
         TaskStore(db_path),

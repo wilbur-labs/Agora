@@ -62,9 +62,12 @@ class ProjectRegistry:
         )
         self.default_project = cfg.get("default", "agora")
         self._configured_projects = cfg.get("projects", {})
-        self.store = ProjectStore(
-            resolve_control_plane_db_path(self.config, project_root=self.project_root)
-        )
+        # No ``project_root`` here on purpose. Which database this installation
+        # uses is a property of the installation (where config.yaml is), not of
+        # where this registry's import file lives — and passing a per-caller root
+        # is how the registry and the task store ended up resolving to two
+        # different files under one process.
+        self.store = ProjectStore(resolve_control_plane_db_path(self.config))
         self._import_result: ProjectImportResult | None = None
         # What is known about the import source: "present" (read it), "absent"
         # (definitely no such file) or "unknown" (the open failed some other way).
@@ -90,16 +93,19 @@ class ProjectRegistry:
         caller a normal-looking project list that is indistinguishable from a
         machine that genuinely has no source.
 
-        Consequence this change deepened: constructing a registry runs this
-        method, so it writes project state into whatever control-plane database
-        ``resolve_control_plane_db_path`` resolves to — including from the API's
-        startup path, which builds a registry via the execution dispatcher. Tests
-        that construct a registry with a configuration naming no data root
-        therefore write projects into the same file their tasks and runs use. That
-        was already true of task and run state; this change extends it to projects
-        and to the current-project pointer, and the working-directory-relative
-        default makes "which database" depend on where the process was started.
-        See the same note on ``resolve_control_plane_db_path``.
+        Constructing a registry runs this method, so it writes project state into
+        whatever control-plane database ``resolve_control_plane_db_path`` resolves
+        to — including from the API's startup path, which builds a registry via the
+        execution dispatcher. That is by design: projects, tasks, runs and gates
+        share one file so rows that reference each other are writable in one
+        transaction.
+
+        Which file that is no longer depends on the working directory. Relative
+        paths resolve against the directory holding config.yaml, and
+        ``assert_no_database_ambiguity`` refuses to start rather than switch an
+        installation onto a different existing database. Tests keep out of the real
+        file by naming their own ``control_plane.db_path``, which the autouse
+        fixture in ``tests/conftest.py`` does for every test that has not opted out.
         """
         try:
             self._import_result = self.import_from_yaml()

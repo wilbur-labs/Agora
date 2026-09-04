@@ -77,3 +77,30 @@ class TestVectorStore:
             self.store.add("test", f"item_{i}", np.random.randn(8).astype(np.float32))
         results = self.store.search("test", np.random.randn(8).astype(np.float32), top_k=3)
         assert len(results) == 3
+
+
+def test_a_relative_data_dir_anchors_the_vector_store_to_the_config_file(tmp_path, monkeypatch):
+    """`memory.data_dir` has to mean the same thing for both databases it names.
+
+    It was anchored for the control plane and left cwd-relative here, so one key
+    resolved two ways. Nothing covered it: every other test in this file passes an
+    absolute db_path, so the anchoring code was never executed by the suite."""
+    import agora.config.settings as settings
+    from agora.embeddings.store import VectorStore
+
+    install = tmp_path / "install"
+    install.mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (install / "config.yaml").write_text("memory:\n  data_dir: ./vectors\n", encoding="utf-8")
+    monkeypatch.chdir(elsewhere)
+    monkeypatch.setenv("AGORA_CONFIG_PATH", str(install / "config.yaml"))
+    settings.reset_config()
+
+    store = VectorStore()
+    try:
+        assert (install / "vectors" / "vectors.db").exists()
+        assert not (elsewhere / "vectors").exists()
+    finally:
+        store.conn.close()
+        settings.reset_config()

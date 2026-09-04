@@ -2,11 +2,13 @@
 
 **The defect this closes.** Every store resolves its database through
 ``resolve_control_plane_db_path``, and the shipped ``config.yaml`` names a *relative*
-``memory.data_dir: ./data``. So the file a process uses depends on the directory it
-was started from — and ``make test`` (``cd backend && pytest``) and ``make dev``
-(``cd backend && uvicorn``) both start from ``backend/``, which means **the test
-suite and the development server resolve to the same file**,
-``backend/data/agora.db``.
+``memory.data_dir: ./data``. That path now anchors to the directory holding
+``config.yaml``, so **the test suite and the development server resolve to the same
+file** — the repository's own ``data/agora.db``. They used to reach it by a different
+route (both start from ``backend/``, and the path was resolved against the working
+directory), which is why the passage below is written about ``backend/data/agora.db``:
+the route changed, the collision did not, and this fixture is what keeps the suite off
+whichever file it is.
 
 That is not a hypothetical. A single test was observed opening it, because
 ``agora.api.app.lifespan`` calls ``initialize_control_plane_store()`` and
@@ -43,13 +45,16 @@ does not — a second project, and ``projects_base`` — so the fallback landed 
 ``project_root / "projects"``, which is derived from the module's own location and is
 therefore the *real* projects directory however much else has been redirected.
 
-The working-directory dependence itself is *not* fixed here. It is a product defect
-as much as a test one — starting the server from another directory silently presents
-a different project list — and it is deferred to the environment work, where "where
-does this project live" is the subject rather than an accident. Fixing it means
-moving the resolved path, which on a developer's machine switches the server to a
-different existing database; that needs a startup check that refuses rather than
-switches, and it does not belong in a conftest.
+The working-directory dependence itself **has since been fixed**, in the environment
+work this passage deferred it to: the database's relative paths anchor to
+``config.yaml``'s directory — that resolver's list, not every path in the file — and
+``assert_no_database_ambiguity`` refuses to start rather than switching an installation
+onto a different existing database. Moving the resolved path did exactly
+what was feared here — on this machine both candidates existed and differed — which is
+why the refusal, not the move, was the deliverable.
+
+None of that removes the need for this fixture. Anchoring decides *which* file the
+suite and the server share; it does not stop them sharing it.
 
 **The guard is the part that stays true**, and its own history is the argument for
 its shape. Redirecting paths fixes today's suite; the guard fails the *accident* —
@@ -435,8 +440,9 @@ def refuse_databases_outside_the_temp_tree(tmp_path_factory, monkeypatch, reques
                     f"{resolved}\n"
                     f"  test: {request.node.nodeid}\n"
                     "  This is the hazard tests/conftest.py exists to prevent: the "
-                    "suite and `make dev` resolve to the same file, and startup "
-                    "recovery dispatches queued runs. Resolve the path through the "
+                    "suite and `make dev` resolve to the same database (both anchored "
+                    "to config.yaml's directory), and startup recovery dispatches "
+                    "queued runs. Resolve the path through the "
                     "configuration (see isolate_control_plane_database), or build "
                     "the store under tmp_path."
                 )
