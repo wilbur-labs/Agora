@@ -6174,3 +6174,359 @@ failures that did not exist.
 Next safe action: the test/live-database isolation, then W2's environment
 abstraction, for which projects now carry the note that root is a property of a
 project in an environment and never its identity.
+
+## 2026-09-01 → 09-02 — checkbox counting, test isolation, two recorded gaps closed
+
+The progress bar counts Markdown checkboxes. The objection that stalled it — a
+checkbox cannot express "in progress" — is true and does not cost the percentage:
+an item in flight is written as an unchecked box, so done plus not-done still
+partitions the whole checklist and `done / total` is exact. What the convention
+cannot support is the split of not-done, so `in_progress` is reported as unknown
+rather than zero, and the display carries a variant with no in-progress field at
+all. This repository's own record — 1057 boxes — now reads 1050 done, 99%, where
+it previously rendered nothing.
+
+The block structure comes from a CommonMark parser instead of a line scan. That was
+not the first attempt. Hand-rolling it produced a run of miscounts where each fix
+uncovered the next, and the worst was self-inflicted: fence tracking added to stop a
+documented example from being counted let a stray indented `~~~` open a fence that
+never closed, and a file full of items read as tracking nothing at all — this
+module's own worst failure, built by the code meant to prevent it. Eleven findings
+disappeared at once when the parser took over, none of them needing a special case.
+Inline parsing is disabled and both counters share one parse: 273ms to 53ms on the
+real file, by removing work rather than caching a result.
+
+What is deliberately not done there: a checkbox is never resolved against the
+document's link reference definitions. One `[x]: url` line makes markdown-it render
+every `- [x]` in the file as a link, so that rule would silently drop the whole
+checklist. GFM takes the task marker first, and so does this. For any other mark the
+references do settle a real ambiguity and are consulted.
+
+The test suite no longer reaches live state. Both kinds of it. The database was the
+known one: `make test` and `make dev` both start from `backend/`, so a relative
+`data_dir` resolved both to the same file, and `lifespan` calls its store factories
+directly rather than through `Depends`, so no `dependency_overrides` could reach
+them. Every `TestClient` in the suite ran startup recovery — which resumes the
+persisted queue, i.e. dispatches runs — against a developer's own database. Nothing
+had gone wrong yet only because that database happened to hold no queued run.
+
+The second kind was found by review after the first was already called done:
+constructing a `ProjectRegistry` creates `.agora/research`, `.agora/decisions`,
+`.agora/specs` and every registered workspace under each project's root. One
+`TestClient` was measured issuing twelve such directory creations into this
+developer's repository and into a second real project beside it — no-ops only while
+those directories happen to exist. Delete one and the suite puts it back.
+
+Both are redirected per test, and a guard fails the accidental reach: it intercepts
+`sqlite3.connect` and `Path.mkdir` / `os.mkdir` / `os.makedirs` as module
+attributes, which covers every store in `agora/`, and resolves links before
+deciding. The guard's own history is the argument
+for its shape: its first version watched `sqlite3.connect` alone, which is exactly
+why it could not see those twelve directories, and why it read as proof that nothing
+was left. A guard narrower than the claim it supports is worse than no guard. Five
+variants of that same mistake were made and corrected in one night — a string-prefix
+path test that admitted a sibling directory, a lexical path test a junction walked
+through, a type test that accepted an empty string as a usable path, and a YAML load
+that erased duplicate keys the production reader rejects. The last was the second
+time that afternoon the same PyYAML behaviour bit, in a second file.
+
+Not guarded: file writes. Measured rather than assumed — the startup path was
+instrumented and writes nothing outside the temp tree — so it is a stated boundary.
+Three further ways past the guard are known, need a test to go out of its way, and
+are carried as skipped tests that name themselves in every run's summary rather than
+as a paragraph. See CR-8 in the workspace record.
+
+Two gaps recorded during W1 are closed. Recap items now name their run: a worker and
+its automatic review finish on the same day by design, and two runs of one adapter
+with the same outcome were previously indistinguishable in the payload, so anything
+binding an item to a run had to cross-check adapter, kind and file count and hope
+the day held nothing similar. The W0(b) acceptance test asserted exactly that
+cross-check, with a note that the three outcomes differed enough to tell apart —
+true of those three, not a property of the payload. It now asserts the run id.
+
+And the Portfolio board no longer reads a truncated page as an empty one.
+`listOpenAttention` has always returned `truncated`; the page kept only `items`, so a
+task whose question fell past the cap arrived with no kinds and was filed by
+lifecycle state alone — a task waiting for an answer shown under Running, in the
+product's main triage surface. The rule is the rail's, because it is the same rule:
+presence is provable from any page, absence is not. The nine-column mapping had to
+be decided here rather than borrowed, so the columns that assert "nothing is waiting"
+are named explicitly and only they downgrade; a needs-approval or blocked claim that
+rests on lifecycle state does not depend on the read and is kept. Uncertain tasks go
+to a column of their own, above the settled work, never dropped from the board. The
+same component's "Nothing needs you right now" had the same defect and now requires a
+complete read — and, after the rounds below, a *complete* task-inventory read as well:
+a task read that succeeds with a full page has not established what the board holds.
+
+Backend 996 collected, 986 passed, 10 skipped (21m31s). Frontend 155 collected, 155
+passed; tsc, eslint and build (12 pages) clean. The collected counts belong here per
+the gate item in AGENTS.md and this entry had dropped them: "986 passed" cannot tell
+a suite that shrank from one that ran fewer tests, which is the mistake this file
+already recorded once. Three of the ten skips are the guard's known boundaries
+(CR-8); the other seven are platform capabilities this account lacks (symlinks,
+self-denied traversal). Two of the three print their CR-8 reason on any platform. The
+third is `dir_fd`, which is POSIX-only, so on Windows `skipif` answers first and the
+CR-8 reason would never be seen — its skip reason now names CR-8 as well, because a
+boundary that goes unreported on the machine this suite mostly runs on is a debt with
+no artifact.
+
+Codex reviewed the three uncommitted slices together and returned three P2 findings,
+all reproduced and all fixed:
+
+1. The board settled its four reads with one `Promise.all` under one `catch`, so a
+   failing tasks, projects or runs read was recorded as an *unreadable attention
+   read*: every calm task moved to "Could not tell" and the board stated "Open items
+   could not be read" about a read that had succeeded. The correction is not new
+   logic — `rail-group.ts` already implements "a read speaks for itself"
+   (`settleRead` + `railReadReport`) and is tested for exactly this case, and the
+   board now uses it instead of its own copy, which is deleted. A read that fails is
+   still reported, in the banner, as its own failure. **The same shape as the rest of
+   this stretch: the claim was wider than what was checked** — the module's docstring
+   said "from the read's own result and nothing else" while its only caller handed it
+   a combined failure. Mutation: derive the reach from any rejection and two tests
+   fail (the board's and the rail's).
+   A failed attention read now also clears the items it could not re-read; keeping
+   the previous page alongside `unreadable` would let a stale ask keep asserting
+   itself, which is the same error pointing the other way.
+2. The capped notice advised narrowing the project filter to see the items past the
+   cap. `listOpenAttention` takes no arguments: the filter narrows the tasks already
+   loaded on the client and does not rescope or page the read, so the advice changes
+   nothing while reading as though it does. The sentence now states the limit and
+   stops. A project-scoped or paged attention read is a real improvement and is not
+   this fix.
+3. This checkpoint recorded passed/skipped without the collected counts (fixed
+   above).
+
+A second round found one more, also reproduced and fixed: the backend put `run_id`
+into the recap response while the shared client type `RecapItem` did not declare it,
+so no TypeScript consumer could reach the field the slice exists to provide. Declared
+`run_id?: string | null`, which is the payload as it actually is — the key is absent
+on items no run produced, and null on a run-derived item whose assembler supplied no
+id. The acceptance test already asserts the id over HTTP, so the type now matches
+something that is pinned rather than something that is intended.
+
+Fixing (1) removed a try/catch-around-await that had been making the React compiler
+bail out of the Portfolio component — and with it, that component's whole lint rule
+set. Once the component was analysed, exactly one violation surfaced, pre-existing:
+the dashboard effect calls a callback that clears state synchronously. Deferred by
+one tick, the way the load effect one screen above already was.
+
+A third round, run on 09-04 through kiro-cli's gpt-5.6-sol because the codex channel
+was out of credit until 09-07 (same model family, different channel), found two more
+in the work that the first two rounds had already passed:
+
+4. **The reassurance survived a failed task read.** With the four reads settled
+   independently, a failing `listTasks` leaves the board holding no tasks, so every
+   group is empty — and "Nothing needs you right now" printed directly beneath the
+   board's own load-failure banner, about an inventory that had not been read. The
+   task list could hold `review`, `blocked` and `failed` tasks, each of which reaches
+   an action column without consulting the attention page at all. This one was
+   **introduced by the fix above**: the shared `catch` used to mark attention
+   unreadable on any failure, which suppressed the line by accident. Removing the
+   accident is right; leaving the condition unstated is what let the claim escape.
+   The rule is now named (`portfolioAllClearSayable`) and takes both reads, and
+   `railReadReport`'s `staleOrigins` — previously dropped here with a comment calling
+   it rail-only — is what answers for the task read. `projects` and `runs` are
+   deliberately not in it: they decorate cards, and their failure costs a stale
+   detail, not the board's knowledge of what exists. Mutation: drop the task-read
+   term and the new test fails; restored, 157/157.
+
+5. **The guard's stated scope was wider than the guard.** The conftest docstring said
+   it fails "any test" that opens a database or creates a directory outside the temp
+   tree, while `tests/test_guard_boundaries.py` — written in the same change — lists
+   three ways past it. A guard described as absolute is the thing that stops anyone
+   looking, which is the failure mode this whole stretch is about. The claim is now
+   an explicit two-part list: what is intercepted, and what is not (file writes,
+   `uri=True`, `dir_fd=`, a cached ancestor swapped for a junction, a `connect` bound
+   before the fixture, and subprocesses — none of which appears in `agora/` today).
+   Behaviour unchanged; only the claim was wrong.
+
+The same round also raised a concurrent-refresh hazard on the same board, accepted
+and fixed: `load()` is called by the mount effect, the refresh button and a card's
+conflict retry, and the four settled reads always resolve, so an older call always
+reached the state writes and could publish its answer over a newer one — a stale
+"could not be read" replacing a read that had since succeeded. A monotonic token now
+lets only the newest call write. It is pre-existing (the old `Promise.all` raced the
+same way) and it is **not covered by a test**: the frontend suite tests library rules,
+not components, and there is no DOM harness here to overlap two refreshes in.
+
+Gate after those fixes: backend 996 collected, 986 passed, 10 skipped (12m20s — the
+same counts as before the round, which is the point: two of the three fixes were a
+claim and a comment, and the third is frontend-only). Frontend 157 collected, 157
+passed (155 plus the two that pin the reassurance); tsc, eslint and build (12 pages)
+clean.
+
+A fourth round, on those fixes, returned four more. Two were the fixes themselves
+still being wider than what they checked:
+
+6. **A fulfilled task read is not a complete inventory.** The new rule required the
+   task read to have *succeeded*; `listTasks` asks for 500 and returns a bare array —
+   no total, no `truncated` — so a page filled to the cap is indistinguishable from
+   "there is more", and with 501 tasks the 501st can be the `blocked` one. The reach
+   now comes from the read's own result the way the attention page's does
+   (`taskInventoryReachOf`): rejected is unreadable, a full page is capped, anything
+   short of the cap is complete. Pessimistic by exactly one case — a list of exactly
+   500 that is genuinely complete loses a reassurance it was entitled to — and never
+   optimistic. `TASK_PAGE_LIMIT` is exported from the client so the reading side
+   compares against the number it asked for rather than a literal of its own.
+7. **The guard's new scope statement was still wrong in two places.** It said every
+   store calls `sqlite3.connect` itself (several arrive through another store's
+   `_connect` — still the patched attribute, so still covered, but not what the
+   sentence said), and it put file writes and subprocesses on a list that ended
+   "none of those appears in `agora/` today", which is false: both appear. Writes
+   and subprocesses are a *boundary*, and the list is now split so it says that.
+8. **The deferred URI test would have passed for the wrong reason.** `pytest -rs`
+   promises "delete this skip to pick it up", but run from `backend/` the guard's
+   lexical misreading of `file:D:/…` lands outside the temp tree, so the guard raises
+   for the wrong reason and the test goes green with the bypass wide open — a
+   deferred debt whose artifact silently reclaims itself. It now `chdir`s into
+   `tmp_path`, where the misreading lands *inside* the allowed tree, so only real URI
+   parsing can make it pass. Measured both ways: without the skip and without the
+   chdir it passes; without the skip and with it, it fails as it should.
+
+The fourth finding is two false absences this change set did not introduce and does
+not close — the group badges report an exact count from a capped or failed inventory,
+and `TaskCard` renders "No runs yet" when the runs read failed or was capped. They are
+CR-10 and CR-11 in the workspace record, open, because "the same defect elsewhere in
+the file I was editing" is where scope goes to die; the reassurance was fixed because
+this change set is what made it reachable.
+
+Gate after the fourth round: frontend 158 collected, 158 passed; backend unchanged at
+996 collected, 986 passed, 10 skipped (12m09s).
+
+A fifth round, on those fixes, returned two — both of them the same lesson in the two
+places it had not yet been applied:
+
+9. **Suppressing a claim is not the same as explaining it.** With 500 tasks on the
+   board and every one of them calm, the reassurance was correctly withheld and
+   *nothing* was rendered in its place: an empty "Needs you" column, no notice, no
+   banner. The uncertainty was kept inside the component and dropped at the display
+   boundary — which is the bug this whole stretch is about, one layer out. The board
+   now carries a task-inventory notice beside the attention one, in both locales, and
+   a capped read is disclosed nowhere else, so the test that pins every outcome to a
+   sentence covers it too (mutation: delete the English capped string and it fails).
+   `pending` joined the reach type for the same reason it exists on the attention
+   side: before the first read, "could not be read" is its own falsehood.
+10. **A deferred debt listed one item it could never hand back.** The scope statement
+   named four ways past the guard and said the file of skipped tests carries them;
+   the file has three. The fourth — a `from sqlite3 import connect` bound before the
+   fixture runs — is not reclaimable at all: patching a module attribute cannot reach
+   a reference that already exists. It is a limit of the technique, and it now says
+   so instead of appearing on a list of debts someone could pick up.
+
+A sixth round read the sentences the fifth one added, and all four of its findings
+were in that copy — the fix had moved the defect into the words:
+
+11. **The capped notice asserted a fact the board does not have.** "There are more
+    tasks than this page reads" is exactly what a full page cannot tell you: the reach
+    is capped *because* 500 is indistinguishable from complete. And it spoke of "an
+    empty column" while rendering above a column that may hold cards. Both locales now
+    state the read's limit and stop.
+12. **The unreadable notice claimed missing tasks.** A refresh that fails keeps the
+    previous snapshot, which may have been complete; what is known is that it could
+    not be re-read. The sentence now says that instead.
+13. **`**不**` rendered as `**不**`.** The board's `Notice` puts its children in a div
+    as plain text, so the emphasis in the zh attention line — on the word carrying the
+    sentence's meaning — was literal asterisks on screen. Removed, and pinned: no
+    notice string in either locale may write bold, code or a link as markdown
+    (mutation: put it back and the i18n test fails). Three forms, named — not "no
+    markdown", which the assertion does not check and could not sensibly: underscores
+    and lone asterisks occur in ordinary prose, and a check that fires on those gets
+    deleted rather than obeyed.
+14. The boundary file's own opening still said the guard "fails any test". Qualified,
+    the same way conftest's was.
+
+Gate after the sixth round: frontend 158 collected, 158 passed; tsc, eslint and build
+(12 pages) clean; backend 996 collected, 986 passed, 10 skipped (12m08s).
+
+A seventh round found five more, every one of them a sentence claiming more than the
+code knows — the same defect the code fixes, in the prose about the fix:
+
+15. **The attention notices asserted counts too.** "There are more open items than
+    this page reads" is the same unavailable fact as the task one — `truncated` is set
+    when the page comes back *full*, which a complete list of exactly that size also
+    does — and "some tasks could not be sorted" says tasks exist that may not. All
+    three sentences, in both locales, now state what the read did and stop.
+16. **The `pending` inventory notice could never render.** It was gated on `!loading`,
+    and `pending` is only true while the first load is in flight, so the string and
+    the test pinning it were both dead. The notice now renders the way the attention
+    one beside it always did — ungated — and a refresh keeps showing the previous
+    reach, which is still what the board is displaying.
+17. **"Outside the pytest temp tree" was not the guard's boundary.** The whole
+    platform temp directory is allowed, deliberately, so `tempfile.gettempdir()/x.db`
+    passes — and every message and docstring said "the pytest temp tree" anyway. They
+    now say "the allowed temp roots", including the assertion a failing test reads.
+18. The `dir_fd` boundary's skip reason (above).
+19. The markdown assertion claimed more than it checked (above).
+
+Gate after the seventh round: frontend 158 collected, 158 passed; tsc, eslint and
+build (12 pages) clean; backend 996 collected, 986 passed, 10 skipped (13m05s).
+
+An eighth round, asked for a commit/no-commit verdict, said no and gave four:
+
+20. **Two `pending` sentences described a read, and `pending` is not about a read.**
+    The page settles its four reads and publishes them together, so "Still reading the
+    task list" kept saying it after the task read had returned, held up by a sibling.
+    Publishing each read as it lands is a bigger change than this is worth; the state
+    is what it is, and the words now match it — "Still loading the board" — with the
+    type and the comments saying the same.
+21. **The board's section order existed twice and had already drifted.** `GROUPS` in
+    the component decided what renders; `PORTFOLIO_ORDER` in the library was what the
+    tests asserted, and they disagreed (the constant put shaping last, the component
+    renders it before the completed section). The test was passing about an order
+    nothing rendered — a check that reads as coverage and is not. The sections now
+    live in the library as `PORTFOLIO_GROUPS`, the page renders from them, and the
+    flat order is derived from that, so it cannot disagree again. Two assertions
+    added: every bucket appears exactly once, and only the settled section collapses.
+22. The gate line above recorded "backend re-run" without the counts AGENTS.md asks
+    for — the third time this entry has had to be corrected for that, and the reason
+    the rule exists.
+23. **"Not intercepted" was the wrong name for three of the boundaries.** `uri=True`,
+    `dir_fd=` and the junction swap all *do* reach the patched wrapper; it then decides
+    about the wrong path and allows the call. Same outcome, different cause, and the
+    cause is what a reader needs to fix it.
+
+Gate after the eighth round: frontend 158 collected, 158 passed; tsc, eslint and build
+(12 pages) clean; backend 996 collected, 986 passed, 10 skipped (14m52s).
+
+A ninth round found one, in the assertion the eighth round had just added:
+
+24. **"Exactly once" could not fail on its own.** The line above it compared the
+    flattened order to the expected buckets as sorted *arrays*, and array equality
+    already counts multiplicity — so a duplicated bucket failed there, and the new
+    length assertion had no mutation of its own. The set is now compared as a set, so
+    one line answers "is any bucket missing" and the other answers "is any bucket
+    twice". Both verified: duplicating `running` into the unsorted section fails the
+    length line; dropping `closed` fails the set line; restored, 158/158. That this
+    was found in a test written to fix *another* test that could not fail is the whole
+    lesson of this stretch in one place.
+
+Gate after the ninth round: frontend 158 collected, 158 passed; tsc, eslint and build
+(12 pages) clean; backend 996 collected, 986 passed, 10 skipped (14m52s).
+
+A tenth round, asked to check the intended commit split as well, found four:
+
+25. **One of the four commits would not have compiled on its own.** The split put all
+    of `control-plane.ts` in the recap commit, and the portfolio commit imports
+    `TASK_PAGE_LIMIT` from it — so applying the first two commits gives TS2305. The
+    file's two hunks go to their own commits instead. Worth the trouble: a commit that
+    does not build is a commit nobody can bisect through.
+26. **`CALM_STATES` said "every lifecycle state" and was missing two.** `requirements`
+    and `design` reach `shaping` through the same default as the four that were
+    listed, so a regression special-casing either would have passed. Added.
+27. **Two comments still described `capped` as "there was more than I read"** — the
+    exact claim the notices had just been corrected for making, left behind in the
+    prose that explains them. Both now say the page reached its read limit.
+28. **A comment said the reassurance needs the task read to have "succeeded"**, which
+    is what the code stopped requiring three rounds ago: succeeding is not enough,
+    because a page filled to the cap succeeds.
+
+Gate after the tenth round: frontend 158 collected, 158 passed; tsc, eslint and build
+(12 pages) clean; backend 996 collected, 986 passed, 10 skipped (14m52s).
+
+Next safe action: W2's environment abstraction. It owns the half of the database
+problem left open here — which file a process uses still depends on the directory it
+was started from, which is a product defect and not only a test one, and moving the
+resolved path switches a developer onto a different existing database unless the
+change refuses to start rather than switching. The embeddings store is a second
+database resolved the same way, and W2 should take both.
