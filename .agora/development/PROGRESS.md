@@ -6530,3 +6530,381 @@ was started from, which is a product defect and not only a test one, and moving 
 resolved path switches a developer onto a different existing database unless the
 change refuses to start rather than switching. The embeddings store is a second
 database resolved the same way, and W2 should take both.
+
+## W2 — the environment seam, and refusing to guess which database is ours
+
+Two decisions were written down before any code, as `tasks/agora/adr/0002` and
+`adr/0003` in the workspace that drives this project.
+
+**The database.** The control-plane database's relative paths are now anchored to the
+directory holding `config.yaml`, not to the working directory (that resolver's list,
+not every path in the file — several other configured paths answer to other roots). `make dev` from the repository
+root and from `backend/` were two different control planes — two project lists, two
+task lists, nothing on screen saying so — and `resolve_control_plane_db_path` carried
+a docstring section titled "Consequences this change deepened (accepted, not fixed
+here)" that described this precisely and protected nothing. That section is deleted;
+this is what replaces it.
+
+Changing the rule under an existing install can move it onto its *other* database, so
+it is paired with `assert_no_database_ambiguity`, which refuses to start and prints
+both absolute paths. Two things about that check are worth recording:
+
+- **The condition is wider than the one first agreed.** The plan said "refuse when the
+  anchored path has no database and the old one does". On the machine it was written
+  for, that check would never have fired: `data/agora.db` (1,343,488 B, Aug 29) and
+  `backend/data/agora.db` (1,208,320 B, Aug 31) *both* exist and differ. The condition
+  is now "the two rules name different files and the old one exists", regardless of the
+  new one. A guard narrower than its own claim is worse than none, because it reads as
+  proof.
+- **Both doors are guarded.** The API's lifespan and `agora task`'s `build_service`
+  open the same database. Guarding only the first would have left the CLI switching
+  silently while the change claimed it refuses to.
+
+An unreadable old location raises too. "Could not find out" is not "not there", and it
+is the one answer that must not be read as permission to proceed.
+
+**The environment.** `agora/environments.py` defines `Environment` with exactly two
+capabilities — `run(argv, cwd, timeout)` for short bounded commands, `probe(path)` for
+`agora.fsprobe` — plus `LocalEnvironment`. `CommandResult` keeps `unstartable` apart
+from a non-zero exit, the same distinction `PathProbe` keeps for paths: a missing tool
+and a tool that said no call for opposite responses.
+
+It deliberately does **not** cover launching agent processes. The dispatcher needs a
+pid, two live streams and a kill; that is a process handle, not a result, and an
+interface for it designed now — with no remote implementation to check it against —
+would be a guess. W3 adds it. This sentence belongs beside every claim that "W2 added
+an environment abstraction" — and the sentence that used to stand here, "the seam covers
+three of the four places that run commands", was wrong twice over. See the round-6 and
+round-8 entries below and `environments.py` for the counted inventory; this paragraph
+deliberately no longer carries its own copy of it.
+
+Call sites moved onto it: `workspaces/provisioner.py` (both git helpers, its
+`Path.exists()`/`is_dir()` checks, and the `shutil.which` git pre-check that was asking
+this machine's PATH about a possibly-remote host), `execution/deliverables.py` (three
+`subprocess.run` sites) and `execution/handoff.py` (one). Behaviour changes that came
+with it:
+
+- An unreadable workspace is `ERROR` with the reason, not `MISSING`. `MISSING` tells
+  the operator to provision a worktree that may be sitting right there; the fix is a
+  permission.
+- A workspace that stats but cannot be listed is `ERROR` too — the second half of the
+  same question, which the emptiness check would have read as "empty".
+- `handoff` no longer records a missing git as "workspace is not a provisioned
+  worktree". That note is read by a person, and it was a verdict about the wrong thing.
+- `doctor.py` no longer answers "Create workspace directory: X" for a directory that is
+  already there and merely unreadable.
+
+**One process note.** The full run caught a call site the targeted runs did not:
+`tests/test_project_provisioning.py` still passed a `str` where an `Environment` now
+goes. The lesson this project already paid for is "after fixing a read, search the
+other call sites of the same function name" — it was searched, but only under
+`agora/`, not under `tests/`. Narrowing the search is how the lesson stops working.
+
+Gate: backend 1021 collected, 1011 passed, 10 skipped (12m05s) — 996/986/10 before,
+so 25 added and the skipped count aligned. Frontend untouched, 158/158 not re-run.
+Mutation-verified: narrowing the ambiguity check back to "only when the anchored path
+is empty" fails `test_it_still_refuses_when_the_anchored_path_also_has_a_database`;
+removing the `probe.unknown` branch in `_inspect` fails two workspace tests. Restored,
+all green.
+
+Next safe action: independent review, then commit. The API and CLI will refuse to
+start on this machine until the operator says which of the two databases is theirs —
+that is the check working, not a regression.
+
+### Four review rounds, 27 findings, all valid
+
+Codex was rate-limited until 2026-09-07, so review ran through kiro-cli on the same
+model (`gpt-5.6-sol`) — a different channel, not a different reviewer. Twenty-seven
+findings across four rounds, **every one confirmed and fixed, none rejected**. What the
+rounds were actually for is worth recording, because it was not "polish":
+
+**Round 1 (9).** The anchoring change had introduced a *new* split: rule 3 took a base
+from its caller, `ProjectRegistry` passed one and the task store did not, and while both
+were the repository root that was invisible. Anchoring pulled them apart, so a project
+list and a task list in one process would have gone to two files — the exact invariant
+the change was written to protect. Also: `hand_off` recorded "workspace is not a
+provisioned worktree" for a *missing git*, permanently, on a task moving to DONE; the
+`shutil.which` git pre-check was asking this machine's PATH about a possibly-remote
+host; and a comment claimed W3 could "swap the implementation rather than this file"
+while every filesystem mutation and the `_assert_allowed` confinement check remained
+local — the confinement one matters, because it would compare remote paths against this
+host's symlinks and roots.
+
+**Round 2 (8).** Mostly damage from round 1's own fixes. `ready_worktree_check`'s new
+`(ready, reason)` tuple carried a reason only from its *first* git call. `get_config`
+stored a relative config path, so `config_dir()`'s `.parent` was `.` and resolved
+against whatever directory it was asked from — reintroducing, one level up, the
+cwd-dependence this whole change removes.
+
+**Round 3 (5), and the one worth remembering.** `_commit_workspace` had been given a
+careful argument that the *preceding* successful `add` and `status` licensed calling a
+non-zero `rev-parse HEAD` an unborn branch. They do not: they establish that git could
+read the repository at those instants, and state changes between commands. The
+replacement — a positive `symbolic-ref` probe, with git's exit codes measured directly —
+was wrong in the same place: it succeeds whenever HEAD names a branch, including one
+whose ref is corrupt, so it would have reported "no commits" for a repository that has
+them. The resolution was to **stop claiming it**. Any HEAD read without a sha now says
+it could not be read. An Agora worktree always has a HEAD (`ensure_source_repo` seeds
+one), so the branch that claim served is unreachable anyway.
+
+**Round 4 (5).** The guard's new `kind != "file"` shortcut read a symlink whose *target*
+could not be stat'd as "not a database" — `probe_path` calls that `other`, not `unknown`,
+because something is definitely at the path. A link pointing at a real database with a
+denied target would have let startup proceed on the other file: the silent switch again,
+one representation away from where it was being looked for. The line now follows
+fsprobe's own rule applied to the target — only `FileNotFoundError` settles it as
+absence — and is pinned from both sides, including a test that fails if the check is
+made too wide and bricks startup on a dangling link.
+
+Two dead compatibility wrappers (`_rev_parse`, `_is_repo_root`), left by threading
+reasons through every call, were removed. A sibling docstring in `projects/registry.py`
+still described the cwd-dependent behaviour this change deletes; corrected.
+
+**Measured, not assumed.** `ready_worktree_check` makes **eight** git calls on the
+successful path — counted with an instrumented Environment, not inferred — so the
+parametrized regression covers `after_call` 0..7, making each of calls 1..8 in turn the
+one where git stops answering. An earlier version started at 1, so the first call was
+never the failing one while the test's name said "at any point".
+
+**One observation, not fixed.** Calls 4 and 6 are the identical command
+(`git -C <project> rev-parse --path-format=absolute --git-common-dir`): `_repo_root_check`
+reads the project's common dir and `ready_worktree_check` reads it again to compare. The
+duplication predates this change (the old `_is_repo_root` did the same), and this gate
+runs before every agent launch, so one fewer subprocess is worth having — but removing it
+shifts every index in the parametrized test just verified above, so it is left for a
+change that can re-verify them.
+
+Gate after round 4's fixes: backend **1054 collected, 1044 passed, 10 skipped**
+(15m22s). Baseline before this stretch was 996/986/10, so 58 tests were added and the
+skipped count held at 10 — two runs with the same passed count and different skipped
+counts are not the same suite, which is why it is recorded. Frontend untouched, 158/158
+not re-run. Blocker at that point: round 4 had ended NOT READY on the symlink finding
+above; it is fixed and the round-5 result is below.
+
+**Round 5 (6 findings, P1 empty for the first time).** The reviewer also produced an
+exhaustive `(kind, error)` table for `probe_path` and walked each pair to the guard
+branch it lands in — the audit that should have been written alongside the check.
+
+Two of the six are the same defect as round 1's, still standing in the prose: the
+`config.yaml` header claimed *every* relative path in the file anchors to the file's
+directory. It does not — `projects.registry_path`, project roots and workspace paths
+resolve against `ProjectRegistry.project_root`. Round 1 had reported this about
+`vectors.db`; the store was anchored and the sentence was left universal, so the fix
+made the claim *more* wrong, not less. Narrowed in three places (`config.yaml`,
+`resolve_control_plane_db_path`'s docstring, ADR 0002) with the excluded paths named.
+`research.artifact_dir` is the other cwd-relative path and stays that way: like
+`VectorStore`, `ResearchOrchestrator` has no production constructor — measured, not
+assumed.
+
+The symlink regression tests from round 4 could not fail on the thing they were about:
+their fake probe ignored `follow_symlinks`, so switching production to `False` — which
+makes every symlink probe as `other` with no error and slip past the guard — left them
+green. The fake now asserts the flag; mutating production to stop following links fails
+both.
+
+`tests/conftest.py`'s own docstring still explained, at length, that the
+working-directory dependence "is *not* fixed here" and was deferred to the environment
+work. This *is* that work. Corrected, along with the guard's assertion message.
+
+`fsprobe`'s "pure apart from the single stat" became false the moment round 4 leaned on
+the followed-symlink path: it is one `lstat` plus a `stat` of the target. Corrected
+there and in the two places that repeated it (`environments.py`, ADR 0003).
+
+Gate after round 5's fixes: backend **1054 collected, 1044 passed, 10 skipped**
+(15m46s) — identical to round 4's, which is the expected result: round 5 changed prose
+and one assertion inside an existing test helper, and added no tests. Round 5 ended
+NOT READY.
+
+**Round 6 (6 findings, P1 empty again).** Two of them are the same sentence failing a
+third time. The "every relative path is anchored" claim had been narrowed once in round
+5; it was still wrong, because `projects.registry_path` has **two** consumers with
+**two** anchors — this resolver places a database beside it, and the registry opens the
+file itself relative to `ProjectRegistry.project_root`. Assigning the key wholesale to
+either list is false either way. The wording is now a three-row table (anchored to
+config.yaml's directory / anchored to the registry's root / relative to the process)
+with `registry_path` deliberately appearing twice, and `research.artifact_dir` and
+`research.workspaces` named in the third row where earlier versions omitted them.
+`config_dir`'s own docstring still carried the universal claim round 5 was supposed to
+remove — the same file, four lines away — along with `api/app.py` and `conftest.py`.
+
+**The seam's own scope statement was wrong, and it was the one written to prevent this.**
+It said the abstraction "covers three of the four places that run commands". Counted:
+every git call site outside the frozen `orchestration/` tree is on the seam (three), and
+five further modules spawn processes for other reasons. The fourth git call site,
+`orchestration/protocol_context.resolve_git_revision`, is **not** on it — it runs
+`git -C <project root>` with a bare `subprocess.run` and is reached from
+`orchestration/service.py`. The search that produced "three of four" had excluded
+`orchestration/` because it is frozen, but the question was "what runs git", not "what
+runs git that I am allowed to change". Filtering a search by a category irrelevant to the
+question drops a whole tree from the answer.
+
+That one is a real hazard for W3 — a remote Environment would have provisioning talk to
+the far side while this call runs local git against a path that is not there — and W2
+deliberately does not modify the frozen tree. So it is a `defer`, and per adr/0015 it
+gets something that reappears on its own rather than a paragraph: **CR-14, status OPEN**
+(injected into every session), plus a **skipped test with its reason**,
+`test_every_git_call_site_goes_through_the_environment`, which `pytest -rs` prints on
+every run. Its assertion body is real, not a placeholder: `resolve_git_revision`'s source
+contains `subprocess.run` today, so deleting the skip fails immediately. **This is why
+the skipped count moves from 10 to 11** — a deliberate, recorded change, not drift.
+
+Also: `Environment.run`'s `timeout` lost its `None` default. "Short, bounded" was
+documented and not enforced, so an unbounded wait violated the contract without
+violating the interface. Every caller already passed one. And `fsprobe.py`, changed in
+round 5, had been left out of the commit assignment entirely; it belongs with A.
+
+Next safe action: gate, then round 7. The change is not committed. The API and
+`agora task` now start: the database ambiguity this work introduced a guard for was
+resolved by moving `backend/data/agora.db` to `data/agora.db` (7 tasks, 2 projects, the
+live one) and renaming the older pre-W1a file aside — the operator chose, which is what
+the guard exists to make them do.
+
+Gate after round 6's fixes: backend **1055 collected, 1044 passed, 11 skipped**
+(16m00s). The +1 skip is CR-14's, recorded above before the run rather than explained
+after it.
+
+**Round 7 (5 findings, P1 and P3 both empty).** Three of the five are the same
+paragraph failing for the fourth time, which is the finding.
+
+The path taxonomy went: "every relative path in this file is anchored here" → two rules
+→ three rules → **four**. Each version was checked against part of the code and stated
+about all of it. What was still wrong after round 6: workspace paths anchor to *each
+project's own resolved root*, not to the registry root (`importer._parse_project`
+resolves the root first, then the workspaces against it), and `research.artifact_dir` /
+`research.workspaces` are not process-relative at all under the shipped configuration —
+`ResearchOrchestrator` **overwrites** both from the current project whenever a `projects`
+key is present, so what the file says is ignored rather than resolved.
+
+The process-spawner count was wrong the same way and for the same reason. The paragraph
+saying "five modules still spawn processes" was written to record that excluding
+`orchestration/` from a search had hidden the fourth git call site — and it was itself
+produced by a search that excluded `orchestration/`. There are four more in there
+(`runtime.py`, `runtime_auth.py`, `runtime_capabilities.py`, plus the git one). Nine, and
+the qualifier "outside the frozen tree" is now in the sentence. **Writing a criterion
+down is not executing it.**
+
+CR-14's acceptance artifact was too weak: it scanned the source for the literal
+`subprocess.run`, which `from subprocess import run` or `subprocess.Popen` would satisfy
+while the hazard stood — a test for one spelling of the defect rather than for the
+defect. Rewritten as three positive checks on the parsed tree: the module imports nothing
+that can spawn a process, makes no `create_subprocess*` call, and
+`resolve_git_revision` accepts an `env`. Two of the three fail today.
+
+Also: the test doubles kept `timeout=None` defaults, so if production ever stopped
+passing one they would forward `None` to `subprocess.run` — an unbounded wait, with the
+suite still green. They now require it, matching the protocol.
+
+Next safe action: gate, then round 8. Still not committed.
+
+Gate after round 7's fixes: backend **1055 collected, 1044 passed, 11 skipped**
+(15m57s) — unchanged, as expected for a round that added no tests.
+
+**Round 8 (5 findings, P1 empty for the fourth round).** Every one of them is the same
+kind, and by now that is the report: prose claiming more than the code does.
+
+The path taxonomy — corrected in `resolve_control_plane_db_path`, `config.yaml` and ADR
+0002 in round 7 — was still wrong in `config_dir()`, **fifty lines up in the same file**,
+because that docstring carried its own copy of the list and only the original was being
+fixed. The copy is gone; `config_dir` now points at the one statement instead of
+restating it. That is the structural fix, not a wording fix: a taxonomy stated twice
+drifts, and this one drifted twice while being corrected.
+
+It was also **incomplete**: `execution.allowed_workspace_roots` holds paths and is
+anchored to `ProjectRegistry.project_root` by three separate constructors. It was missed
+because the enumeration behind the previous version was made from `config.yaml` — and
+that key is supported but not written there. Enumerating the set from the artifact rather
+than from the code that reads it is the same defect as filtering a search by an
+irrelevant category: both produce a complete-looking answer over an incomplete domain.
+
+The spawner count was wrong a second time, in the paragraph written to record it being
+wrong the first time. Ten modules under `agora/` can start a process; one is
+`environments.py`, the implementation. "Nine" silently excluded it, exactly as "four" had
+silently excluded the frozen tree. **Both exclusions were correct and unstated, and
+unstated is what makes an exclusion a defect rather than a shorthand.**
+
+CR-14's guard needed a third version. Structural checks kept being evadable — the first
+scanned for the literal `subprocess.run` (`from subprocess import run` passes), the
+second parsed the module and forbade `subprocess` imports and `create_subprocess*` calls
+while requiring an `env` parameter (`os.popen(...)` with an unused `env` passes). Every
+structural version tests for *a way of writing the defect*. The guard is now behavioural:
+hand `resolve_git_revision` a recording Environment and require that it was used. No
+alternative spelling leaves the recorder non-empty. It fails today at the first
+assertion, because the function takes no `env`.
+
+Next safe action: gate, then round 9. Still not committed.
+
+Gate after round 8's fixes: backend **1055 collected, 1044 passed, 11 skipped**
+(17m42s) — unchanged for a third round.
+
+**Round 9 (3 findings, P1 empty for the fifth round).** The reviewer states it plainly:
+**no defect was found in the production code.** Both blocking findings are about CR-14's
+deferred guard, and the third is a count typo in an ADR next to a table that says the
+right thing.
+
+The guard needed a fourth version, and the two failures it had were opposite ones:
+
+- **A miss.** It swallowed the outcome and asserted only that the recorder was
+  non-empty, so a *partial* conversion passed — route one call through the environment
+  for show, leave the real revision reads local. The guard is supposed to be the thing
+  that says the hazard is gone; accepting a token call means it says so early.
+- **A false alarm.** It asserted the injection parameter is named `env`. A genuine fix
+  naming it `environment` — which is exactly what `WorkspaceProvisioner` already calls
+  it — would have failed a guard that has to survive until W3, and failed with the wrong
+  reason attached.
+
+The fourth version hands in a root that **does not exist** and does **not** swallow the
+outcome, so any call still made locally raises and the function can only return
+successfully when every one of them went through the environment; and it looks the
+injection parameter up from `{env, environment}` rather than pinning a spelling. Both
+directions were then verified by construction rather than argued: a stand-in fixed
+implementation using the `environment=` spelling passes, and the exact partial conversion
+the review described fails.
+
+Four versions of one guard, and each earlier one *read* as though it established the
+thing it was named for. That is the same failure as a paragraph that reads as though a
+hazard is handled — which is what adr/0015 is about — except it was wearing a test's
+clothes, and a test is supposed to be the cure.
+
+Next safe action: gate, then round 10. Still not committed.
+
+**Rounds 10-14: one guard, seven versions.** Round 10 found the only remaining defect in
+the change, and it was in CR-14's deferred guard rather than in any shipped code — as had
+been true since round 5. The rounds after it were spent on that one test, and the
+sequence is worth keeping because each version *read* as though it established the thing
+it was named for:
+
+1. scan the source for the literal `subprocess.run` — green for
+   `from subprocess import run`;
+2. parse the module: no `subprocess` import, no `create_subprocess*`, and an `env`
+   parameter — green for `os.popen(...)` with an `env` that is never read;
+3. behavioural, but swallowing the outcome and asserting only a non-empty recorder —
+   green for a token `env.run` with the real reads still local;
+4. the same against a hard-coded absent root — a path never checked for absence, and on
+   Windows a real location that could hold a clean repository;
+5. plus all three reads recorded — green for an implementation that delegates *and also*
+   fires a redundant local process, because the refusal was an `AssertionError` and the
+   redundant spawn sat inside `try/except Exception`;
+6. refuse `subprocess.Popen.__init__` and a named list of `os` spawn functions, raising a
+   `BaseException` — still missed `os.spawnve` while covering `os.spawnv`;
+7. refuse the whole `os.spawn*` family taken from `dir(os)`, and **narrow the claim to
+   match the code** instead of widening the code toward the claim.
+
+Version seven is the first that says only what it checks: it names the refused paths, and
+states two things it does not establish — a native spawn through a C extension is not
+observable from inside the process, and a deliberate `except BaseException` swallows the
+refusal. It also documents that an unrecognised injection parameter name makes it *fail*,
+which for a guard whose job is to block until a hazard is gone is the safe direction.
+
+Every version was checked by construction against stand-in implementations before
+submission, and versions 5 and 6 were caught that way rather than by argument — version 5
+passed the very scenario it was written for until a fake was built to try it.
+
+Round 13 and round 14 both returned READY TO COMMIT.
+
+Final gate: backend **1055 collected, 1044 passed, 11 skipped** (13m10s). Baseline before
+W2 was 996/986/10, so 59 tests were added and the skipped count moved by exactly one —
+CR-14's, recorded when it was introduced rather than explained afterwards. Frontend
+untouched, 158/158 not re-run.
+
+Next safe action: W4 (Goal / Requirement / CR Log / ADR into the UI), per CR-9's ordering.
+CR-14 stays OPEN and belongs to W3.
