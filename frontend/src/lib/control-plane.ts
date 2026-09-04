@@ -172,7 +172,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-export function listTasks(limit = 500): Promise<TaskManifest[]> {
+// The task list is one page too, and the endpoint caps `limit` at 500. Unlike the
+// attention page it returns a bare array — no `truncated`, no total — so a caller
+// that wants to know whether it saw everything has only the page's own length to go
+// on: a page filled to the cap is indistinguishable from "there is more". Exported
+// so the reading side compares against the same number it asked for rather than a
+// literal of its own that can drift from this default.
+export const TASK_PAGE_LIMIT = 500;
+
+export function listTasks(limit: number = TASK_PAGE_LIMIT): Promise<TaskManifest[]> {
   return request(`/api/tasks?limit=${limit}`);
 }
 

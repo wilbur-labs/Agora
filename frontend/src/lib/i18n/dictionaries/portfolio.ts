@@ -32,6 +32,9 @@ export const portfolio = {
     empty: "No tasks",
     groups: {
       action: "Needs you",
+      // Not "Needs you": the whole content of this group is that the read
+      // could not say whether these need you.
+      unsorted: "Could not be sorted",
       inProgress: "In progress",
       completed: "Completed",
     },
@@ -39,11 +42,59 @@ export const portfolio = {
       needsReply: "Needs reply",
       needsApproval: "Needs approval",
       blocked: "Blocked",
+      // Not a kind of work — the read's own limit. These tasks may or may not need
+      // you; the one thing known is that the attention read could not say.
+      unknown: "Could not tell",
       running: "Running",
       verified: "Verified",
       shaping: "Shaping",
       done: "Done",
       closed: "Closed",
+    },
+    // Why some tasks are in "Could not tell". Three separate sentences on purpose:
+    // saying "the cap was reached" to someone whose request failed is a specific
+    // falsehood, and the distinction is the whole point of this area. Named
+    // `attentionRead` because `attention` is already taken by the panel heading —
+    // a second `attention:` key here is a duplicate the compiler rejects, and the
+    // YAML equivalent earlier tonight was accepted in silence.
+    attentionRead: {
+      pending: "Still loading the board, so tasks are not sorted yet.",
+      // No recovery step, because there is none to offer: the project filter narrows
+      // the tasks already loaded on the client, it does not rescope or page the
+      // open-attention read (`listOpenAttention` takes no arguments), so following
+      // that advice would change nothing and read as though it had. A sentence that
+      // states the limit and stops is the honest version of this notice.
+      //
+      // And it states the *read's* limit, not a count: `truncated` is set when the
+      // page comes back full, which a complete list of exactly that size also does,
+      // so "there are more open items than this page reads" was a fact this code
+      // cannot have. The same correction applies to the other two — with no tasks on
+      // the board at all, "some tasks could not be sorted" is about tasks that do not
+      // exist. Every one of these sentences is about the read.
+      //
+      // `pending` says "the board", not "this read", and that is not vagueness: the
+      // page settles all four reads and publishes them together, so this state lasts
+      // until the whole first load has been applied. "Still reading open items" would
+      // go on saying it after the open-items read had in fact finished, held up by a
+      // sibling.
+      capped: "Open items reached this page's read limit, so sorting may be incomplete.",
+      unreadable: "Open items could not be read, so sorting could not be done. The columns below do not mean nothing is waiting.",
+    },
+    // The task list is a page too, and only this notice says so. Suppressing the
+    // reassurance without it leaves an empty action group explaining nothing — the
+    // uncertainty kept internally and dropped at the display boundary.
+    //
+    // Each sentence states this read's limit and stops. "There are more tasks than
+    // this page reads" would be a fact the board does not have: a page filled to the
+    // cap is *indistinguishable* from a complete list of exactly that size, and the
+    // reach is deliberately pessimistic there. Nor does the unreadable line say the
+    // board is missing tasks — a failed refresh keeps the previous snapshot, which
+    // may well have been complete; what is known is that it could not be re-read.
+    // These are notices about a read, not about the inventory.
+    taskInventory: {
+      pending: "Still loading the board.",
+      capped: "The task list reached this page's limit, so this board may not be showing every task.",
+      unreadable: "The task list could not be read, so the tasks shown here may be out of date or incomplete.",
     },
     allClear: "Nothing needs you right now.",
     cockpit: {
@@ -193,6 +244,7 @@ export const portfolio = {
     empty: "暂无任务",
     groups: {
       action: "需要你处理",
+      unsorted: "无法归类",
       inProgress: "开发中",
       completed: "已完成",
     },
@@ -200,11 +252,22 @@ export const portfolio = {
       needsReply: "需回复",
       needsApproval: "需审批",
       blocked: "受阻",
+      unknown: "无法判断",
       running: "开发中",
       verified: "已验收",
       shaping: "筹备中",
       done: "完成",
       closed: "已关闭",
+    },
+    attentionRead: {
+      pending: "看板还在加载，任务尚未归类。",
+      capped: "待处理事项已达本页读取上限，归类可能不完整。",
+      unreadable: "待处理事项读取失败，无法完成归类。下面各列并不代表没有事情在等你。",
+    },
+    taskInventory: {
+      pending: "看板还在加载。",
+      capped: "任务列表已达本页读取上限，本面板可能没有显示全部任务。",
+      unreadable: "任务列表读取失败，此处显示的任务可能已过时或不完整。",
     },
     allClear: "当前没有需要你处理的事项。",
     cockpit: {

@@ -21,6 +21,7 @@ import {
   listTasks,
   type ProjectDashboard,
   setProjectCharter,
+  TASK_PAGE_LIMIT,
   transitionTask,
   unarchiveTask,
   type AdapterName,
@@ -32,25 +33,56 @@ import {
 } from "@/lib/control-plane";
 import { listRuns, type RunState, type RunSummary } from "@/lib/execution";
 import { progressBarOf } from "@/lib/progress-snapshot";
+import {
+  PORTFOLIO_ATTENTION_NOTICE_KEY,
+  PORTFOLIO_GROUPS,
+  PORTFOLIO_TASK_INVENTORY_NOTICE_KEY,
+  attentionReadCovers,
+  portfolioAllClearSayable,
+  portfolioBucketOf,
+  taskInventoryReachOf,
+  type AttentionRead,
+  type PortfolioBucket,
+  type TaskInventoryReach,
+} from "@/lib/portfolio-bucket";
+// One read, one outcome. Shared with the Workspace rail rather than reimplemented:
+// the rule that a read may only speak for itself is not specific to a surface, and
+// two copies of it are how the rail's fix failed to reach this page in the first
+// place. `railReadReport` already decides the attention read's reach from the
+// attention read alone and orders the failure messages attention-first, and it is
+// pinned by tests/rail-group.test.mts — a second copy here could drift from it
+// silently. What this board does not take from it is `staleOrigins`: the rail names
+// which sibling went stale, and this board has no such notice. It answers the one
+// question it needs about the task read — how far that read got — from the read's own
+// settled result, with `taskInventoryReachOf`. Dropping the task read entirely was
+// how "Nothing needs you right now" came to be printed under a load-failure banner.
+import { railReadReport, settleRead } from "@/lib/rail-group";
 import { ProgressSnapshotBar } from "@/components/progress-snapshot-bar";
 import { useI18n } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 // Attention-first buckets. A task lands in the highest-priority bucket that
-// applies, so "needs you" always wins over "running", etc.
-type Bucket = "needsReply" | "needsApproval" | "blocked" | "running" | "verified" | "shaping" | "done" | "closed";
+// applies, so "needs you" always wins over "running", etc. The rule itself lives in
+// lib/portfolio-bucket.ts, with the tests that pin it — it had to move out of this
+// file because it was deciding the board's whole triage claim from a page whose
+// `truncated` flag this component was throwing away.
+type Bucket = PortfolioBucket;
 
-const GROUPS: Array<{ id: "action" | "inProgress" | "completed"; buckets: Bucket[]; collapsible?: boolean }> = [
-  { id: "action", buckets: ["needsReply", "needsApproval", "blocked"] },
-  { id: "inProgress", buckets: ["running", "verified", "shaping"] },
-  { id: "completed", buckets: ["done", "closed"], collapsible: true },
-];
+// `unsorted` sits between "needs you" and "in progress" on purpose: a task the
+// attention read could not cover may in fact need a human, so it must not be filed
+// below the work that is already settled. It is a group of its own rather than a
+// member of `action`, because "Needs you" is a claim and this group's whole content
+// is the absence of one.
+
 
 // Left-accent + pill color per bucket (theme-aware Tailwind tokens).
 const BUCKET_META: Record<Bucket, { border: string; pill: string; dot: string }> = {
   needsReply: { border: "border-l-red-500", pill: "bg-red-500/10 text-red-600 dark:text-red-400", dot: "bg-red-500" },
   needsApproval: { border: "border-l-violet-500", pill: "bg-violet-500/10 text-violet-600 dark:text-violet-400", dot: "bg-violet-500" },
   blocked: { border: "border-l-orange-500", pill: "bg-orange-500/10 text-orange-600 dark:text-orange-400", dot: "bg-orange-500" },
+  // Deliberately not a calm colour and not an alarming one: the card is saying "I do
+  // not know", and either extreme would state something it does not know.
+  unknown: { border: "border-l-amber-500", pill: "bg-amber-500/10 text-amber-600 dark:text-amber-400", dot: "bg-amber-500" },
   running: { border: "border-l-blue-500", pill: "bg-blue-500/10 text-blue-600 dark:text-blue-400", dot: "bg-blue-500" },
   verified: { border: "border-l-teal-500", pill: "bg-teal-500/10 text-teal-600 dark:text-teal-400", dot: "bg-teal-500" },
   shaping: { border: "border-l-sky-400", pill: "bg-sky-400/10 text-sky-600 dark:text-sky-300", dot: "bg-sky-400" },
@@ -58,16 +90,6 @@ const BUCKET_META: Record<Bucket, { border: string; pill: string; dot: string }>
   closed: { border: "border-l-zinc-400", pill: "bg-zinc-400/10 text-zinc-500", dot: "bg-zinc-400" },
 };
 
-function bucketOf(task: TaskManifest, kinds: Set<AttentionKind>): Bucket {
-  if (kinds.has("question")) return "needsReply";
-  if (kinds.has("approval") || task.state === "review") return "needsApproval";
-  if (kinds.has("blocker") || task.state === "blocked" || task.state === "failed") return "blocked";
-  if (task.state === "running") return "running";
-  if (task.state === "verified") return "verified";
-  if (task.state === "done") return "done";
-  if (task.state === "cancelled") return "closed";
-  return "shaping"; // backlog / requirements / design / planned
-}
 
 export default function PortfolioPage() {
   const { t } = useI18n();
@@ -75,6 +97,14 @@ export default function PortfolioPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [attention, setAttention] = useState<AttentionItem[]>([]);
+  // How far the ONE global open-attention read got. `pending` until it settles:
+  // before any read, an empty kind set is not evidence of anything either.
+  const [attentionRead, setAttentionRead] = useState<AttentionRead>("pending");
+  // How far the task read got. `pending` until the first load is applied — all four
+  // reads publish together below, so this is a fact about the load, not about the task
+  // read finishing: before anything lands, the board's emptiness is evidence of
+  // nothing, and calling that a failed read is its own falsehood.
+  const [taskInventory, setTaskInventory] = useState<TaskInventoryReach>("pending");
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [showCreate, setShowCreate] = useState(false);
   const [showNewProject, setShowNewProject] = useState(false);
@@ -84,21 +114,57 @@ export default function PortfolioPage() {
   const [showCompleted, setShowCompleted] = useState(false);
   const [dashboard, setDashboard] = useState<ProjectDashboard | null>(null);
   const [showCharter, setShowCharter] = useState(false);
+  // Which refresh is current. A ref, not state: it is read and written inside one
+  // async call and must never itself cause a render.
+  const loadToken = useRef(0);
 
   const load = useCallback(async () => {
+    // Refreshes can overlap: the mount effect, a conflict retry from a card, and the
+    // refresh button all call this. Four settled reads always resolve, so an older
+    // call always reaches the writes below — and would then publish its own answer
+    // over a newer one, which for `attentionRead` means a stale "could not be read"
+    // replacing a read that has since succeeded. Only the newest call writes.
+    const token = ++loadToken.current;
     setLoading(true);
     setError(null);
-    try {
-      const [loadedTasks, projectList, openAttention, loadedRuns] = await Promise.all([listTasks(), listProjects(), listOpenAttention(), listRuns({ limit: 500 })]);
-      setTasks(loadedTasks);
-      setRegisteredProjects(projectList.items.map((item) => item.project_id));
-      setAttention(openAttention.items);
-      setRuns(loadedRuns);
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setLoading(false);
+    // Four reads, four outcomes. `Promise.all` under one `catch` was wrong in a way
+    // that matters here: a failing *tasks*, *projects* or *runs* read landed in the
+    // same handler and the attention read was recorded as `unreadable` — so every
+    // calm task moved to "Could not tell" and the board said "Open items could not
+    // be read" about a read that had in fact succeeded. The reach is defined as the
+    // attention read's own result **and nothing else**; a combined failure path
+    // leaves it nothing to answer from.
+    const [tasksRead, projectsRead, attentionResult, runsRead] = await Promise.all([
+      settleRead(() => listTasks()),
+      settleRead(() => listProjects()),
+      settleRead(() => listOpenAttention()),
+      settleRead(() => listRuns({ limit: 500 })),
+    ]);
+    // How far the attention read got, kept rather than discarded. Only `items` was
+    // read here, and `truncated` — which `listOpenAttention` has always returned —
+    // was dropped on the floor, so a task whose question was past the cap arrived
+    // with no kinds and was filed by lifecycle state alone. See lib/portfolio-bucket.ts.
+    const report = railReadReport({ tasks: tasksRead, projects: projectsRead, attention: attentionResult, runs: runsRead });
+    if (token !== loadToken.current) return; // a newer refresh already owns the board
+    setAttentionRead(report.attentionReach);
+    setTaskInventory(taskInventoryReachOf(tasksRead, TASK_PAGE_LIMIT));
+    if (attentionResult.status === "fulfilled") {
+      setAttention(attentionResult.value.items);
+    } else {
+      // Presence is provable only from the page it was read on, and this read has no
+      // page. Keeping the previous one alongside `unreadable` would let a stale ask
+      // go on asserting itself — the same mistake in the other direction.
+      setAttention([]);
     }
+    if (tasksRead.status === "fulfilled") setTasks(tasksRead.value);
+    if (projectsRead.status === "fulfilled") {
+      setRegisteredProjects(projectsRead.value.items.map((item) => item.project_id));
+    }
+    if (runsRead.status === "fulfilled") setRuns(runsRead.value);
+    // Attention first, so its failure is not buried behind a sibling's (the order is
+    // railReadReport's, not this page's).
+    setError(report.errors.length > 0 ? report.errors.join(" · ") : null);
+    setLoading(false);
   }, []);
 
   useEffect(() => {
@@ -124,8 +190,18 @@ export default function PortfolioPage() {
 
   useEffect(() => {
     const ctrl = new AbortController();
-    loadDashboard(ctrl.signal);
-    return () => ctrl.abort();
+    // Deferred for the same reason the load effect above is: `loadDashboard` clears
+    // the dashboard synchronously when the filter is "all", and a setState in an
+    // effect body cascades renders (react-hooks/set-state-in-effect). This was
+    // always true here; it became *visible* when `load` stopped using
+    // try/catch-around-await, which had made the React compiler bail out of this
+    // component and take its whole rule set with it. Nothing else in the component
+    // was flagged once it started being analysed.
+    const timeout = window.setTimeout(() => loadDashboard(ctrl.signal), 0);
+    return () => {
+      window.clearTimeout(timeout);
+      ctrl.abort();
+    };
   }, [loadDashboard, tasks]);
 
   const dashboardByTask = useMemo(() => {
@@ -165,9 +241,17 @@ export default function PortfolioPage() {
   const tagged = useMemo(
     () => visible.map((task) => {
       const info = attentionByTask.get(task.task_id);
-      return { task, bucket: bucketOf(task, info?.kinds ?? new Set<AttentionKind>()), ask: info?.ask ?? null };
+      return {
+        task,
+        bucket: portfolioBucketOf({
+          task,
+          kinds: info?.kinds ?? new Set<AttentionKind>(),
+          attentionComplete: attentionReadCovers(attentionRead),
+        }),
+        ask: info?.ask ?? null,
+      };
     }),
-    [visible, attentionByTask],
+    [visible, attentionByTask, attentionRead],
   );
 
   const replaceTask = (updated: TaskManifest) => {
@@ -211,7 +295,7 @@ export default function PortfolioPage() {
 
         {dashboard && <ProjectCockpit dashboard={dashboard} onEditCharter={() => setShowCharter(true)} />}
 
-        {GROUPS.map((group) => {
+        {PORTFOLIO_GROUPS.map((group) => {
           const cards = tagged
             .filter((entry) => group.buckets.includes(entry.bucket))
             .sort((a, b) => group.buckets.indexOf(a.bucket) - group.buckets.indexOf(b.bucket));
@@ -227,8 +311,39 @@ export default function PortfolioPage() {
                 <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">{t(`portfolio.groups.${group.id}`)}</h2>
                 <Badge variant="secondary">{cards.length}</Badge>
               </button>
-              {group.id === "action" && cards.length === 0 && !loading && (
+              {/* "Nothing needs you right now" is a claim, and an empty action group
+                  only supports it when the attention read covered every open item
+                  *and* the task inventory read was complete — succeeding is not
+                  enough, since a page filled to the cap succeeds. With a capped or
+                  failed attention read the same emptiness means nothing was found on
+                  the page; with a capped or failed task read it means the board is
+                  placing a page, or nothing at all.
+                  Both were false absences in this component, next to the bucketing
+                  itself — the rule is `portfolioAllClearSayable`. */}
+              {group.id === "action" && cards.length === 0 && !loading
+                && portfolioAllClearSayable({ attentionRead, taskInventory }) && (
                 <p className="rounded-xl border border-dashed bg-card px-4 py-6 text-center text-sm text-muted-foreground">{t("portfolio.allClear")}</p>
+              )}
+              {/* And when it cannot be said, why. Suppressing the sentence and
+                  printing nothing keeps the uncertainty inside the component: the
+                  user sees an empty "Needs you" column and has no way to tell a quiet
+                  board from a partial one. A failed read is also named in the banner
+                  above; a capped one is named only here.
+                  Not gated on `!loading`, unlike the reassurance and like the
+                  attention notice below: `pending` is only ever true while the first
+                  load is in flight, so gating it there made that sentence — and the
+                  test pinning it — unreachable. A refresh keeps the previous reach,
+                  which is still what the board is showing. */}
+              {group.id === "action" && taskInventory !== "complete" && (
+                <Notice tone={taskInventory === "unreadable" ? "error" : "info"}>
+                  {t(PORTFOLIO_TASK_INVENTORY_NOTICE_KEY[taskInventory])}
+                </Notice>
+              )}
+              {/* Why some tasks could not be sorted, in the group that holds them. */}
+              {group.id === "unsorted" && !attentionReadCovers(attentionRead) && (
+                <Notice tone={attentionRead === "unreadable" ? "error" : "info"}>
+                  {t(PORTFOLIO_ATTENTION_NOTICE_KEY[attentionRead as Exclude<AttentionRead, "complete">])}
+                </Notice>
               )}
               {!collapsed && cards.length > 0 && (
                 <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
