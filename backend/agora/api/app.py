@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from agora import __version__
+from agora.config.settings import get_config, resolve_control_plane_db_path
 from agora.tasks.router import router as tasks_router
 from agora.requirements.router import router as requirements_router
 from agora.execution.router import router as execution_router
@@ -26,6 +27,41 @@ from agora.api.settings_router import router as settings_router
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    # Which database this process is about to use, absolute, before it touches it.
+    #
+    # It is not a given. `resolve_control_plane_db_path` falls back to paths that are
+    # relative to the *working directory*, and the shipped config.yaml names one
+    # (`memory.data_dir: ./data`) — so `make dev` from the repository root and from
+    # `backend/` are two different databases, presenting two different project and
+    # task lists with nothing on screen to say so. That is a real defect and it is
+    # not fixed here (moving the path would silently switch a developer onto their
+    # other database; it needs a startup check that refuses rather than switches).
+    # What is fixed here is that it is no longer *invisible*: one line naming the
+    # file makes "which one am I on" answerable, which is also the first thing
+    # anyone will need when the resolution itself is changed.
+    # Wrapped, because a line whose only job is to tell you something must not be
+    # able to stop the server from starting. `initialize_control_plane_store()` below
+    # reads the same configuration and will fail loudly on its own if it is broken;
+    # this one has no business being the first thing that does.
+    try:
+        print(
+            "agora: control-plane database "
+            f"{resolve_control_plane_db_path(get_config()).resolve()}",
+            file=sys.stderr,
+        )
+    except Exception as exc:  # noqa: BLE001 - a diagnostic may never be the failure
+        # The fallback is wrapped too. The first branch's most likely cause is that
+        # this stream cannot be written to at all — a closed or detached stderr under
+        # a process manager — and reporting that failure *to the same stream* raises
+        # again and takes down the startup the try was there to protect. A diagnostic
+        # that cannot be delivered is simply not delivered.
+        try:
+            print(
+                f"agora: could not report the control-plane database path: {exc}",
+                file=sys.stderr,
+            )
+        except Exception:  # noqa: BLE001, S110 - nowhere left to report it to
+            pass
     initialize_control_plane_store()
     # One call, because the two steps behind it are ordered by a real dependency
     # and not by taste: reconcile_reviews_owed raises the gates that resume_queued

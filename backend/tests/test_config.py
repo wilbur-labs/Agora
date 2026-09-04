@@ -3,12 +3,19 @@ import os
 import tempfile
 from pathlib import Path
 
+import pytest
 import yaml
 
 from agora.config.settings import get_config, reset_config
 
 
 class TestConfig:
+    # Opted out of the conftest redirect on purpose. That fixture points
+    # AGORA_CONFIG_PATH at a copy, which means a bare get_config() stops performing
+    # the repository-root/backend/cwd search — and this test is *about* that search.
+    # Under the redirect it read the copy and asserted the copy's contents, so the
+    # search could have been removed entirely and it would still have passed.
+    @pytest.mark.real_config_discovery
     def test_loads_yaml(self):
         reset_config()
         cfg = get_config()
@@ -52,6 +59,10 @@ class TestConfig:
         finally:
             reset_config()
 
+    # Same reason, and it also exercises the default path: reset-then-reload has to
+    # resolve the file the same way twice, which is only the real search when nothing
+    # has pinned AGORA_CONFIG_PATH.
+    @pytest.mark.real_config_discovery
     def test_reset_config(self):
         reset_config()
         cfg1 = get_config()
