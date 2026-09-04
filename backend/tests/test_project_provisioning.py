@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from agora.api.app import app
 from agora.api.settings_router import _projects_overview
+from agora.environments import LocalEnvironment
 from agora.execution.deliverables import _is_provisioned_worktree
 from agora.fsprobe import PathProbe
 from agora.projects import ProjectRegistry
@@ -328,7 +329,7 @@ def test_create_project_provisions_linked_worktrees_inside_outer_repo(tmp_path):
         assert Path(top).resolve() == project.root.resolve()
         # Each workspace is a linked worktree of the project (not the outer repo).
         for adapter, workspace in project.workspaces.items():
-            assert _is_provisioned_worktree(GIT, workspace), adapter
+            assert _is_provisioned_worktree(LocalEnvironment(), workspace), adapter
     finally:
         app.dependency_overrides.clear()
 

@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import subprocess
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
 from agora.api.app import app
+from agora.environments import CommandResult, LocalEnvironment
+from agora.fsprobe import PathProbe
 from agora.projects import ProjectRegistry
 from agora.workspaces.models import ProvisionRequest, WorkspaceState
 from agora.workspaces.provisioner import (
@@ -211,3 +214,151 @@ def test_workspace_list_api_maps_path_escape_to_422(tmp_path, git_project):
         assert TestClient(app).get("/api/workspaces/alpha").status_code == 422
     finally:
         app.dependency_overrides.clear()
+
+
+# --- what the Environment seam is for: an unreadable workspace is not a missing one ---
+#
+# Every one of these injects an Environment rather than monkeypatching `pathlib`,
+# which is the point of the seam: the same fake is what a remote implementation
+# will be swapped in through.
+
+
+class _ProbeOverride:
+    """A LocalEnvironment whose probe of one path is replaced. Everything else real."""
+
+    def __init__(self, target, probe_result):
+        self._inner = LocalEnvironment()
+        self._target = Path(target).resolve()
+        self._probe_result = probe_result
+
+    def run(self, argv, *, cwd=None, timeout):
+        return self._inner.run(argv, cwd=cwd, timeout=timeout)
+
+    def probe(self, path, *, follow_symlinks=True):
+        if Path(path).resolve() == self._target:
+            return self._probe_result
+        return self._inner.probe(path, follow_symlinks=follow_symlinks)
+
+
+def test_an_unreadable_workspace_is_error_with_a_reason_not_missing(tmp_path, git_project):
+    registry, _ = _system(tmp_path, git_project)
+    workspace = registry.get("alpha").workspaces["codex"]
+    env = _ProbeOverride(workspace, PathProbe("unknown", error=PermissionError(13, "denied")))
+    provisioner = WorkspaceProvisioner(registry, timeout_seconds=20, environment=env)
+
+    status = provisioner.status("alpha", "codex")
+
+    # MISSING would tell the operator to provision a worktree that may well be
+    # sitting right there; the fix is a permission, not a `git worktree add`.
+    assert status.state == WorkspaceState.ERROR
+    assert status.error is not None and "PermissionError" in status.error
+
+
+def test_a_workspace_that_cannot_be_listed_is_error_not_missing(tmp_path, git_project):
+    registry, _ = _system(tmp_path, git_project)
+    workspace = registry.get("alpha").workspaces["codex"]
+    workspace.mkdir(parents=True, exist_ok=True)
+    provisioner = WorkspaceProvisioner(registry, timeout_seconds=20)
+
+    original = type(workspace).iterdir
+
+    def denied(path):
+        if Path(path).resolve() == workspace.resolve():
+            raise PermissionError(13, "denied")
+        return original(path)
+
+    # The stat succeeds and the listing does not -- the second half of the same
+    # question, which an empty-directory check would have read as "empty".
+    import pytest as _pytest  # local: this monkeypatch is scoped to one assertion
+    with _pytest.MonkeyPatch.context() as mp:
+        mp.setattr(type(workspace), "iterdir", denied)
+        status = provisioner.status("alpha", "codex")
+
+    assert status.state == WorkspaceState.ERROR
+    assert status.error is not None and "PermissionError" in status.error
+
+
+def test_provisioning_onto_an_unreadable_path_says_so_rather_than_blaming_a_race(tmp_path, git_project):
+    registry, _ = _system(tmp_path, git_project)
+    workspace = registry.get("alpha").workspaces["codex"]
+    env = _ProbeOverride(workspace, PathProbe("unknown", error=PermissionError(13, "denied")))
+    provisioner = WorkspaceProvisioner(registry, timeout_seconds=20, environment=env)
+
+    with pytest.raises(WorkspaceConflictError, match="could not be inspected"):
+        asyncio.run(provisioner.provision(ProvisionRequest(project_id="alpha", adapter="codex")))
+
+
+class _GitTimesOut:
+    """Git starts and never finishes. Not the same as git being absent."""
+
+    def __init__(self):
+        self._inner = LocalEnvironment()
+
+    def run(self, argv, *, cwd=None, timeout):
+        return CommandResult("timeout")
+
+    def probe(self, path, *, follow_symlinks=True):
+        return self._inner.probe(path, follow_symlinks=follow_symlinks)
+
+
+def test_git_that_times_out_is_unavailable_not_a_validation_failure(tmp_path, git_project):
+    registry, _ = _system(tmp_path, git_project)
+    provisioner = WorkspaceProvisioner(registry, timeout_seconds=20, environment=_GitTimesOut())
+
+    with pytest.raises(WorkspaceUnavailableError, match="timed out"):
+        asyncio.run(provisioner.ensure_source_repo("alpha"))
+
+
+def test_git_that_hangs_is_reported_as_git_not_as_a_verdict_on_the_project(
+    tmp_path, git_project
+):
+    """`.ran` is true for a timeout, so a hanging git used to pass the availability
+    check and surface later as "Project root is not a Git repository" -- a statement
+    about the operator's project, drawn from a fact about our tooling."""
+    registry, _ = _system(tmp_path, git_project)
+    provisioner = WorkspaceProvisioner(registry, timeout_seconds=20, environment=_GitTimesOut())
+
+    with pytest.raises(WorkspaceUnavailableError, match="git is not usable"):
+        asyncio.run(provisioner.provision(ProvisionRequest(project_id="alpha", adapter="codex")))
+
+
+def test_a_stored_provisioning_error_does_not_swallow_the_present_one(tmp_path, git_project):
+    """Two different facts: why a past attempt failed, and what cannot be established
+    now. Reporting only the first sends the operator after a cause that may be long
+    gone; reporting only the second loses why the workspace is in this state."""
+    registry, _ = _system(tmp_path, git_project)
+    workspace = registry.get("alpha").workspaces["codex"]
+    env = _ProbeOverride(workspace, PathProbe("unknown", error=PermissionError(13, "denied")))
+    provisioner = WorkspaceProvisioner(registry, timeout_seconds=20, environment=env)
+    # Stand in for a failed earlier provision, which is what fills this map.
+    provisioner._errors[("alpha", "codex")] = "Workspace branch is already checked out elsewhere"
+
+    status = provisioner.status("alpha", "codex")
+
+    assert status.state == WorkspaceState.ERROR
+    # Stored first, current second: the order is the sentence, "this is why it was
+    # left like this; this is what is in the way now".
+    assert status.error.startswith("Workspace branch is already checked out elsewhere; ")
+    assert "PermissionError" in status.error
+
+
+def test_the_same_obstacle_is_not_reported_as_two_facts(tmp_path, git_project):
+    """A provisioning attempt that failed *because* the path was unreadable stores
+    that cause; the next inspection hits the same wall. Joining them would present one
+    obstacle as a stale fact plus a current one."""
+    registry, _ = _system(tmp_path, git_project)
+    workspace = registry.get("alpha").workspaces["codex"]
+    env = _ProbeOverride(workspace, PathProbe("unknown", error=PermissionError(13, "denied")))
+    provisioner = WorkspaceProvisioner(registry, timeout_seconds=20, environment=env)
+
+    # Let `provision()` actually fail and store its own message, rather than planting
+    # the string the assertion wants. Planting it would pass even if the two call
+    # sites drifted back to two different wordings -- which is the whole invariant
+    # `_uninspectable` exists to hold.
+    with pytest.raises(WorkspaceConflictError):
+        asyncio.run(provisioner.provision(ProvisionRequest(project_id="alpha", adapter="codex")))
+
+    status = provisioner.status("alpha", "codex")
+
+    assert status.state == WorkspaceState.ERROR
+    assert status.error.count("PermissionError") == 1

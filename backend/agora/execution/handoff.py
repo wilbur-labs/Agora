@@ -13,10 +13,10 @@ commit (if any) the workspace already has.
 """
 from __future__ import annotations
 
-import shutil
-import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from agora.environments import CommandResult, Environment, LocalEnvironment
 
 from agora.tasks.models import AppendEventRequest, TaskManifest, TaskState
 from agora.tasks.store import TaskStore
@@ -24,7 +24,7 @@ from agora.tasks.store import TaskStore
 from agora.projects import ProjectRegistry
 from agora.workspaces.naming import worktree_branch
 
-from .deliverables import _is_provisioned_worktree, is_ready_worktree, list_changes
+from .deliverables import _GIT, list_changes, provisioned_worktree_check, ready_worktree_check
 from .dispatcher import ROLE_KEY, ROLE_WORKER
 from .models import RunState
 from .store import ExecutionStore
@@ -59,46 +59,78 @@ def _latest_worker_run(exec_store: ExecutionStore, task_id: str):
     return None
 
 
-def _run_git(git: str, workspace: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        [git, "-C", str(workspace), *args],
-        capture_output=True, text=True, encoding="utf-8", errors="replace",
-        timeout=_GIT_TIMEOUT, check=False,
-    )
+def _run_git(env: Environment, workspace: Path, *args: str) -> CommandResult:
+    return env.run([_GIT, "-C", str(workspace), *args], timeout=_GIT_TIMEOUT)
 
 
-def _commit_workspace(workspace: Path, message: str, actor: str) -> tuple[str | None, bool, str | None]:
+def _commit_workspace(
+    workspace: Path, message: str, actor: str, *, env: Environment | None = None
+) -> tuple[str | None, bool, str | None]:
     """Commit everything in the workspace worktree. Returns (commit, committed,
     note). The caller must have already confirmed the workspace is this run's
     provisioned worktree (see hand_off), so `git -C` here operates only on that
     isolated worktree, never a surrounding repository."""
-    git = shutil.which("git")
-    if git is None:
-        return None, False, "git is not available"
+    env = env or LocalEnvironment()
     # Defense in depth: hand_off has already confirmed full provenance, but this
     # shape guard ensures we never `git add -A` a repo root / project root even if
     # called directly on an unexpected workspace.
-    if not _is_provisioned_worktree(git, workspace):
-        return None, False, "workspace is not a provisioned worktree"
-    try:
-        _run_git(git, workspace, "add", "-A")
-        status = _run_git(git, workspace, "status", "--porcelain")
-        committed = False
-        if status.stdout.strip():
-            commit_proc = _run_git(
-                git, workspace,
-                "-c", f"user.name={actor}", "-c", f"user.email={_COMMIT_EMAIL}",
-                "commit", "-m", message,
-            )
-            committed = commit_proc.returncode == 0
-            if not committed:
-                return None, False, f"git commit failed: {commit_proc.stderr.strip()[:200]}"
-        head = _run_git(git, workspace, "rev-parse", "HEAD")
-        commit = head.stdout.strip() if head.returncode == 0 else None
-        note = None if commit else "workspace has no commits"
-        return commit, committed, note
-    except (OSError, subprocess.SubprocessError) as exc:
-        return None, False, f"git error: {exc}"
+    #
+    # Two answers, not one. This note is written into the handoff record and read by
+    # a person: "workspace is not a provisioned worktree" is a verdict about their
+    # workspace, and reporting a missing git that way would send them to fix
+    # something that is not broken.
+    provisioned, unavailable = provisioned_worktree_check(env, workspace)
+    if unavailable is not None:
+        return None, False, unavailable
+    if not provisioned:
+        # Same wording as hand_off's, and for the same reason: git ran and the check
+        # did not pass, which is not the same as having established that this is not
+        # a worktree (exit 128 also covers safe.directory and an unreadable .git).
+        return None, False, (
+            "workspace could not be confirmed as a provisioned worktree"
+        )
+    added = _run_git(env, workspace, "add", "-A")
+    if not added.ok:
+        # `git add -A` exits zero even with nothing to add, so a non-zero exit (or a
+        # timeout) means staging did not finish. Carrying on from here would commit
+        # whatever the index happened to hold and record it as this run's delivery.
+        if not added.ran:
+            return None, False, f"git is not available ({added.reason()})"
+        return None, False, f"git add failed ({added.reason()})"
+    status = _run_git(env, workspace, "status", "--porcelain")
+    if not status.ok:
+        # "could not read the worktree" is not "the worktree is clean"; the second
+        # would silently record a handoff that committed nothing.
+        return None, False, f"git status failed ({status.reason()})"
+    committed = False
+    if status.stdout.strip():
+        commit_proc = _run_git(
+            env, workspace,
+            "-c", f"user.name={actor}", "-c", f"user.email={_COMMIT_EMAIL}",
+            "commit", "-m", message,
+        )
+        committed = commit_proc.ok
+        if not committed:
+            detail = commit_proc.stderr.strip()[:200] or commit_proc.reason()
+            return None, False, f"git commit failed: {detail}"
+    head = _run_git(env, workspace, "rev-parse", "HEAD")
+    sha = head.stdout.strip() if head.ok else ""
+    if sha:
+        return sha, committed, None
+    if committed:
+        # A commit was just made, so a HEAD exists whatever this read says.
+        return None, True, (
+            f"committed, but the resulting HEAD could not be read ({head.reason()})"
+        )
+    # No sha, and nothing established about why. Every attempt to narrow this down
+    # failed on the same ambiguity: exit 128 covers an unborn branch, a corrupted or
+    # unreadable ref, and a revoked .git. Reading HEAD with `symbolic-ref` was tried
+    # and does not settle it either -- it succeeds whenever HEAD names a branch,
+    # including one whose ref is broken, so it would have reported "no commits" for a
+    # repository that has them. Nothing cheap distinguishes the cases, an Agora
+    # worktree always has a HEAD anyway (`ensure_source_repo` seeds one before
+    # provisioning), and this note is permanent -- so it says what was observed.
+    return None, False, f"could not read the workspace HEAD ({head.reason()})"
 
 
 def hand_off(
@@ -134,12 +166,34 @@ def hand_off(
             project_root = projects.get(worker.project_id).root
         except (KeyError, LookupError):
             project_root = None
-        if project_root is not None and is_ready_worktree(workspace, project_root, expected_branch):
+        ready, unavailable = (
+            ready_worktree_check(workspace, project_root, expected_branch)
+            if project_root is not None else (False, None)
+        )
+        if project_root is None:
+            # A fourth state, and the only one whose cause is already known: the run's
+            # project is gone from the registry, so no worktree check was even
+            # attempted. Folding it into "could not be confirmed" points the operator
+            # at a workspace that may be perfectly fine.
+            note = (
+                "worker project is no longer registered, so its workspace could not "
+                "be checked; nothing committed"
+            )
+        elif ready:
             files = list_changes(workspace)
             message = f"Deliver: {task.title}"[:500]
             commit, committed, note = _commit_workspace(workspace, message, actor)
+        elif unavailable is not None:
+            # git could not run or could not finish. The old wording here said the
+            # workspace is not a provisioned worktree, which is a verdict about the
+            # operator's workspace drawn from a fact about our own tooling -- and it
+            # went into a permanent handoff record on a task moving to DONE.
+            note = f"could not check the worker workspace: {unavailable}; nothing committed"
         else:
-            note = "worker workspace is not a provisioned worktree; nothing committed"
+            note = (
+                "worker workspace could not be confirmed as this run's provisioned "
+                "worktree; nothing committed"
+            )
     else:
         note = "no succeeded worker run; nothing to commit"
 

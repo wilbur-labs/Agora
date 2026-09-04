@@ -2,11 +2,10 @@
 from __future__ import annotations
 
 import asyncio
-import shutil
-import subprocess
 from pathlib import Path
 from typing import Any
 
+from agora.environments import Environment, LocalEnvironment
 from agora.execution.security import redact_text
 from agora.projects import Project, ProjectRegistry
 
@@ -19,6 +18,31 @@ from .naming import worktree_branch
 # built per request) so concurrent provisioning of one workspace serializes
 # in-process, per Phase 5 Invariant 6.
 _WORKSPACE_LOCKS: dict[tuple[str, str], asyncio.Lock] = {}
+
+
+def _uninspectable(reason: str) -> str:
+    """One phrasing for one fact, used wherever a probe comes back unknown.
+
+    Two wordings for the same obstacle is not only untidy: `_with_stored` has to
+    recognise a repeat, and it can only do that if the sentence is the same sentence.
+    """
+    return f"workspace could not be inspected ({reason})"
+
+
+def _with_stored(stored: str | None, current: str) -> str:
+    """Both, when there are both. A stored error is what a past provisioning attempt
+    hit; ``current`` is what this inspection just failed to establish. Reporting only
+    the stored one sends the operator to fix a cause that may be long gone while the
+    present obstacle goes unmentioned, and reporting only the current one throws away
+    the reason the workspace was left in this state."""
+    if not stored:
+        return current
+    if stored == current:
+        # The same obstacle, seen twice. A provisioning attempt that failed *because*
+        # the path was unreadable stores that cause; the next inspection hits it again
+        # and would otherwise present one fact as a stale one plus a current one.
+        return stored
+    return f"{stored}; {current}"
 
 
 class WorkspaceError(RuntimeError):
@@ -45,8 +69,21 @@ class WorkspaceProvisioner:
         allowed_workspace_roots: list[Path] | None = None,
         git_command: str = "git",
         timeout_seconds: int = 60,
+        environment: Environment | None = None,
     ):
         self.projects = projects
+        # Where git runs and where paths are *looked at*. Only those two.
+        #
+        # What is still local, and what W3 has to deal with rather than inherit:
+        # every filesystem *mutation* here (`root.mkdir`, `workspace.parent.mkdir`,
+        # `workspace.rmdir`, writing `.gitignore`), the directory listings, and --
+        # the one that matters for safety -- `_assert_allowed`, which resolves
+        # symlinks and compares roots on *this* host. Point a remote Environment at
+        # this class today and it will create local directories while asking a
+        # remote git to build a worktree somewhere else, and confine paths against
+        # the wrong filesystem. So: not "swap the implementation and this file is
+        # done". See agora/environments.py and tasks/agora/adr/0003.
+        self.env = environment or LocalEnvironment()
         self.allowed_workspace_roots = [path.expanduser().resolve() for path in (allowed_workspace_roots or [])]
         self.git_command = git_command
         self.timeout_seconds = timeout_seconds
@@ -103,7 +140,9 @@ class WorkspaceProvisioner:
                     "Project root has staged changes; commit or clear them before provisioning"
                 )
             gitignore = root / ".gitignore"
-            if not gitignore.exists():
+            # Only a definite absence earns a write. `exists()` answered False for an
+            # unreadable file too, and that answer would have overwritten it.
+            if self.env.probe(gitignore).absent:
                 gitignore.write_text(".agora/\n", encoding="utf-8")
             await self._git(root, ["add", ".gitignore"])
             await self._git(root, [
@@ -124,8 +163,24 @@ class WorkspaceProvisioner:
                 return ProvisionResult(status=current, created=False)
             if current.state == WorkspaceState.FOREIGN:
                 raise WorkspaceConflictError("Workspace contains unmanaged files or a different worktree")
-            if shutil.which(self.git_command) is None:
-                raise WorkspaceUnavailableError("git is not installed or not on PATH")
+            # Ask the environment, not this machine's PATH. `shutil.which` answers
+            # about the process's own host, which is the wrong host as soon as the
+            # environment is not the local one -- the last local-only assumption
+            # left in this file.
+            version = await asyncio.to_thread(
+                self.env.run, [self.git_command, "--version"], timeout=self.timeout_seconds
+            )
+            if not version.ok:
+                # `.ran` was the wrong test: it is true for a timeout, so a git that
+                # started and hung passed this check and failed later as "Project
+                # root is not a Git repository" -- a statement about the project,
+                # from a fact about git. `git --version` exits zero whenever git
+                # works at all, so anything else belongs here.
+                if not version.ran:
+                    raise WorkspaceUnavailableError(
+                        f"git is not installed or not on PATH ({version.reason()})"
+                    )
+                raise WorkspaceUnavailableError(f"git is not usable ({version.reason()})")
             if not current.source_is_git:
                 raise WorkspaceValidationError("Project root is not a Git repository")
 
@@ -134,8 +189,14 @@ class WorkspaceProvisioner:
             try:
                 workspace = workspace.resolve()
                 self._assert_allowed(project, workspace)
+                pre = self.env.probe(workspace)
+                if pre.unknown:
+                    # Not "it changed": nothing at all was established about it. Fail
+                    # closed either way, but do not send the operator looking for a
+                    # race that never happened.
+                    raise WorkspaceConflictError(_uninspectable(pre.reason()))
                 try:
-                    if workspace.exists():
+                    if pre.present:
                         if any(workspace.iterdir()):
                             raise WorkspaceConflictError("Workspace became non-empty before provisioning")
                         workspace.rmdir()
@@ -202,10 +263,36 @@ class WorkspaceProvisioner:
             self._git_sync(project.root, ["rev-parse", "--path-format=absolute", "--git-common-dir"])
             if source_is_git else None
         )
-        if not workspace.exists() or (workspace.is_dir() and not any(workspace.iterdir())):
+        probe = self.env.probe(workspace)
+        if probe.unknown:
+            # `Path.exists()` used to answer False here, which sent an unreadable
+            # worktree back as MISSING -- "provision it" -- when the operator's
+            # actual next move is to fix a permission. ERROR widens to mean "this
+            # state could not be established", and the reason says which kind it is.
+            return self._status(
+                project, adapter, workspace, WorkspaceState.ERROR,
+                source_is_git=source_is_git,
+                error=_with_stored(self._errors.get(key), _uninspectable(probe.reason())),
+            )
+        empty = False
+        if probe.is_dir():
+            try:
+                empty = not any(workspace.iterdir())
+            except OSError as exc:
+                # Stat succeeded and the listing did not: still "could not find
+                # out", so it must not fall through to MISSING either.
+                return self._status(
+                    project, adapter, workspace, WorkspaceState.ERROR,
+                    source_is_git=source_is_git,
+                    error=_with_stored(
+                        self._errors.get(key),
+                        f"workspace could not be listed ({type(exc).__name__})",
+                    ),
+                )
+        if probe.absent or empty:
             state = WorkspaceState.ERROR if key in self._errors else WorkspaceState.MISSING
             return self._status(project, adapter, workspace, state, source_is_git=source_is_git, error=self._errors.get(key))
-        if not workspace.is_dir():
+        if not probe.is_dir():
             return self._status(project, adapter, workspace, WorkspaceState.FOREIGN, source_is_git=source_is_git)
 
         common = self._git_sync(workspace, ["rev-parse", "--path-format=absolute", "--git-common-dir"])
@@ -243,39 +330,43 @@ class WorkspaceProvisioner:
             return False
 
     async def _git(self, cwd: Path, args: list[str]) -> str:
-        try:
-            process = await asyncio.create_subprocess_exec(
-                self.git_command, *args, cwd=str(cwd),
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-            )
-        except FileNotFoundError:
-            raise WorkspaceUnavailableError("git is not installed or not on PATH") from None
-        except OSError as exc:
-            raise WorkspaceUnavailableError(f"Could not start git: {type(exc).__name__}") from None
-        try:
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=self.timeout_seconds)
-        except (TimeoutError, asyncio.TimeoutError):
-            if process.returncode is None:
-                try:
-                    process.kill()
-                except ProcessLookupError:
-                    pass
-                await process.wait()
-            raise WorkspaceUnavailableError("Git operation timed out") from None
-        if process.returncode != 0:
-            message = redact_text(stderr.decode("utf-8", errors="replace").splitlines()[0] if stderr else "unknown error")
-            raise WorkspaceValidationError(f"git {args[0]} failed ({process.returncode}): {message[:500]}")
-        return stdout.decode("utf-8", errors="replace").strip()
+        """Run one git command through the environment, off the event loop.
+
+        ``Environment.run`` is synchronous by design (one implementation per
+        environment instead of two that can drift), so the await is a thread hop.
+        The three failures stay three different exceptions: git absent and git too
+        slow are ``WorkspaceUnavailableError`` -- nothing is wrong with the
+        workspace -- while git saying no is a ``WorkspaceValidationError`` about it.
+        """
+        result = await asyncio.to_thread(
+            self.env.run,
+            [self.git_command, *args],
+            cwd=cwd,
+            timeout=self.timeout_seconds,
+        )
+        if result.outcome == "unstartable":
+            if isinstance(result.error, FileNotFoundError):
+                raise WorkspaceUnavailableError("git is not installed or not on PATH")
+            raise WorkspaceUnavailableError(f"Could not start git: {result.reason()}")
+        if result.outcome == "timeout":
+            raise WorkspaceUnavailableError("Git operation timed out")
+        if result.returncode != 0:
+            first_line = result.stderr.splitlines()[0] if result.stderr.strip() else "unknown error"
+            message = redact_text(first_line)
+            raise WorkspaceValidationError(f"git {args[0]} failed ({result.returncode}): {message[:500]}")
+        return result.stdout.strip()
 
     def _git_sync(self, cwd: Path, args: list[str]) -> str | None:
-        try:
-            result = subprocess.run(
-                [self.git_command, *args], cwd=str(cwd), capture_output=True,
-                text=True, encoding="utf-8", errors="replace", timeout=10, check=False,
-            )
-        except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
-            return None
-        return result.stdout.strip() if result.returncode == 0 else None
+        """A git query whose answer may be "we could not find out".
+
+        ``None`` covers every non-answer -- git missing, timeout, spawn failure,
+        non-zero exit -- and it is deliberately not split further here: every caller
+        of this method is a *positive* proof step (is this a repo root, is this the
+        expected branch) that must fail closed on anything indeterminate. The
+        distinction that matters is kept one level up, in ``_git``.
+        """
+        result = self.env.run([self.git_command, *args], cwd=cwd, timeout=10)
+        return result.stdout.strip() if result.ok else None
 
     _branch = staticmethod(worktree_branch)
 

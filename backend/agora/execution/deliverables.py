@@ -20,9 +20,9 @@ Also returns a bounded, redacted text preview of one confined file.
 from __future__ import annotations
 
 import hashlib
-import shutil
-import subprocess
 from pathlib import Path
+
+from agora.environments import Environment, LocalEnvironment
 
 from .security import redact_text
 
@@ -35,6 +35,10 @@ MAX_FILES = 200
 # built pages, bundles, generated docs — stay openable.
 SNAPSHOT_HASH_LIMIT = 8 * 1024 * 1024
 _GIT_TIMEOUT = 10
+#: argv[0] for every git call here. The environment resolves it -- on a remote one
+#: the local PATH says nothing about whether git is there, so a `shutil.which`
+#: pre-check would be answering about the wrong machine.
+_GIT = "git"
 
 _STATUS_LABELS = {
     "M": "modified",
@@ -54,8 +58,24 @@ def _same_path(a: str | Path, b: str | Path) -> bool:
         return False
 
 
-def _is_provisioned_worktree(git: str, workspace: Path) -> bool:
-    """True only if `workspace` is a linked git worktree whose own top-level is
+def _is_provisioned_worktree(env: Environment, workspace: Path) -> bool:
+    return provisioned_worktree_check(env, workspace)[0]
+
+
+def provisioned_worktree_check(
+    env: Environment, workspace: Path
+) -> tuple[bool, str | None]:
+    """``(is_provisioned, unavailable_reason)``.
+
+    Two answers, because they call for opposite responses. ``False`` with a reason
+    means git itself never ran or timed out and nothing was established about the
+    workspace; ``False`` with no reason means git ran and the workspace is not a
+    provisioned worktree. Callers that only report a boolean use
+    :func:`_is_provisioned_worktree` and fail closed on both, which is right for a
+    gate; callers that write the outcome down for a human need the difference, or
+    a missing git gets recorded as a verdict about the operator's workspace.
+
+    True only if `workspace` is a linked git worktree whose own top-level is
     exactly `workspace` — i.e. a provisioned per-adapter worktree, not a repo
     root, the project root, or a plain nested directory.
 
@@ -70,58 +90,83 @@ def _is_provisioned_worktree(git: str, workspace: Path) -> bool:
       workspace mistakenly mapped onto (or aliased to) a repo root can never
       have its whole repository staged and committed.
     """
-    try:
-        result = subprocess.run(
-            [git, "-C", str(workspace), "rev-parse",
-             "--show-toplevel", "--absolute-git-dir", "--git-common-dir"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=_GIT_TIMEOUT, check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    if result.returncode != 0:
-        return False
+    result = env.run(
+        [_GIT, "-C", str(workspace), "rev-parse",
+         "--show-toplevel", "--absolute-git-dir", "--git-common-dir"],
+        timeout=_GIT_TIMEOUT,
+    )
+    if not result.ran:
+        return False, f"git is not available ({result.reason()})"
+    if result.outcome == "timeout":
+        return False, "git did not answer in time"
+    if not result.ok:
+        # git ran and refused. That is *usually* "not a repository", but the same
+        # exit 128 covers `safe.directory` refusing a repo it does not trust and an
+        # unreadable `.git`. The three are not separable without parsing a message
+        # git may translate, so this reports what was actually established -- the
+        # check did not pass -- and leaves the caller to phrase it as such rather
+        # than as a verdict about the directory.
+        return False, None
     lines = [ln.strip() for ln in result.stdout.splitlines() if ln.strip()]
     if len(lines) != 3:  # expect exactly the three requested paths
-        return False
+        return False, None
     toplevel, git_dir, common_dir = lines[0], lines[1], lines[2]
     if not _same_path(toplevel, workspace):
-        return False
+        return False, None
     # --git-common-dir may be relative to the git dir's parent; anchor it.
     common = Path(common_dir)
     if not common.is_absolute():
         common = workspace / common
-    return not _same_path(git_dir, common)
+    return not _same_path(git_dir, common), None
 
 
-def _rev_parse(git: str, cwd: Path, args: list[str]) -> str | None:
-    """Run `git -C cwd rev-parse <args>` and return stripped stdout, or None if
-    git errored/timed out/exited nonzero (indeterminate)."""
-    try:
-        result = subprocess.run(
-            [git, "-C", str(cwd), "rev-parse", *args],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=_GIT_TIMEOUT, check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    return result.stdout.strip() if result.returncode == 0 else None
+def _rev_parse_result(
+    env: Environment, cwd: Path, args: list[str]
+) -> tuple[str | None, str | None]:
+    """``(stdout, unavailable_reason)``. The reason is set only when git did not run
+    or did not finish — a non-zero exit is git answering, and is left unclassified for
+    the same reason :func:`provisioned_worktree_check` leaves it unclassified."""
+    result = env.run([_GIT, "-C", str(cwd), "rev-parse", *args], timeout=_GIT_TIMEOUT)
+    if result.ok:
+        return result.stdout.strip(), None
+    if not result.ran:
+        return None, f"git is not available ({result.reason()})"
+    if result.outcome == "timeout":
+        return None, "git did not answer in time"
+    return None, None
 
 
-def _is_repo_root(git: str, path: Path) -> bool:
+def _repo_root_check(env: Environment, path: Path) -> tuple[bool, str | None]:
     """True only if `path` is a repository's own main worktree root — its
     `--show-toplevel` is itself AND its git dir equals its common dir (so it is
     NOT a linked worktree of some other repository). Used to prove a project
     root genuinely owns its repository before trusting its common dir."""
-    top = _rev_parse(git, path, ["--show-toplevel"])
+    top, why = _rev_parse_result(env, path, ["--show-toplevel"])
+    if why:
+        return False, why
     if not top or not _same_path(top, path):
-        return False
-    git_dir = _rev_parse(git, path, ["--absolute-git-dir"])
-    common = _rev_parse(git, path, ["--path-format=absolute", "--git-common-dir"])
-    return bool(git_dir and common and _same_path(git_dir, common))
+        return False, None
+    git_dir, why = _rev_parse_result(env, path, ["--absolute-git-dir"])
+    if why:
+        return False, why
+    common, why = _rev_parse_result(env, path, ["--path-format=absolute", "--git-common-dir"])
+    if why:
+        return False, why
+    return bool(git_dir and common and _same_path(git_dir, common)), None
 
 
-def is_ready_worktree(workspace: Path, project_root: Path, expected_branch: str) -> bool:
+def is_ready_worktree(
+    workspace: Path, project_root: Path, expected_branch: str, *,
+    env: Environment | None = None,
+) -> bool:
+    """Boolean form of :func:`ready_worktree_check`, for gates that only fail closed."""
+    return ready_worktree_check(workspace, project_root, expected_branch, env=env)[0]
+
+
+def ready_worktree_check(
+    workspace: Path, project_root: Path, expected_branch: str, *,
+    env: Environment | None = None,
+) -> tuple[bool, str | None]:
     """Positive, fail-closed check that `workspace` is exactly the provisioned
     linked worktree for a run: its own top-level, a *linked* worktree, sharing
     the project root's repository, checked out on `expected_branch`, with a HEAD.
@@ -134,28 +179,53 @@ def is_ready_worktree(workspace: Path, project_root: Path, expected_branch: str)
     never run, and deliverables must never be read or committed, on a workspace
     we cannot positively prove is its own provisioned worktree.
     """
-    git = shutil.which("git")
-    if git is None:
-        return False
-    if not _is_provisioned_worktree(git, workspace):
-        return False
+    env = env or LocalEnvironment()
+    provisioned, unavailable = provisioned_worktree_check(env, workspace)
+    if unavailable is not None:
+        # git never ran, or ran out of time. Nothing about the workspace was
+        # established, and the caller that writes this into a record needs to say so
+        # instead of reporting a verdict it does not have.
+        return False, unavailable
+    if not provisioned:
+        return False, None
+    # Every step below is one more git call, and any of them can be the one where git
+    # goes away or hangs. The reason has to survive all of them: a tuple that carries
+    # unavailability only from its first call has a channel narrower than its
+    # contract, which is this project's most-repeated defect wearing a new hat.
+    #
     # The project root must genuinely own its repository: its own main-worktree
     # root, not nested inside an ancestor checkout and not itself a linked
     # worktree of another repo — otherwise root_common would resolve to that
     # other repository and one of its worktrees on the expected branch would pass.
-    if not _is_repo_root(git, project_root):
-        return False
-    ws_common = _rev_parse(git, workspace, ["--path-format=absolute", "--git-common-dir"])
-    root_common = _rev_parse(git, project_root, ["--path-format=absolute", "--git-common-dir"])
+    is_root, why = _repo_root_check(env, project_root)
+    if why:
+        return False, why
+    if not is_root:
+        return False, None
+    ws_common, why = _rev_parse_result(
+        env, workspace, ["--path-format=absolute", "--git-common-dir"]
+    )
+    if why:
+        return False, why
+    root_common, why = _rev_parse_result(
+        env, project_root, ["--path-format=absolute", "--git-common-dir"]
+    )
+    if why:
+        return False, why
     if not ws_common or not root_common or not _same_path(ws_common, root_common):
-        return False
-    branch = _rev_parse(git, workspace, ["--abbrev-ref", "HEAD"])
+        return False, None
+    branch, why = _rev_parse_result(env, workspace, ["--abbrev-ref", "HEAD"])
+    if why:
+        return False, why
     if branch != expected_branch:
-        return False
-    return bool(_rev_parse(git, workspace, ["--verify", "HEAD"]))
+        return False, None
+    head, why = _rev_parse_result(env, workspace, ["--verify", "HEAD"])
+    if why:
+        return False, why
+    return bool(head), None
 
 
-def _read_changes(workspace: Path) -> tuple[list[dict], bool] | None:
+def _read_changes(workspace: Path, env: Environment) -> tuple[list[dict], bool] | None:
     """``(files, truncated)`` for the worktree's changes vs HEAD, or None if the
     answer could not be obtained (no git, not a provisioned worktree, git error
     or timeout).
@@ -167,20 +237,13 @@ def _read_changes(workspace: Path) -> tuple[list[dict], bool] | None:
     ``truncated`` is True when more than ``MAX_FILES`` files changed, so callers
     can say "at least these" instead of implying the list is complete.
     """
-    git = shutil.which("git")
-    if git is None:
+    if not _is_provisioned_worktree(env, workspace):
         return None
-    if not _is_provisioned_worktree(git, workspace):
-        return None
-    try:
-        result = subprocess.run(
-            [git, "-C", str(workspace), "status", "--porcelain=v1", "--untracked-files=all"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=_GIT_TIMEOUT, check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if result.returncode != 0:
+    result = env.run(
+        [_GIT, "-C", str(workspace), "status", "--porcelain=v1", "--untracked-files=all"],
+        timeout=_GIT_TIMEOUT,
+    )
+    if not result.ok:
         return None
     files: list[dict] = []
     truncated = False
@@ -204,7 +267,7 @@ def _read_changes(workspace: Path) -> tuple[list[dict], bool] | None:
     return files, truncated
 
 
-def list_changes(workspace: Path) -> list[dict]:
+def list_changes(workspace: Path, *, env: Environment | None = None) -> list[dict]:
     """Return the worktree's changed/untracked files vs HEAD (best effort).
 
     Scoped to the workspace's own repository: if the workspace is not itself a
@@ -212,7 +275,7 @@ def list_changes(workspace: Path) -> list[dict]:
     Best-effort by design — for a run's permanent record use ``snapshot_changes``,
     which reports collection failure instead of hiding it as "no changes".
     """
-    read = _read_changes(workspace)
+    read = _read_changes(workspace, env or LocalEnvironment())
     return read[0] if read is not None else []
 
 
@@ -267,7 +330,9 @@ def _identity(workspace: Path, item: dict) -> dict:
     return {"status": item["status"], "sha256": None, "stamp": stamp}
 
 
-def baseline_state(workspace: Path) -> tuple[dict[str, dict], bool] | None:
+def baseline_state(
+    workspace: Path, *, env: Environment | None = None
+) -> tuple[dict[str, dict], bool] | None:
     """``(identities, complete)`` for what was already changed in this worktree
     *before* a run starts, or None when the worktree cannot be read.
 
@@ -280,7 +345,7 @@ def baseline_state(workspace: Path) -> tuple[dict[str, dict], bool] | None:
     baseline is then only a prefix, and subtracting it cannot separate this run's
     work from what was already there.
     """
-    read = _read_changes(workspace)
+    read = _read_changes(workspace, env or LocalEnvironment())
     if read is None:
         return None
     files, truncated = read
@@ -295,7 +360,8 @@ CLEAN_BASELINE: tuple[dict[str, dict], bool] = ({}, True)
 
 
 def snapshot_changes(
-    workspace: Path, baseline: tuple[dict[str, dict], bool] | None
+    workspace: Path, baseline: tuple[dict[str, dict], bool] | None, *,
+    env: Environment | None = None,
 ) -> dict | None:
     """Freeze what *this run* delivered, as it reaches a terminal state.
 
@@ -321,7 +387,7 @@ def snapshot_changes(
     """
     if baseline is None:
         return None
-    read = _read_changes(workspace)
+    read = _read_changes(workspace, env or LocalEnvironment())
     if read is None:
         return None
     before, complete = baseline

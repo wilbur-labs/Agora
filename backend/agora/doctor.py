@@ -6,6 +6,7 @@ from shutil import which
 from typing import Any
 
 from agora.config.settings import get_config
+from agora.fsprobe import probe_path
 from agora.projects import ProjectRegistry
 
 
@@ -32,7 +33,10 @@ def run_doctor(config: dict[str, Any] | None = None) -> dict[str, Any]:
         workspace_key = WORKER_WORKSPACES[worker]
         workspace = project.workspaces.get(workspace_key)
         cli_path = which(command)
-        workspace_ok = bool(workspace and Path(workspace).exists())
+        # Same question, same answer as everywhere else: absence and "could not
+        # find out" are different, and only the first one means "create it".
+        probe = probe_path(Path(workspace)) if workspace else None
+        workspace_ok = bool(probe is not None and probe.present)
         ready = bool(cli_path and workspace_ok)
         workers.append({
             "worker": worker,
@@ -43,7 +47,7 @@ def run_doctor(config: dict[str, Any] | None = None) -> dict[str, Any]:
             "workspace_ok": workspace_ok,
             "auth": "not_checked",
             "status": "ready" if ready else "unavailable",
-            "action": _action(command, cli_path, workspace, workspace_ok),
+            "action": _action(command, cli_path, workspace, probe),
         })
 
     return {
@@ -59,11 +63,15 @@ def run_doctor(config: dict[str, Any] | None = None) -> dict[str, Any]:
     }
 
 
-def _action(command: str, cli_path: str | None, workspace: Path | None, workspace_ok: bool) -> str:
+def _action(command: str, cli_path: str | None, workspace: Path | None, probe) -> str:
     if not cli_path:
         return f"Install or expose `{command}` on PATH."
-    if not workspace:
+    if not workspace or probe is None:
         return "Configure a workspace for this worker."
-    if not workspace_ok:
+    if probe.unknown:
+        # Not ready either way, but "create it" is the wrong instruction for a
+        # directory that is already there and merely unreadable.
+        return f"Workspace could not be inspected ({probe.reason()}): {workspace}"
+    if not probe.present:
         return f"Create workspace directory: {workspace}"
     return "Ready. Auth health check is not implemented yet."
