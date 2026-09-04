@@ -521,6 +521,12 @@ def task_recap(
     for run in day_runs:
         snapshot = exec_store.deliverable_snapshot(run.run_id)
         runs.append({
+            # Which run this is. Every run-derived recap item carries it through, so a
+            # consumer can bind an item to the run it describes instead of guessing
+            # from adapter + kind + file count — a guess that stops working the moment
+            # a day holds two similar runs, which is the ordinary case for a worker
+            # plus its automatic review.
+            "run_id": run.run_id,
             "adapter": run.adapter,
             "state": run.state.value,
             "finished_at": run.finished_at,

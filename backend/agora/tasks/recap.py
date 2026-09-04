@@ -110,27 +110,37 @@ def last_active_day(
     same_day_runs.sort(key=lambda run: run.get("finished_at") or "")
     for run in same_day_runs:
         adapter = run.get("adapter")
+        # Which run produced this item. Carried on every run-derived kind, because
+        # `adapter` alone does not identify one: a worker and its automatic review
+        # finish on the same day by design, and two runs of the same adapter with the
+        # same outcome were indistinguishable in the payload. A consumer wanting to
+        # link an item to its run — or a test wanting to assert *which* run an item
+        # describes — had to cross-check adapter + kind + file count and hope the day
+        # held nothing similar. `None` when the caller did not supply one, so an
+        # older assembler keeps working and the field is never invented.
+        run_id = run.get("run_id")
         if run.get("state") == "succeeded":
             if str(run.get("role") or "") == _ROLE_REVIEW:
-                items.append(_item("reviewed", adapter=adapter))
+                items.append(_item("reviewed", adapter=adapter, run_id=run_id))
                 continue
             count = run.get("delivered_count")
             if count == 0:
                 # A verified-empty snapshot is knowledge: this run changed nothing.
                 # Calling that "delivered work" would describe a known no-op as a
                 # delivery. None is different — the count is unknown, not zero.
-                items.append(_item("ran_no_changes", adapter=adapter))
+                items.append(_item("ran_no_changes", adapter=adapter, run_id=run_id))
             else:
                 items.append(_item(
                     "delivered",
                     adapter=adapter,
+                    run_id=run_id,
                     files=count,
                     # The snapshot stopped at MAX_FILES, so the count is a floor.
                     # Presenting a floor as exact would overstate what is known.
                     files_at_least=bool(run.get("delivered_truncated")),
                 ))
         elif run.get("state") in {"failed", "timed_out", "abandoned"}:
-            items.append(_item("run_failed", adapter=adapter))
+            items.append(_item("run_failed", adapter=adapter, run_id=run_id))
         # queued/running/cancelled runs are not an outcome; they only mark activity.
 
     # Then the decisions recorded that day.

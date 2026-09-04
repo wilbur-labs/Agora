@@ -17,16 +17,28 @@ def _event(event_type: str, created_at: str, **payload):
 
 
 def _run(state: str, finished_at: str | None, *, adapter="codex", role="worker",
-         delivered_count=None, delivered_truncated=False):
+         delivered_count=None, delivered_truncated=False, run_id=None):
     return {
-        "adapter": adapter, "state": state, "finished_at": finished_at,
-        "role": role, "delivered_count": delivered_count,
+        "run_id": run_id, "adapter": adapter, "state": state,
+        "finished_at": finished_at, "role": role, "delivered_count": delivered_count,
         "delivered_truncated": delivered_truncated,
     }
 
 
 def _kinds(recap):
     return [item["kind"] for item in recap["items"]]
+
+
+def _fixed_day_of(timestamp: str | None) -> str | None:
+    """The UTC date part, so a test's day does not depend on the machine's zone.
+
+    `last_active_day` takes `day_of` injected for exactly this reason. Tests that
+    care about *which day* still use the real resolver; these care about what an
+    item carries, and pinning the day keeps that the only variable.
+    """
+    if not isinstance(timestamp, str) or len(timestamp) < 10 or timestamp[4] != "-":
+        return None
+    return timestamp[:10]
 
 
 def test_nothing_recorded_yields_no_day():
@@ -537,3 +549,62 @@ def test_next_rollover_and_days_ago_come_from_the_same_instant(tmp_path, monkeyp
         # And the day the response is about is the day it was answered on, so the
         # panel says "today" — the whole point of reading the clock once.
         assert recap["days_ago"] == 0, offset
+
+
+def test_two_similar_runs_on_one_day_are_told_apart_by_run_id():
+    """The recorded gap: an item named no run, so a day with two similar runs was ambiguous.
+
+    A worker and its automatic review finish on the same day by design, and two runs
+    of the same adapter reaching the same outcome produced two items that differed in
+    nothing. Anything wanting to bind an item to its run — a UI linking to the run,
+    or a test asserting *which* run an item describes — had to cross-check adapter +
+    kind + delivered count and hope the day held nothing similar. That is not a
+    weaker identifier; on this input it is not an identifier at all.
+    """
+    recap = last_active_day(
+        [],
+        [
+            _run("succeeded", "2026-05-04T09:00:00+00:00", adapter="codex",
+                 delivered_count=2, run_id="run-first"),
+            _run("succeeded", "2026-05-04T11:00:00+00:00", adapter="codex",
+                 delivered_count=2, run_id="run-second"),
+        ],
+        day_of=_fixed_day_of,
+    )
+    # Same kind, same adapter, same count: identical but for the run they name.
+    assert _kinds(recap) == ["delivered", "delivered"]
+    assert [item["adapter"] for item in recap["items"]] == ["codex", "codex"]
+    assert [item["files"] for item in recap["items"]] == [2, 2]
+    assert [item["run_id"] for item in recap["items"]] == ["run-first", "run-second"]
+
+
+def test_every_run_derived_item_names_its_run():
+    """All four run-derived kinds, not just the delivering one.
+
+    A partial fix here would be worse than none: a consumer that can link three
+    kinds of item and silently cannot link the fourth has no way to tell "this run is
+    unknown" from "this item type never carries one".
+    """
+    recap = last_active_day(
+        [],
+        [
+            _run("succeeded", "2026-05-04T09:00:00+00:00", delivered_count=1, run_id="r-delivered"),
+            _run("succeeded", "2026-05-04T09:30:00+00:00", delivered_count=0, run_id="r-empty"),
+            _run("succeeded", "2026-05-04T10:00:00+00:00", role="review", run_id="r-review"),
+            _run("failed", "2026-05-04T10:30:00+00:00", run_id="r-failed"),
+        ],
+        day_of=_fixed_day_of,
+    )
+    assert _kinds(recap) == ["delivered", "ran_no_changes", "reviewed", "run_failed"]
+    assert [item["run_id"] for item in recap["items"]] == [
+        "r-delivered", "r-empty", "r-review", "r-failed",
+    ]
+
+
+def test_a_caller_that_supplies_no_run_id_gets_none_not_an_invented_one():
+    """`run_id` is absent, never fabricated: an older assembler keeps working."""
+    recap = last_active_day(
+        [], [_run("succeeded", "2026-05-04T09:00:00+00:00", delivered_count=1)],
+        day_of=_fixed_day_of,
+    )
+    assert recap["items"][0]["run_id"] is None

@@ -306,6 +306,13 @@ export interface RecapItem {
   kind: string;
   summary: string;
   adapter?: string;
+  // The run this item describes. Two different absences, and they are both real:
+  // the key is missing on items that no run produced (a decision recorded that day),
+  // and it is present-but-null on a run-derived item whose assembler did not supply
+  // an id. Optional-and-nullable says exactly that, the way `files` below does — a
+  // required `string` would let a consumer read an id that is not there, which is
+  // the guess this field exists to replace.
+  run_id?: string | null;
   // Files a run delivered. null means the count is unknown (no deliverable
   // snapshot), which is different from 0; `files_at_least` marks it as a floor
   // because the snapshot itself was truncated.

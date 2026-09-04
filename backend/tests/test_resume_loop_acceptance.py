@@ -429,11 +429,19 @@ def test_yesterdays_step_is_what_the_task_shows_the_next_day(tmp_path, monkeypat
                 )[1]
 
             # Exactly one run outcome per day per task, and it is that run's own.
+            #
+            # `run_id` is what makes "that run's own" an assertion rather than a
+            # hope. This block used to cross-check adapter + kind + file count and
+            # note that the three outcomes differed enough to tell apart — which was
+            # true of *these* three and not a property of the payload. Two similar
+            # runs on one day (a worker and its automatic review: the ordinary case)
+            # produced items that named nothing distinguishing at all.
             delivered_item = _run_items(recaps["deliver"])
             assert delivered_item == [{
                 "kind": "delivered",
                 "summary": ITEM_KINDS["delivered"],
                 "adapter": _ADAPTER,
+                "run_id": deliver["run"]["run_id"],
                 # Two files, because that run wrote two — cross-checked against its
                 # snapshot below, so this is the run's real count and not a constant.
                 "files": 2,
@@ -444,16 +452,20 @@ def test_yesterdays_step_is_what_the_task_shows_the_next_day(tmp_path, monkeypat
 
             # The three read differently, which is the point of asserting all three:
             # a day that ended on a verified no-op does not say "delivered work",
-            # and a day that ended on a failure does not either.
+            # and a day that ended on a failure does not either. Each also names the
+            # run it is about, so the item is bound to that run and not merely
+            # consistent with it.
             assert _run_items(recaps["no-op"]) == [{
                 "kind": "ran_no_changes",
                 "summary": ITEM_KINDS["ran_no_changes"],
                 "adapter": _ADAPTER,
+                "run_id": worked["no-op"]["run"]["run_id"],
             }], recaps["no-op"]
             assert _run_items(recaps["fail"]) == [{
                 "kind": "run_failed",
                 "summary": ITEM_KINDS["run_failed"],
                 "adapter": _ADAPTER,
+                "run_id": worked["fail"]["run"]["run_id"],
             }], recaps["fail"]
 
             # Not merely "something happened": the day reads as the day it was —
