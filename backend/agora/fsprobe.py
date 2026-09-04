@@ -34,7 +34,8 @@ here. That split is deliberate: erring toward unknown never states a falsehood,
 while erring toward absent does. Do not "fix" it by folding ``NotADirectoryError``
 into absence — that reintroduces exactly the guess this module exists to refuse.
 
-Pure apart from the single stat, and it never raises: a probe is an observation,
+Pure apart from the stat — one ``lstat``, plus a second ``stat`` of the target when a
+symlink is followed — and it never raises: a probe is an observation,
 and "the observation failed" is one of its outcomes rather than an exception the
 caller has to remember to catch.
 """
