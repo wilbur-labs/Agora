@@ -55,4 +55,8 @@ backend/.pytest-*
 .agora/research/
 .agora/specs/
 .agora/decisions/
+# The project's own change log. Local by decision, not by oversight: this
+# repository is public and its change record is not. See .agora/development/CR-LOG.md
+# itself, CR-1, for what that costs and why it was accepted.
+.agora/development/CR-LOG.md
 .agora/workspaces/
