@@ -13,6 +13,7 @@ import {
   railSubtitleOf,
   settleRead,
   type RailGroup,
+  railRunIsCurrent,
 } from "../src/lib/rail-group.ts";
 import { workspace as workspaceDictionary } from "../src/lib/i18n/dictionaries/workspace.ts";
 
@@ -298,6 +299,68 @@ test("each stale-read notice speaks for its own read, in every locale", () => {
     );
     for (const key of staleKeys) {
       assert.ok(!attentionMessages.has(lookup(locale, key)), `${locale}: ${key} borrows attention's words`);
+    }
+  }
+});
+
+// --- CR-17: a run kept from before a failed refresh is not the current one ----
+
+test("a run the rail is holding is current only while the runs read succeeds", () => {
+  assert.equal(railRunIsCurrent([]), true);
+  assert.equal(railRunIsCurrent(["tasks"]), true);
+  assert.equal(railRunIsCurrent(["projects"]), true);
+});
+
+test("a failed runs read disqualifies the run in hand", () => {
+  // The page keeps its previous page of runs when the read is rejected, which is
+  // right -- blanking the rail on every failed refresh would be its own dishonesty.
+  // But the run in hand is then from before the failure and may have finished since,
+  // and the rail was rendering it as the current state dot, folding its timestamps
+  // into the activity time, and ordering by it.
+  assert.equal(railRunIsCurrent(["runs"]), false);
+  assert.equal(railRunIsCurrent(["tasks", "runs"]), false);
+  assert.equal(railRunIsCurrent(RAIL_STALE_ORDER), false);
+});
+
+test("the rail's rule is narrower than the portfolio card's, on purpose", () => {
+  // Only a *rejected* read disqualifies. A capped one does not, because the rail
+  // makes no claim from absence: it renders nothing when it holds no run for a task,
+  // rather than "no runs yet". Its sibling on the board does make that claim, which
+  // is why that one has to care about the cap and this one does not. `staleOrigins`
+  // carries rejections only, and that is the whole input here.
+  assert.deepEqual([...RAIL_STALE_ORDER], ["tasks", "projects", "runs"]);
+  assert.equal(railRunIsCurrent(["projects", "tasks"]), true);
+});
+
+test("the rail drops the stale run in one place, not at each render site", async () => {
+  // Structural, and the same honest limit as its counterpart on the portfolio board:
+  // node --test strips types but does not transform JSX, so this suite cannot mount
+  // the component. Dropping the run where the groups are built is what makes the
+  // dot, the relative time and the ordering all stop using it at once; three separate
+  // guards at three render sites is three chances for one of them to be forgotten.
+  const { readFile } = await import("node:fs/promises");
+  const file = await readFile(
+    new URL("../src/app/workspace/page.tsx", import.meta.url), "utf8");
+  const source = file.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
+  assert.ok(source.includes("railRunIsCurrent(staleOrigins)"),
+    "the rail must ask whether the run it holds is current");
+  assert.ok(source.includes("runsAreCurrent ? latestRunByTask.get(task.task_id) ?? null : null"),
+    "the run must be dropped where the groups are built, so activity and order drop it too");
+});
+
+test("the runs notice describes what the rail now does, not what it used to", async () => {
+  // The notice outlived the presentation it described: it said the dots and times
+  // *shown* might be out of date, while CR-17 had just stopped showing them. A
+  // disclosure that survives its own subject is the same defect one level up — and
+  // it was my own fix that made it false.
+  const { workspace } = await import("../src/lib/i18n/dictionaries/workspace.ts");
+  for (const locale of ["en", "zh"] as const) {
+    const notice: string = workspace[locale].rail.runsUnreadable;
+    assert.equal(typeof notice, "string");
+    // It must not promise that anything derived from the failed read is on screen.
+    for (const claim of ["out of date", "过时", "dots", "状态点", "activity times", "活动时间"]) {
+      assert.ok(!notice.includes(claim),
+        `${locale}: the runs notice must not describe a stale run as shown: ${claim}`);
     }
   }
 });

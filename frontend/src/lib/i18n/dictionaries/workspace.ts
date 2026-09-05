@@ -29,7 +29,12 @@ export const workspace = {
       // about a different read and was once printed about a read that succeeded.
       tasksUnreadable: "The task list could not be read, so tasks may be missing from this list or out of date.",
       projectsUnreadable: "The project list could not be read, so the project filter may be out of date.",
-      runsUnreadable: "Run status could not be read, so the run dots and activity times shown may be out of date.",
+      // Rewritten with CR-17. It used to say the dots and times *shown* might be out
+      // of date, which described exactly the presentation CR-17 removed: on a failed
+      // runs read the rail now drops the run it is holding, so there is no dot and the
+      // activity time comes from the task manifest. A notice that outlives the thing it
+      // describes is the same defect one level up — the fix made its own disclosure false.
+      runsUnreadable: "Run status could not be read, so it is not shown for these tasks.",
       unknownSubtitle: "{state} · attention not known",
       empty: "No tasks yet — create one to begin.",
       noMatch: "No tasks match your search.",
@@ -455,7 +460,7 @@ export const workspace = {
       attentionUnreadable: "未处理事项读取失败，因此无法判断这些任务是否需你处理。打开任务可查看它自己的关卡。",
       tasksUnreadable: "任务列表读取失败，此列表可能缺少任务或已过时。",
       projectsUnreadable: "项目列表读取失败，项目筛选可能已过时。",
-      runsUnreadable: "运行状态读取失败，此处显示的运行状态点与活动时间可能已过时。",
+      runsUnreadable: "运行状态读取失败，因此这些任务不显示运行状态。",
       unknownSubtitle: "{state} · 是否需你处理未知",
       empty: "还没有任务——创建一个开始。",
       noMatch: "没有匹配的任务。",

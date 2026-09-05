@@ -69,6 +69,7 @@ import {
   RAIL_ATTENTION_NOTICE_KEY,
   RAIL_ORDER,
   RAIL_STALE_NOTICE_KEY,
+  railRunIsCurrent,
   attentionReadIsComplete,
   railGroupOf,
   railReadReport,
@@ -307,9 +308,13 @@ export default function WorkspacePage() {
     const groups: Record<RailGroup, Array<{ task: TaskManifest; ask: string | null; run: RunSummary | null; activity: string }>> = {
       needsYou: [], unknown: [], running: [], review: [], done: [],
     };
+    // Dropped in one place rather than at each render site, so the state dot, the
+    // relative time and the ordering all stop using a run the page can no longer
+    // vouch for. `activityOf` falls back to `task.updated_at`, which is current.
+    const runsAreCurrent = railRunIsCurrent(staleOrigins);
     for (const task of visibleTasks) {
       const info = attentionByTask.get(task.task_id);
-      const run = latestRunByTask.get(task.task_id) ?? null;
+      const run = runsAreCurrent ? latestRunByTask.get(task.task_id) ?? null : null;
       const group = railGroupOf({ task, kinds: info?.kinds ?? NO_KINDS, attentionComplete });
       groups[group].push({ task, ask: info?.ask ?? null, run, activity: activityOf(task, run) });
     }
@@ -318,7 +323,7 @@ export default function WorkspacePage() {
       groups[group].sort((a, b) => b.activity.localeCompare(a.activity));
     }
     return groups;
-  }, [visibleTasks, attentionByTask, latestRunByTask, attentionComplete]);
+  }, [visibleTasks, attentionByTask, latestRunByTask, attentionComplete, staleOrigins]);
 
   const selectedTask = useMemo(
     () => tasks.find((task) => task.task_id === selectedTaskId) ?? null,

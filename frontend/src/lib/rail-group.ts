@@ -169,6 +169,29 @@ export const RAIL_STALE_ORDER: readonly RailStaleOrigin[] = ["tasks", "projects"
  * The rail notice for each sibling read that failed. Separate messages, not the
  * attention notice: each names its own read and claims nothing about the others.
  */
+/**
+ * Whether a run the rail is holding may be presented as that task's current one.
+ *
+ * When the runs read is rejected the page keeps its previous page of runs, which is
+ * the right thing — blanking the rail on every failed refresh would be its own kind
+ * of dishonesty — but the run in hand is then from the read *before* the failure. It
+ * may have been queued and finished since. The rail was rendering it as the current
+ * state dot, and folding its timestamps into `activityOf`, so a stale run also
+ * decided where the task sat in the ordering.
+ *
+ * The banner already says the runs are stale. Saying it and then presenting them as
+ * current is the shape this file exists to refuse: the notice discloses while the
+ * thing beside it goes on asserting.
+ *
+ * Only a *rejected* read disqualifies. A capped one does not, because the rail makes
+ * no claim from absence — it renders nothing when it holds no run for a task, rather
+ * than "no runs yet". Its sibling on the portfolio board does make that claim, which
+ * is why `taskRunsLineOf` there has to care about the cap and this does not.
+ */
+export function railRunIsCurrent(staleOrigins: readonly RailStaleOrigin[]): boolean {
+  return !staleOrigins.includes("runs");
+}
+
 export const RAIL_STALE_NOTICE_KEY: Record<RailStaleOrigin, string> = {
   tasks: "workspace.rail.tasksUnreadable",
   projects: "workspace.rail.projectsUnreadable",
