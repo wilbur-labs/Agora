@@ -117,6 +117,26 @@ export const portfolio = {
         save: "Save charter",
         saving: "Saving…",
       },
+      crLog: {
+        title: "Change log",
+        open: "{count} open",
+        // "Read, and every row classified." The only state in which this UI is
+        // allowed to say nothing is open.
+        allClear: "No open change requests.",
+        // Read, but some rows carry a status this reader does not understand. The
+        // count above is then a floor, and saying so is the whole point.
+        unclassified: "{count} with a status this reader cannot read — the count above may be short.",
+        empty: "This project keeps a change log and has raised nothing in it.",
+        // Absent is a fact about the project.
+        none: "This project keeps no change log ({path}).",
+        // Everything else is a fact about the read, and never a number.
+        unreadable: "The change log could not be read — no count is shown.",
+        tooLarge: "The change log is too large to read whole — no count is shown.",
+        malformed: "The change log's table does not have the expected columns, so no status can be trusted. Rows to fix: {ids}",
+        unreported: "This server does not report the change log.",
+        openBadge: "OPEN",
+        unknownBadge: "?",
+      },
       metrics: {
         progress: "Progress",
         verified: "Verified",
@@ -289,6 +309,20 @@ export const portfolio = {
         successPlaceholder: "怎样算完成",
         save: "保存章程",
         saving: "保存中…",
+      },
+      crLog: {
+        title: "变更记录",
+        open: "{count} 项未决",
+        allClear: "没有未决的变更请求。",
+        unclassified: "{count} 项的状态本读取器读不懂——上面的数字可能偏少。",
+        empty: "这个项目有变更记录,但还没提出过任何一条。",
+        none: "这个项目没有变更记录({path})。",
+        unreadable: "变更记录读不到——不显示任何条数。",
+        tooLarge: "变更记录太大,无法完整读取——不显示任何条数。",
+        malformed: "变更记录的表格列数不对,任何状态都不可信。需要修的行:{ids}",
+        unreported: "此服务器不提供变更记录。",
+        openBadge: "未决",
+        unknownBadge: "?",
       },
       metrics: {
         progress: "进度",

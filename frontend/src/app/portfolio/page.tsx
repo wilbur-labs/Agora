@@ -33,6 +33,7 @@ import {
 } from "@/lib/control-plane";
 import { listRuns, type RunState, type RunSummary } from "@/lib/execution";
 import { progressBarOf } from "@/lib/progress-snapshot";
+import { attentionRowsOf, crLogHeadlineOf, crLogViewOf } from "@/lib/cr-log";
 import {
   PORTFOLIO_ATTENTION_NOTICE_KEY,
   PORTFOLIO_GROUPS,
@@ -433,6 +434,13 @@ function ProjectCockpit({ dashboard, onEditCharter }: { dashboard: ProjectDashbo
         <Button variant="outline" size="sm" onClick={onEditCharter}><Pencil className="size-3.5" /> {t("portfolio.cockpit.charter.edit")}</Button>
       </div>
 
+      {/* The project's own change log, read from its repository.
+
+          Why it sits here, directly under the charter: the charter says what this
+          project is for, and an open CR is the record of something proposing to
+          change that. The two belong in one eyeful or the mechanism is decoration. */}
+      <ProjectChangeLog dashboard={dashboard} />
+
       {/* Produced progress, snapshot-driven completion, and health.
           The middle tile used to be `metrics.verified_pct`. It is gone from the
           display layer by recorded decision: that percentage counts a criterion as
@@ -787,6 +795,63 @@ function NewProjectPanel({ onClose, onCreated }: { onClose: () => void; onCreate
         {error && <Notice tone="error">{error}</Notice>}
         <Button type="submit" size="lg" className="w-full" disabled={submitting || !projectId.trim()}>{submitting ? t("portfolio.newProject.submitting") : t("portfolio.newProject.submit")}</Button>
       </form>
+    </div>
+  );
+}
+
+// The project's CR Log strip. It renders; it does not decide.
+//
+// Every sentence and its tone come from `crLogHeadlineOf` (lib/cr-log.ts), which
+// `node --test` executes directly. That split is not tidiness: while the branching
+// lived here in JSX it could not be executed by a test, and the tests written for it
+// passed with the component's own logic reverted — a test that cannot fail, guarding
+// the one claim in this feature that must never be made wrongly. "No open change
+// requests" is a claim, and it is reachable only through `allClearSayable`.
+function ProjectChangeLog({ dashboard }: { dashboard: ProjectDashboard }) {
+  const { t } = useI18n();
+  const view = crLogViewOf(dashboard.cr_log);
+  const rows = attentionRowsOf(view);
+  const path = dashboard.cr_log?.source ?? ".agora/development/CR-LOG.md";
+  const { key, params, tone } = crLogHeadlineOf(view, path);
+
+  return (
+    <div className="rounded-xl border bg-muted/30 p-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+          <FileCheck2 className="size-3.5" /> {t("portfolio.cockpit.crLog.title")}
+        </span>
+        <span
+          className={cn(
+            "text-sm",
+            tone === "attention" && "font-semibold text-amber-600 dark:text-amber-400",
+            tone === "unknown" && "text-muted-foreground",
+          )}
+        >
+          {t(`portfolio.cockpit.crLog.${key}`, params)}
+        </span>
+      </div>
+      {/* Stated whenever it is true, including beside a non-zero count: the number
+          next to it is then a floor, and a floor presented alone is a wrong number. */}
+      {view.kind === "rows" && view.unrecognised > 0 && (
+        <p className="mt-1 text-xs text-muted-foreground">
+          {t("portfolio.cockpit.crLog.unclassified", { count: String(view.unrecognised) })}
+        </p>
+      )}
+      {rows.length > 0 && (
+        <ul className="mt-2 space-y-1">
+          {rows.map((cr) => (
+            <li key={cr.id} className="flex items-baseline gap-2 text-xs leading-relaxed">
+              <Badge variant={cr.status_token === "open" ? "default" : "outline"} className="shrink-0">
+                {cr.status_token === "open"
+                  ? t("portfolio.cockpit.crLog.openBadge")
+                  : t("portfolio.cockpit.crLog.unknownBadge")}
+              </Badge>
+              <span className="shrink-0 font-mono text-muted-foreground">{cr.id}</span>
+              <span className="min-w-0 flex-1">{cr.description}</span>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

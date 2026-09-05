@@ -1,4 +1,5 @@
 import { getApiBase } from "@/lib/api";
+import type { CRLogLike } from "@/lib/cr-log";
 import type { ProgressSnapshotLike } from "@/lib/progress-snapshot";
 
 export type TaskState =
@@ -640,9 +641,53 @@ export interface ProjectDashboard {
   // project that keeps no snapshot, which is why `progressBarOf` treats `undefined`
   // as unknown rather than as an absence.
   progress_snapshot?: ProgressSnapshotLike | null;
+  // The project's own CR Log, read from its repository (see lib/cr-log.ts and
+  // tasks/agora/adr/0004). Optional in the *type* for the same reason as the
+  // snapshot above: a server older than this UI sends no such field, and "this
+  // server does not report it" must stay distinguishable from "this project keeps
+  // no CR Log" — otherwise the UI states a fact about the project on the strength
+  // of a fact about the server.
+  cr_log?: CRLogLike | null;
   next_action: ProjectNextAction;
   tasks: DashboardTask[];
   truncated: boolean;
+}
+
+// The project's decision records. Its own request, not a dashboard field: reading
+// them lists a directory and opens every record in it, and the dashboard is what a
+// task switch waits for.
+export interface DecisionRecordLike {
+  number: number;
+  filename: string;
+  readable: boolean;
+  title: string | null;
+  status: string | null;
+  /** "proposed" | "accepted" | "superseded" | "deprecated" | "rejected" | "unrecognised" */
+  status_token: string;
+  superseded_by: string | null;
+  date: string | null;
+}
+
+export interface ProjectDecisions {
+  project_id: string;
+  available: boolean;
+  /** "absent" | "unreadable" when unavailable. */
+  reason: string | null;
+  /** null — not [] — whenever `available` is false. */
+  records: DecisionRecordLike[] | null;
+  /** null when unavailable. Travels with `records` so a count of decisions can
+   *  never be shown without the number of records that could not be opened. */
+  unreadable_count: number | null;
+  /** Files in the directory not named as records. Named rather than dropped, and
+   *  `null` — not [] — when the directory could not be listed: whether anything is
+   *  misplaced in there is then unknown, and a consumer reading `.length` off an
+   *  empty array would be reading an answer nobody was able to look up. */
+  unnumbered_files: string[] | null;
+  source: string;
+}
+
+export function fetchProjectDecisions(projectId: string, signal?: AbortSignal): Promise<ProjectDecisions> {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/decisions`, { signal });
 }
 
 // The project cockpit projection: charter, progress vs verified completion, the
