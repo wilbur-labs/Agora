@@ -137,18 +137,33 @@ export const portfolio = {
         openBadge: "OPEN",
         unknownBadge: "?",
       },
+      group: {
+        // "at least", because the board holds one page of tasks and a full page is
+        // indistinguishable from "there is more".
+        atLeast: "≥{count}",
+      },
       metrics: {
         progress: "Progress",
         verified: "Verified",
         health: "Health",
         weight: "{done}/{total} criteria",
+        // Shown instead of the number when the dashboard's task page was capped: a
+        // percentage of an unstated subset is not a percentage of the project.
+        partial: "Not shown — the dashboard's task read reached its limit",
       },
       nextAction: {
         label: "Next action",
         forTask: "Task: {title}",
         allClear: "Nothing needs you — the project is on track.",
+        // Shown instead of any action when the dashboard's task read reached its
+        // limit: a candidate found on one page is not the project's next action, and
+        // finding none on one page is not "nothing to do".
+        unknown: "Next action not determined — the dashboard's task read reached its limit",
         attention: "{count} need attention",
         pending: "{count} awaiting you",
+        // Floors, for a rollup over a page that was not the project.
+        attentionAtLeast: "≥{count} need attention",
+        pendingAtLeast: "≥{count} awaiting you",
         partial: "Large project — counts cover the first page of tasks.",
       },
       card: {
@@ -166,6 +181,9 @@ export const portfolio = {
         status: "{adapter} · {state}",
         viewResult: "View result",
         none: "No runs yet",
+        // Said instead of "No runs yet" when the board's one page of runs did not
+        // cover this task. Absent from a page it did not fully read is not "none".
+        unknown: "Runs not fully read — this card cannot say",
       },
       delivery: "Delivered {count} file(s)",
       advance: {
@@ -199,6 +217,9 @@ export const portfolio = {
     },
     archived: {
       show: "Show archived ({count})",
+      // Without the number, for when the task read was capped or failed and the count
+      // is not one this board can vouch for.
+      showSome: "Show archived",
       hide: "Hide archived",
     },
     create: {
@@ -324,18 +345,25 @@ export const portfolio = {
         openBadge: "未决",
         unknownBadge: "?",
       },
+      group: {
+        atLeast: "≥{count}",
+      },
       metrics: {
         progress: "进度",
         verified: "已验证",
         health: "健康度",
         weight: "{done}/{total} 项标准",
+        partial: "不显示——驾驶舱这次任务读取到达了上限",
       },
       nextAction: {
         label: "下一步",
         forTask: "任务:{title}",
         allClear: "没有待你处理的事——项目进展正常。",
+        unknown: "无法判定下一步——驾驶舱这次任务读取到达了上限",
         attention: "{count} 项需要关注",
         pending: "{count} 项待你处理",
+        attentionAtLeast: "≥{count} 项需要关注",
+        pendingAtLeast: "≥{count} 项待你处理",
         partial: "项目较大——统计仅覆盖第一页任务。",
       },
       card: {
@@ -353,6 +381,7 @@ export const portfolio = {
         status: "{adapter} · {state}",
         viewResult: "查看结果",
         none: "尚无运行",
+        unknown: "运行记录未读全——这张卡说不准",
       },
       delivery: "已交付 {count} 个文件",
       advance: {
@@ -386,6 +415,7 @@ export const portfolio = {
     },
     archived: {
       show: "显示已归档（{count}）",
+      showSome: "显示已归档",
       hide: "隐藏已归档",
     },
     create: {

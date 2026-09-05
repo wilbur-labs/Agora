@@ -32,6 +32,11 @@ import {
   type TaskState,
 } from "@/lib/control-plane";
 import { listRuns, type RunState, type RunSummary } from "@/lib/execution";
+
+// The runs page this board asks for. Named rather than written twice, so the
+// reach check compares against the same number the request used — a literal in
+// one of the two places is how a capped read starts looking complete.
+const RUNS_PAGE_LIMIT = 500;
 import { progressBarOf } from "@/lib/progress-snapshot";
 import { attentionRowsOf, crLogHeadlineOf, crLogViewOf } from "@/lib/cr-log";
 import {
@@ -41,7 +46,12 @@ import {
   attentionReadCovers,
   portfolioAllClearSayable,
   portfolioBucketOf,
+  archivedCountOf,
+  portfolioGroupCountOf,
+  projectMetricsSayable,
+  projectNextActionLineOf,
   taskInventoryReachOf,
+  taskRunsLineOf,
   type AttentionRead,
   type PortfolioBucket,
   type TaskInventoryReach,
@@ -106,6 +116,7 @@ export default function PortfolioPage() {
   // read finishing: before anything lands, the board's emptiness is evidence of
   // nothing, and calling that a failed read is its own falsehood.
   const [taskInventory, setTaskInventory] = useState<TaskInventoryReach>("pending");
+  const [runsReach, setRunsReach] = useState<TaskInventoryReach>("pending");
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [showCreate, setShowCreate] = useState(false);
   const [showNewProject, setShowNewProject] = useState(false);
@@ -139,7 +150,7 @@ export default function PortfolioPage() {
       settleRead(() => listTasks()),
       settleRead(() => listProjects()),
       settleRead(() => listOpenAttention()),
-      settleRead(() => listRuns({ limit: 500 })),
+      settleRead(() => listRuns({ limit: RUNS_PAGE_LIMIT })),
     ]);
     // How far the attention read got, kept rather than discarded. Only `items` was
     // read here, and `truncated` — which `listOpenAttention` has always returned —
@@ -149,6 +160,10 @@ export default function PortfolioPage() {
     if (token !== loadToken.current) return; // a newer refresh already owns the board
     setAttentionRead(report.attentionReach);
     setTaskInventory(taskInventoryReachOf(tasksRead, TASK_PAGE_LIMIT));
+    // The runs read is one page too, and its cap is the number this component asks
+    // for. Without this the cards could only tell a failed read from a good one, and
+    // a *capped* read looks exactly like "this task has no runs" from a card's seat.
+    setRunsReach(taskInventoryReachOf(runsRead, RUNS_PAGE_LIMIT));
     if (attentionResult.status === "fulfilled") {
       setAttention(attentionResult.value.items);
     } else {
@@ -217,6 +232,7 @@ export default function PortfolioPage() {
   );
   const scoped = projectFilter === "all" ? tasks : tasks.filter((task) => task.project_id === projectFilter);
   const archivedCount = scoped.filter((task) => task.archived_at).length;
+  const archivedShown = archivedCountOf(archivedCount, taskInventory);
   const visible = showArchived ? scoped : scoped.filter((task) => !task.archived_at);
 
   // task_id -> open attention kinds present, plus the first open item's title (the "ask").
@@ -270,16 +286,33 @@ export default function PortfolioPage() {
           <div className="flex items-center gap-2">
             <select
               value={projectFilter}
-              onChange={(event) => setProjectFilter(event.target.value)}
+              // The editor is bound to whatever project the cockpit is showing. Left
+              // open across a filter change it re-mounted for the next project as soon
+              // as that dashboard arrived — an edit box for one project's charter,
+              // opened for another's.
+              onChange={(event) => { setShowCharter(false); setProjectFilter(event.target.value); }}
               className="h-9 rounded-lg border bg-background px-3 text-sm"
               aria-label={t("portfolio.filter.label")}
             >
               <option value="all">{t("portfolio.filter.allProjects")}</option>
               {projects.map((project) => <option key={project}>{project}</option>)}
             </select>
+            {/* Uncertainty is deliberately NOT a reason to show this. Clicking it
+                filters the tasks already loaded — it fetches nothing — so on a capped
+                read that loaded no archived tasks the button would reveal nothing and
+                then offer to hide it again. The board already says its read was
+                partial, in the notice below the action group; a button that cannot act
+                on that is noise, not honesty. */}
             {(archivedCount > 0 || showArchived) && (
               <Button variant={showArchived ? "secondary" : "outline"} size="lg" onClick={() => setShowArchived((value) => !value)} aria-pressed={showArchived}>
-                {showArchived ? t("portfolio.archived.hide") : t("portfolio.archived.show", { count: archivedCount })}
+                {showArchived
+                  ? t("portfolio.archived.hide")
+                  // Counted off the same bounded, possibly stale snapshot as the group
+                  // badges, so it goes through the same helper rather than stating a
+                  // number the read does not support.
+                  : archivedShown.kind === "exact"
+                    ? t("portfolio.archived.show", { count: archivedShown.count })
+                    : t("portfolio.archived.showSome")}
               </Button>
             )}
             <Button variant="outline" size="lg" onClick={load} disabled={loading} aria-label={t("portfolio.actions.refresh")}>
@@ -294,7 +327,13 @@ export default function PortfolioPage() {
       <div className="mx-auto max-w-[1600px] space-y-6 p-5 md:p-8">
         {error && <Notice tone="error">{t("portfolio.errors.loadFailed", { error })}</Notice>}
 
-        {dashboard && <ProjectCockpit dashboard={dashboard} onEditCharter={() => setShowCharter(true)} />}
+        {/* Only while it is this project's. Selecting another project leaves the
+            previous dashboard in state until the new request settles, and the cockpit
+            underneath a B-filtered board was rendering A's charter, metrics and next
+            action as if they were B's. */}
+        {dashboard && dashboard.project_id === projectFilter && (
+          <ProjectCockpit dashboard={dashboard} onEditCharter={() => setShowCharter(true)} />
+        )}
 
         {PORTFOLIO_GROUPS.map((group) => {
           const cards = tagged
@@ -310,7 +349,7 @@ export default function PortfolioPage() {
               >
                 {group.collapsible && <ChevronRight className={cn("size-4 transition-transform", !collapsed && "rotate-90")} />}
                 <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">{t(`portfolio.groups.${group.id}`)}</h2>
-                <Badge variant="secondary">{cards.length}</Badge>
+                <GroupCount count={cards.length} taskInventory={taskInventory} attentionRead={attentionRead} />
               </button>
               {/* "Nothing needs you right now" is a claim, and an empty action group
                   only supports it when the attention read covered every open item
@@ -349,7 +388,7 @@ export default function PortfolioPage() {
               {!collapsed && cards.length > 0 && (
                 <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                   {cards.map(({ task, bucket, ask }) => (
-                    <TaskCard key={task.task_id} task={task} bucket={bucket} ask={ask} latestRun={latestRunByTask.get(task.task_id) ?? null} dash={dashboardByTask.get(task.task_id) ?? null} onConflict={load} onAdvanced={replaceTask} />
+                    <TaskCard key={task.task_id} task={task} bucket={bucket} ask={ask} latestRun={latestRunByTask.get(task.task_id) ?? null} runsReach={runsReach} dash={dashboardByTask.get(task.task_id) ?? null} onConflict={load} onAdvanced={replaceTask} />
                   ))}
                 </div>
               )}
@@ -371,7 +410,7 @@ export default function PortfolioPage() {
           onCreated={async () => { setShowNewProject(false); await load(); }}
         />
       )}
-      {showCharter && dashboard && (
+      {showCharter && dashboard && dashboard.project_id === projectFilter && (
         <CharterPanel
           projectId={dashboard.project_id}
           charter={dashboard.charter}
@@ -392,6 +431,8 @@ export default function PortfolioPage() {
 function ProjectCockpit({ dashboard, onEditCharter }: { dashboard: ProjectDashboard; onEditCharter: () => void }) {
   const { t, te } = useI18n();
   const { charter, metrics, next_action: next } = dashboard;
+  const metricsSayable = projectMetricsSayable(dashboard.truncated);
+  const nextLine = projectNextActionLineOf(next.action, next.partial);
   const hasCharter = Boolean(charter.goal || charter.non_goals.length || charter.success_criteria.length);
   const attention = metrics.health === "attention";
 
@@ -449,13 +490,21 @@ function ProjectCockpit({ dashboard, onEditCharter }: { dashboard: ProjectDashbo
           them. The tile now renders the project's RESUME progress snapshot — done
           items only in the number, in-progress as a translucent second segment — and
           renders no number at all when there is no snapshot to count. */}
-      <div className="grid gap-3 sm:grid-cols-3">
-        <MetricTile
-          label={t("portfolio.cockpit.metrics.progress")}
-          pct={metrics.progress_pct}
-          sub={t("portfolio.cockpit.metrics.weight", { done: metrics.produced_weight, total: metrics.total_weight })}
-          barClass="bg-blue-500"
-        />
+      <div className="grid gap-3 sm:grid-cols-2">
+        {/* The weight-derived progress tile is gone, and the reason is the one written
+            over the card block below it: `tasks/progress.py` marks every criterion of
+            the task's **current** spec "produced" whenever any historical worker run
+            succeeded, with no binding to the revision those criteria belong to. A run
+            against revision A therefore reports revision B's new criteria as produced,
+            and the tile could read 100% and "N/N criteria" with nothing having
+            produced them.
+            Calling it Progress rather than Verified does not supply the missing
+            evidence — especially beside a subline that names the units as current
+            criteria. `truncated` was not the defect here and gating on it did not
+            repair this; it is the same unbound signal `verified_pct` was dropped for.
+            What remains in this row is the snapshot bar beside it, which counts a file
+            the humans maintain, and health, whose blocked/failed evidence does not
+            depend on revision binding. Restoring a number here is a backend change. */}
         <div className="rounded-xl border bg-muted/30 p-3">
           <p className="text-xs font-medium text-muted-foreground">{t("common.progress.label")}</p>
           <ProgressSnapshotBar
@@ -470,21 +519,33 @@ function ProjectCockpit({ dashboard, onEditCharter }: { dashboard: ProjectDashbo
             className="mt-1"
           />
         </div>
-        <div className={cn("rounded-xl border p-3", attention ? "border-orange-500/40 bg-orange-500/5" : "bg-muted/30")}>
+        <div className={cn("rounded-xl border p-3", attention && metricsSayable ? "border-orange-500/40 bg-orange-500/5" : "bg-muted/30")}>
           <p className="text-xs font-medium text-muted-foreground">{t("portfolio.cockpit.metrics.health")}</p>
-          <p className={cn("mt-2 flex items-center gap-1.5 text-lg font-semibold", attention ? "text-orange-600 dark:text-orange-400" : "text-emerald-600 dark:text-emerald-400")}>
-            {attention ? <AlertTriangle className="size-4" /> : <CircleCheck className="size-4" />}
-            {te("health", metrics.health)}
-          </p>
+          {/* Health is the same rollup. A green "normal" over the first page says
+              nothing about the task beyond it, and green is the half nobody re-checks. */}
+          {metricsSayable ? (
+            <p className={cn("mt-2 flex items-center gap-1.5 text-lg font-semibold", attention ? "text-orange-600 dark:text-orange-400" : "text-emerald-600 dark:text-emerald-400")}>
+              {attention ? <AlertTriangle className="size-4" /> : <CircleCheck className="size-4" />}
+              {te("health", metrics.health)}
+            </p>
+          ) : (
+            <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{t("portfolio.cockpit.metrics.partial")}</p>
+          )}
         </div>
       </div>
 
       {/* The one deterministic next action for the whole project. */}
-      <div className={cn("rounded-xl border-l-4 bg-muted/30 px-4 py-3", next.attention ? "border-l-orange-500" : next.action === "none" ? "border-l-emerald-500" : "border-l-primary")}>
+      <div className={cn("rounded-xl border-l-4 bg-muted/30 px-4 py-3", next.attention ? "border-l-orange-500" : nextLine.kind === "allClear" ? "border-l-emerald-500" : "border-l-primary")}>
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="min-w-0">
             <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">{t("portfolio.cockpit.nextAction.label")}</p>
-            {next.action === "none" ? (
+            {/* All three of these are the same decision, taken once. Guarding only the
+                dedicated all-clear sentence left the enum label "Nothing to do" saying
+                it again one line down, and let a partial page's second-best candidate
+                be labelled the project's next action. */}
+            {nextLine.kind === "unknown" ? (
+              <p className="mt-0.5 text-sm text-muted-foreground">{t("portfolio.cockpit.nextAction.unknown")}</p>
+            ) : nextLine.kind === "allClear" ? (
               <p className="mt-0.5 text-sm font-medium">{t("portfolio.cockpit.nextAction.allClear")}</p>
             ) : (
               <p className="mt-0.5 text-sm font-semibold">
@@ -493,33 +554,34 @@ function ProjectCockpit({ dashboard, onEditCharter }: { dashboard: ProjectDashbo
               </p>
             )}
           </div>
+          {/* Both badges are rollups over the same bounded page as the line above, and
+              the backend says so: `pending_count` may undercount when `partial`, and on
+              truncation the route supplements only off-page `blocked` and `failed`, so
+              an off-page `running` task with no worker success raises attention that is
+              never counted. Beside a line reading "next action not determined", an
+              exact count was the same unsupported precision the line had just given up.
+              Shown as a floor instead — the observation is real, the total is not. */}
           <div className="flex items-center gap-2 text-[11px]">
             {next.attention_count > 0 && (
               <span className="inline-flex items-center gap-1 rounded-full bg-orange-500/10 px-2 py-0.5 font-medium text-orange-600 dark:text-orange-400">
-                <AlertTriangle className="size-3" /> {t("portfolio.cockpit.nextAction.attention", { count: next.attention_count })}
+                <AlertTriangle className="size-3" />
+                {next.partial
+                  ? t("portfolio.cockpit.nextAction.attentionAtLeast", { count: next.attention_count })
+                  : t("portfolio.cockpit.nextAction.attention", { count: next.attention_count })}
               </span>
             )}
             {next.pending_count > 0 && (
-              <span className="rounded-full bg-primary/10 px-2 py-0.5 font-medium text-primary">{t("portfolio.cockpit.nextAction.pending", { count: next.pending_count })}</span>
+              <span className="rounded-full bg-primary/10 px-2 py-0.5 font-medium text-primary">
+                {next.partial
+                  ? t("portfolio.cockpit.nextAction.pendingAtLeast", { count: next.pending_count })
+                  : t("portfolio.cockpit.nextAction.pending", { count: next.pending_count })}
+              </span>
             )}
           </div>
         </div>
-        {next.partial && <p className="mt-1 text-[11px] text-muted-foreground">{t("portfolio.cockpit.nextAction.partial")}</p>}
+        {next.partial && nextLine.kind !== "unknown" && <p className="mt-1 text-[11px] text-muted-foreground">{t("portfolio.cockpit.nextAction.partial")}</p>}
       </div>
     </section>
-  );
-}
-
-function MetricTile({ label, pct, sub, barClass }: { label: string; pct: number; sub: string; barClass: string }) {
-  return (
-    <div className="rounded-xl border bg-muted/30 p-3">
-      <p className="text-xs font-medium text-muted-foreground">{label}</p>
-      <p className="mt-1 text-2xl font-bold tabular-nums">{pct}%</p>
-      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted">
-        <div className={cn("h-full rounded-full transition-all", barClass)} style={{ width: `${Math.min(100, Math.max(0, pct))}%` }} />
-      </div>
-      <p className="mt-1.5 text-[11px] text-muted-foreground">{sub}</p>
-    </div>
   );
 }
 
@@ -546,8 +608,24 @@ const RUN_TONE: Record<RunState, string> = {
   abandoned: "bg-red-500",
 };
 
-function TaskCard({ task, bucket, ask, latestRun, dash, onAdvanced, onConflict }: { task: TaskManifest; bucket: Bucket; ask: string | null; latestRun: RunSummary | null; dash: DashboardTask | null; onAdvanced: (updated: TaskManifest) => void; onConflict: () => Promise<void> }) {
+// The group's badge. `cards.length` is how many this board is holding, which is only
+// the group's size when the task read covered every task — see portfolioGroupCountOf.
+function GroupCount({ count, taskInventory, attentionRead }: { count: number; taskInventory: TaskInventoryReach; attentionRead: AttentionRead }) {
+  const { t } = useI18n();
+  const shown = portfolioGroupCountOf(count, taskInventory, attentionRead);
+  if (shown.kind === "unknown") return null;
+  return (
+    <Badge variant="secondary">
+      {shown.kind === "exact"
+        ? shown.count
+        : t("portfolio.cockpit.group.atLeast", { count: String(shown.count) })}
+    </Badge>
+  );
+}
+
+function TaskCard({ task, bucket, ask, latestRun, runsReach, dash, onAdvanced, onConflict }: { task: TaskManifest; bucket: Bucket; ask: string | null; latestRun: RunSummary | null; runsReach: TaskInventoryReach; dash: DashboardTask | null; onAdvanced: (updated: TaskManifest) => void; onConflict: () => Promise<void> }) {
   const { t, te } = useI18n();
+  const runLine = taskRunsLineOf(Boolean(latestRun), runsReach);
   const [busy, setBusy] = useState(false);
   const [pending, setPending] = useState<null | "advance" | "archive">(null);
   const [error, setError] = useState<string | null>(null);
@@ -589,7 +667,12 @@ function TaskCard({ task, bucket, ask, latestRun, dash, onAdvanced, onConflict }
       {ask && <p className="mt-1 line-clamp-2 rounded-md bg-muted/50 px-2 py-1 text-xs leading-relaxed">{ask}</p>}
       {!ask && task.description && <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-muted-foreground">{task.description}</p>}
       <div className="mt-2 flex items-center gap-2 text-[11px]">
-        {latestRun ? (
+        {/* "No runs yet" is a claim about the task; absence from a page the board did
+            not fully read is not that claim. Which of the three this is is decided
+            once, by taskRunsLineOf — asking `latestRun ?` here as well would be the
+            same rule in two places, and the reassuring branch is the one it would
+            eventually disagree about. */}
+        {runLine.kind === "run" && latestRun ? (
           <>
             <span className="flex items-center gap-1 text-muted-foreground">
               <span className={cn("size-1.5 rounded-full", RUN_TONE[latestRun.state])} />
@@ -598,7 +681,11 @@ function TaskCard({ task, bucket, ask, latestRun, dash, onAdvanced, onConflict }
             <a href={`/runs?task=${encodeURIComponent(task.task_id)}`} className="font-medium text-primary hover:underline">{t("portfolio.card.run.viewResult")}</a>
           </>
         ) : (
-          <span className="text-muted-foreground">{t("portfolio.card.run.none")}</span>
+          <span className="text-muted-foreground">
+            {runLine.kind === "none"
+              ? t("portfolio.card.run.none")
+              : t("portfolio.card.run.unknown")}
+          </span>
         )}
       </div>
       {delivery && (delivery.commit || delivery.fileCount > 0) && (
@@ -616,17 +703,18 @@ function TaskCard({ task, bucket, ask, latestRun, dash, onAdvanced, onConflict }
           {t("portfolio.cockpit.card.next", { action: te("nextAction", dash.next_action.action) })}
         </p>
       )}
-      {dash && dash.has_spec && (
-        <div className="mt-2">
-          <div className="flex items-center justify-between text-[11px] text-muted-foreground">
-            <span>{t("portfolio.cockpit.card.verified", { pct: dash.total_weight ? Math.round((dash.verified_weight * 100) / dash.total_weight) : 0 })}</span>
-            <span className="tabular-nums">{dash.verified_weight}/{dash.total_weight}</span>
-          </div>
-          <div className="mt-1 h-1 overflow-hidden rounded-full bg-muted">
-            <div className="h-full rounded-full bg-emerald-500" style={{ width: `${dash.total_weight ? Math.min(100, (dash.verified_weight * 100) / dash.total_weight) : 0}%` }} />
-          </div>
-        </div>
-      )}
+      {/* The card used to render "Verified N%" here, from `dash.verified_weight` over
+          `dash.total_weight`. That is the same number the cockpit tile above removed,
+          reached the same way: `tasks/progress.py` marks the task's *current* criterion
+          set verified whenever the task is verified/done and any historical worker run
+          succeeded, without binding that run to the spec revision the criteria belong
+          to. A task whose requirements were revised after a successful run therefore
+          read 100% while nothing had verified the new criteria.
+          The page had already written down why that number cannot be shown and then
+          went on showing it one component away — the defect is not the wording, it is
+          the evidence, and no label repairs it. The lifecycle state below is kept: it
+          is authoritative state, not a verification claim. Restoring a percentage here
+          needs evidence bound to the current revision, which is a backend change. */}
       <div className="mt-4 flex items-center justify-between gap-2">
         <span className="text-xs capitalize text-muted-foreground">{te("taskState", task.state)} · P{task.priority}</span>
         <span className="flex items-center gap-3">

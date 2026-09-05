@@ -222,6 +222,150 @@ export function portfolioAllClearSayable(
 }
 
 /**
+ * What a group's badge may say about how many cards are in it.
+ *
+ * `cards.length` is how many tasks *this board is holding*, and the board holds one
+ * page: `listTasks` caps at `TASK_PAGE_LIMIT` and returns a bare array, so a full page
+ * is indistinguishable from "there is more". Rendering that number as the group's size
+ * turns "I can see this many" into "there are this many" — the same substitution the
+ * attention notice above already exists to prevent, one element to its left.
+ *
+ * So the count is exact only when **both** the task read and the open-attention read
+ * were complete -- the second because which column a card is in depends on it -- and
+ * "at least N" only
+ * when it was **capped** — a capped page really was read and really did hold that
+ * many. A *failed* read supports no lower bound at all: the board keeps its previous
+ * snapshot, so those cards are what was true last time. Nor does a load still in
+ * flight, where "at least 0" is true and useless. Both of those say nothing.
+ *
+ * The three outcomes are separate variants rather than a number plus a flag, so a
+ * caller cannot render the number without having handled which kind it is.
+ */
+export type PortfolioGroupCount =
+  | { kind: "unknown" }
+  | { kind: "exact"; count: number }
+  | { kind: "atLeast"; count: number };
+
+export function portfolioGroupCountOf(
+  cards: number,
+  taskInventory: TaskInventoryReach,
+  attentionRead: AttentionRead,
+): PortfolioGroupCount {
+  // **Two reads, not one.** The task inventory proves which tasks exist. It does not
+  // prove which column they belong in: `portfolioBucketOf` sorts on the open-attention
+  // page as well, and a task whose question lies past that page's cap is put under
+  // "could not be sorted" rather than into a calm column. Counting on the inventory
+  // alone therefore printed an exact "Needs you 0" beside a group whose real size the
+  // board had no way to know — the same presence/absence boundary the bucketing itself
+  // already respects, missed one element to its right.
+  const reads = [taskInventory, attentionRead];
+  if (reads.every((reach) => reach === "complete")) return { kind: "exact", count: cards };
+  // A lower bound needs every read to have at least succeeded. `unreadable` keeps the
+  // previous snapshot, so its cards are what was true last time; `pending` has no
+  // result at all. And a floor of zero says nothing worth reading.
+  if (reads.some((reach) => reach === "unreadable" || reach === "pending") || cards === 0) {
+    return { kind: "unknown" };
+  }
+  return { kind: "atLeast", count: cards };
+}
+
+/**
+ * The archived control's count, which depends on the task read and nothing else.
+ *
+ * Deliberately not `portfolioGroupCountOf`: whether a task is archived comes off the
+ * task itself, so the attention read has no bearing on it, and passing a literal
+ * "complete" to satisfy a parameter that does not apply is how a reach stops meaning
+ * anything.
+ */
+export function archivedCountOf(
+  cards: number,
+  taskInventory: TaskInventoryReach,
+): PortfolioGroupCount {
+  if (taskInventory === "complete") return { kind: "exact", count: cards };
+  if (taskInventory === "capped" && cards > 0) return { kind: "atLeast", count: cards };
+  return { kind: "unknown" };
+}
+
+/**
+ * What a task card may say about that task's runs.
+ *
+ * "No runs yet" is a statement about the task. The board arrives at it by looking for
+ * the task in one page of runs — `listRuns({ limit })`, a bare array with the same cap
+ * as the task list — so a task absent from that page has either no runs or runs the
+ * board did not fetch, and those are different sentences. A failed read reaches the
+ * same place from the other direction: no runs in hand, and nothing known.
+ *
+ * A run in hand is showable only when the read that produced it succeeded. A failed
+ * refresh leaves the previous page in place, so the run in hand may have been queued
+ * and finished since, and rendering it as the current state is a stale fact dressed as
+ * a fresh one.
+ */
+export type TaskRunsLine = { kind: "run" } | { kind: "none" } | { kind: "unknown" };
+
+export function taskRunsLineOf(
+  hasLatestRun: boolean,
+  runsReach: TaskInventoryReach,
+): TaskRunsLine {
+  // A failed *refresh* leaves the previous page of runs in place, so a run in hand is
+  // not necessarily from the read whose reach this is: the retained run may have been
+  // queued and since finished, and rendering it as the current state is a false
+  // statement dressed as a fresh one. "A run in hand is always showable" was true only
+  // of a read that succeeded.
+  if (runsReach === "unreadable") return { kind: "unknown" };
+  if (hasLatestRun) return { kind: "run" };
+  return runsReach === "complete" ? { kind: "none" } : { kind: "unknown" };
+}
+
+/**
+ * Whether the project cockpit's weight-derived tiles may be shown at all.
+ *
+ * `metrics.progress_pct`, `produced_weight/total_weight` and `health` are computed by
+ * the backend over the dashboard's **first page of tasks**, and the response says so
+ * in `truncated`. The page carried that flag for a footnote under one sentence and
+ * rendered the tiles as whole-project facts beside it: on a project whose first five
+ * hundred tasks are done, the cockpit could show 100% and a green health while task
+ * five hundred and one was blocked.
+ *
+ * A percentage of an unstated subset is not a percentage of the project, and there is
+ * no wording that repairs it — the same reason the middle tile stopped rendering
+ * `verified_pct`. So the number is not rendered at all, and the tile says why.
+ */
+export function projectMetricsSayable(truncated: boolean): boolean {
+  return !truncated;
+}
+
+/**
+ * What the cockpit may say about the project's next action.
+ *
+ * Three outcomes, because there are three things that can be true, and the first
+ * attempt at this only had two. It suppressed the dedicated "nothing needs you"
+ * sentence when the read was partial and then rendered the enum label for
+ * `action === "none"` in its place — which reads "Nothing to do". The claim survived
+ * the guard by moving one line down, in different words. A guard on one sentence is
+ * not a guard on the fact.
+ *
+ * And `partial` disqualifies a *named* action too, not only the empty one. The engine
+ * picks the highest-ranked candidate on the page it was given; the backend supplements
+ * off-page `blocked` and `failed` tasks but nothing else, so an off-page task ranking
+ * above the page's winner — `answer_clarifications` at 80 over `start_requirements` at
+ * 52 — leaves the board calling second place "the next action". Presence on a partial
+ * page supports "an action found on the page", not "the project's next action";
+ * absence supports neither.
+ */
+export type ProjectNextActionLine =
+  | { kind: "allClear" }
+  | { kind: "action" }
+  | { kind: "unknown" };
+
+export function projectNextActionLineOf(
+  action: string,
+  partial: boolean,
+): ProjectNextActionLine {
+  if (partial) return { kind: "unknown" };
+  return action === "none" ? { kind: "allClear" } : { kind: "action" };
+}
+
+/**
  * The board notice's message key per outcome. `complete` is absent **by type**:
  * there is nothing to disclose about a complete read, and a key that could answer
  * for it would invite rendering a warning over good data.

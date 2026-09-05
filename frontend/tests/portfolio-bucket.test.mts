@@ -13,6 +13,11 @@ import {
   type AttentionRead,
   type PortfolioBucket,
   type TaskInventoryReach,
+  archivedCountOf,
+  portfolioGroupCountOf,
+  taskRunsLineOf,
+  projectMetricsSayable,
+  projectNextActionLineOf,
 } from "../src/lib/portfolio-bucket.ts";
 import { railReadReport } from "../src/lib/rail-group.ts";
 import { portfolio as portfolioDictionary } from "../src/lib/i18n/dictionaries/portfolio.ts";
@@ -284,4 +289,263 @@ test("every outcome that is not a complete read has a sentence in both locales",
   for (const locale of ["en", "zh"] as const) {
     assert.ok(lookup(locale, "portfolio.buckets.unknown"), `${locale} is missing the unknown label`);
   }
+});
+
+// --- CR-10: a group badge is a count only when the read covered everything ----
+
+test("a group's badge is exact only when both reads covered everything", () => {
+  assert.deepEqual(portfolioGroupCountOf(7, "complete", "complete"), { kind: "exact", count: 7 });
+});
+
+test("a complete task read does not make an attention-dependent group exact", () => {
+  // Which column a card is in is decided on the open-attention page as well: a task
+  // whose question lies past that page's cap is put under "could not be sorted"
+  // rather than into a calm column. Counting on the inventory alone printed an exact
+  // "Needs you 0" beside a group whose real size the board had no way to know.
+  assert.deepEqual(portfolioGroupCountOf(3, "complete", "capped"), { kind: "atLeast", count: 3 });
+  assert.deepEqual(portfolioGroupCountOf(3, "complete", "unreadable"), { kind: "unknown" });
+  assert.deepEqual(portfolioGroupCountOf(0, "complete", "capped"), { kind: "unknown" });
+});
+
+test("a capped read on either side makes the badge 'at least'", () => {
+  // `cards.length` is how many the board is holding, and it holds one page:
+  // listTasks caps and returns a bare array, so a full page is indistinguishable
+  // from "there is more". Rendering it as the group's size turns "I can see this
+  // many" into "there are this many".
+  assert.deepEqual(portfolioGroupCountOf(500, "capped", "complete"), { kind: "atLeast", count: 500 });
+});
+
+test("a failed refresh supports no lower bound either", () => {
+  // The board keeps its previous snapshot when a refresh fails, so those cards are
+  // what was true last time. "At least seven" is a claim no current read stands
+  // behind -- capped is the only reach that earns a lower bound.
+  assert.deepEqual(portfolioGroupCountOf(7, "unreadable", "complete"), { kind: "unknown" });
+});
+
+test("a board with no result yet reports no count at all", () => {
+  // "at least 0" is true and useless.
+  assert.deepEqual(portfolioGroupCountOf(0, "pending", "pending"), { kind: "unknown" });
+});
+
+test("a floor of zero is not worth rendering", () => {
+  assert.deepEqual(portfolioGroupCountOf(0, "capped", "complete"), { kind: "unknown" });
+});
+
+test("the unknown variant carries no number to render by accident", () => {
+  // Narrowed to what it establishes. `atLeast` deliberately carries a count too, and
+  // nothing in the type stops a caller rendering it without the "at least" wording --
+  // that is a rendering rule, and rendering rules need a harness this suite does not
+  // have. What is provable here is that `unknown` has no number at all.
+  const unknown = portfolioGroupCountOf(3, "pending", "complete");
+  assert.equal("count" in unknown, false);
+});
+
+test("the archived count depends on the task read and nothing else", () => {
+  // Archive membership comes off the task itself, so the attention read has no
+  // bearing on it -- and passing a literal "complete" to satisfy a parameter that
+  // does not apply is how a reach stops meaning anything.
+  assert.deepEqual(archivedCountOf(3, "complete"), { kind: "exact", count: 3 });
+  assert.deepEqual(archivedCountOf(3, "capped"), { kind: "atLeast", count: 3 });
+  assert.deepEqual(archivedCountOf(0, "capped"), { kind: "unknown" });
+  assert.deepEqual(archivedCountOf(3, "unreadable"), { kind: "unknown" });
+});
+
+// --- CR-11: "No runs yet" is a claim about the task, not about the page ------
+
+test("a run in hand is showable when the read that produced it succeeded", () => {
+  for (const reach of ["complete", "capped"] as const) {
+    assert.deepEqual(taskRunsLineOf(true, reach), { kind: "run" });
+  }
+});
+
+test("a refresh in flight does not blank a run already on screen", () => {
+  // `pending` is not a read that succeeded, so it is kept out of the test above. It
+  // is still shown: a refresh in flight has not contradicted anything, and blanking
+  // the board on every reload would be its own kind of dishonesty.
+  assert.deepEqual(taskRunsLineOf(true, "pending"), { kind: "run" });
+});
+
+test("a run left over from a failed refresh is not stated as the current one", () => {
+  // The board keeps the previous page when the runs read fails, so the run in hand
+  // may have been queued and since finished. Rendering it is a stale fact dressed
+  // as a fresh one -- "a run in hand is always showable" was true only of a read
+  // that succeeded.
+  assert.deepEqual(taskRunsLineOf(true, "unreadable"), { kind: "unknown" });
+});
+
+test("no runs yet is sayable only when the runs read covered everything", () => {
+  assert.deepEqual(taskRunsLineOf(false, "complete"), { kind: "none" });
+});
+
+test("a task absent from a page the board did not fully read is unknown, not none", () => {
+  // The failure this exists to stop: a capped page looks exactly like "this task has
+  // no runs" from a card's seat, and the task-level Runs view would contradict it.
+  for (const reach of ["pending", "capped", "unreadable"] as const) {
+    assert.deepEqual(taskRunsLineOf(false, reach), { kind: "unknown" });
+  }
+});
+
+test("the board's claims are wired to the reads, and consumed where they are rendered", async () => {
+  // **What this test is, exactly.** It reads source text. It is not a render test,
+  // because `node --test` strips types but does not transform JSX, so this suite
+  // cannot mount a .tsx component at all. That limit is why the decisions live in
+  // this module as pure functions in the first place — those are tested properly
+  // above — and why this one exists only to check that the component still *uses*
+  // them.
+  //
+  // It was much weaker before. Asserting that a helper is called is satisfied by a
+  // call whose result is thrown away, and a review demonstrated seven mutations that
+  // each restored a user-visible false claim while every assertion here passed: a
+  // `void`-ed reach publication, raw counts rendered beside a dead helper call, the
+  // old `latestRun ? … : "No runs yet"` ternary, `(metricsSayable || true)`, the enum
+  // label put back inside the `unknown` branch, and one ownership guard deleted while
+  // the other was duplicated so the occurrence count still passed. So the assertions
+  // below pin the **rendering expressions**, not the calls.
+  const { readFile } = await import("node:fs/promises");
+  const file = await readFile(
+    new URL("../src/app/portfolio/page.tsx", import.meta.url), "utf8");
+  // Comments stripped first. Both halves of this test need it: a banned fragment must
+  // be bannable in the prose that explains why it is banned -- the first version
+  // failed on its own explanation -- and a required fragment satisfied by a comment
+  // would be a hole rather than a check.
+  const source = file.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
+
+  for (const [what, fragment] of [
+    // the decision is taken…
+    ["group count", "portfolioGroupCountOf(count, taskInventory, attentionRead)"],
+    ["archived count", "archivedCountOf(archivedCount, taskInventory)"],
+    ["run line", "taskRunsLineOf(Boolean(latestRun), runsReach)"],
+    ["metrics", "projectMetricsSayable(dashboard.truncated)"],
+    ["next action", "projectNextActionLineOf(next.action, next.partial)"],
+    // …and its result is what gets rendered
+    ["group badge", 'shown.kind === "exact"'],
+    ["archived label", 'archivedShown.kind === "exact"'],
+    ["run branch", 'runLine.kind === "run" && latestRun'],
+    ["no-runs branch", 'runLine.kind === "none"'],
+    ["unknown next action", 'nextLine.kind === "unknown" ? ('],
+    ["unknown next action copy", 't("portfolio.cockpit.nextAction.unknown")'],
+    ["health guard", "{metricsSayable ? ("],
+    // …and the reach it depends on is actually published, with the same named limit
+    ["runs request", "listRuns({ limit: RUNS_PAGE_LIMIT })"],
+    ["runs reach", "setRunsReach(taskInventoryReachOf(runsRead, RUNS_PAGE_LIMIT))"],
+    // …and each ownership boundary is guarded at its own render site
+    ["cockpit owner", "dashboard.project_id === projectFilter && (\n          <ProjectCockpit"],
+    ["editor owner", "showCharter && dashboard && dashboard.project_id === projectFilter"],
+  ] as const) {
+    assert.ok(source.includes(fragment), `${what}: expected the source to contain ${fragment}`);
+  }
+
+  // Whitespace-insensitive, so an expression that spans lines can be pinned too.
+  // Both floors are checked at their own render site: replacing either one's
+  // `next.partial` with `false` put the exact copy back on a partial response while
+  // the key itself stayed in the source, so the key alone proves nothing.
+  const flat = source.replace(/\s+/g, " ");
+  for (const [what, fragment] of [
+    ["attention floor", 'next.partial ? t("portfolio.cockpit.nextAction.attentionAtLeast"'],
+    ["pending floor", 'next.partial ? t("portfolio.cockpit.nextAction.pendingAtLeast"'],
+  ] as const) {
+    assert.ok(flat.includes(fragment), `${what}: expected the source to contain ${fragment}`);
+  }
+
+  for (const [what, banned] of [
+    ["the raw group badge", '<Badge variant="secondary">{cards.length}</Badge>'],
+    ["the raw all-clear condition", 'next.action === "none"'],
+    // A guard that is always true is a guard that was deleted with extra steps.
+    ["a short-circuited guard", "|| true"],
+    // The card's verified percentage, from the same evidence the cockpit dropped.
+    ["the card's verified percentage", "portfolio.cockpit.card.verified"],
+    // …and the fields behind it, so the ratio cannot come back without the key.
+    ["the card's verified weights", "dash.verified_weight"],
+    // The weight-derived project progress, which maps the same unbound historical
+    // worker success onto the current criterion set.
+    ["the weight-derived progress", "metrics.progress_pct"],
+    ["the current-criteria fraction", "metrics.produced_weight"],
+  ] as const) {
+    assert.ok(!source.includes(banned), `${what} must not be in the page: ${banned}`);
+  }
+
+  // A reach must come from a read, not from a literal that fixes its answer.
+  for (const literal of ['"complete"', "'complete'"]) {
+    assert.ok(!source.includes(`, ${literal})`),
+      `a reach must come from a read, not from ${literal}`);
+  }
+  // The charter editor is bound to the project the cockpit shows, so a filter change
+  // has to close it; without this it re-mounted for the next project.
+  assert.ok(source.includes("setShowCharter(false); setProjectFilter("),
+    "changing the project filter must close the charter editor");
+});
+
+// --- the cockpit's own two claims -------------------------------------------
+
+test("the weight tiles are shown only when the dashboard read the whole project", () => {
+  assert.equal(projectMetricsSayable(false), true);
+  // On a project whose first five hundred tasks are done, the cockpit could show
+  // 100% and a green health while task five hundred and one was blocked. A
+  // percentage of an unstated subset is not a percentage of the project.
+  assert.equal(projectMetricsSayable(true), false);
+});
+
+test("the cockpit's next-action line has three outcomes, not two", () => {
+  assert.deepEqual(projectNextActionLineOf("none", false), { kind: "allClear" });
+  assert.deepEqual(projectNextActionLineOf("resolve_blocker", false), { kind: "action" });
+});
+
+test("a partial page names no action at all, empty or otherwise", () => {
+  // Two ways the old boolean let the claim through. Suppressing the dedicated
+  // all-clear sentence left the enum label for `none` -- "Nothing to do" -- saying it
+  // again one line down; and a named action from a partial page is the winner of that
+  // page, not of the project, because a higher-ranked task can sit past the cap.
+  assert.deepEqual(projectNextActionLineOf("none", true), { kind: "unknown" });
+  assert.deepEqual(projectNextActionLineOf("start_requirements", true), { kind: "unknown" });
+  assert.deepEqual(projectNextActionLineOf("resolve_blocker", true), { kind: "unknown" });
+});
+
+// --- the strings these decisions resolve to must exist in both locales -------
+
+test("every literal portfolio key, and every templated key's parent, exists in both locales", async () => {
+  // Extracted from the source rather than listed by hand. The hand-written version of
+  // this test walked the keys that were *defined* and passed while the renderer asked
+  // for `portfolio.group.atLeast`, which was defined as `portfolio.cockpit.group.atLeast`
+  // -- so the badge rendered the literal key and every test stayed green. A list I write
+  // is a list of what I remembered; this is a list of what the page does.
+  //
+  // Keys built by template are checked as far as they can be: a `${...}` inside one
+  // makes the leaf unknowable from the source, so what is asserted is that the part
+  // before it resolves to an **object** in both locales. That catches a wrong parent
+  // path -- which is the mistake this test exists for -- and not a missing leaf. Any
+  // decision this slice makes therefore asks with a whole literal instead, which is
+  // why the card's run line spells both of its keys out.
+  const { readFile } = await import("node:fs/promises");
+  const { portfolio } = await import("../src/lib/i18n/dictionaries/portfolio.ts");
+  const source = await readFile(
+    new URL("../src/app/portfolio/page.tsx", import.meta.url), "utf8");
+
+  const whole = new Set<string>();
+  const prefixes = new Set<string>();
+  for (const match of source.matchAll(/["'`]portfolio\.([A-Za-z0-9_.]+)(\$\{)?/g)) {
+    if (match[2]) prefixes.add(match[1].replace(/\.$/, ""));
+    else whole.add(match[1]);
+  }
+  assert.ok(whole.size > 20, `expected to find the page's keys, found ${whole.size}`);
+  assert.ok(prefixes.size > 0, "expected to find the page's templated keys too");
+
+  const resolve = (locale: "en" | "zh", key: string) =>
+    key.split(".").reduce<unknown>(
+      (node, part) => (node as Record<string, unknown> | undefined)?.[part],
+      portfolio[locale] as unknown,
+    );
+
+  const missing: string[] = [];
+  for (const locale of ["en", "zh"] as const) {
+    for (const key of whole) {
+      if (typeof resolve(locale, key) !== "string") missing.push(`${locale}.portfolio.${key}`);
+    }
+    for (const key of prefixes) {
+      const node = resolve(locale, key);
+      if (typeof node !== "object" || node === null) {
+        missing.push(`${locale}.portfolio.${key}.* (no such group)`);
+      }
+    }
+  }
+  assert.deepEqual(missing, [], "these keys are rendered as their own name");
 });
