@@ -387,9 +387,21 @@ def project_dashboard(
         spec = current_spec if current_spec is not None and current_spec.state == SpecState.APPROVED else None
         # A run finishing leaves the task in RUNNING until the human settles its
         # review; only an actually-active run means "wait".
+        #
+        # **One query, not two.** Asking for RUNNING and then for QUEUED lets a run
+        # that moves `queued -> running` between the two answers be absent from both:
+        # it is no longer queued when the second question is asked, and was not yet
+        # running when the first one was. `has_active_run` then reads False for a task
+        # that is actively running, and `task_next_action` turns that into "investigate
+        # failure" or "verify review" — the board telling someone to go and look at
+        # work that is still happening. `ExecutionStore.list` already takes `states`
+        # for exactly this, and its docstring already names this race.
         has_active_run = task.state == TaskState.RUNNING and bool(
-            exec_store.list(task_id=task.task_id, state=RunState.RUNNING, limit=1)
-            or exec_store.list(task_id=task.task_id, state=RunState.QUEUED, limit=1)
+            exec_store.list(
+                task_id=task.task_id,
+                states=[RunState.RUNNING, RunState.QUEUED],
+                limit=1,
+            )
         )
         m = task_metrics(task.state, spec, has_worker_success=has_worker, has_review_success=has_review)
         next_action = task_next_action(
