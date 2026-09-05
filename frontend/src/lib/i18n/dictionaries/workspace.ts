@@ -253,6 +253,35 @@ export const workspace = {
     timeline: {
       title: "Timeline",
       empty: "No activity yet. Say what you want, or make the first move.",
+      // Said instead of `empty` whenever a read did not fully land: an empty list
+      // after a failed read is not an empty history.
+      unknown: "Activity could not be read — this is not \"nothing happened yet\".",
+      // …and above the entries when there are some, because a partial list shown as
+      // the history is the same false completeness where nobody looks for it.
+      //
+      // One hedged clause and nothing else. Two earlier wordings were each wider than
+      // what the page knows: "some activity could not be read" states a cause that is
+      // wrong on the capped path, and "some of the history was not read" states it as
+      // fact — `runsTruncated` is set whenever the page comes back at exactly the cap,
+      // which is also what a history of exactly that many runs looks like, so the
+      // whole history may well have been read. What is true in every case that reaches
+      // this string is only that the page cannot vouch for the list being complete.
+      partial: "This may not be the whole history.",
+      // The in-flight half of the same caveat, kept as its own sentence. Entries show
+      // as soon as one read lands, so the other read still being in flight would
+      // otherwise raise the notice above on every ordinary load — and a warning that
+      // appears every time is one nobody reads when it finally means something.
+      //
+      // "Checking for more", not "reading the rest": the read still in flight may come
+      // back with nothing, so there need not be any rest. And it may never come back —
+      // the loaders carry no timeout — so this line has to stay true if it persists.
+      stillChecking: "Still checking for more history…",
+      // The third case, and the reason it is not the one above: the page can know a
+      // record exists that this list lacks — a note just posted, a gate raised
+      // mid-run — while the read that would fetch it is not the one the reader is
+      // waiting on. Saying "still checking" there described an activity that was not
+      // happening. This says only what is known.
+      notShownYet: "Something recorded on this task is not shown here yet.",
       inputPlaceholder: "Add a note or correct the direction…",
       send: "Send",
       sending: "Sending…",
@@ -617,6 +646,10 @@ export const workspace = {
     timeline: {
       title: "时间线",
       empty: "还没有活动。说出你想要什么,或者先迈出第一步。",
+      unknown: "活动记录读不到——这不等于「还没有发生过任何事」。",
+      partial: "下面这些可能不是全部的历史。",
+      stillChecking: "还在确认是否有更多历史……",
+      notShownYet: "此任务上有一条记录还没显示出来。",
       inputPlaceholder: "添加一条说明,或纠正方向……",
       send: "发送",
       sending: "发送中…",

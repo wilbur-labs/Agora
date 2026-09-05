@@ -192,6 +192,12 @@ export function railRunIsCurrent(staleOrigins: readonly RailStaleOrigin[]): bool
   return !staleOrigins.includes("runs");
 }
 
+// The timeline's own read-completeness layer lives in `lib/timeline.ts`, not here.
+// Its first version was two helpers in this file — a state and a separate "is it
+// partial" — and this is the wrong home twice over: the rail is not the timeline, and
+// two functions over the same loose booleans left the component to combine them, which
+// is what review then found four defects in.
+
 export const RAIL_STALE_NOTICE_KEY: Record<RailStaleOrigin, string> = {
   tasks: "workspace.rail.tasksUnreadable",
   projects: "workspace.rail.projectsUnreadable",

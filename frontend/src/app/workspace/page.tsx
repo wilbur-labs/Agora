@@ -107,10 +107,16 @@ import {
 import {
   FAILED_RUN_STATES,
   nestedFailureCount,
-  runTreeOf,
   type RunUnit,
   type UnplacedRun,
 } from "@/lib/run-tree";
+import {
+  eventsLackKnown,
+  runsLackKnown,
+  timelineReadOf,
+  timelineVerdictOf,
+  type TimelineVerdict,
+} from "@/lib/timeline";
 import { progressBarOf, type ProgressBar } from "@/lib/progress-snapshot";
 // The same two decisions the portfolio cockpit takes, imported rather than
 // restated. One rule, one implementation: a second copy is a second thing to
@@ -335,6 +341,25 @@ export default function WorkspacePage() {
     [tasks, selectedTaskId],
   );
 
+  // This page's own two snapshots, narrowed to the selected task and handed down as
+  // evidence that these items exist. The child cannot see them otherwise, and its reads
+  // race with these: `load` bumps `refreshNonce` before its own four reads settle, so
+  // the rail could learn of a gate or a run first and render it beside a timeline that
+  // claimed to be complete without it. Existence only — a global read at its cap says
+  // nothing by omission, and nothing here is read that way.
+  const selectedTaskAttention = useMemo(
+    () => (selectedTask === null
+      ? []
+      : attention.filter((item) => item.task_id === selectedTask.task_id)),
+    [attention, selectedTask],
+  );
+  const selectedTaskRuns = useMemo(
+    () => (selectedTask === null
+      ? []
+      : runs.filter((run) => run.task_id === selectedTask.task_id)),
+    [runs, selectedTask],
+  );
+
   // Drop a selection the project filter now excludes, so the main view never
   // shows a task hidden from the rail (notes would post to the wrong project).
   useEffect(() => {
@@ -371,7 +396,20 @@ export default function WorkspacePage() {
       <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
         {error && <div className="m-4 shrink-0 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{t("workspace.errors.loadFailed", { error })}</div>}
         {selectedTask ? (
-          <TaskWorkspace key={selectedTask.task_id} refreshNonce={refreshNonce} task={selectedTask} onTaskMayHaveChanged={load} />
+          <TaskWorkspace
+            key={selectedTask.task_id}
+            refreshNonce={refreshNonce}
+            task={selectedTask}
+            // What this page's own reads have seen of the selected task. The child's
+            // reads and these overlap in time — `load` bumps `refreshNonce` before its
+            // four reads settle — so the rail can learn of a gate or a run before the
+            // child's reads do, and used to render "Needs you" beside a timeline
+            // claiming to be complete without that event. Passed as evidence of
+            // existence only; absence from a capped global page says nothing.
+            railAttention={selectedTaskAttention}
+            railRuns={selectedTaskRuns}
+            onTaskMayHaveChanged={load}
+          />
         ) : (
           <EmptyWorkspace hasTasks={tasks.length > 0} />
         )}
@@ -591,7 +629,7 @@ const HANDOFF_FILES_SHOWN = 12;
 // The parent's summary comes from a capped, global run page and cannot make that
 // distinction — it would be the rail's projection standing in for the task's own
 // answer, which is the substitution this file has had to remove twice already.
-function TaskWorkspace({ task, refreshNonce, onTaskMayHaveChanged }: { task: TaskManifest; refreshNonce: number; onTaskMayHaveChanged: () => void }) {
+function TaskWorkspace({ task, refreshNonce, railAttention, railRuns, onTaskMayHaveChanged }: { task: TaskManifest; refreshNonce: number; railAttention: readonly AttentionItem[]; railRuns: readonly RunSummary[]; onTaskMayHaveChanged: () => void }) {
   const { t, te } = useI18n();
   const [dashboard, setDashboard] = useState<ProjectDashboard | null>(null);
   const [dashError, setDashError] = useState(false);
@@ -612,6 +650,13 @@ function TaskWorkspace({ task, refreshNonce, onTaskMayHaveChanged }: { task: Tas
   // running" — an unknown presented as an absence, on the one question that
   // decides whether a second run may be dispatched.
   const [runsError, setRunsError] = useState(false);
+  const [eventsError, setEventsError] = useState(false);
+  // The newest event the control plane has confirmed to this page but that the event
+  // read may not have fetched yet — `appendTaskEvent` returns the record it wrote, and
+  // discarding it was what left the timeline claiming to be whole in the seconds after
+  // a note was posted. Only the newest is kept: the events endpoint takes no limit and
+  // returns the whole table, so a read that has this one has every earlier one.
+  const [postedEventId, setPostedEventId] = useState<string | null>(null);
   // Whether that page came back at its cap. A truncated history cannot say which
   // run is the latest, nor that no review run exists for a worker run — both are
   // claims about the whole list. Tracked separately from `runsError` because "some
@@ -695,10 +740,23 @@ function TaskWorkspace({ task, refreshNonce, onTaskMayHaveChanged }: { task: Tas
       });
   }, [task.task_id]);
 
+  // Token-guarded like its siblings, and it needs the guard more than most: five
+  // places start an events read (refresh, a run reaching a terminal state, follow-up,
+  // dispatch completing, posting a note), several of them unsignalled, so reads
+  // overlap routinely. Without a token an older answer can land last and put both the
+  // list *and* its error bit back — and `eventsError` is what the timeline's honesty
+  // now rests on, so a stale `false` there is a stale claim of completeness.
+  const eventsRequest = useRef(0);
   const loadEvents = useCallback((signal?: AbortSignal) => {
+    const token = ++eventsRequest.current;
+    const stale = () => signal?.aborted || token !== eventsRequest.current;
     listTaskEvents(task.task_id, signal)
-      .then((value) => { if (!signal?.aborted) setEvents(value); })
-      .catch(() => { if (!signal?.aborted) setEvents([]); });
+      .then((value) => { if (!stale()) { setEvents(value); setEventsError(false); } })
+      // Not `setEvents([])`. That turned every failure into a confirmed empty history
+      // -- the timeline then said "no activity yet" about a read that established
+      // nothing -- and it also erased notes that were already on screen, so a
+      // transient failure looked like the task losing its past.
+      .catch(() => { if (!stale()) setEventsError(true); });
   }, [task.task_id]);
 
   // Full run records (prompt + stdout/stderr + result) so the timeline can show
@@ -868,6 +926,47 @@ function TaskWorkspace({ task, refreshNonce, onTaskMayHaveChanged }: { task: Tas
     document.addEventListener("visibilitychange", onVisible);
     return () => document.removeEventListener("visibilitychange", onVisible);
   }, [loadRecap]);
+
+  // What the timeline may say, decided here because this is where the read facts
+  // live, and handed down as one value. `TimelineColumn` gets the verdict and not the
+  // events, the runs or the error bits: the first fix for this passed the raw facts
+  // and two helpers, and the column then said "no activity yet" while a read was
+  // still in flight, ignored the run cap, and rendered "some of this could not be
+  // read" beside "could not be read". Nothing it cannot see can it get wrong again.
+  //
+  // `capped: false` for events is measured, not assumed: `GET /tasks/{id}/events`
+  // takes no limit and `TaskStore.events` (backend/agora/tasks/store.py:368) selects
+  // the whole table for the task. The runs read is the capped one.
+  //
+  // `behind` is derived, not tracked. Both lists have siblings that reach a fact before
+  // they do — the attention reads see a gate the events read has not fetched, the
+  // active-run read sees a run the capped history page has not — and the answer is a
+  // comparison of what is in hand, not a flag someone has to set at each place the page
+  // finds out. Both review rounds that attacked the flag version were about the places
+  // it was not set and the state update it raced with; a derivation has neither.
+  const eventsGap = eventsLackKnown(
+    events,
+    [taskAttention, reviewGate, railAttention],
+    postedEventId === null ? [] : [postedEventId],
+  );
+  const runsGap = runsLackKnown(runs, [activeRuns, railRuns]);
+
+  // A gap the page can close, so close it. Disclosing one without fetching it was a
+  // notice with nothing behind it: during a run the 2.5s poll refreshes attention but
+  // not events, so a gate raised mid-run put a caveat on screen that would have sat
+  // there until the run settled or the user hit Refresh. Once per time a gap appears —
+  // a boolean dependency cannot re-fire while it stays true, and if the fetch does not
+  // close it the caveat is still the honest thing to show.
+  useEffect(() => { if (eventsGap) loadEvents(); }, [eventsGap, loadEvents]);
+  useEffect(() => { if (runsGap) void loadRuns(); }, [runsGap, loadRuns]);
+
+  const timeline = useMemo<TimelineVerdict<TaskEvent, ExecutionRun>>(
+    () => timelineVerdictOf(
+      timelineReadOf(events, { failed: eventsError, capped: false, behind: eventsGap }),
+      timelineReadOf(runs, { failed: runsError, capped: runsTruncated, behind: runsGap }),
+    ),
+    [events, eventsError, eventsGap, runs, runsError, runsGap, runsTruncated],
+  );
 
   // The latest successful *worker* run is what "produced" the current result — or
   // the reason no such answer exists. In the auto-review flow the review run
@@ -1208,7 +1307,7 @@ function TaskWorkspace({ task, refreshNonce, onTaskMayHaveChanged }: { task: Tas
       <RequirementsStrip task={task} specs={specs} error={specsError} />
       <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
         {/* Center: the unified, chat-like task timeline + message box. */}
-        <TimelineColumn taskId={task.task_id} events={events} runs={runs} specs={specs} runHistoryLimit={RUN_HISTORY_LIMIT} onPosted={() => { loadEvents(); loadRecap(); }} />
+        <TimelineColumn taskId={task.task_id} verdict={timeline} specs={specs} runHistoryLimit={RUN_HISTORY_LIMIT} onPosted={(eventId) => { setPostedEventId(eventId); loadEvents(); loadRecap(); }} />
         {/* Right: the run. While one is unsettled the column IS its output; once it
             settles the column IS what it changed plus the gate before done. Which
             of the two is decided by run state alone (lib/run-column.ts). */}
@@ -1231,24 +1330,11 @@ function TaskWorkspace({ task, refreshNonce, onTaskMayHaveChanged }: { task: Tas
 // stream (requirement drafting/approval, stage changes, runs, review, handoff,
 // and the human's own notes), with a message box to continue or correct course.
 //
-// S2: runs appear as **work units**, not as process launches. A worker run is a
-// top-level entry and the review run(s) recorded against it are nested inside it —
-// no connector lines, which is the recorded decision and its reason (the relation is
-// already in the data, and drawn lines become spaghetti). Ordering is by work unit:
-// a unit sits at its worker run's queue time, and a review does not get its own slot
-// in the stream.
-//
-// The third entry kind is the one that keeps this honest. `runTreeOf` returns runs it
-// could not place — a review whose reviewed run is past the 100-run cap or lost to a
-// failed detail read, or one that records no reviewed run at all — and they are
-// rendered, with the reason. Dropping them would turn a partial read into a
-// disappearance.
-type TimelineItem =
-  | { kind: "event"; at: string; key: string; event: TaskEvent }
-  | { kind: "unit"; at: string; key: string; unit: RunUnit<ExecutionRun> }
-  | { kind: "unplaced"; at: string; key: string; unplaced: UnplacedRun<ExecutionRun> };
-
-function TimelineColumn({ taskId, events, runs, specs, runHistoryLimit, onPosted }: { taskId: string; events: TaskEvent[] | null; runs: ExecutionRun[] | null; specs: RequirementSpec[] | null; runHistoryLimit: number; onPosted: () => void }) {
+// S2: runs appear as work units, not as process launches — the interleave, the
+// ordering and the run tie-break are `timelineItemsOf` in lib/timeline.ts, together
+// with the decision of what this column may say about completeness. What arrives here
+// is a `TimelineVerdict`: entries to render, or one sentence and the reason for it.
+function TimelineColumn({ taskId, verdict, specs, runHistoryLimit, onPosted }: { taskId: string; verdict: TimelineVerdict<TaskEvent, ExecutionRun>; specs: RequirementSpec[] | null; runHistoryLimit: number; onPosted: (eventId: string) => void }) {
   const { t, te } = useI18n();
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
@@ -1259,50 +1345,24 @@ function TimelineColumn({ taskId, events, runs, specs, runHistoryLimit, onPosted
     return map;
   }, [specs]);
 
-  // The run.* lifecycle events are noise once we show the actual run cards, so
-  // drop them and interleave one work unit per worker run (by its queue time),
-  // plus any run the tree could not place.
-  const items = useMemo<TimelineItem[]>(() => {
-    const out: TimelineItem[] = [];
-    for (const e of events ?? []) {
-      if (e.event_type.startsWith("run.")) continue;
-      out.push({ kind: "event", at: e.created_at, key: e.event_id, event: e });
-    }
-    const tree = runTreeOf(runs);
-    for (const unit of tree.units) {
-      out.push({ kind: "unit", at: unit.run.queued_at, key: unit.run.run_id, unit });
-    }
-    for (const unplaced of tree.unplaceable) {
-      out.push({ kind: "unplaced", at: unplaced.run.queued_at, key: unplaced.run.run_id, unplaced });
-    }
-    // One sort over the whole stream, and the run tie-break has to be applied here to
-    // be the global rule the tree documents: units and unplaceable runs are pushed as
-    // two groups, so on a shared queue time a timestamp-only sort would order a
-    // top-level run against an unplaceable review by which group was appended first,
-    // not by run id. Events are not runs and keep their arrival order on a tie
-    // (Array.prototype.sort is stable).
-    return out.sort((a, b) => {
-      const byTime = a.at.localeCompare(b.at);
-      if (byTime !== 0) return byTime;
-      // `key` is the run id for both run-bearing kinds.
-      return a.kind === "event" || b.kind === "event" ? 0 : a.key.localeCompare(b.key);
-    });
-  }, [events, runs]);
-
-  // Keep the newest entry in view as the stream grows.
+  // Keep the newest entry in view as the stream grows. There are no entries to grow
+  // on any other branch of the verdict, so the count is zero there.
+  const entryCount = verdict.show === "entries" ? verdict.items.length : 0;
   useEffect(() => {
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [items.length]);
+  }, [entryCount]);
 
   const send = async () => {
     const text = draft.trim();
     if (!text || sending) return;
     setSending(true);
     try {
-      await appendTaskEvent(taskId, "user_message", { text });
+      // The written record, not just an acknowledgement: its id is what lets the
+      // timeline say it is missing an entry until the read that fetches it lands.
+      const written = await appendTaskEvent(taskId, "user_message", { text });
       setDraft("");
-      onPosted();
+      onPosted(written.event_id);
     } catch {
       // Surfaced by leaving the draft in place; a full error toast is later work.
     } finally {
@@ -1313,14 +1373,32 @@ function TimelineColumn({ taskId, events, runs, specs, runHistoryLimit, onPosted
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div ref={scrollRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto p-5">
-        {items.length === 0 ? (
-          <p className="py-8 text-center text-sm text-muted-foreground">{t("workspace.timeline.empty")}</p>
+        {/* One branch per thing the timeline may say, and the "may not be the whole
+            history" notice is inside the branch that has entries — the only branch it
+            can apply to. Rendered above them, because a caveat under a list nobody
+            scrolls is a caveat nobody reads. */}
+        {verdict.show !== "entries" ? (
+          <p className="py-8 text-center text-sm text-muted-foreground">
+            {verdict.show === "loading" ? "…"
+              : verdict.show === "unknown" ? t("workspace.timeline.unknown")
+              : verdict.show === "missing" ? t("workspace.timeline.notShownYet")
+              : t("workspace.timeline.empty")}
+          </p>
         ) : (
-          items.map((item) => item.kind === "event"
-            ? <TimelineEntry key={item.key} event={item.event} spec={specForEvent(item.event, specsById)} t={t} te={te} />
-            : item.kind === "unit"
-              ? <RunWorkUnit key={item.key} unit={item.unit} t={t} te={te} />
-              : <UnplacedRunEntry key={item.key} unplaced={item.unplaced} runHistoryLimit={runHistoryLimit} t={t} te={te} />)
+          <>
+            {verdict.partial !== null && (
+              <p className="pb-2 text-center text-xs text-muted-foreground">
+                {t(verdict.partial === "loading" ? "workspace.timeline.stillChecking"
+                  : verdict.partial === "missing" ? "workspace.timeline.notShownYet"
+                  : "workspace.timeline.partial")}
+              </p>
+            )}
+            {verdict.items.map((item) => item.kind === "event"
+              ? <TimelineEntry key={item.key} event={item.event} spec={specForEvent(item.event, specsById)} t={t} te={te} />
+              : item.kind === "unit"
+                ? <RunWorkUnit key={item.key} unit={item.unit} t={t} te={te} />
+                : <UnplacedRunEntry key={item.key} unplaced={item.unplaced} runHistoryLimit={runHistoryLimit} t={t} te={te} />)}
+          </>
         )}
       </div>
       <div className="border-t bg-background p-3">
