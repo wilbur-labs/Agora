@@ -111,6 +111,7 @@ import {
   type UnplacedRun,
 } from "@/lib/run-tree";
 import {
+  ATTENTION_TIMELINE_EVENT_KEY,
   eventsLackKnown,
   runsLackKnown,
   timelineReadOf,
@@ -657,9 +658,13 @@ function TaskWorkspace({ task, refreshNonce, railAttention, railRuns, onTaskMayH
   // a note was posted. Only the newest is kept: the events endpoint takes no limit and
   // returns the whole table, so a read that has this one has every earlier one.
   const [postedEventId, setPostedEventId] = useState<string | null>(null);
-  // Whether that page came back at its cap. A truncated history cannot say which
-  // run is the latest, nor that no review run exists for a worker run — both are
-  // claims about the whole list. Tracked separately from `runsError` because "some
+  // Whether that page came back at its cap — which is to say, whether this read can
+  // be confirmed complete. It cannot distinguish a truncated history from one of
+  // exactly `RUN_HISTORY_LIMIT` runs, so it is pessimistic by one and never optimistic;
+  // what reads it must therefore not describe it as a failure (CR-25). A history that
+  // cannot be confirmed complete cannot say which run is the latest, nor that no review
+  // run exists for a worker run — both are claims about the whole list. Tracked
+  // separately from `runsError` because "some
   // records could not be read" and "there are more records than were read" are
   // different facts about the same read.
   const [runsTruncated, setRunsTruncated] = useState(false);
@@ -1448,7 +1453,13 @@ function timelineView(event: TaskEvent, t: Translate, te: TranslateEnum): { who:
   if (type === "run.started") return { who: "agent", title: t("workspace.timeline.events.runStarted", { adapter }), detail: null };
   if (type === "run.succeeded") return { who: "agent", title: t("workspace.timeline.events.runSucceeded", { adapter }), detail: null };
   if (type === "run.failed") return { who: "agent", title: t("workspace.timeline.events.runFailed", { adapter }), detail: p.error_message ? String(p.error_message) : null };
-  if (type.startsWith("attention.")) return { who: "system", title: t(type === "attention.responded" ? "workspace.timeline.events.attentionResponded" : "workspace.timeline.events.attentionRaised"), detail: p.title ? String(p.title) : null };
+  if (type.startsWith("attention.")) {
+    // One sentence per event (CR-27). An unmapped `attention.*` name falls through to
+    // the humanised-type fallback below rather than borrowing "Needs you" — a name this
+    // build does not know is a fact about this build, not a thing the user must do.
+    const key = ATTENTION_TIMELINE_EVENT_KEY[type];
+    if (key !== undefined) return { who: "system", title: t(key), detail: p.title ? String(p.title) : null };
+  }
   if (type.startsWith("handoff.")) return { who: "system", title: t("workspace.timeline.events.handoff"), detail: p.commit ? String(p.commit).slice(0, 8) : null };
   // Fallback: humanized type.
   return { who: "system", title: type.replaceAll(".", " ").replaceAll("_", " "), detail: null };

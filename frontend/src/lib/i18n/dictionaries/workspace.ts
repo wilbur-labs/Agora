@@ -221,7 +221,13 @@ export const workspace = {
       // produced" is a claim about the whole history, and this page holds one page
       // of it. R3 — `runsTruncated` stopped the right column claiming "never ran"
       // while the header still printed "Nothing produced yet" from the same read.
-      producedUnknown: "Whether anything was produced can't be said — this task's runs couldn't be read in full.",
+      // CR-25. This is reached from `latestDeliveredOf` whenever the run read cannot
+      // support "no success exists" — a failed read *or* a page at its cap. The cap is
+      // set by `summaries.length >= RUN_HISTORY_LIMIT`, and a history of exactly that
+      // many runs looks identical to a truncated one, so "couldn't be read in full"
+      // stated a failure that in that case did not happen. The flag is pessimistic on
+      // purpose and that is right; the sentence was the part claiming too much.
+      producedUnknown: "Whether anything was produced can't be said — this task's run history can't be confirmed as complete.",
       // S1. A run succeeded and left nothing behind that this header can show: no
       // printable output and no files in the task's handoff. It used to share
       // `nothingYet` with "no successful run exists", which is a different result —
@@ -312,8 +318,30 @@ export const workspace = {
         runStarted: "Run started · {adapter}",
         runSucceeded: "Run succeeded · {adapter}",
         runFailed: "Run failed · {adapter}",
+        // CR-27. These used to be the only two: everything that was not
+        // `attention.responded` rendered as "Needs you", so a cancelled item, an
+        // expired one, and a *successful* bridge delivery all announced that the user
+        // had something to do. The event names are enumerated in
+        // `ATTENTION_TIMELINE_EVENT_KEY` (lib/timeline.ts) against the backend's
+        // writers, including the two that are built with an f-string and so cannot be
+        // found by searching for a literal name.
         attentionRaised: "Needs you",
-        attentionResponded: "You responded",
+        // "Responded", not "You responded": `RespondAttentionRequest.actor` accepts any
+        // non-empty string and the authenticated path passes the principal id, so an
+        // automation or service principal would otherwise be rendered as the reader.
+        attentionResponded: "Responded",
+        // The event establishes cancellation and closure. A caller may cancel with no
+        // reason at all, so "no longer needed" is an explanation the record does not
+        // carry.
+        attentionCancelled: "Cancelled",
+        attentionExpired: "Expired unanswered",
+        attentionDelivered: "Answer delivered",
+        // Not "the answer could not be delivered": `_fail_undelivered_bridge`
+        // (attention/store.py) also writes this when a bidirectional item is cancelled
+        // or expires *unanswered*, and run_scope.py does the same for an orphaned
+        // prompt. In those cases there was no answer, so naming one is a claim about
+        // something that never existed.
+        attentionDeliveryFailed: "Delivery failed",
         handoff: "Handed off",
         note: "Note",
       },
@@ -395,7 +423,8 @@ export const workspace = {
       unreadable: "Couldn't read this task's runs, so whether one is in progress can't be said. Nothing below is a claim that it isn't.",
       none: "This task has no runs yet. Use Continue above to start one.",
       liveWithoutRecord: "{count} run(s) of this task have not finished, and their records haven't arrived yet. Output will appear here as it is read.",
-      maybeNotLatest: "Some of this task's runs couldn't be read, so this may not be the most recent one.",
+      // CR-25, same shape: reached from the same read, so it may not name a failure.
+      maybeNotLatest: "This task's run history can't be confirmed as complete, so this may not be the most recent one.",
       live: {
         header: "{adapter} is running",
         alsoActive: "{count} other run(s) of this task are also unfinished.",
@@ -421,7 +450,10 @@ export const workspace = {
       review: {
         notWorker: "This run is not an implementation run, so no cross-review is expected for it.",
         runDidNotSucceed: "This run didn't succeed, so no cross-review was started for it.",
-        unknown: "Whether a cross-review accounts for this run can't be said: this task's run list was incomplete.",
+        // CR-25's third consumer, missed on the first pass: `reviewStandingOf` reaches
+        // this from the same `runsTruncated`, which is pessimistic by one, so "was
+        // incomplete" states something the read never established.
+        unknown: "Whether a cross-review accounts for this run can't be said: this task's run list can't be confirmed as complete.",
         gateUnread: "Whether a cross-review accounts for this run can't be said: its approvals and blockers couldn't be read.",
         active: "The cross-review by {adapter} hasn't finished yet.",
         gateOpen: "The cross-review raised {count} item(s) for you to settle on this run.",
@@ -631,7 +663,7 @@ export const workspace = {
     summary: {
       did: "做了什么",
       nothingYet: "这个任务还没有成功的运行记录。",
-      producedUnknown: "无法判断是否有产出——此任务的运行记录未能完整读取。",
+      producedUnknown: "无法判断是否有产出——无法确认此任务的运行历史是完整的。",
       producedNothing: "有一次运行成功了,但没有任何输出,而这个任务的交接记录里也没有文件。它究竟写了什么,请看时间线中的那次运行。",
       producedFilesNotRead: "有一次运行成功了,但没有任何输出。这个任务还没有读取到交接记录,因此这里不统计文件——请看时间线中的那次运行。",
       producedFilesUnreadable: "有一次运行成功了,但没有任何输出,而这个任务的交接记录无法读取。",
@@ -679,7 +711,11 @@ export const workspace = {
         runSucceeded: "运行成功 · {adapter}",
         runFailed: "运行失败 · {adapter}",
         attentionRaised: "需要你处理",
-        attentionResponded: "你已回应",
+        attentionResponded: "已回应",
+        attentionCancelled: "已取消",
+        attentionExpired: "已过期,未回应",
+        attentionDelivered: "回应已送达",
+        attentionDeliveryFailed: "送达失败",
         handoff: "已交付",
         note: "说明",
       },
@@ -744,7 +780,7 @@ export const workspace = {
       unreadable: "无法读取此任务的运行记录,因此无法判断是否有运行正在进行。下面的内容不代表没有运行。",
       none: "此任务尚无任何运行。可用上方的“继续”发起一次。",
       liveWithoutRecord: "此任务有 {count} 次运行尚未结束,但记录还没读到。输出会在读到后显示在这里。",
-      maybeNotLatest: "此任务有部分运行未能读取,因此这可能不是最近的一次。",
+      maybeNotLatest: "无法确认此任务的运行历史是完整的,因此这可能不是最近的一次。",
       live: {
         header: "{adapter} 正在运行",
         alsoActive: "此任务还有 {count} 次运行尚未结束。",
@@ -767,7 +803,7 @@ export const workspace = {
       review: {
         notWorker: "这次运行不是实现运行,因此不会有针对它的交叉评审。",
         runDidNotSucceed: "这次运行没有成功,因此没有为它启动交叉评审。",
-        unknown: "无法判断这次运行是否已由交叉评审承接:此任务的运行列表不完整。",
+        unknown: "无法判断这次运行是否已由交叉评审承接:无法确认此任务的运行列表是完整的。",
         gateUnread: "无法判断这次运行是否已由交叉评审承接:未能读取它的审批与阻塞项。",
         active: "{adapter} 的交叉评审尚未结束。",
         gateOpen: "交叉评审针对这次运行提出了 {count} 项待你处理的事项。",

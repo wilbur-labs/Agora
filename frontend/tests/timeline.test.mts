@@ -8,6 +8,8 @@ import {
   type ColumnRunLike,
 } from "../src/lib/run-column.ts";
 import {
+  ATTENTION_TIMELINE_EVENT_KEY,
+  ATTENTION_STATE_EVENTS_FOR_TEST,
   eventsLackKnown,
   runsLackKnown,
   timelineItemsOf,
@@ -403,6 +405,33 @@ test("an open item created by the vendor bridge is not reported as missing forev
 // on every run, and deleting it to make the output tidy is a visible edit rather than
 // a silent one.
 test.skip("CR-26: a spec whose state event is missing is a known gap too", () => {});
+
+test("every attention event has its own sentence, and none borrows \"Needs you\"", () => {
+  // CR-27: the column branched on `attention.responded` alone, so a cancelled item, an
+  // expired one and a *successfully delivered* answer all told the user they had
+  // something to do. One key per event name -- and the map has to cover every name in
+  // the state map plus both delivery outcomes, one of which no literal search finds.
+  // The map is keyed by *state*; its values are the event names, which is what the
+  // timeline renders. Iterating the keys here would have compared states to event
+  // names and passed by looking up undefined against undefined.
+  for (const type of Object.values(ATTENTION_STATE_EVENTS_FOR_TEST).flat()) {
+    assert.ok(ATTENTION_TIMELINE_EVENT_KEY[type] !== undefined,
+      `${type} records a state but has no timeline sentence`);
+  }
+  for (const type of ["attention.delivery_delivered", "attention.delivery_failed"]) {
+    assert.ok(ATTENTION_TIMELINE_EVENT_KEY[type] !== undefined, type);
+  }
+  // Only the two raising events may say "Needs you".
+  const raised = Object.entries(ATTENTION_TIMELINE_EVENT_KEY)
+    .filter(([, key]) => key.endsWith("attentionRaised")).map(([type]) => type).sort();
+  assert.deepEqual(raised, ["attention.bridge_captured", "attention.created"]);
+  // …and every sentence resolves in both locales.
+  for (const key of Object.values(ATTENTION_TIMELINE_EVENT_KEY)) {
+    for (const locale of ["en", "zh"] as const) {
+      assert.ok(lookup(locale, key), `${locale} is missing ${key}`);
+    }
+  }
+});
 
 // --- the stream itself ---------------------------------------------------------
 

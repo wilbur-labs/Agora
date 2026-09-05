@@ -94,6 +94,34 @@ const ATTENTION_STATE_EVENTS: Record<string, readonly string[]> = {
   expired: ["attention.expired"],
 };
 
+/**
+ * The sentence each attention event gets in the timeline (CR-27).
+ *
+ * Every name in `ATTENTION_STATE_EVENTS` plus the two delivery outcomes, because the
+ * column renders events and not states: it used to branch on
+ * `type === "attention.responded"` alone and render everything else as "Needs you", so
+ * a cancelled item, an expired one and a *successfully delivered* answer each told the
+ * user they had something to do.
+ *
+ * `attention.delivery_delivered` is here despite being absent from a literal search of
+ * the backend — `finish_delivery` builds it as `f"attention.delivery_{state.value}"`
+ * (attention/store.py:322). That is the same trap the state map fell into: enumerate
+ * names, then read the writers that construct them.
+ */
+export const ATTENTION_TIMELINE_EVENT_KEY: Record<string, string> = {
+  "attention.created": "workspace.timeline.events.attentionRaised",
+  // A bridged item is an open item, so it is raised: same sentence.
+  "attention.bridge_captured": "workspace.timeline.events.attentionRaised",
+  "attention.responded": "workspace.timeline.events.attentionResponded",
+  "attention.cancelled": "workspace.timeline.events.attentionCancelled",
+  "attention.expired": "workspace.timeline.events.attentionExpired",
+  "attention.delivery_delivered": "workspace.timeline.events.attentionDelivered",
+  "attention.delivery_failed": "workspace.timeline.events.attentionDeliveryFailed",
+};
+
+/** Exposed for the test that checks every recorded state also has a sentence. */
+export const ATTENTION_STATE_EVENTS_FOR_TEST = ATTENTION_STATE_EVENTS;
+
 function attentionItemIdOf(event: TimelineEventLike): string | null {
   const raw = (event.payload ?? {})["item_id"];
   return typeof raw === "string" ? raw : null;
