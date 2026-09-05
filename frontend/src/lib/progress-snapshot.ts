@@ -203,11 +203,18 @@ function donePctOf(done: number, total: number): number {
 }
 
 export function progressBarOf(facts: ProgressBarFacts): ProgressBar {
-  if (!facts.dashboardLoaded) {
-    return facts.dashboardReadFailed
-      ? { kind: "unknown", because: "dashboardUnread" }
-      : { kind: "loading" };
-  }
+  // **A failed read outranks having a dashboard in hand.** This used to ask about the
+  // failure only inside `!dashboardLoaded`, so the one state it was written for --
+  // a page that keeps the dashboard it had and marks the refresh failed -- walked
+  // straight past it and the old snapshot was classified as if it were current. The
+  // bar then showed a confident percentage between a task fraction and a next action
+  // that had both just been withheld for being stale.
+  //
+  // The test that claimed to cover this passed `dashboardLoaded: false`, so it
+  // exercised the branch that already worked and gave false confidence about the one
+  // that did not.
+  if (facts.dashboardReadFailed) return { kind: "unknown", because: "dashboardUnread" };
+  if (!facts.dashboardLoaded) return { kind: "loading" };
   const snapshot = facts.snapshot;
   // A field that is not there says nothing about the project.
   if (snapshot === null || snapshot === undefined) {

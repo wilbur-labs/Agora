@@ -18,6 +18,9 @@ import {
   taskRunsLineOf,
   projectMetricsSayable,
   projectNextActionLineOf,
+  dashboardClaimOf,
+  taskTrustLineOf,
+  workspaceProjectStripOf,
 } from "../src/lib/portfolio-bucket.ts";
 import { railReadReport } from "../src/lib/rail-group.ts";
 import { portfolio as portfolioDictionary } from "../src/lib/i18n/dictionaries/portfolio.ts";
@@ -548,4 +551,124 @@ test("every literal portfolio key, and every templated key's parent, exists in b
     }
   }
   assert.deepEqual(missing, [], "these keys are rendered as their own name");
+});
+
+// --- CR-21: a dashboard's rollups are current, a page, or from before a failure ---
+
+test("a dashboard that read the whole project is current", () => {
+  assert.equal(dashboardClaimOf({ readFailed: false, truncated: false }), "current");
+});
+
+test("a truncated read is a page, and its `total` is the page's size", () => {
+  // `done/total` was computed as `tasks.length`, so the denominator was the size of
+  // the page rather than of the project. A fraction whose whole is wrong is worse
+  // than a missing one.
+  assert.equal(dashboardClaimOf({ readFailed: false, truncated: true }), "partial");
+});
+
+test("a failed refresh is stale even when what it kept had been complete", () => {
+  // The page keeps the dashboard it had, which is right; but every number in it is
+  // from before the failure, and the only guard was an early return that fires when
+  // there is no dashboard at all. A retained one sailed straight past it.
+  assert.equal(dashboardClaimOf({ readFailed: true, truncated: false }), "stale");
+  // Checked before `truncated`, because a stale response's own flag is as old as the
+  // rest of it.
+  assert.equal(dashboardClaimOf({ readFailed: true, truncated: true }), "stale");
+});
+
+test("the workspace strip shows a fraction only when its whole is the project", () => {
+  const at = (over: Partial<Parameters<typeof workspaceProjectStripOf>[0]> = {}) =>
+    workspaceProjectStripOf({
+      readFailed: false, truncated: false, done: 3, pageSize: 10,
+      action: "none", partial: false, attentionCount: 0, attention: false, title: null, ...over,
+    });
+
+  assert.deepEqual(at().count, { kind: "exact", done: 3, total: 10 });
+  // `pageSize` was being passed as `total`, so the whole of "{done}/{total} done" was
+  // the size of the page. A fraction whose whole is wrong is worse than a missing one.
+  assert.deepEqual(at({ truncated: true }).count, { kind: "atLeast", done: 3 });
+  // Nothing at all from a response that predates the failure.
+  assert.deepEqual(at({ readFailed: true }).count, { kind: "hidden" });
+});
+
+test("the workspace strip's sentence is the same decision the cockpit takes", () => {
+  const at = (over: Partial<Parameters<typeof workspaceProjectStripOf>[0]>) =>
+    workspaceProjectStripOf({
+      readFailed: false, truncated: false, done: 0, pageSize: 0,
+      action: "none", partial: false, attentionCount: 0, attention: false, title: null, ...over,
+    });
+
+  assert.deepEqual(at({}).next, { kind: "allClear" });
+  // The `action` variant carries its own label, so the renderer does not have to
+  // reach back to the response for it -- and cannot reach past the decision for
+  // anything else while it is there.
+  assert.deepEqual(at({ action: "resolve_blocker", attention: true, title: "t-1" }).next,
+    { kind: "action", action: "resolve_blocker", attention: true, title: "t-1" });
+  assert.deepEqual(at({ partial: true }).next, { kind: "unknown" });
+  // Stale disqualifies it even though the response's own `partial` says otherwise:
+  // that flag is as old as the rest of the response.
+  assert.deepEqual(at({ readFailed: true }).next, { kind: "unknown" });
+  assert.deepEqual(at({ readFailed: true, action: "resolve_blocker" }).next, { kind: "unknown" });
+});
+
+test("the workspace strip's attention count is a floor, or nothing", () => {
+  const at = (over: Partial<Parameters<typeof workspaceProjectStripOf>[0]>) =>
+    workspaceProjectStripOf({
+      readFailed: false, truncated: false, done: 0, pageSize: 0,
+      action: "none", partial: false, attentionCount: 4, attention: false, title: null, ...over,
+    });
+
+  assert.deepEqual(at({}).attention, { kind: "exact", count: 4 });
+  assert.deepEqual(at({ truncated: true }).attention, { kind: "atLeast", count: 4 });
+  assert.deepEqual(at({ readFailed: true }).attention, { kind: "hidden" });
+  assert.deepEqual(at({ attentionCount: 0 }).attention, { kind: "hidden" });
+});
+
+test("the trust line asks about the failure before it asks about the task", () => {
+  // Giving a retained dashTask precedence meant a failed refresh still answered "no
+  // approved criteria yet" -- a plain absence claim from a read that established
+  // nothing -- or spoke about the current criterion set from a response that predates
+  // the failure. The next action beside it had already been nulled for exactly this.
+  assert.equal(taskTrustLineOf({ readFailed: true, hasTask: true, hasSpec: true }), "unavailable");
+  assert.equal(taskTrustLineOf({ readFailed: true, hasTask: true, hasSpec: false }), "unavailable");
+  assert.equal(taskTrustLineOf({ readFailed: true, hasTask: false, hasSpec: false }), "unavailable");
+  assert.equal(taskTrustLineOf({ readFailed: false, hasTask: false, hasSpec: false }), "loading");
+  assert.equal(taskTrustLineOf({ readFailed: false, hasTask: true, hasSpec: false }), "noCriteria");
+  // Never a percentage: `verified_weight / total_weight` is not bound to the revision
+  // its criteria belong to. This was that number's third home.
+  assert.equal(taskTrustLineOf({ readFailed: false, hasTask: true, hasSpec: true }), "unbound");
+});
+
+test("the workspace page renders these decisions and does not restate them", async () => {
+  // Structural, and narrower than it used to be on purpose: now that every element's
+  // decision is a variant returned by a pure function, what is left to check is that
+  // the component reads those variants rather than the raw response. The behaviour
+  // itself is tested above, where it can actually be executed -- this suite cannot
+  // mount a .tsx component at all.
+  const { readFile } = await import("node:fs/promises");
+  const file = await readFile(
+    new URL("../src/app/workspace/page.tsx", import.meta.url), "utf8");
+  const source = file.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
+
+  for (const fragment of [
+    "workspaceProjectStripOf({",
+    "taskTrustLineOf({",
+    "strip.count.kind ===",
+    "strip.next.kind ===",
+    "strip.attention.kind !==",
+    "trustLine ===",
+  ]) {
+    assert.ok(source.includes(fragment), `expected the page to contain ${fragment}`);
+  }
+  for (const banned of [
+    // the page's own arithmetic on a page's length
+    "const total = dashboard.tasks.length",
+    // the unbound verification number, in the third place it lived
+    "dashTask?.verified_weight",
+    "dashTask?.total_weight",
+  ]) {
+    assert.ok(!source.includes(banned), `${banned} must not be in the page`);
+  }
+  assert.ok(source.includes("dashError ? null : dashTask?.next_action"),
+    "a stale dashTask must not supply this task's next action");
 });

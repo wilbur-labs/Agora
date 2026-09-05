@@ -51,6 +51,9 @@ export const workspace = {
       completion: "Verified completion",
       completionValue: "{done}/{total} criteria",
       noCriteria: "No approved criteria yet",
+      // Replaces the verified fraction, which was derived from a worker success
+      // not bound to the revision the criteria belong to.
+      completionUnbound: "Not shown — no evidence bound to the current criteria",
       unavailable: "Unavailable",
       blocker: "Blocker",
       noBlocker: "None",
@@ -68,6 +71,12 @@ export const workspace = {
       // carries the task tally (a count of task states, which is what it says) and
       // the snapshot-driven progress bar beside it.
       strip: "{done}/{total} done",
+      // A page's length is not the project's task count, so a truncated read reports
+      // the floor it actually saw and no denominator at all.
+      stripPartial: "≥{done} done",
+      nextPartial: "Next action not determined — this dashboard read one page",
+      nextStale: "Next action not shown — this dashboard is from before a failed refresh",
+      attentionAtLeast: "≥{count} need attention",
       next: "Project next",
       forTask: "· {title}",
       allDone: "All tasks done or cancelled",
@@ -477,6 +486,7 @@ export const workspace = {
       completion: "可信完成度",
       completionValue: "{done}/{total} 项验收",
       noCriteria: "尚无已批准的验收标准",
+      completionUnbound: "不显示——没有与当前验收标准绑定的证据",
       unavailable: "不可用",
       blocker: "阻塞",
       noBlocker: "无",
@@ -488,6 +498,10 @@ export const workspace = {
     },
     project: {
       strip: "{done}/{total} 完成",
+      stripPartial: "≥{done} 完成",
+      nextPartial: "无法判定下一步——这次驾驶舱只读到一页",
+      nextStale: "不显示下一步——这份驾驶舱数据来自一次失败刷新之前",
+      attentionAtLeast: "≥{count} 项需要关注",
       next: "项目下一步",
       forTask: "· {title}",
       allDone: "所有任务已完成或取消",

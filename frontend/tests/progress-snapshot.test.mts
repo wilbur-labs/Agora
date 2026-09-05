@@ -326,3 +326,34 @@ test("every wordless outcome has a sentence in both locales", () => {
     );
   }
 });
+
+test("a retained dashboard whose refresh failed is unknown, not classified", () => {
+  // The combination the guard was written for, and the one no test covered: the page
+  // keeps the dashboard it had and marks the refresh failed. `progressBarOf` asked
+  // about the failure only inside `!dashboardLoaded`, so this walked past it and the
+  // old snapshot was classified as if current -- a confident percentage between a
+  // task fraction and a next action that had both just been withheld for staleness.
+  //
+  // The test that claimed to cover this passed `dashboardLoaded: false`, exercising
+  // the branch that already worked. It gave confidence about the one that did not.
+  const bar = progressBarOf({
+    snapshot: { available: true, reason: null, done: 9, in_progress: 0, todo: 1,
+                source: ".agora/development/PROGRESS.md", convention: CONVENTION_MARKERS },
+    dashboardLoaded: true,
+    dashboardReadFailed: true,
+  });
+  assert.equal(bar.kind, "unknown");
+  assert.equal(bar.kind === "unknown" && bar.because, "dashboardUnread");
+  assert.equal("pct" in bar, false);
+});
+
+test("a loaded dashboard that did not fail still classifies its snapshot", () => {
+  // The other side, so the fix cannot be "always unknown".
+  const bar = progressBarOf({
+    snapshot: { available: true, reason: null, done: 9, in_progress: 0, todo: 1,
+                source: ".agora/development/PROGRESS.md", convention: CONVENTION_MARKERS },
+    dashboardLoaded: true,
+    dashboardReadFailed: false,
+  });
+  assert.equal(bar.kind, "counts");
+});

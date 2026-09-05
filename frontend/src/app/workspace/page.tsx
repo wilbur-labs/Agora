@@ -37,8 +37,8 @@ import {
   OPEN_ATTENTION_PAGE_LIMIT,
   type AttentionItem,
   type AttentionKind,
-  type DashboardTask,
   type Delivery,
+  type NextAction,
   type ProjectDashboard,
   type RecapItem,
   type TaskRecap,
@@ -111,7 +111,12 @@ import {
   type RunUnit,
   type UnplacedRun,
 } from "@/lib/run-tree";
-import { progressBarOf } from "@/lib/progress-snapshot";
+import { progressBarOf, type ProgressBar } from "@/lib/progress-snapshot";
+// The same two decisions the portfolio cockpit takes, imported rather than
+// restated. One rule, one implementation: a second copy is a second thing to
+// forget to fix, which is how this page came to disagree with that one.
+import { taskTrustLineOf, workspaceProjectStripOf,
+  type TaskTrustLine, type WorkspaceProjectStrip } from "@/lib/portfolio-bucket";
 import { ProgressSnapshotBar } from "@/components/progress-snapshot-bar";
 import { useI18n, type Translate, type TranslateEnum } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
@@ -1141,7 +1146,26 @@ function TaskWorkspace({ task, refreshNonce, onTaskMayHaveChanged }: { task: Tas
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <ProjectStrip dashboard={dashboard} dashError={dashError} />
+      <ProjectStrip
+        name={dashboard?.name ?? null}
+        strip={dashboard ? workspaceProjectStripOf({
+          readFailed: dashError,
+          truncated: dashboard.truncated,
+          done: dashboard.tasks.filter((it) => it.state === "done").length,
+          pageSize: dashboard.tasks.length,
+          action: dashboard.next_action.action,
+          partial: dashboard.next_action.partial,
+          attentionCount: dashboard.next_action.attention_count,
+          attention: dashboard.next_action.attention,
+          title: dashboard.next_action.title,
+        }) : null}
+        bar={progressBarOf({
+          snapshot: dashboard?.progress_snapshot,
+          dashboardLoaded: dashboard !== null,
+          dashboardReadFailed: dashError,
+        })}
+        snapshotSource={dashboard?.progress_snapshot?.source ?? undefined}
+      />
       {/* The Resume Brief and the action that acts on it, as one block. */}
       <div className="border-b bg-muted/20">
         <ResumeBrief recap={recap} recapError={recapError} t={t} te={te} />
@@ -1174,7 +1198,7 @@ function TaskWorkspace({ task, refreshNonce, onTaskMayHaveChanged }: { task: Tas
           onTaskMayHaveChanged={onTaskMayHaveChanged}
         />
       </div>
-      <OutcomeSummary task={task} dashTask={dashTask} dashError={dashError} blocker={blockerClaim} delivery={delivery} deliveryError={deliveryError} deliveryAsked={task.state === "done"} latestSuccess={latestSuccess} />
+      <OutcomeSummary task={task} trustLine={taskTrustLineOf({ readFailed: dashError, hasTask: dashTask !== null, hasSpec: dashTask?.has_spec ?? false })} next={dashError ? null : dashTask?.next_action ?? null} blocker={blockerClaim} delivery={delivery} deliveryError={deliveryError} deliveryAsked={task.state === "done"} latestSuccess={latestSuccess} />
       {/* Requirements: the task's contract, not "what is happening now", so it is
           NOT in the right column any more. It sits here, directly under the
           outcome header whose Trust cell scores the very criteria it lists, as a
@@ -1426,46 +1450,58 @@ function SpecBlock({ spec, t }: { spec: RequirementSpec; t: Translate }) {
 
 // Top strip: project-level orientation, so switching tasks never loses "where
 // is this whole project and what's its next move?".
-function ProjectStrip({ dashboard, dashError }: { dashboard: ProjectDashboard | null; dashError: boolean }) {
+// Takes the decided view and the two things that are not decisions -- the project's
+// name and its snapshot bar. **Not the dashboard.** A reviewer's point that no source
+// scan can answer: while the response is in scope, nothing stops a later edit reading
+// a raw count in another branch, and the test can only look for spellings it has
+// thought of. With the response out of scope that bypass is not a thing you can
+// write, which is a different kind of guarantee from a test that looks for it.
+function ProjectStrip(
+  { name, strip, bar, snapshotSource }: {
+    name: string | null;
+    strip: WorkspaceProjectStrip | null;
+    bar: ProgressBar;
+    snapshotSource: string | undefined;
+  },
+) {
   const { t, te } = useI18n();
-  // S3: the progress figure comes from the project's RESUME progress snapshot, and
-  // from nothing else. Derived before the early return below so the rule that a
-  // failed dashboard read is *unknown* (never 0%, never "no snapshot") is applied by
-  // one function rather than by the branch order of this component.
-  const bar = progressBarOf({
-    snapshot: dashboard?.progress_snapshot,
-    dashboardLoaded: dashboard !== null,
-    dashboardReadFailed: dashError,
-  });
-  if (!dashboard) {
-    return <div className="border-b bg-muted/30 px-5 py-2 text-xs text-muted-foreground">{dashError ? t("workspace.project.unavailable") : "…"}</div>;
+  if (!strip || name === null) {
+    return <div className="border-b bg-muted/30 px-5 py-2 text-xs text-muted-foreground">{bar.kind === "unknown" ? t("workspace.project.unavailable") : "…"}</div>;
   }
-  const done = dashboard.tasks.filter((it) => it.state === "done").length;
-  const total = dashboard.tasks.length;
-  const next = dashboard.next_action;
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b bg-muted/30 px-5 py-2 text-xs">
-      <span className="inline-flex items-center gap-1.5 font-semibold"><Network className="size-3.5 text-primary" />{dashboard.name}</span>
-      <span className="text-muted-foreground">{t("workspace.project.strip", { done, total })}</span>
+      <span className="inline-flex items-center gap-1.5 font-semibold"><Network className="size-3.5 text-primary" />{name}</span>
+      {strip.count.kind === "exact" ? (
+        <span className="text-muted-foreground">{t("workspace.project.strip", { done: strip.count.done, total: strip.count.total })}</span>
+      ) : strip.count.kind === "atLeast" ? (
+        <span className="text-muted-foreground">{t("workspace.project.stripPartial", { done: strip.count.done })}</span>
+      ) : null}
       {/* The bar replaces the verified percentage that used to be in the line above.
           That number came from `metrics.verified_pct`, which reads a criterion as
           verified from any historical successful run of its task — so new criteria
           added by a requirements change are reported as verified by a run that
           predates them. Rewording it could not have fixed it; the source had to go. */}
-      <ProgressSnapshotBar bar={bar} source={dashboard.progress_snapshot?.source} compact />
+      <ProgressSnapshotBar bar={bar} source={snapshotSource} compact />
       <span className="text-muted-foreground/50">·</span>
-      {next.action === "none" ? (
+      {strip.next.kind === "unknown" ? (
+        <span className="inline-flex items-center gap-1 text-muted-foreground">
+          {t(strip.claim === "stale" ? "workspace.project.nextStale" : "workspace.project.nextPartial")}
+        </span>
+      ) : strip.next.kind === "allClear" ? (
         <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400"><CircleCheck className="size-3.5" />{t("workspace.project.allDone")}</span>
       ) : (
-        <span className={cn("inline-flex items-center gap-1", next.attention ? "text-orange-600 dark:text-orange-400" : "text-foreground")}>
+        <span className={cn("inline-flex items-center gap-1", strip.next.attention ? "text-orange-600 dark:text-orange-400" : "text-foreground")}>
           <ArrowRight className="size-3.5" />
-          <span className="font-medium">{t("workspace.project.next")}:</span> {te("nextAction", next.action)}
-          {next.title && <span className="text-muted-foreground">{t("workspace.project.forTask", { title: next.title })}</span>}
+          <span className="font-medium">{t("workspace.project.next")}:</span> {te("nextAction", strip.next.action)}
+          {strip.next.title && <span className="text-muted-foreground">{t("workspace.project.forTask", { title: strip.next.title })}</span>}
         </span>
       )}
-      {next.attention_count > 0 && (
+      {strip.attention.kind !== "hidden" && (
         <span className="ml-auto inline-flex items-center gap-1 rounded-full bg-orange-500/10 px-2 py-0.5 font-medium text-orange-600 dark:text-orange-400">
-          <AlertTriangle className="size-3" />{t("workspace.project.attention", { count: next.attention_count })}
+          <AlertTriangle className="size-3" />
+          {strip.attention.kind === "atLeast"
+            ? t("workspace.project.attentionAtLeast", { count: strip.attention.count })
+            : t("workspace.project.attention", { count: strip.attention.count })}
         </span>
       )}
     </div>
@@ -1607,12 +1643,15 @@ function ResumeBrief(
   );
 }
 
-function OutcomeSummary({ task, dashTask, dashError, blocker, delivery, deliveryError, deliveryAsked, latestSuccess }: { task: TaskManifest; dashTask: DashboardTask | null; dashError: boolean; blocker: TaskBlockerClaim; delivery: Delivery | null; deliveryError: boolean; deliveryAsked: boolean; latestSuccess: DeliveredResult<ExecutionRun> }) {
+// Given the decided trust line and the task's next action, not the dashboard row they
+// came from: with `dashTask` out of scope, a later edit cannot reach past the decision
+// to a retained value, which is the one thing a source scan could never establish.
+function OutcomeSummary({ task, trustLine, next, blocker, delivery, deliveryError, deliveryAsked, latestSuccess }: { task: TaskManifest; trustLine: TaskTrustLine; next: NextAction | null; blocker: TaskBlockerClaim; delivery: Delivery | null; deliveryError: boolean; deliveryAsked: boolean; latestSuccess: DeliveredResult<ExecutionRun> }) {
   const { t, te } = useI18n();
-  const next = dashTask?.next_action ?? null;
-  const total = dashTask?.total_weight ?? 0;
-  const verified = dashTask?.verified_weight ?? 0;
-  const pct = total ? Math.round((verified * 100) / total) : 0;
+  // A task-level action has no `partial`: the task is on the page or there is no
+  // `dashTask` at all. So the only thing that can disqualify it here is staleness,
+  // which `next` already carries by being null. Routed through the shared decision
+  // anyway, so this page and the portfolio cockpit cannot drift on the same sentence.
   const stuck = task.state === "blocked" || task.state === "failed";
   // Two sources, deliberately, and they are not the same claim. The title comes
   // from the task-scoped attention view (the single source for every attention
@@ -1700,16 +1739,20 @@ function OutcomeSummary({ task, dashTask, dashError, blocker, delivery, delivery
         <div className="space-y-3">
           <div>
             <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{t("workspace.summary.trust")}</p>
-            {!dashTask ? (
-              <p className="mt-0.5 text-sm text-muted-foreground">{dashError ? t("workspace.header.unavailable") : "—"}</p>
-            ) : !dashTask.has_spec ? (
-              <p className="mt-0.5 text-sm text-muted-foreground">{t("workspace.header.noCriteria")}</p>
-            ) : (
-              <div className="mt-0.5 flex items-center gap-2">
-                <span className="text-sm font-semibold tabular-nums">{t("workspace.header.completionValue", { done: verified, total })}</span>
-                {total > 0 && <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-emerald-500" style={{ width: `${pct}%` }} /></div>}
-              </div>
-            )}
+            {/* The third place this number lived. `verified_weight / total_weight`
+                marks every criterion of the task's *current* spec verified from any
+                historical worker success, with no binding to the revision those
+                criteria belong to — a run against one revision reports the next
+                revision's new criteria as verified. It was removed from the portfolio
+                card and from the cockpit tile for that reason, and the commit that did
+                so said the page had written down why it cannot be shown and went on
+                showing it two components away. This was the third. */}
+            <p className="mt-0.5 text-sm text-muted-foreground">
+              {trustLine === "unavailable" ? t("workspace.header.unavailable")
+                : trustLine === "loading" ? "—"
+                : trustLine === "noCriteria" ? t("workspace.header.noCriteria")
+                : t("workspace.header.completionUnbound")}
+            </p>
           </div>
           <div>
             <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{t("workspace.summary.next")}</p>
@@ -1721,7 +1764,16 @@ function OutcomeSummary({ task, dashTask, dashError, blocker, delivery, delivery
               next.action === "none"
                 ? <p className="mt-0.5 inline-flex items-center gap-1 text-sm text-emerald-600 dark:text-emerald-400"><CircleCheck className="size-3.5" />{t("workspace.summary.done")}</p>
                 : <p className={cn("mt-0.5 text-sm font-semibold", next.attention ? "text-orange-600 dark:text-orange-400" : "text-primary")}>{te("nextAction", next.action)}</p>
-            ) : <p className="mt-0.5 text-sm text-muted-foreground">{dashError ? t("workspace.header.unavailable") : "—"}</p>}
+            ) : (
+              // `next` is null when the read failed or has not landed. The trust line
+              // beside it already distinguishes those two, from the same facts, so this
+              // borrows its answer rather than re-deriving one from a flag it no longer
+              // has -- two derivations of "why is this empty" is how they came to
+              // disagree in the first place.
+              <p className="mt-0.5 text-sm text-muted-foreground">
+                {trustLine === "unavailable" ? t("workspace.header.unavailable") : "—"}
+              </p>
+            )}
           </div>
         </div>
       </div>
@@ -2005,7 +2057,12 @@ function RequirementsStrip({ task, specs, error }: { task: TaskManifest; specs: 
           <ChevronDown className={cn("size-3 shrink-0 transition-transform", open && "rotate-180")} />
           <span className="font-medium uppercase tracking-wide">{t("workspace.requirements.label")}</span>
           <span className="min-w-0 truncate">{summaryLine}</span>
-          {latest && latest.acceptance_scenarios.length > 0 && (
+          {/* `!error` too: the summary line beside it already goes unavailable on a
+              failed refresh and the expanded body is hidden, but this badge counted
+              the retained revision's scenarios independently -- so the strip could
+              read "Unavailable · 7 scenarios", where the seven belong to the read
+              that failed. A count is a claim as much as a sentence is. */}
+          {!error && latest && latest.acceptance_scenarios.length > 0 && (
             <span className="shrink-0">· {t("workspace.requirements.scenarioCount", { count: latest.acceptance_scenarios.length })}</span>
           )}
         </button>

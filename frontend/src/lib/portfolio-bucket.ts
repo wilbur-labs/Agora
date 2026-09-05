@@ -366,6 +366,134 @@ export function projectNextActionLineOf(
 }
 
 /**
+ * What a project dashboard's rollups may be presented as.
+ *
+ * Three states, because the response and the page between them produce three, and
+ * the workspace strip was collapsing all of them into "current":
+ *
+ *   stale    the refresh failed. The page keeps the dashboard it had -- which is
+ *            right, blanking the strip on every failed refresh would be its own
+ *            dishonesty -- but every number in it is from before the failure, and the
+ *            only guard was an early return that fires when there is no dashboard at
+ *            all. A retained one sailed straight past it.
+ *   partial  the read succeeded and says so in `truncated`: its `tasks` are a page.
+ *            `done/total` was being computed as `tasks.length`, so the denominator was
+ *            the size of the page rather than of the project -- a fraction whose
+ *            *whole* is wrong is worse than a missing one.
+ *   current  neither.
+ *
+ * `truncated` is checked second on purpose: a stale response's own truncation flag is
+ * as old as the rest of it, so "stale" is the honest answer for a failed refresh even
+ * when the dashboard it kept had been complete.
+ */
+export type DashboardClaim = "current" | "partial" | "stale";
+
+export function dashboardClaimOf(
+  { readFailed, truncated }: { readFailed: boolean; truncated: boolean },
+): DashboardClaim {
+  if (readFailed) return "stale";
+  return truncated ? "partial" : "current";
+}
+
+/**
+ * Everything the workspace project strip may show, decided in one place.
+ *
+ * Written this way after a review pointed out that the previous shape -- a claim
+ * value plus four render conditions in JSX -- could not be tested at all. This suite
+ * cannot mount a .tsx component (node --test strips types, it does not transform
+ * JSX), so a decision left in the markup has no test, and the source scan standing in
+ * for one kept proving that calls existed rather than that their results controlled
+ * anything. Every regression the reviewer demonstrated passed that scan.
+ *
+ * So each element gets a variant that carries exactly what may be rendered, and
+ * nothing else. A caller cannot print a total that is not there.
+ */
+export type StripCount =
+  | { kind: "exact"; done: number; total: number }
+  | { kind: "atLeast"; done: number }
+  | { kind: "hidden" };
+
+export type StripAttention =
+  | { kind: "exact"; count: number }
+  | { kind: "atLeast"; count: number }
+  | { kind: "hidden" };
+
+/** The next-action line plus the two things the label needs, so the renderer does not
+ *  have to reach back to the response for them. `action` and `title` exist only on the
+ *  `action` variant: there is nothing to label on the other two. */
+export type StripNext =
+  | { kind: "allClear" }
+  | { kind: "unknown" }
+  | { kind: "action"; action: string; attention: boolean; title: string | null };
+
+export interface WorkspaceProjectStrip {
+  claim: DashboardClaim;
+  count: StripCount;
+  next: StripNext;
+  attention: StripAttention;
+}
+
+export function workspaceProjectStripOf(
+  facts: {
+    readFailed: boolean;
+    truncated: boolean;
+    done: number;
+    pageSize: number;
+    action: string;
+    partial: boolean;
+    attentionCount: number;
+    attention: boolean;
+    title: string | null;
+  },
+): WorkspaceProjectStrip {
+  const claim = dashboardClaimOf(facts);
+  // `pageSize` is named for what it is. It was being passed as `total`, and printed
+  // as the denominator of "{done}/{total} done" -- so the whole of that fraction was
+  // the size of the page rather than of the project. A fraction whose whole is wrong
+  // is worse than a missing one.
+  const count: StripCount =
+    claim === "current" ? { kind: "exact", done: facts.done, total: facts.pageSize }
+    : claim === "partial" ? { kind: "atLeast", done: facts.done }
+    : { kind: "hidden" };
+  // A stale response cannot support either sentence: `action === "none"` is what the
+  // engine found on the page it was given, and that page is from before the failure.
+  const line = claim === "stale"
+    ? ({ kind: "unknown" } as const)
+    : projectNextActionLineOf(facts.action, facts.partial);
+  const next: StripNext = line.kind === "action"
+    ? { kind: "action", action: facts.action, attention: facts.attention, title: facts.title }
+    : line;
+  const attention: StripAttention =
+    facts.attentionCount <= 0 || claim === "stale" ? { kind: "hidden" }
+    : claim === "partial" ? { kind: "atLeast", count: facts.attentionCount }
+    : { kind: "exact", count: facts.attentionCount };
+  return { claim, count, next, attention };
+}
+
+/**
+ * What the task summary's trust line may say.
+ *
+ * The failure is asked about first. Giving a retained `dashTask` precedence meant a
+ * failed refresh still answered "no approved criteria yet" -- a plain absence claim
+ * from a read that established nothing -- or spoke about the current criterion set
+ * from a response that predates the failure.
+ *
+ * `unbound` is where a percentage used to be. `verified_weight / total_weight` marks
+ * every criterion of the task's current spec verified from any historical worker
+ * success, with no binding to the revision those criteria belong to; it was removed
+ * from the portfolio card and the cockpit tile, and this was its third home.
+ */
+export type TaskTrustLine = "unavailable" | "loading" | "noCriteria" | "unbound";
+
+export function taskTrustLineOf(
+  { readFailed, hasTask, hasSpec }: { readFailed: boolean; hasTask: boolean; hasSpec: boolean },
+): TaskTrustLine {
+  if (readFailed) return "unavailable";
+  if (!hasTask) return "loading";
+  return hasSpec ? "unbound" : "noCriteria";
+}
+
+/**
  * The board notice's message key per outcome. `complete` is absent **by type**:
  * there is nothing to disclose about a complete read, and a key that could answer
  * for it would invite rendering a warning over good data.
