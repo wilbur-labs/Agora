@@ -335,6 +335,7 @@ def project_dashboard(
     criteria + progress vs verified-completion, and the project-wide rollup."""
     from agora.execution.dispatcher import ROLE_KEY, ROLE_REVIEW, ROLE_WORKER
     from agora.execution.models import RunState
+    from agora.projects.cr_log import read_cr_log
     from agora.projects.progress_snapshot import read_progress_snapshot
     from agora.requirements.models import SpecState
     from agora.requirements.store import RequirementStore
@@ -454,6 +455,13 @@ def project_dashboard(
         # tell "no snapshot" from "could not be read" from "not reported by this
         # server" without deriving any of them from a missing field.
         "progress_snapshot": read_progress_snapshot(project.root).payload(),
+        # The project's own CR Log, read from its repository rather than held here —
+        # see tasks/agora/adr/0004 in claude-workspace. One file, parsed the same way
+        # as the snapshot above, which is why it rides along on this response.
+        # Its sibling, the decision records, deliberately does *not*: that one lists a
+        # directory and opens every file in it, and this is the request a task switch
+        # waits for. It has its own route below, fetched when the panel is opened.
+        "cr_log": read_cr_log(project.root).payload(),
         "next_action": project_next_action(action_items, partial=truncated),
         "tasks": task_views,
         "truncated": truncated,
@@ -551,6 +559,28 @@ def task_recap(
     result["zone_offset_minutes"] = zone_offset_minutes(zone=zone, now=now)
     result["next_rollover"] = next_rollover(zone=zone, now=now)
     return result
+
+
+@router.get("/projects/{project_id}/decisions")
+def project_decisions(
+    project_id: str,
+    registry: ProjectRegistry = Depends(get_project_registry),
+) -> dict[str, Any]:
+    """The project's decision records, read from ``<root>/.agora/decisions/``.
+
+    Its own route rather than a field on the dashboard, because reading it lists a
+    directory and opens every record in it, and the dashboard is the request a task
+    switch waits for. The payload always carries either the records or the reason
+    there are none, so the UI can tell "this project keeps no decision log" from
+    "it could not be read" without deriving either from a missing field.
+    """
+    from agora.projects.decisions import read_decisions
+
+    try:
+        project = registry.get(project_id)
+    except (KeyError, LookupError):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Unknown project: {project_id}") from None
+    return {"project_id": project_id, **read_decisions(project.root).payload()}
 
 
 @router.put("/projects/{project_id}/charter")

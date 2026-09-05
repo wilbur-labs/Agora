@@ -517,3 +517,115 @@ def test_provisioner_locks_are_process_shared(tmp_path):
     p1 = WorkspaceProvisioner(registry)
     p2 = WorkspaceProvisioner(registry)
     assert p1._locks is p2._locks is _WORKSPACE_LOCKS
+
+
+def test_dashboard_carries_the_cr_log_as_its_own_claim(tmp_path):
+    """The CR Log rides on the dashboard the way the snapshot does: always present,
+    carrying either the rows or the reason there are none. A merely missing key would
+    read as "this project has no open CRs", which is the one sentence the drift
+    mechanism must never say by accident."""
+    from agora.projects.cr_log import CR_LOG_RELATIVE_PATH
+    from agora.tasks.router import get_project_registry, get_task_store
+    from agora.tasks.store import TaskStore
+    from agora.execution.router import get_execution_store
+    from agora.execution.store import ExecutionStore
+
+    registry = _registry(tmp_path)
+    tasks = TaskStore(tmp_path / "crlog.db")
+    runs = ExecutionStore(tasks)
+
+    app.dependency_overrides[get_project_registry] = lambda: registry
+    app.dependency_overrides[get_task_store] = lambda: tasks
+    app.dependency_overrides[get_execution_store] = lambda: runs
+    client = TestClient(app)
+    try:
+        body = client.get("/api/projects/agora/dashboard").json()
+        assert body["cr_log"]["available"] is False
+        assert body["cr_log"]["reason"] == "absent"
+        # Absent, so there is no count to render — not a zero.
+        assert body["cr_log"]["open_count"] is None
+        assert body["cr_log"]["rows"] is None
+
+        path = registry.get("agora").root / CR_LOG_RELATIVE_PATH
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "| ID | date | source | description | kind | status | decision | propagated |\n"
+            "|---|---|---|---|---|---|---|---|\n"
+            "| CR-1 | 2026-09-05 | user | widen the scope | creep | OPEN | accept | |\n"
+            "| CR-2 | 2026-09-05 | agent | rename a field | refine | DONE | accept | store.py |\n"
+            "| CR-3 | 2026-09-05 | agent | a hazard | defer | still thinking | - | |\n",
+            encoding="utf-8",
+        )
+        body = client.get("/api/projects/agora/dashboard").json()
+        log = body["cr_log"]
+        assert log["available"] is True
+        assert log["open_count"] == 1
+        # The third row's status is a sentence, so it is neither open nor closed, and
+        # the count that says so travels with the one above it.
+        assert log["unrecognised_status_count"] == 1
+        assert [row["id"] for row in log["rows"]] == ["CR-1", "CR-2", "CR-3"]
+        assert log["source"] == CR_LOG_RELATIVE_PATH.as_posix()
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_decisions_have_their_own_route_and_report_absence_as_absence(tmp_path):
+    """Not a dashboard field: reading it lists a directory and opens every record,
+    and the dashboard is the request a task switch waits for."""
+    from agora.projects.decisions import DECISIONS_RELATIVE_PATH
+    from agora.tasks.router import get_project_registry, get_task_store
+    from agora.tasks.store import TaskStore
+    from agora.execution.router import get_execution_store
+    from agora.execution.store import ExecutionStore
+
+    registry = _registry(tmp_path)
+    tasks = TaskStore(tmp_path / "adr.db")
+    runs = ExecutionStore(tasks)
+
+    app.dependency_overrides[get_project_registry] = lambda: registry
+    app.dependency_overrides[get_task_store] = lambda: tasks
+    app.dependency_overrides[get_execution_store] = lambda: runs
+    client = TestClient(app)
+    try:
+        # The dashboard does not carry them.
+        assert "decisions" not in client.get("/api/projects/agora/dashboard").json()
+
+        # A project created through Agora already has the directory --
+        # ProjectRegistry._ensure_project_dirs makes it -- so the empty answer here is
+        # "keeps a decision log, has recorded nothing", not "absent". Absence is what
+        # an imported pre-existing project looks like, covered in test_decisions.py.
+        body = client.get("/api/projects/agora/decisions").json()
+        assert body["project_id"] == "agora"
+        assert (body["available"], body["reason"]) == (True, None)
+        assert body["records"] == []
+        assert body["unreadable_count"] == 0
+
+        directory = registry.get("agora").root / DECISIONS_RELATIVE_PATH
+        assert directory.is_dir(), "the registry is expected to have created it"
+        (directory / "0001-first.md").write_text(
+            "# 0001. The first decision\n\n- **Status**: superseded by [[0002-second]]\n"
+            "- **Date**: 2026-09-05\n\n## Context\n\nwhy\n",
+            encoding="utf-8",
+        )
+        (directory / "README.md").write_text("# not a record\n", encoding="utf-8")
+        body = client.get("/api/projects/agora/decisions").json()
+        assert body["available"] is True
+        assert len(body["records"]) == 1
+        record = body["records"][0]
+        assert (record["number"], record["title"]) == (1, "The first decision")
+        assert (record["status_token"], record["superseded_by"]) == ("superseded", "0002")
+        # Named, not dropped: the directory holds five files, the log shows four.
+        assert body["unnumbered_files"] == ["README.md"]
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_decisions_route_404s_for_an_unknown_project(tmp_path):
+    from agora.tasks.router import get_project_registry
+
+    app.dependency_overrides[get_project_registry] = lambda: _registry(tmp_path)
+    client = TestClient(app)
+    try:
+        assert client.get("/api/projects/nope/decisions").status_code == 404
+    finally:
+        app.dependency_overrides.clear()
