@@ -387,9 +387,19 @@ def _read_record(path: Path, number: int) -> DecisionRecord:
 
 
 def read_decisions(root: Path) -> DecisionLog:
-    """Read one project's decision records. Never raises."""
-    source = DECISIONS_RELATIVE_PATH.as_posix()
-    directory = root / DECISIONS_RELATIVE_PATH
+    """Read one project's decision records from its fixed path. Never raises."""
+    return read_decisions_dir(
+        root / DECISIONS_RELATIVE_PATH, DECISIONS_RELATIVE_PATH.as_posix()
+    )
+
+
+def read_decisions_dir(directory: Path, source: str) -> DecisionLog:
+    """The same read, of a decisions directory that lives somewhere else.
+
+    Split out for W7: a workspace task keeps its ADRs in ``tasks/<name>/adr/`` rather
+    than ``.agora/decisions/``. The record format is the same one — same numbering,
+    same Status/Date/Alternatives headings — so only the directory and its name vary.
+    One rule, one implementation; a second copy is a second thing to forget to fix."""
     unavailable = lambda reason: DecisionLog(  # noqa: E731 - one shape, two call sites
         available=False, reason=reason, records=None, unreadable_count=None,
         unnumbered_files=None, source=source,

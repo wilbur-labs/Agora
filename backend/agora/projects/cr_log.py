@@ -418,11 +418,26 @@ def _table_rows(text: str) -> list[tuple[list[str], int | None, bool]]:
 
 
 def read_cr_log(root: Path) -> CRLog:
-    """Read one project's CR Log. Never raises: every failure is a reason the UI can
-    render, because a 500 here would take a project's whole view down over a file that
-    is optional by design."""
-    source = CR_LOG_RELATIVE_PATH.as_posix()
-    path = root / CR_LOG_RELATIVE_PATH
+    """Read one project's CR Log from its fixed path. Never raises: every failure is a
+    reason the UI can render, because a 500 here would take a project's whole view down
+    over a file that is optional by design."""
+    return read_cr_log_file(root / CR_LOG_RELATIVE_PATH, CR_LOG_RELATIVE_PATH.as_posix())
+
+
+def read_cr_log_file(path: Path, source: str) -> CRLog:
+    """The same read, of a CR table that lives somewhere else.
+
+    Split out for W7, which reads the CR rows embedded in a workspace task's
+    ``RESUME.md`` rather than a project's ``.agora/development/CR-LOG.md``. The table
+    format is identical — the same five kinds, the same statuses, the same ways of
+    being malformed — so what varies is only which file to open and what to call it.
+    Copying this function to point at another path would have given the two sources two
+    parsers that drift, which is the failure this codebase keeps correcting (see the
+    note at the bottom of portfolio-bucket.ts, and `attentionReachOf`'s second copy).
+
+    ``source`` is what the UI names as the thing it read, so the caller supplies it: a
+    path relative to whatever root the caller is talking about, which this function
+    cannot know."""
     unavailable = lambda reason, ids=(): CRLog(  # noqa: E731 - one shape, several call sites
         available=False, reason=reason, rows=None, open_count=None,
         unrecognised_status_count=None, malformed_ids=(tuple(ids) if ids else None), source=source,

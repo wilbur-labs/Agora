@@ -132,6 +132,21 @@ def _construct_mapping_without_duplicates(
     mapping: dict[Any, Any] = {}
     for key_node, value_node in node.value:
         key = loader.construct_object(key_node, deep=deep)
+        # PyYAML's own ``construct_mapping`` hashes the key here and raises a
+        # ``ConstructorError`` when it cannot; this loop replaced that method and left
+        # the check behind. Without it a legal-but-unsupported complex key
+        # (``? [a, b]``) reaches ``key in mapping`` and raises a bare ``TypeError``,
+        # which is not a ``yaml.YAMLError`` — so every caller's ``except
+        # yaml.YAMLError`` misses it and a malformed file becomes an exception out of a
+        # reader that promises never to raise. Measured, not reasoned: a one-line
+        # document reproduces it.
+        try:
+            hash(key)
+        except TypeError:
+            raise yaml.constructor.ConstructorError(
+                "while constructing a mapping", node.start_mark,
+                "found unhashable key", key_node.start_mark,
+            ) from None
         if key in mapping:
             raise _DuplicateKeyError(key, key_node)
         mapping[key] = loader.construct_object(value_node, deep=deep)
@@ -141,6 +156,14 @@ def _construct_mapping_without_duplicates(
 _StrictLoader.add_constructor(
     yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _construct_mapping_without_duplicates
 )
+
+#: The same loader, for readers outside this module. `workspace_tasks.py` parses a
+#: workspace task's `task.yaml`, where a duplicated `goal:` would be exactly the loss
+#: described above — one of two goals shown as *the* goal, with nothing saying a second
+#: existed. Exported rather than copied: two strict loaders are two things to keep in
+#: step, and the one that drifts decides what a file is allowed to say.
+StrictLoader = _StrictLoader
+DuplicateKeyError = _DuplicateKeyError
 
 
 @dataclass(frozen=True)
