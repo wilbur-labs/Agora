@@ -34,6 +34,8 @@ import {
   SOURCE_REASON_KEY,
   crSummaryOf,
   sourceVerdictOf,
+  resumeSectionsOf,
+  taskOnwardOf,
   type WorkspaceSourcePayload,
   type WorkspaceTaskPayload,
 } from "@/lib/workspace-sources";
@@ -508,8 +510,90 @@ function TaskLine({ task }: { task: WorkspaceTaskPayload }) {
       ) : adr > 0 ? (
         <span className="text-muted-foreground">{t("settings.sources.adrCount", { n: String(adr) })}</span>
       ) : null}
+      <TaskOnward task={task} />
+      <TaskProgressLines task={task} />
     </li>
   );
+}
+
+/** Where the task stopped and what is next — the two questions the panel exists for.
+ *
+ *  Clamped rather than truncated in the payload: the whole section is in the DOM and two
+ *  lines of it are shown, so "there is more" is visible and nothing here has to decide
+ *  what part of someone's next step is the important part. The `expand` control reveals
+ *  the rest in place. (The response itself is the size problem, and that is CR-35.) */
+function TaskProgressLines({ task }: { task: WorkspaceTaskPayload }) {
+  const { t } = useI18n();
+  const [expanded, setExpanded] = useState(false);
+  const { currentState, nextStep } = resumeSectionsOf(task.resume);
+  const rows: [string, typeof currentState][] = [
+    ["settings.sources.currentState", currentState],
+    ["settings.sources.nextStep", nextStep],
+  ];
+  const anyText = rows.some(([, section]) => section.show === "text");
+  return (
+    <div className="mt-1 w-full space-y-0.5">
+      {rows.map(([label, section]) => (
+        <p key={label} className="text-xs">
+          <span className="text-muted-foreground">{t(label)}: </span>
+          {section.show === "text" ? (
+            <span className={cn("whitespace-pre-wrap", !expanded && "line-clamp-2")}>
+              {section.text}
+            </span>
+          ) : section.show === "missing" ? (
+            // A fact about the task, not a failure: it has not written this section.
+            <span className="text-muted-foreground">{t("settings.sources.sectionMissing")}</span>
+          ) : (
+            // And this one is a failure, which is why it cannot share the sentence above.
+            <span className="text-amber-600">{t("settings.sources.resumeUnreadable")}</span>
+          )}
+        </p>
+      ))}
+      {anyText && (
+        <button
+          type="button"
+          className="text-xs text-muted-foreground underline underline-offset-2"
+          onClick={() => setExpanded((was) => !was)}
+        >
+          {t(expanded ? "settings.sources.collapse" : "settings.sources.expand")}
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** The way onward from a task: open the project its `primary_repo` names, or say
+ *  precisely which of the three other things is true. */
+function TaskOnward({ task }: { task: WorkspaceTaskPayload }) {
+  const { t } = useI18n();
+  const onward = taskOnwardOf(task.repo_link);
+  if (onward.show === "open") {
+    return (
+      <a className="text-xs text-primary underline underline-offset-2" href={onward.href}>
+        {t("settings.sources.openProject", { project: onward.projectId })}
+      </a>
+    );
+  }
+  if (onward.show === "notRegistered") {
+    // Names the directory: the next move is to add *that* one as a project.
+    return (
+      <span className="text-xs text-muted-foreground">
+        {t("settings.sources.repoNotRegistered", { repo: onward.repo })}
+      </span>
+    );
+  }
+  if (onward.show === "noRepoRecorded") {
+    return <span className="text-xs text-muted-foreground">{t("settings.sources.noRepoRecorded")}</span>;
+  }
+  if (onward.show === "repoMalformed") {
+    return <span className="text-xs text-amber-600">{t("settings.sources.repoMalformed")}</span>;
+  }
+  if (onward.show === "projectsUnreadable") {
+    // Amber, and about the project list rather than about this task: nothing here failed.
+    return <span className="text-xs text-amber-600">{t("settings.sources.projectsUnreadable")}</span>;
+  }
+  // `unknown`: nothing was established, so nothing is claimed.
+  return null;
 }
 
 function ProjectImportNotice({ status }: { status: ProjectImportStatus | null }) {

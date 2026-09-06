@@ -24,6 +24,7 @@ export type ManifestReason =
 
 export interface ManifestPayload {
   available: boolean;
+  primary_repo: string | null;
   reason: ManifestReason | null;
   title: string | null;
   goal: string | null;
@@ -56,8 +57,27 @@ export interface DecisionsPayload {
   source: string;
 }
 
+/** Whether this task's repository is one Agora already knows. Mirrors `RepoLink`. */
+export type RepoLinkState =
+  | "linked"
+  | "not_registered"
+  /** The file names no repository — a line to add. */
+  | "not_recorded"
+  /** It names one and the value is not a path — a line to fix. Different work. */
+  | "repo_malformed"
+  /** The task read fine; the project list did not. Not an answer about this task. */
+  | "projects_unreadable"
+  | "unknown";
+
+export interface RepoLinkPayload {
+  state: RepoLinkState;
+  repo: string | null;
+  project_id: string | null;
+}
+
 export interface WorkspaceTaskPayload {
   name: string;
+  repo_link: RepoLinkPayload;
   manifest: ManifestPayload;
   resume: ResumePayload;
   cr_log: CrLogPayload;
@@ -120,6 +140,82 @@ export function sourceVerdictOf(source: WorkspaceSourcePayload): SourceVerdict {
   return source.tasks.length > 0
     ? { show: "tasks", count: source.tasks.length, skipped }
     : { show: "empty", skipped };
+}
+
+/**
+ * One section of a task's RESUME, as one value.
+ *
+ * Three answers, and the panel has to keep them apart: the text, "this task records no
+ * such section", and "this file could not be read". `ResumePayload` gives `null` for the
+ * last two alike, so a renderer reading the field alone shows a missing section and an
+ * unreadable file identically — as nothing at all, which reads as "nothing to say".
+ */
+export type SectionRead =
+  | { show: "text"; text: string }
+  /** The file was read; it has no such heading. A fact about the task. */
+  | { show: "missing" }
+  /** The file was not read. `reason` is why, and it belongs on screen. */
+  | { show: "unreadable"; reason: string };
+
+/**
+ * The two sections the panel shows: where the task stopped, and what is next.
+ *
+ * These are the two questions the person asked out loud ("how do I see where a project
+ * got to?"), and the API had been answering them since the first slice while nothing
+ * rendered either.
+ */
+export function resumeSectionsOf(resume: ResumePayload): {
+  currentState: SectionRead;
+  nextStep: SectionRead;
+} {
+  if (!resume.available) {
+    const reason = resume.reason ?? "unreadable";
+    return { currentState: { show: "unreadable", reason }, nextStep: { show: "unreadable", reason } };
+  }
+  const read = (text: string | null): SectionRead =>
+    text && text.trim() ? { show: "text", text } : { show: "missing" };
+  return { currentState: read(resume.current_state), nextStep: read(resume.next_step) };
+}
+
+/**
+ * What the panel offers as the way onward from a task, as one value.
+ *
+ * Four states because each has a different next move, and the two that look alike are
+ * the ones that must not merge: "the file names no repository" is something to write
+ * into `task.yaml`, while "the repository it names is not registered here" is a
+ * directory to add as a project. `unknown` claims nothing at all — it is what a caller
+ * that could not read the manifest, or did not look at the projects, is entitled to say.
+ */
+export type TaskOnward =
+  | { show: "open"; projectId: string; href: string }
+  | { show: "notRegistered"; repo: string }
+  | { show: "noRepoRecorded" }
+  /** `primary_repo` is there and unusable. Says so, because "not recorded" would send
+   *  someone to add a line that already exists. */
+  | { show: "repoMalformed" }
+  /** Nothing about this task failed — the project list did, and a person whose links
+   *  just disappeared is owed that sentence rather than a blank space. */
+  | { show: "projectsUnreadable" }
+  | { show: "unknown" };
+
+export function taskOnwardOf(link: RepoLinkPayload): TaskOnward {
+  if (link.state === "linked" && link.project_id) {
+    // The workspace board already deep-links by project; this reuses that route rather
+    // than inventing a second way in.
+    return {
+      show: "open",
+      projectId: link.project_id,
+      href: `/workspace?project=${encodeURIComponent(link.project_id)}`,
+    };
+  }
+  if (link.state === "not_registered" && link.repo) return { show: "notRegistered", repo: link.repo };
+  if (link.state === "not_recorded") return { show: "noRepoRecorded" };
+  if (link.state === "repo_malformed") return { show: "repoMalformed" };
+  if (link.state === "projects_unreadable") return { show: "projectsUnreadable" };
+  // Includes `linked` with no project_id and `not_registered` with no path: a server
+  // that sends half an answer gets the variant that claims nothing, not a crash and not
+  // a guess.
+  return { show: "unknown" };
 }
 
 /** The i18n key for each reason a source has nothing to show. */

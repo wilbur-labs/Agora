@@ -6,6 +6,8 @@ import {
   SOURCE_REASON_KEY,
   crSummaryOf,
   sourceVerdictOf,
+  resumeSectionsOf,
+  taskOnwardOf,
   type CrLogPayload,
   type ManifestReason,
   type SourceReason,
@@ -33,10 +35,12 @@ const source = (over: Partial<WorkspaceSourcePayload> = {}): WorkspaceSourcePayl
   unreadable_entries: [], ...over,
 });
 
-const task = (name: string) => ({
+const task = (name: string, over: Record<string, unknown> = {}) => ({
   name,
+  repo_link: { state: "unknown" as const, repo: null, project_id: null },
   manifest: {
-    available: true, reason: null, title: null, goal: "a goal",
+    available: true, reason: null, title: null, goal: "a goal", primary_repo: null,
+    primary_repo_malformed: false,
     status: "active", machine: null, milestones: [],
   },
   resume: { available: true, reason: null, current_state: null, next_step: null, progress: null },
@@ -46,6 +50,7 @@ const task = (name: string) => ({
   },
   decisions: { available: true, reason: null, records: [], source: "x" },
   has_workflow: true,
+  ...over,
 });
 
 // --- W7: a reason is not a count ------------------------------------------------
@@ -155,6 +160,12 @@ test("every reason has a sentence in both locales", () => {
       "settings.sources.none", "settings.sources.listUnreadable",
       "settings.sources.emptyTasksDir", "settings.sources.taskCount",
       "settings.sources.taskCountAtLeast", "settings.sources.unreadableEntries",
+      "settings.sources.currentState", "settings.sources.nextStep",
+      "settings.sources.sectionMissing", "settings.sources.resumeUnreadable",
+      "settings.sources.expand", "settings.sources.collapse",
+      "settings.sources.openProject", "settings.sources.repoNotRegistered",
+      "settings.sources.noRepoRecorded", "settings.sources.repoMalformed",
+      "settings.sources.projectsUnreadable",
       "settings.sources.skipped", "settings.sources.goalEmpty",
       "settings.sources.crOpen", "settings.sources.crUnrecognised",
       "settings.sources.adrCount", "settings.sources.browse",
@@ -179,4 +190,100 @@ test("no reason is described as a count in either locale", () => {
       assert.ok(!/\b0\b|零/.test(sentence), `${locale} ${reason} states a count: ${sentence}`);
     }
   }
+});
+
+// --- where it stopped, and what is next ------------------------------------------
+
+test("a section that is there comes through as its text", () => {
+  const { currentState, nextStep } = resumeSectionsOf({
+    available: true, reason: null,
+    current_state: "停在 W2 的入口。", next_step: "先打通，再加固。", progress: null,
+  });
+  assert.deepEqual(currentState, { show: "text", text: "停在 W2 的入口。" });
+  assert.deepEqual(nextStep, { show: "text", text: "先打通，再加固。" });
+});
+
+test("a section the task never wrote is not the same as a file nobody read", () => {
+  // Both arrive as `null` on the payload, which is exactly why the panel may not read
+  // that field on its own: one is a fact about the task, the other is a failure.
+  const missing = resumeSectionsOf({
+    available: true, reason: null, current_state: null, next_step: null, progress: null,
+  });
+  const unread = resumeSectionsOf({
+    available: false, reason: "too_large", current_state: null, next_step: null, progress: null,
+  });
+  assert.deepEqual(missing.currentState, { show: "missing" });
+  assert.deepEqual(unread.currentState, { show: "unreadable", reason: "too_large" });
+  assert.deepEqual(unread.nextStep, { show: "unreadable", reason: "too_large" });
+});
+
+test("an unreadable resume with no reason still does not read as 'not recorded'", () => {
+  const { nextStep } = resumeSectionsOf({
+    available: false, reason: null, current_state: null, next_step: null, progress: null,
+  });
+  assert.deepEqual(nextStep, { show: "unreadable", reason: "unreadable" });
+});
+
+test("a section holding only whitespace is not text to show", () => {
+  const { currentState } = resumeSectionsOf({
+    available: true, reason: null, current_state: "   \n  ", next_step: null, progress: null,
+  });
+  assert.deepEqual(currentState, { show: "missing" });
+});
+
+// --- the way onward ----------------------------------------------------------------
+
+test("a linked task offers the project it names, deep-linked by id", () => {
+  const onward = taskOnwardOf({ state: "linked", repo: "D:/Projects/Agora", project_id: "agora" });
+  assert.equal(onward.show, "open");
+  assert.equal(onward.show === "open" && onward.href, "/workspace?project=agora");
+});
+
+test("a project id needing escaping is escaped into the link", () => {
+  const onward = taskOnwardOf({ state: "linked", repo: "D:/x", project_id: "a b&c" });
+  assert.equal(onward.show === "open" && onward.href, "/workspace?project=a%20b%26c");
+});
+
+test("the three ways there is no link are three different answers", () => {
+  // Each one has a different next move, and the panel says which.
+  assert.deepEqual(
+    taskOnwardOf({ state: "not_registered", repo: "D:/Projects/Alpha", project_id: null }),
+    { show: "notRegistered", repo: "D:/Projects/Alpha" },
+  );
+  assert.deepEqual(
+    taskOnwardOf({ state: "not_recorded", repo: null, project_id: null }),
+    { show: "noRepoRecorded" },
+  );
+  assert.deepEqual(
+    taskOnwardOf({ state: "unknown", repo: "D:/Projects/Alpha", project_id: null }),
+    { show: "unknown" },
+  );
+});
+
+test("a repo value that is there and wrong is not the same as one that is missing", () => {
+  // Different work: fix that line, versus add a line that is not there.
+  assert.deepEqual(
+    taskOnwardOf({ state: "repo_malformed", repo: null, project_id: null }),
+    { show: "repoMalformed" },
+  );
+  assert.deepEqual(
+    taskOnwardOf({ state: "not_recorded", repo: null, project_id: null }),
+    { show: "noRepoRecorded" },
+  );
+});
+
+test("a failure to read the project list is said out loud, not rendered as blank", () => {
+  // `unknown` renders as nothing, which is right when nothing is owed — and wrong here:
+  // the links a person had a moment ago would just disappear.
+  assert.deepEqual(
+    taskOnwardOf({ state: "projects_unreadable", repo: "D:/Projects/Alpha", project_id: null }),
+    { show: "projectsUnreadable" },
+  );
+});
+
+test("half an answer from the server claims nothing rather than guessing", () => {
+  // `linked` with no project id cannot be opened, and `not_registered` with no path
+  // cannot name what to register. Neither may be rendered as though it could.
+  assert.deepEqual(taskOnwardOf({ state: "linked", repo: "D:/x", project_id: null }), { show: "unknown" });
+  assert.deepEqual(taskOnwardOf({ state: "not_registered", repo: null, project_id: null }), { show: "unknown" });
 });
