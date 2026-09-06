@@ -15,7 +15,7 @@ import textwrap
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, field_validator
 
@@ -34,6 +34,7 @@ from agora.orchestration.runtime_capabilities import (
     collect_native_runtime_capabilities,
 )
 from agora.projects import ProjectRegistry
+from agora.projects.workspace_tasks import read_workspace_source
 from agora.workspaces.models import ProvisionRequest
 from agora.workspaces.provisioner import WorkspaceProvisioner
 
@@ -253,6 +254,81 @@ def _run_folder_dialog(initial: str) -> str:
     if result.returncode != 0:
         raise RuntimeError("folder dialog unavailable")
     return result.stdout.strip()
+
+
+# --------------------------------------------------------------- workspace sources (W7)
+#
+# Agora reads the tasks a claude-workspace directory already holds, rather than asking
+# for the work to be entered a second time. Three endpoints, and the middle one is the
+# reason this is not two:
+#
+#   GET  /workspace-sources          what is registered, and what each one reads today
+#   POST /workspace-sources/probe    what a path *would* yield — without registering it
+#   POST /workspace-sources          register   /   DELETE ...  forget (touches no file)
+#
+# `probe` exists so the UI can show what it found *before* anything is stored. Accepting
+# a path and then rendering an empty list is the same defect this product keeps
+# correcting: the person cannot tell "this directory holds no tasks" from "I could not
+# read it" from "wrong directory". The probe answers that first, in their words, and
+# only then do they confirm.
+
+
+class WorkspaceSourcePathRequest(BaseModel):
+    path: str = Field(min_length=1, max_length=4096)
+
+
+def _source_payload(root: Path) -> dict[str, Any]:
+    return read_workspace_source(root).payload()
+
+
+@router.get("/workspace-sources")
+def list_workspace_sources(
+    registry: ProjectRegistry = Depends(get_project_registry),
+) -> dict[str, Any]:
+    """Every registered workspace, read now.
+
+    Read on request rather than cached: these files are the user's live working notes —
+    the whole point is that Agora shows what they say *today* — and a cache would need
+    an invalidation story to be worth its risk of showing yesterday's RESUME as today's.
+    """
+    sources = registry.workspace_sources()
+    return {"sources": [_source_payload(root) for root in sources]}
+
+
+@router.post("/workspace-sources/probe")
+def probe_workspace_source(request: WorkspaceSourcePathRequest) -> dict[str, Any]:
+    """What this path would yield, without registering it. Never raises for a bad path:
+    an unreadable directory is an answer to show, not a 422 to interpret."""
+    path = Path(request.path).expanduser()
+    if not path.is_absolute():
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "A workspace directory must be given as an absolute path",
+        )
+    return _source_payload(path)
+
+
+@router.post("/workspace-sources", status_code=status.HTTP_201_CREATED)
+def register_workspace_source(
+    request: WorkspaceSourcePathRequest,
+    registry: ProjectRegistry = Depends(get_project_registry),
+) -> dict[str, Any]:
+    """Register a workspace directory. Idempotent."""
+    try:
+        resolved = registry.register_workspace_source(request.path)
+    except (ValueError, OSError) as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from None
+    return _source_payload(resolved)
+
+
+@router.delete("/workspace-sources")
+def unregister_workspace_source(
+    path: str = Query(min_length=1, max_length=4096),
+    registry: ProjectRegistry = Depends(get_project_registry),
+) -> dict[str, Any]:
+    """Stop reading a workspace directory. **No file is touched**: the tasks stay where
+    they are and Agora simply forgets the path."""
+    return {"was_registered": registry.unregister_workspace_source(path)}
 
 
 @router.get("/projects")

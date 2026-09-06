@@ -34,6 +34,7 @@ from .store import (
     ORIGIN_AGORA,
     SETTING_LAST_IMPORT_ERROR,
     SETTING_PROJECTS_BASE,
+    SETTING_WORKSPACE_SOURCES,
     ProjectExistsError,
     ProjectStore,
 )
@@ -255,6 +256,76 @@ class ProjectRegistry:
         resolved.mkdir(parents=True, exist_ok=True)
         self.store.set_setting(SETTING_PROJECTS_BASE, str(resolved))
         return resolved
+
+    # ------------------------------------------------- workspace sources (W7)
+
+    def workspace_sources(self) -> list[Path]:
+        """The workspace directories registered on **this machine**, in the order added.
+
+        Machine-local on purpose. `D:/AI/claude-workspace` does not exist on the AI
+        server or on a second laptop, so this belongs beside `projects_base` in the
+        settings table rather than anywhere that travels. A registration that no longer
+        resolves is not removed silently — `read_workspace_source` reports it as
+        `absent`, which is the difference between "you moved it" and "you never had one".
+        """
+        raw = self.store.get_setting(SETTING_WORKSPACE_SOURCES)
+        if not raw:
+            return []
+        # Newline-separated: a path can contain almost anything else, and a JSON blob
+        # here would need its own failure story for a value this simple.
+        return [Path(line) for line in raw.splitlines() if line.strip()]
+
+    def register_workspace_source(self, path: str | Path) -> Path:
+        """Add a workspace directory. Idempotent; returns the resolved path.
+
+        Deliberately does **not** require the directory to be readable or to hold
+        `tasks/`. The UI probes first and shows what it found, so by the time this is
+        called the person has already seen the answer; refusing here would also mean a
+        source on a disconnected drive could not stay registered across a reboot.
+        """
+        resolved = Path(path).expanduser()
+        if not resolved.is_absolute():
+            raise ValueError("A workspace source must be an absolute path")
+        resolved = resolved.resolve()
+        wanted = str(resolved)
+
+        # One transaction, not read-then-write: two concurrent registrations would
+        # otherwise each start from the same list and the later commit would drop the
+        # other, silently.
+        #
+        # Compared as paths, not as strings. `resolve()` normalises the case of a path
+        # that exists, but this method deliberately accepts one that does not — an
+        # offline drive — and there the typed spelling survives. On Windows
+        # `D:/Work/Offline` and `D:/Work/offline` are one directory and `Path.__eq__`
+        # says so, while `str ==` does not: the string comparison stored the same
+        # workspace twice and then failed to forget it under the other spelling.
+        def add(current: list[str]) -> list[str]:
+            if any(Path(line) == resolved for line in current):
+                return current
+            return [*current, wanted]
+
+        self.store.edit_setting_lines(SETTING_WORKSPACE_SOURCES, add)
+        return resolved
+
+    def unregister_workspace_source(self, path: str | Path) -> bool:
+        """Forget a workspace directory. **Touches no file** — the work stays where it
+        is; only Agora stops reading it. Returns whether it had been registered."""
+        resolved = Path(path).expanduser()
+        if resolved.is_absolute():
+            resolved = resolved.resolve()
+        removed = False
+
+        # The same path comparison as `register_workspace_source`: forgetting has to
+        # recognise every spelling registering accepts, or a source can be registered
+        # and then impossible to remove.
+        def drop(current: list[str]) -> list[str]:
+            nonlocal removed
+            remaining = [line for line in current if Path(line) != resolved]
+            removed = len(remaining) != len(current)
+            return remaining
+
+        self.store.edit_setting_lines(SETTING_WORKSPACE_SOURCES, drop)
+        return removed
 
     # ------------------------------------------------------------------ writes
 

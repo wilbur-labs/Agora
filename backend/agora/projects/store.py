@@ -42,6 +42,10 @@ ORIGIN_AGORA = "agora"
 # project_settings keys. Scalar control-plane state that is not per-project.
 SETTING_CURRENT_PROJECT = "current_project_id"
 SETTING_PROJECTS_BASE = "projects_base"
+#: Workspace directories this machine reads tasks from (W7). Newline-separated.
+#: Machine-local, like the projects root above: a path on this laptop means nothing
+#: on the AI server, so it must not travel.
+SETTING_WORKSPACE_SOURCES = "workspace_sources"
 SETTING_LAST_IMPORT_ERROR = "last_import_error"
 
 
@@ -396,6 +400,43 @@ class ProjectStore:
                 "SELECT value FROM project_settings WHERE key = ?", (key,)
             ).fetchone()
         return None if row is None else row["value"]
+
+    def edit_setting_lines(self, key: str, edit: Any) -> list[str]:
+        """Read a newline-separated setting, apply `edit`, write it back — **in one
+        transaction**.
+
+        Read-modify-write across two calls loses writes: two registrations that both
+        start from `[A]` write `[A,B]` and `[A,C]`, and whichever commits second drops
+        the other with no error anywhere. The same race resurrects a source that was
+        being removed. Found in review before it could happen; the window is small but
+        the failure is silent, which is the kind that gets blamed on the user
+        ("I added it and it did not stick").
+
+        **`_immediate_transaction`, not `_transaction`** — this is exactly the shape
+        that helper's own docstring reserves for itself ("read the row, then write it
+        if it still looks like X"). SQLite's default transaction is deferred, so the
+        SELECT here would take no write lock; one transaction is not by itself one
+        serialised unit, and the first version of this method got that wrong.
+
+        `edit` takes the current lines and returns the new ones.
+        """
+        with self._immediate_transaction() as db:
+            row = db.execute(
+                "SELECT value FROM project_settings WHERE key = ?", (key,)
+            ).fetchone()
+            current = [] if row is None else [
+                line for line in row["value"].splitlines() if line.strip()
+            ]
+            updated = list(edit(current))
+            db.execute(
+                """
+                INSERT INTO project_settings (key, value, updated_at) VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value,
+                                               updated_at = excluded.updated_at
+                """,
+                (key, "\n".join(updated), utc_now()),
+            )
+        return updated
 
     def set_setting(self, key: str, value: str) -> None:
         with self._transaction() as db:
