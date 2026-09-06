@@ -26,6 +26,62 @@ export const settings = {
       authNote:
         "Installed does not mean signed in. A CLI can be present but its subscription not authenticated; that surfaces only when a run starts.",
     },
+    // W7 — the work Agora reads rather than owns.
+    //
+    // Every string here is chosen so that a reason is never rendered as a count. The
+    // three ways a directory can yield nothing read very differently to the person
+    // choosing it, and collapsing them into "no tasks" is the substitution this whole
+    // panel exists to refuse.
+    sources: {
+      title: "Work sources",
+      intro: "Directories Agora reads tasks from, live. Nothing is copied in and nothing is written back \u2014 the work stays where you keep it.",
+      addLabel: "Add a workspace directory",
+      addPlaceholder: "D:\\AI\\claude-workspace",
+      addHint: "A claude-workspace directory \u2014 the one holding tasks/<name>/task.yaml. Checked before it is added, so you see what it yields first. Registered on this machine only: a path here means nothing on another one.",
+      browse: "Choose\u2026",
+      browseUnavailable: "The folder picker is not available on this host. Type the path instead.",
+      check: "Check",
+      confirm: "Add this directory",
+      forget: "Forget",
+      forgetHint: "Stops Agora reading it. No file is touched \u2014 the tasks stay where they are.",
+      none: "No directories registered yet.",
+      listUnreadable: "The registered directories could not be read. This is not the same as none being registered.",
+      taskCount: "{count} task(s)",
+      // A floor, not a total: something under tasks/ could not be read, so the
+      // number is what was seen rather than what is there.
+      taskCountAtLeast: "at least {count} task(s)",
+      unreadableEntries: "Could not read: {names}. There may be more tasks than shown.",
+      skipped: "skipped: {names}",
+      emptyTasksDir: "This directory has a tasks/ folder and nothing in it.",
+      goalEmpty: "no goal recorded yet",
+      staleProbe: "The path changed after the check. Check it again before adding it.",
+      crUnavailable: "CR log could not be read",
+      adrUnavailable: "decision records could not be read",
+      crOpen: "{open} open CR",
+      // Never shown alone with the open count, and this is the reason it exists: the
+      // first real log this read reported nine rows whose status it could not parse,
+      // and "11 open" on its own would have been offered as the whole truth.
+      crUnrecognised: "{n} row(s) whose status could not be read",
+      adrCount: "{n} decision record(s)",
+      reason: {
+        absent: "This directory is not there.",
+        unreadable: "This directory could not be read.",
+        notADirectory: "This path is a file, not a directory.",
+        // The most useful of the four: it is almost always the parent, or the tool
+        // directory instead of the work one.
+        noTasksDir: "No tasks/ folder here \u2014 this is probably not the workspace directory.",
+      },
+      manifest: {
+        absent: "no task.yaml",
+        unreadable: "task.yaml could not be read",
+        tooLarge: "task.yaml is too large to read",
+        malformed: "task.yaml could not be parsed",
+        duplicateKey: "task.yaml has a duplicated key",
+        // Its own sentence. Nothing is broken: it is another tool's file, and telling
+        // someone to hunt a syntax error in a well-formed file wastes their afternoon.
+        unknownSchema: "not a claude-workspace task.yaml",
+      },
+    },
     workspaces: {
       title: "Workspaces",
       intro: "Where each project and its per-agent worktrees live on disk.",
@@ -110,6 +166,47 @@ export const settings = {
       tokensNotCaptured: "token:未采集",
       authNote:
         "已安装 ≠ 已登录。CLI 可能已就位但订阅未认证;这只有在启动一次运行时才会暴露出来。",
+    },
+    sources: {
+      title: "\u5de5\u4f5c\u6570\u636e\u6765\u6e90",
+      intro: "Agora \u6d3b\u8bfb\u8fd9\u4e9b\u76ee\u5f55\u91cc\u7684\u4efb\u52a1\u3002\u4e0d\u590d\u5236\u8fdb\u6765\uff0c\u4e5f\u4e0d\u5199\u56de\u53bb\u2014\u2014\u5de5\u4f5c\u4ecd\u7136\u5f52\u4f60\u81ea\u5df1\u7684\u76ee\u5f55\u6240\u6709\u3002",
+      addLabel: "\u6dfb\u52a0\u4e00\u4e2a workspace \u76ee\u5f55",
+      addPlaceholder: "D:\\AI\\claude-workspace",
+      addHint: "\u4e00\u4e2a claude-workspace \u76ee\u5f55\uff08\u91cc\u9762\u6709 tasks/<name>/task.yaml \u7684\u90a3\u4e2a\uff09\u3002\u6dfb\u52a0\u524d\u5148\u63a2\u4e00\u4e0b\uff0c\u8ba9\u4f60\u5148\u770b\u5230\u5b83\u80fd\u8bfb\u51fa\u4ec0\u4e48\u3002\u53ea\u5728\u672c\u673a\u767b\u8bb0\uff1a\u8fd9\u4e2a\u8def\u5f84\u5728\u53e6\u4e00\u53f0\u673a\u5668\u4e0a\u6ca1\u6709\u610f\u4e49\u3002",
+      browse: "\u9009\u62e9\u2026",
+      browseUnavailable: "\u8fd9\u53f0\u4e3b\u673a\u4e0a\u6253\u4e0d\u5f00\u76ee\u5f55\u9009\u62e9\u5668\uff0c\u8bf7\u76f4\u63a5\u8f93\u5165\u8def\u5f84\u3002",
+      check: "\u63a2\u4e00\u4e0b",
+      confirm: "\u767b\u8bb0\u8fd9\u4e2a\u76ee\u5f55",
+      forget: "\u53d6\u6d88\u767b\u8bb0",
+      forgetHint: "Agora \u4e0d\u518d\u8bfb\u5b83\u3002**\u4e0d\u52a8\u4f60\u4efb\u4f55\u6587\u4ef6**\u2014\u2014\u4efb\u52a1\u8fd8\u5728\u539f\u5904\u3002",
+      none: "\u8fd8\u6ca1\u6709\u767b\u8bb0\u4efb\u4f55\u76ee\u5f55\u3002",
+      listUnreadable: "\u5df2\u767b\u8bb0\u7684\u76ee\u5f55\u8bfb\u4e0d\u5230\u3002\u8fd9\u4e0d\u7b49\u4e8e\u300c\u4e00\u4e2a\u90fd\u6ca1\u767b\u8bb0\u300d\u3002",
+      taskCount: "{count} \u4e2a\u4efb\u52a1",
+      taskCountAtLeast: "\u81f3\u5c11 {count} \u4e2a\u4efb\u52a1",
+      unreadableEntries: "\u8fd9\u51e0\u9879\u8bfb\u4e0d\u5230\uff1a{names}\u3002\u5b9e\u9645\u4efb\u52a1\u53ef\u80fd\u6bd4\u4e0a\u9762\u663e\u793a\u7684\u591a\u3002",
+      skipped: "\u5df2\u8df3\u8fc7\uff1a{names}",
+      emptyTasksDir: "\u8fd9\u4e2a\u76ee\u5f55\u6709 tasks/ \uff0c\u4f46\u91cc\u9762\u662f\u7a7a\u7684\u3002",
+      goalEmpty: "\u8fd8\u6ca1\u5199 goal",
+      staleProbe: "\u63a2\u5b8c\u4e4b\u540e\u8def\u5f84\u6539\u8fc7\u4e86\u3002\u5148\u91cd\u65b0\u63a2\u4e00\u4e0b\u518d\u767b\u8bb0\u3002",
+      crUnavailable: "CR \u8868\u8bfb\u4e0d\u5230",
+      adrUnavailable: "\u51b3\u7b56\u8bb0\u5f55\u8bfb\u4e0d\u5230",
+      crOpen: "{open} \u6761 OPEN \u7684 CR",
+      crUnrecognised: "{n} \u884c\u7684\u72b6\u6001\u8bfb\u4e0d\u51fa\u6765",
+      adrCount: "{n} \u6761\u51b3\u7b56\u8bb0\u5f55",
+      reason: {
+        absent: "\u8fd9\u4e2a\u76ee\u5f55\u4e0d\u5b58\u5728\u3002",
+        unreadable: "\u8fd9\u4e2a\u76ee\u5f55\u8bfb\u4e0d\u5230\u3002",
+        notADirectory: "\u8fd9\u4e2a\u8def\u5f84\u662f\u6587\u4ef6\uff0c\u4e0d\u662f\u76ee\u5f55\u3002",
+        noTasksDir: "\u8fd9\u91cc\u6ca1\u6709 tasks/ \u2014\u2014 \u5927\u6982\u4e0d\u662f workspace \u76ee\u5f55\u3002",
+      },
+      manifest: {
+        absent: "\u6ca1\u6709 task.yaml",
+        unreadable: "task.yaml \u8bfb\u4e0d\u5230",
+        tooLarge: "task.yaml \u592a\u5927\uff0c\u6ca1\u8bfb",
+        malformed: "task.yaml \u89e3\u6790\u4e0d\u4e86",
+        duplicateKey: "task.yaml \u6709\u91cd\u590d\u7684\u952e",
+        unknownSchema: "\u4e0d\u662f claude-workspace \u7684 task.yaml",
+      },
     },
     workspaces: {
       title: "工作区",

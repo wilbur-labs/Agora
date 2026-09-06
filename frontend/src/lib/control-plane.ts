@@ -1,5 +1,6 @@
 import { getApiBase } from "@/lib/api";
 import { MAX_PAGE, SERVER_PAGE_MAX, readPage } from "./paged";
+import type { WorkspaceSourcePayload } from "./workspace-sources";
 import type { CRLogLike } from "@/lib/cr-log";
 import type { ProgressSnapshotLike } from "@/lib/progress-snapshot";
 
@@ -241,6 +242,41 @@ export async function listOpenAttention(): Promise<OpenAttentionPage> {
   const page = await readPage(OPEN_ATTENTION_PAGE_LIMIT, (limit) =>
     request<AttentionItem[]>(`/api/attention?state=open&limit=${limit}`));
   return { items: [...page.items], truncated: page.truncated };
+}
+
+// --- workspace sources (W7) -----------------------------------------------------
+//
+// `probe` before `register`, deliberately: the panel shows what a path yields *before*
+// anything is stored, so the person can tell "this directory holds no tasks" from
+// "I could not read it" from "wrong directory" at the moment they choose it. Accepting
+// a path and then rendering an empty list is the substitution this product exists to
+// refuse.
+
+export async function listWorkspaceSources(signal?: AbortSignal): Promise<WorkspaceSourcePayload[]> {
+  const page = await request<{ sources: WorkspaceSourcePayload[] }>(
+    "/api/workspace-sources", { signal });
+  return page.sources;
+}
+
+export function probeWorkspaceSource(
+  path: string, signal?: AbortSignal,
+): Promise<WorkspaceSourcePayload> {
+  return request("/api/workspace-sources/probe", {
+    method: "POST", body: JSON.stringify({ path }), signal,
+  });
+}
+
+export function registerWorkspaceSource(path: string): Promise<WorkspaceSourcePayload> {
+  return request("/api/workspace-sources", {
+    method: "POST", body: JSON.stringify({ path }),
+  });
+}
+
+/** Forget a source. Touches no file — the tasks stay where they are. */
+export function unregisterWorkspaceSource(path: string): Promise<{ was_registered: boolean }> {
+  return request(`/api/workspace-sources?path=${encodeURIComponent(path)}`, {
+    method: "DELETE",
+  });
 }
 
 export function createTask(input: CreateTaskInput): Promise<TaskManifest> {

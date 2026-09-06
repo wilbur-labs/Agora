@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Activity,
   CheckCircle2,
@@ -18,13 +18,25 @@ import { Button } from "@/components/ui/button";
 import {
   getRuntimeCapabilities,
   getSettingsOverview,
+  listWorkspaceSources,
   pickProjectsFolder,
+  probeWorkspaceSource,
+  registerWorkspaceSource,
   setProjectsBase,
+  unregisterWorkspaceSource,
   type ProjectImportStatus,
   type RuntimeCapabilities,
   type RuntimeCapability,
   type SettingsOverview,
 } from "@/lib/control-plane";
+import {
+  MANIFEST_REASON_KEY,
+  SOURCE_REASON_KEY,
+  crSummaryOf,
+  sourceVerdictOf,
+  type WorkspaceSourcePayload,
+  type WorkspaceTaskPayload,
+} from "@/lib/workspace-sources";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n";
 
@@ -77,6 +89,7 @@ export default function SettingsPage() {
         <RuntimesCard runtimes={runtimes} loading={loading} />
         <div className="grid gap-6 lg:grid-cols-2">
           <WorkspacesCard overview={overview} onReload={load} onError={setError} />
+          <WorkSourcesCard onError={setError} />
           <div className="space-y-6">
             <LimitsCard overview={overview} />
             <ActivityCard overview={overview} />
@@ -261,6 +274,244 @@ function WorkspacesCard({ overview, onReload, onError }: { overview: SettingsOve
 /** Says out loud what the YAML import source did. Projects are stored in the
  *  control-plane database, so a file that cannot be read must be reported as a
  *  failure — it may never quietly shorten the list below. */
+// The work Agora reads rather than owns (W7).
+//
+// Named "work sources" and not "import" on purpose. This registers a directory and
+// reads it live; nothing is copied in. Call it import and the first two questions are
+// "why did my edit in the workspace show up here" and "why can I not edit it here" —
+// the label would be describing a mechanism the product does not have.
+//
+// The interaction is probe-then-confirm. A path is checked and the result shown
+// *before* anything is stored, because the three ways this can go wrong read very
+// differently to the person: an empty `tasks/`, a directory with no `tasks/` at all
+// (almost always the wrong folder), and one that could not be read. Storing first and
+// rendering an empty list would collapse all three into "no tasks", which is the
+// substitution this product exists to refuse.
+function WorkSourcesCard({ onError }: { onError: (msg: string | null) => void }) {
+  const { t } = useI18n();
+  const [sources, setSources] = useState<WorkspaceSourcePayload[] | null>(null);
+  const [readFailed, setReadFailed] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [probing, setProbing] = useState(false);
+  const [probe, setProbe] = useState<WorkspaceSourcePayload | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [browsing, setBrowsing] = useState(false);
+
+  // `sources === null` with `readFailed` is "could not read the list", which is not the
+  // same as "nothing registered" and must not render as the empty state.
+  //
+  // Each load carries a token and only the newest one may write. Registering and
+  // forgetting both call this, so two are easily in flight at once, and a slower
+  // earlier response landing last would put a source the person just forgot back on
+  // the screen as registered — state that survives until they reload the page and
+  // that the product has no way to notice is stale.
+  const loadToken = useRef(0);
+  const load = useCallback(async () => {
+    const token = ++loadToken.current;
+    try {
+      const listed = await listWorkspaceSources();
+      if (token !== loadToken.current) return;
+      setSources(listed); setReadFailed(false);
+    } catch {
+      if (token !== loadToken.current) return;
+      setReadFailed(true);
+    }
+  }, []);
+  useEffect(() => { void load(); }, [load]);
+
+  const browse = async () => {
+    setBrowsing(true); onError(null);
+    try {
+      const result = await pickProjectsFolder();
+      if (!result.available) { onError(t("settings.sources.browseUnavailable")); return; }
+      if (result.path) { setDraft(result.path); setProbe(null); }
+    } catch (err) { onError((err as Error).message); }
+    finally { setBrowsing(false); }
+  };
+
+  // The probe is stored with the path it was asked about, and registration uses *that*
+  // path rather than whatever the input holds now. Without the pairing: probe A, edit
+  // the box to B while the request is in flight, A's answer arrives and offers the
+  // confirm button, and confirming registers B — a directory nobody probed, through the
+  // one control whose entire purpose is that you saw the answer first.
+  const [probed, setProbed] = useState<string | null>(null);
+  const runProbe = async () => {
+    const asked = draft.trim();
+    setProbing(true); onError(null); setProbe(null); setProbed(null);
+    try { setProbe(await probeWorkspaceSource(asked)); setProbed(asked); }
+    catch (err) { onError((err as Error).message); }
+    finally { setProbing(false); }
+  };
+
+  const confirm = async () => {
+    if (probed === null) return;
+    setSaving(true); onError(null);
+    try { await registerWorkspaceSource(probed); setDraft(""); setProbe(null); setProbed(null); await load(); }
+    catch (err) { onError((err as Error).message); }
+    finally { setSaving(false); }
+  };
+
+  const forget = async (root: string) => {
+    onError(null);
+    try { await unregisterWorkspaceSource(root); await load(); }
+    catch (err) { onError((err as Error).message); }
+  };
+
+  return (
+    <Section icon={FolderOpen} title={t("settings.sources.title")} intro={t("settings.sources.intro")}>
+      <div className="mb-4 rounded-lg border bg-muted/20 p-3">
+        <label className="block space-y-1.5 text-sm font-medium">
+          <span>{t("settings.sources.addLabel")}</span>
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <input
+              className="field flex-1 font-mono text-xs"
+              placeholder={t("settings.sources.addPlaceholder")}
+              value={draft}
+              onChange={(e) => { setDraft(e.target.value); setProbe(null); }}
+            />
+            <Button type="button" variant="outline" onClick={() => void browse()} disabled={browsing || probing || saving}>
+              {browsing ? <RefreshCw className="animate-spin" /> : <FolderOpen />}{t("settings.sources.browse")}
+            </Button>
+            <Button type="button" onClick={() => void runProbe()} disabled={probing || saving || !draft.trim()}>
+              {probing ? <RefreshCw className="animate-spin" /> : null}{t("settings.sources.check")}
+            </Button>
+          </div>
+        </label>
+        <p className="mt-1.5 text-[11px] text-muted-foreground">{t("settings.sources.addHint")}</p>
+        {/* The probe's answer, before anything is stored. Registration is only offered
+            when there is something to register — a directory with no `tasks/` gets its
+            own sentence and no button, because the fix is to pick another folder. */}
+        {probe !== null && probed !== null && (
+          <div className="mt-3 rounded-lg border bg-background p-3">
+            <SourceSummary source={probe} />
+            {draft.trim() !== probed ? (
+              // The box was edited after the probe. Say so instead of offering a button
+              // that would register the path shown rather than the path checked.
+              <p className="mt-2 text-xs text-amber-600">{t("settings.sources.staleProbe")}</p>
+            ) : sourceVerdictOf(probe).show !== "unavailable" ? (
+              <Button type="button" className="mt-3" onClick={() => void confirm()} disabled={saving}>
+                {saving ? <RefreshCw className="animate-spin" /> : null}{t("settings.sources.confirm")}
+              </Button>
+            ) : null}
+          </div>
+        )}
+      </div>
+
+      {readFailed ? (
+        <p className="text-sm text-muted-foreground">{t("settings.sources.listUnreadable")}</p>
+      ) : sources === null ? (
+        <p className="text-sm text-muted-foreground">…</p>
+      ) : sources.length === 0 ? (
+        <p className="text-sm text-muted-foreground">{t("settings.sources.none")}</p>
+      ) : (
+        <div className="space-y-3">
+          {sources.map((source) => (
+            <div key={source.root} className="rounded-lg border p-4">
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <SourceSummary source={source} />
+                <Button type="button" variant="outline" size="sm" onClick={() => void forget(source.root)}>
+                  {t("settings.sources.forget")}
+                </Button>
+              </div>
+              <p className="mt-2 text-[11px] text-muted-foreground">{t("settings.sources.forgetHint")}</p>
+            </div>
+          ))}
+        </div>
+      )}
+    </Section>
+  );
+}
+
+// One source, as one sentence plus its tasks. Every branch of the verdict says
+// something different; none of them says "0".
+function SourceSummary({ source }: { source: WorkspaceSourcePayload }) {
+  const { t } = useI18n();
+  const verdict = sourceVerdictOf(source);
+  return (
+    <div className="min-w-0 flex-1">
+      <p className="font-mono text-xs break-all">{source.root}</p>
+      {verdict.show === "unavailable" ? (
+        <p className="mt-1 text-xs text-amber-600">{t(SOURCE_REASON_KEY[verdict.reason])}</p>
+      ) : verdict.show === "empty" ? (
+        <p className="mt-1 text-xs text-muted-foreground">
+          {t("settings.sources.emptyTasksDir")}
+          {/* A tasks/ holding only `_template` is not "nothing in it". Dropping the
+              skipped list here contradicted this panel's own rule one branch over. */}
+          {verdict.skipped.length > 0
+            ? ` ${t("settings.sources.skipped", { names: verdict.skipped.join(", ") })}`
+            : ""}
+        </p>
+      ) : (
+        <>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {verdict.show === "partial"
+              ? t("settings.sources.taskCountAtLeast", { count: String(verdict.count) })
+              : t("settings.sources.taskCount", { count: String(verdict.count) })}
+            {verdict.skipped.length > 0
+              ? ` · ${t("settings.sources.skipped", { names: verdict.skipped.join(", ") })}`
+              : ""}
+          </p>
+          {/* An entry the server listed but could not stat. Naming it is the whole
+              point: the alternative is a task missing from the only place it shows,
+              with the count above reading as the total. */}
+          {verdict.show === "partial" && (
+            <p className="mt-1 text-xs text-amber-600">
+              {t("settings.sources.unreadableEntries", { names: verdict.unreadable.join(", ") })}
+            </p>
+          )}
+          <ul className="mt-2 space-y-1">
+            {(source.tasks ?? []).map((task) => <TaskLine key={task.name} task={task} />)}
+          </ul>
+        </>
+      )}
+    </div>
+  );
+}
+
+function TaskLine({ task }: { task: WorkspaceTaskPayload }) {
+  const { t } = useI18n();
+  const cr = crSummaryOf(task.cr_log);
+  const adr = task.decisions.records?.length ?? null;
+  return (
+    <li className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-xs">
+      <span className="font-medium">{task.name}</span>
+      {task.manifest.available ? (
+        <span className="min-w-0 truncate text-muted-foreground">
+          {task.manifest.goal ?? t("settings.sources.goalEmpty")}
+        </span>
+      ) : (
+        // Not "no goal": the file was not read, and saying which is the whole point.
+        <span className="text-amber-600">{t(MANIFEST_REASON_KEY[task.manifest.reason ?? "unreadable"])}</span>
+      )}
+      {cr.show === "counts" ? (
+        <span className="text-muted-foreground">
+          {t("settings.sources.crOpen", { open: String(cr.open) })}
+          {/* Never shown without this: an open count says nothing about the rows whose
+              status could not be read, and on the first real log there were nine. */}
+          {cr.unrecognised > 0
+            ? ` · ${t("settings.sources.crUnrecognised", { n: String(cr.unrecognised) })}`
+            : ""}
+        </span>
+      ) : (
+        // Not nothing. The first version rendered this branch as blank, so "the CR log
+        // could not be read" looked exactly like "this task has no CRs" — the
+        // substitution the whole panel exists to refuse, in the panel that refuses it.
+        <span className="text-amber-600">{t("settings.sources.crUnavailable")}</span>
+      )}
+      {adr === null ? (
+        // `records: null` is "could not read adr/", including a directory that is there
+        // and unreadable. Absent is the ordinary case and says nothing, so it is the
+        // only one that renders nothing.
+        task.decisions.reason === "absent"
+          ? null
+          : <span className="text-amber-600">{t("settings.sources.adrUnavailable")}</span>
+      ) : adr > 0 ? (
+        <span className="text-muted-foreground">{t("settings.sources.adrCount", { n: String(adr) })}</span>
+      ) : null}
+    </li>
+  );
+}
+
 function ProjectImportNotice({ status }: { status: ProjectImportStatus | null }) {
   const { t } = useI18n();
   if (!status) return null;
