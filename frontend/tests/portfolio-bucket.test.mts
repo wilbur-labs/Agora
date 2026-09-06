@@ -187,18 +187,19 @@ test("the reassurance needs the task read as well as the attention read", () => 
   }
 });
 
-test("a full page of tasks is not a complete inventory", () => {
-  // `listTasks` returns a bare array: no total, no `truncated`. A page filled to the
-  // cap is indistinguishable from "there is more", and the tasks past it can be
-  // exactly the ones that need an answer — so the reach is read from the page's own
-  // length, and a full page is capped rather than complete. Pessimistic by one case
-  // (a list of exactly `limit` that is genuinely complete) and never optimistic.
-  const page = (n: number) => ({ status: "fulfilled" as const, value: new Array(n).fill(null) });
-  assert.equal(taskInventoryReachOf(page(9), 10), "complete");
-  assert.equal(taskInventoryReachOf(page(10), 10), "capped");
-  assert.equal(taskInventoryReachOf(page(0), 10), "complete");
+test("the reach comes from evidence of a further row, not from a full page", () => {
+  // This used to read `length >= limit` off the array, which cannot tell a truncated
+  // page from a complete result of exactly that size: it called an inventory of
+  // exactly `limit` tasks capped, and the cards then said the read had missed
+  // something. The read now asks for one row beyond the page (`lib/paged.ts`), so
+  // `truncated` is the fact that a further row came back — and the limit is not a
+  // parameter here any more, so no caller can page by one number and ask for another.
+  const read = (truncated: boolean) =>
+    ({ status: "fulfilled" as const, value: { items: [], truncated } });
+  assert.equal(taskInventoryReachOf(read(false)), "complete");
+  assert.equal(taskInventoryReachOf(read(true)), "capped");
   assert.equal(
-    taskInventoryReachOf({ status: "rejected", reason: new Error("tasks down") }, 10),
+    taskInventoryReachOf({ status: "rejected", reason: new Error("tasks down") }),
     "unreadable",
   );
 });
@@ -311,10 +312,11 @@ test("a complete task read does not make an attention-dependent group exact", ()
 });
 
 test("a capped read on either side makes the badge 'at least'", () => {
-  // `cards.length` is how many the board is holding, and it holds one page:
-  // listTasks caps and returns a bare array, so a full page is indistinguishable
-  // from "there is more". Rendering it as the group's size turns "I can see this
-  // many" into "there are this many".
+  // `cards.length` is how many the board is holding, and it holds one page. Since
+  // CR-28 a capped reach means a further task was actually returned by the probe, so
+  // this is no longer "a full page might mean more" — it is "there is more". Rendering
+  // it as the group's size would turn "I can see this many" into "there are this many"
+  // either way.
   assert.deepEqual(portfolioGroupCountOf(500, "capped", "complete"), { kind: "atLeast", count: 500 });
 });
 
@@ -428,9 +430,11 @@ test("the board's claims are wired to the reads, and consumed where they are ren
     ["unknown next action", 'nextLine.kind === "unknown" ? ('],
     ["unknown next action copy", 't("portfolio.cockpit.nextAction.unknown")'],
     ["health guard", "{metricsSayable ? ("],
-    // …and the reach it depends on is actually published, with the same named limit
-    ["runs request", "listRuns({ limit: RUNS_PAGE_LIMIT })"],
-    ["runs reach", "setRunsReach(taskInventoryReachOf(runsRead, RUNS_PAGE_LIMIT))"],
+    // …and the reach it depends on is actually published, from a probed read: the
+    // limit is passed to `readPage`, which is what asks for one row beyond it, so a
+    // page can no longer be called truncated merely for being full (CR-28)
+    ["runs request", "readPage(RUNS_PAGE_LIMIT, (limit) => listRuns({ limit }))"],
+    ["runs reach", "setRunsReach(taskInventoryReachOf(runsRead))"],
     // …and each ownership boundary is guarded at its own render site
     ["cockpit owner", "dashboard.project_id === projectFilter && (\n          <ProjectCockpit"],
     ["editor owner", "showCharter && dashboard && dashboard.project_id === projectFilter"],

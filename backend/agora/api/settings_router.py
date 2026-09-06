@@ -532,7 +532,9 @@ def task_recap(
         empty["next_rollover"] = next_rollover(zone=zone, now=now)
         return empty
 
-    events = task_store.events_on_day(task_id, day, limit=_RECAP_EVENT_LIMIT, zone=zone)
+    events, events_truncated = task_store.events_on_day(
+        task_id, day, limit=_RECAP_EVENT_LIMIT, zone=zone
+    )
     day_runs, runs_truncated = exec_store.list_finished_on_day(
         task_id, day, limit=_RECAP_RUN_LIMIT, zone=zone
     )
@@ -562,7 +564,7 @@ def task_recap(
     result = last_active_day(events, runs, today=today, day_of=day_of)
     # Say so when the day held more than we read, rather than letting a bounded
     # read look like the whole day.
-    result["partial"] = bool(runs_truncated or len(events) >= _RECAP_EVENT_LIMIT)
+    result["partial"] = bool(runs_truncated or events_truncated)
     # When this zone's day next changes, so a page left open past midnight stops
     # saying "today" about yesterday. Computed server-side because the current
     # offset alone cannot locate the next midnight across a DST change; the

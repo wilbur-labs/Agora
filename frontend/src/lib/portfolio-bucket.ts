@@ -1,3 +1,5 @@
+import type { Page } from "./paged.ts";
+
 // Which board column a task belongs to — the Portfolio's primary triage claim.
 //
 // Why this exists as its own module. The Portfolio derived every task's column from
@@ -166,12 +168,15 @@ export function attentionReadCovers(read: AttentionRead): boolean {
  * How far the task read got — from that read's own settled outcome, the way
  * `attentionReachOf` does it for the attention page.
  *
- * `capped` exists because the task list is a page as well. `listTasks` asks for
- * `TASK_PAGE_LIMIT` and gets back a bare array: no total, no `truncated`. A page
- * filled to the cap is therefore indistinguishable from "there is more", so it is
- * reported as capped — which can be one task pessimistic (a list of exactly 500 that
- * is in fact complete) and is never optimistic. The board loses a reassurance it was
- * entitled to; the alternative loses a blocked task.
+ * `capped` exists because the task list is a page as well, and it is a **fact**: the
+ * read asks for one row beyond the page it keeps (`lib/paged.ts`), so `truncated` means
+ * a further row actually came back. The limit is not a parameter of this function any
+ * more, so a caller cannot pair a page size with a different request size.
+ *
+ * It used to take the array and its limit and report `length >= limit` as capped, which
+ * is one task pessimistic — a list of exactly 500 that is in fact complete — and never
+ * optimistic. Safe, but it made a definite claim out of a guess, and the panels
+ * downstream said "not fully read" about a read that had missed nothing (CR-28).
  *
  * `pending` is not reachable from this function — a settled read is no longer
  * pending — and exists for the same reason it does on the attention side: before any
@@ -184,11 +189,10 @@ export function attentionReadCovers(read: AttentionRead): boolean {
 export type TaskInventoryReach = "pending" | "complete" | "capped" | "unreadable";
 
 export function taskInventoryReachOf(
-  result: PromiseSettledResult<readonly unknown[]>,
-  pageLimit: number,
+  result: PromiseSettledResult<Page<unknown>>,
 ): TaskInventoryReach {
   if (result.status === "rejected") return "unreadable";
-  return result.value.length >= pageLimit ? "capped" : "complete";
+  return result.value.truncated ? "capped" : "complete";
 }
 
 /**
@@ -225,10 +229,12 @@ export function portfolioAllClearSayable(
  * What a group's badge may say about how many cards are in it.
  *
  * `cards.length` is how many tasks *this board is holding*, and the board holds one
- * page: `listTasks` caps at `TASK_PAGE_LIMIT` and returns a bare array, so a full page
- * is indistinguishable from "there is more". Rendering that number as the group's size
+ * page: it reads `TASK_PAGE_LIMIT` rows through `readPage`, which asks for one more and
+ * so knows whether a further task exists. Rendering that number as the group's size
  * turns "I can see this many" into "there are this many" — the same substitution the
- * attention notice above already exists to prevent, one element to its left.
+ * attention notice above already exists to prevent, one element to its left. (Before
+ * CR-28 the board could not tell the two apart at all: `listTasks` returned a bare
+ * array and a full page was indistinguishable from "there is more".)
  *
  * So the count is exact only when **both** the task read and the open-attention read
  * were complete -- the second because which column a card is in depends on it -- and

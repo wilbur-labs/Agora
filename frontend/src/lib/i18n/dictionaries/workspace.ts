@@ -109,7 +109,15 @@ export const workspace = {
         specRejected: "Spec rejected",
         stageReached: "Reached: {stage}",
         needsYou: "{count} raised for you",
-        answered: "You answered {count}",
+        // CR-29: not "you". `tasks/recap.py` counts every `attention.responded`
+        // event without looking at its actor, and `RespondAttentionRequest.actor`
+        // accepts any non-empty string (the authenticated path passes a principal id),
+        // so an automation's answer was being reported as the reader's own. Naming the
+        // actor instead would be better than dropping the attribution, but the recap
+        // publishes counts rather than actors, and the frontend has no notion of "me"
+        // at all -- there is no whoami surface, only a count of principals in
+        // Settings. So this says what the record establishes and no more.
+        answered: "{count} answered",
         handedOff: "Work handed off",
         noted: "{count} note(s) added",
       },
@@ -222,11 +230,13 @@ export const workspace = {
       // of it. R3 — `runsTruncated` stopped the right column claiming "never ran"
       // while the header still printed "Nothing produced yet" from the same read.
       // CR-25. This is reached from `latestDeliveredOf` whenever the run read cannot
-      // support "no success exists" — a failed read *or* a page at its cap. The cap is
-      // set by `summaries.length >= RUN_HISTORY_LIMIT`, and a history of exactly that
-      // many runs looks identical to a truncated one, so "couldn't be read in full"
-      // stated a failure that in that case did not happen. The flag is pessimistic on
-      // purpose and that is right; the sentence was the part claiming too much.
+      // support "no success exists" — a failed read *or* a page with more behind it.
+      // It used to say "couldn't be read in full", which named a failure that had not
+      // happened: the cap was inferred from `summaries.length >= RUN_HISTORY_LIMIT`,
+      // and a history of exactly that many runs looks identical to a truncated one.
+      // CR-28 then made the cap a fact rather than an inference (the read asks for one
+      // more than it keeps), so the remaining reason to hedge is the *failed read* half
+      // — which this sentence has to cover too, and cannot call a cap.
       producedUnknown: "Whether anything was produced can't be said — this task's run history can't be confirmed as complete.",
       // S1. A run succeeded and left nothing behind that this header can show: no
       // printable output and no files in the task's handoff. It used to share
@@ -454,10 +464,18 @@ export const workspace = {
         // this from the same `runsTruncated`, which is pessimistic by one, so "was
         // incomplete" states something the read never established.
         unknown: "Whether a cross-review accounts for this run can't be said: this task's run list can't be confirmed as complete.",
-        gateUnread: "Whether a cross-review accounts for this run can't be said: its approvals and blockers couldn't be read.",
+        // Reached from three different situations (`reviewStandingOf`): the gate read
+        // failed, it was truncated, or it returned nothing matching this run. Only the
+        // first is a read failure, so naming one was false on the other two — and the
+        // cap is now established by a probe rather than guessed, which makes the
+        // distinction sharper rather than softer.
+        gateUnread: "Whether a cross-review accounts for this run can't be said: its approvals and blockers could not be confirmed.",
         active: "The cross-review by {adapter} hasn't finished yet.",
         gateOpen: "The cross-review raised {count} item(s) for you to settle on this run.",
-        gateSettled: "The cross-review's {count} item(s) on this run have been settled by you.",
+        // CR-29, same reason: `reviewStandingOf` treats any non-open matching item as
+        // settled, including another principal's response and a cancellation, neither
+        // of which the reader did.
+        gateSettled: "The cross-review's {count} item(s) on this run have been settled.",
         // The two arrangements the control plane's `cause` labels distinguish. A
         // review run that finished is not itself the review being accounted for:
         // the approval or blocker it was supposed to raise is.
@@ -590,7 +608,7 @@ export const workspace = {
         specRejected: "规格已拒绝",
         stageReached: "进入：{stage}",
         needsYou: "{count} 项需你处理",
-        answered: "你回应了 {count} 项",
+        answered: "已回应 {count} 项",
         handedOff: "工作已交付",
         noted: "新增 {count} 条说明",
       },
@@ -804,10 +822,10 @@ export const workspace = {
         notWorker: "这次运行不是实现运行,因此不会有针对它的交叉评审。",
         runDidNotSucceed: "这次运行没有成功,因此没有为它启动交叉评审。",
         unknown: "无法判断这次运行是否已由交叉评审承接:无法确认此任务的运行列表是完整的。",
-        gateUnread: "无法判断这次运行是否已由交叉评审承接:未能读取它的审批与阻塞项。",
+        gateUnread: "无法判断这次运行是否已由交叉评审承接:无法确认它的审批与阻塞项。",
         active: "{adapter} 的交叉评审尚未结束。",
         gateOpen: "交叉评审针对这次运行提出了 {count} 项待你处理的事项。",
-        gateSettled: "交叉评审针对这次运行提出的 {count} 项事项已由你处理完毕。",
+        gateSettled: "交叉评审针对这次运行提出的 {count} 项事项已处理完毕。",
         noGateAfterReview: "{adapter} 的交叉评审以 {state} 结束,但没有针对这次运行记录任何审批或阻塞项,因此这次评审并未被承接。",
         noGateNoReview: "没有记录到针对这次运行的交叉评审运行,也没有任何审批或阻塞项。",
       },

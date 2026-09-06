@@ -36,7 +36,7 @@ import { listRuns, type RunState, type RunSummary } from "@/lib/execution";
 // The runs page this board asks for. Named rather than written twice, so the
 // reach check compares against the same number the request used — a literal in
 // one of the two places is how a capped read starts looking complete.
-const RUNS_PAGE_LIMIT = 500;
+const RUNS_PAGE_LIMIT = MAX_PAGE;
 import { progressBarOf } from "@/lib/progress-snapshot";
 import { attentionRowsOf, crLogHeadlineOf, crLogViewOf } from "@/lib/cr-log";
 import {
@@ -68,6 +68,7 @@ import {
 // settled result, with `taskInventoryReachOf`. Dropping the task read entirely was
 // how "Nothing needs you right now" came to be printed under a load-failure banner.
 import { railReadReport, settleRead } from "@/lib/rail-group";
+import { MAX_PAGE, readPage } from "@/lib/paged";
 import { ProgressSnapshotBar } from "@/components/progress-snapshot-bar";
 import { useI18n } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
@@ -147,10 +148,14 @@ export default function PortfolioPage() {
     // attention read's own result **and nothing else**; a combined failure path
     // leaves it nothing to answer from.
     const [tasksRead, projectsRead, attentionResult, runsRead] = await Promise.all([
-      settleRead(() => listTasks()),
+      // Both list reads go through `readPage`, which asks for one row beyond the page:
+      // `truncated` is then the fact that a further row exists, not the guess that a
+      // full page implies one. The cards used to say "not fully read" about a read of
+      // exactly 500 that had missed nothing.
+      settleRead(() => readPage(TASK_PAGE_LIMIT, (limit) => listTasks(limit))),
       settleRead(() => listProjects()),
       settleRead(() => listOpenAttention()),
-      settleRead(() => listRuns({ limit: RUNS_PAGE_LIMIT })),
+      settleRead(() => readPage(RUNS_PAGE_LIMIT, (limit) => listRuns({ limit }))),
     ]);
     // How far the attention read got, kept rather than discarded. Only `items` was
     // read here, and `truncated` — which `listOpenAttention` has always returned —
@@ -159,11 +164,11 @@ export default function PortfolioPage() {
     const report = railReadReport({ tasks: tasksRead, projects: projectsRead, attention: attentionResult, runs: runsRead });
     if (token !== loadToken.current) return; // a newer refresh already owns the board
     setAttentionRead(report.attentionReach);
-    setTaskInventory(taskInventoryReachOf(tasksRead, TASK_PAGE_LIMIT));
+    setTaskInventory(taskInventoryReachOf(tasksRead));
     // The runs read is one page too, and its cap is the number this component asks
     // for. Without this the cards could only tell a failed read from a good one, and
     // a *capped* read looks exactly like "this task has no runs" from a card's seat.
-    setRunsReach(taskInventoryReachOf(runsRead, RUNS_PAGE_LIMIT));
+    setRunsReach(taskInventoryReachOf(runsRead));
     if (attentionResult.status === "fulfilled") {
       setAttention(attentionResult.value.items);
     } else {
@@ -172,11 +177,11 @@ export default function PortfolioPage() {
       // go on asserting itself — the same mistake in the other direction.
       setAttention([]);
     }
-    if (tasksRead.status === "fulfilled") setTasks(tasksRead.value);
+    if (tasksRead.status === "fulfilled") setTasks([...tasksRead.value.items]);
     if (projectsRead.status === "fulfilled") {
       setRegisteredProjects(projectsRead.value.items.map((item) => item.project_id));
     }
-    if (runsRead.status === "fulfilled") setRuns(runsRead.value);
+    if (runsRead.status === "fulfilled") setRuns([...runsRead.value.items]);
     // Attention first, so its failure is not buried behind a sibling's (the order is
     // railReadReport's, not this page's).
     setError(report.errors.length > 0 ? report.errors.join(" · ") : null);

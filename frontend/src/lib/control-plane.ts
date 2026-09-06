@@ -1,4 +1,5 @@
 import { getApiBase } from "@/lib/api";
+import { MAX_PAGE, SERVER_PAGE_MAX, readPage } from "./paged";
 import type { CRLogLike } from "@/lib/cr-log";
 import type { ProgressSnapshotLike } from "@/lib/progress-snapshot";
 
@@ -173,15 +174,26 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-// The task list is one page too, and the endpoint caps `limit` at 500. Unlike the
-// attention page it returns a bare array — no `truncated`, no total — so a caller
-// that wants to know whether it saw everything has only the page's own length to go
-// on: a page filled to the cap is indistinguishable from "there is more". Exported
-// so the reading side compares against the same number it asked for rather than a
-// literal of its own that can drift from this default.
-export const TASK_PAGE_LIMIT = 500;
+/**
+ * The task page a reader takes when it needs to *know* whether it saw everything: one
+ * row smaller than the server's bound, so `readPage` can spend that row on the probe.
+ *
+ * This is not the same thing as "how many tasks a caller should ask for", and briefly
+ * it was both — review caught it. Every unprobed caller (Workspace, the Runs page,
+ * Requirements and its conflict refresh, the Workflow composer) takes the default
+ * below, and pointing that default here quietly cost each of them a task: with exactly
+ * 500 tasks the lowest-ranked one vanished from all of them, and a Requirements deep
+ * link to it fell back to the first task loaded. A caller that wants completeness
+ * *knowledge* pays a row for it; a caller that just wants the tasks should not.
+ */
+export const TASK_PAGE_LIMIT = MAX_PAGE;
 
-export function listTasks(limit: number = TASK_PAGE_LIMIT): Promise<TaskManifest[]> {
+/**
+ * Defaults to the whole bound, not to the probed page. A caller that needs to know
+ * whether more exists uses `readPage(TASK_PAGE_LIMIT, listTasks)` instead, which asks
+ * for exactly this many and shows one fewer.
+ */
+export function listTasks(limit: number = SERVER_PAGE_MAX): Promise<TaskManifest[]> {
   return request(`/api/tasks?limit=${limit}`);
 }
 
@@ -209,7 +221,7 @@ export interface AttentionItem {
 
 // The server caps this endpoint at 500 items per page (`limit` has le=500), so
 // this read cannot be widened — it can only be reported honestly.
-export const OPEN_ATTENTION_PAGE_LIMIT = 500;
+export const OPEN_ATTENTION_PAGE_LIMIT = MAX_PAGE;
 
 /**
  * One page of the global open-attention list, with whether it may have been cut
@@ -223,10 +235,12 @@ export interface OpenAttentionPage {
 }
 
 export async function listOpenAttention(): Promise<OpenAttentionPage> {
-  const items = await request<AttentionItem[]>(
-    `/api/attention?state=open&limit=${OPEN_ATTENTION_PAGE_LIMIT}`,
-  );
-  return { items, truncated: items.length >= OPEN_ATTENTION_PAGE_LIMIT };
+  // Asks for one more than it shows, so `truncated` is evidence rather than the guess
+  // `items.length >= LIMIT` used to make — that guess called a complete inventory of
+  // exactly LIMIT items truncated, and the rail then said there were more than it read.
+  const page = await readPage(OPEN_ATTENTION_PAGE_LIMIT, (limit) =>
+    request<AttentionItem[]>(`/api/attention?state=open&limit=${limit}`));
+  return { items: [...page.items], truncated: page.truncated };
 }
 
 export function createTask(input: CreateTaskInput): Promise<TaskManifest> {

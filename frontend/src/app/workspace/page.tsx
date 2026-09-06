@@ -110,6 +110,7 @@ import {
   type RunUnit,
   type UnplacedRun,
 } from "@/lib/run-tree";
+import { MAX_PAGE, readPage } from "@/lib/paged";
 import {
   ATTENTION_TIMELINE_EVENT_KEY,
   eventsLackKnown,
@@ -598,7 +599,7 @@ const FOLLOW_UP_WINDOW_MS = 30_000;
 // gates. A task will never have this many, which is the point: if the answer
 // comes back full, it may have been cut off, and a cut-off page cannot say "no
 // gate is open".
-const TASK_ATTENTION_LIMIT = 500;
+const TASK_ATTENTION_LIMIT = MAX_PAGE;
 
 // How many of ONE run's attention items to ask for when checking whether the review
 // path has raised its gate for it. A run will never have this many, which is the
@@ -658,15 +659,14 @@ function TaskWorkspace({ task, refreshNonce, railAttention, railRuns, onTaskMayH
   // a note was posted. Only the newest is kept: the events endpoint takes no limit and
   // returns the whole table, so a read that has this one has every earlier one.
   const [postedEventId, setPostedEventId] = useState<string | null>(null);
-  // Whether that page came back at its cap — which is to say, whether this read can
-  // be confirmed complete. It cannot distinguish a truncated history from one of
-  // exactly `RUN_HISTORY_LIMIT` runs, so it is pessimistic by one and never optimistic;
-  // what reads it must therefore not describe it as a failure (CR-25). A history that
-  // cannot be confirmed complete cannot say which run is the latest, nor that no review
-  // run exists for a worker run — both are claims about the whole list. Tracked
-  // separately from `runsError` because "some
-  // records could not be read" and "there are more records than were read" are
-  // different facts about the same read.
+  // Whether a run beyond this page actually exists. The read asks for one more than it
+  // keeps (`lib/paged.ts`), so this is evidence and not the inference it used to be —
+  // `length >= RUN_HISTORY_LIMIT`, which called a history of exactly that many runs
+  // truncated and had the panels announce a read failure that never happened (CR-25,
+  // CR-28). A page with more behind it cannot say which run is the latest, nor that no
+  // review run exists for a worker run — both are claims about the whole list. Tracked
+  // separately from `runsError` because "some records could not be read" and "there are
+  // more records than were read" are different facts about the same read.
   const [runsTruncated, setRunsTruncated] = useState(false);
   // The task's unsettled runs, asked as their own question rather than filtered
   // out of the page of recent history above: that page is capped, so a long-lived
@@ -781,17 +781,24 @@ function TaskWorkspace({ task, refreshNonce, railAttention, railRuns, onTaskMayH
   const loadRuns = useCallback((signal?: AbortSignal) => {
     const token = ++runsRequest.current;
     const stale = () => signal?.aborted || token !== runsRequest.current;
-    return listRuns({ task_id: task.task_id, limit: RUN_HISTORY_LIMIT }, signal)
-      .then((summaries) =>
-        Promise.all(summaries.map((summary) => getRun(summary.run_id, signal).catch(() => null)))
+    // Asks for one run beyond the page, so `runsTruncated` is the fact that a further
+    // run exists rather than the guess a full page used to make. The probe row is
+    // dropped before the details are fetched, so it costs one summary and no detail
+    // request.
+    return readPage(RUN_HISTORY_LIMIT, (limit) =>
+      listRuns({ task_id: task.task_id, limit }, signal))
+      .then((page) =>
+        Promise.all(page.items.map((summary) => getRun(summary.run_id, signal).catch(() => null)))
           .then((details) => {
             if (stale()) return;
+            const summaries = page.items;
             const loaded = details.filter((run): run is ExecutionRun => run !== null);
             setRuns(loaded);
             setRunsError(loaded.length !== summaries.length);
-            // At the cap the page is "at least these runs", so nothing derived from
-            // it may claim to be about all of them.
-            setRunsTruncated(summaries.length >= RUN_HISTORY_LIMIT);
+            // Not "at least these runs" as a guess any more: a further run was
+            // actually returned, so nothing derived from this page may claim to be
+            // about all of them.
+            setRunsTruncated(page.truncated);
           }),
       )
       .catch(() => { if (!stale()) setRunsError(true); });
@@ -839,14 +846,14 @@ function TaskWorkspace({ task, refreshNonce, railAttention, railRuns, onTaskMayH
   const loadTaskAttention = useCallback((signal?: AbortSignal) => {
     const token = ++attentionRequest.current;
     const stale = () => signal?.aborted || token !== attentionRequest.current;
-    return listAttention(
-      { task_id: task.task_id, state: "open", limit: TASK_ATTENTION_LIMIT }, signal,
-    )
-      .then((items) => {
+    return readPage(TASK_ATTENTION_LIMIT, (limit) => listAttention(
+      { task_id: task.task_id, state: "open", limit }, signal,
+    ))
+      .then((page) => {
         if (stale()) return;
-        setTaskAttention(items);
+        setTaskAttention([...page.items]);
         setTaskAttentionError(false);
-        setTaskAttentionTruncated(items.length >= TASK_ATTENTION_LIMIT);
+        setTaskAttentionTruncated(page.truncated);
       })
       .catch(() => {
         if (stale()) return;
@@ -1173,13 +1180,14 @@ function TaskWorkspace({ task, refreshNonce, railAttention, railRuns, onTaskMayH
     // No `state` filter, deliberately: a responded or cancelled item is exactly what
     // releases the obligation, and asking only for open ones is how "absent from the
     // open list" became "no gate was ever raised".
-    listAttention({ task_id: task.task_id, run_id: gateRunId, limit: REVIEW_GATE_LIMIT }, ctrl.signal)
-      .then((items) => {
+    readPage(REVIEW_GATE_LIMIT, (limit) =>
+      listAttention({ task_id: task.task_id, run_id: gateRunId, limit }, ctrl.signal))
+      .then((page) => {
         if (ctrl.signal.aborted) return;
-        setReviewGate(items);
+        setReviewGate([...page.items]);
         setReviewGateFor(gateRunId);
         setReviewGateError(false);
-        setReviewGateTruncated(items.length >= REVIEW_GATE_LIMIT);
+        setReviewGateTruncated(page.truncated);
       })
       .catch(() => {
         if (ctrl.signal.aborted) return;

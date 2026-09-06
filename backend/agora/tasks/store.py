@@ -406,14 +406,21 @@ class TaskStore:
 
     def events_on_day(
         self, task_id: str, day: str, *, limit: int, zone: timezone | None = None
-    ) -> list[TaskEvent]:
-        """This task's events recorded on the **local** ``day``, oldest first,
-        bounded.
+    ) -> tuple[list[TaskEvent], bool]:
+        """``(events, truncated)`` for this task's events recorded on the **local**
+        ``day``, oldest first.
 
-        Compared against a UTC range rather than a string prefix: timestamps are
-        stored in UTC, so one local day spans two UTC dates (in UTC+9, local
-        2026-08-27 runs from 2026-08-26T15:00Z). Prefix matching would silently
-        drop a late night's work.
+        ``truncated`` is True when more exist than ``limit``, established by selecting
+        ``limit + 1`` rows and returning ``limit`` of them -- the same shape as its
+        sibling ``list_finished_on_day``. It used to return the bare list, and the
+        caller inferred truncation from ``len(events) >= limit``, which cannot tell a
+        truncated day from a day holding exactly that many events: the recap then said
+        "more happened that day than is shown" about a day it had read whole, and that
+        sentence also reaches the seed prompt handed to an agent.
+
+        A UTC range, not a string prefix: timestamps are stored in UTC, so one local
+        day spans two UTC dates (in UTC+9, local 2026-08-27 runs from
+        2026-08-26T15:00Z). Prefix matching would silently drop a late night's work.
         """
         start, end = local_day_bounds(day, zone=zone)
         with closing(self._connect()) as db:
@@ -423,9 +430,10 @@ class TaskStore:
                 WHERE task_id = ? AND created_at >= ? AND created_at < ?
                 ORDER BY created_at, rowid LIMIT ?
                 """,
-                (task_id, start, end, limit),
+                (task_id, start, end, limit + 1),
             ).fetchall()
-        return [self._event(row) for row in rows]
+        truncated = len(rows) > limit
+        return [self._event(row) for row in rows[:limit]], truncated
 
     def _insert_event(
         self,
