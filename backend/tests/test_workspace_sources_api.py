@@ -181,6 +181,58 @@ def test_an_empty_path_is_refused(client, endpoint):
     assert client.post(endpoint, json={"path": ""}).status_code == 422
 
 
+def test_a_task_naming_a_registered_project_links_to_it_through_the_api(client, tmp_path):
+    """The join that makes a read into a place to go: `task.yaml` has recorded
+    `primary_repo` all along, and this is the first thing to read it."""
+    root = tmp_path / "ws"
+    task = root / "tasks" / "alpha"
+    task.mkdir(parents=True)
+    # `demo` is the project this test's registry defines, rooted under tmp_path.
+    demo_root = (tmp_path / "control" / "demo").as_posix()
+    (task / "task.yaml").write_text(
+        f"task:\n  id: alpha\n  goal: g\nprimary_repo: {demo_root}\n", encoding="utf-8"
+    )
+    (task / "RESUME.md").write_text(RESUME_MD, encoding="utf-8")
+    client.post("/api/workspace-sources", json={"path": str(root)})
+
+    listed = client.get("/api/workspace-sources").json()["sources"][0]["tasks"][0]
+
+    assert listed["repo_link"]["state"] == "linked"
+    assert listed["repo_link"]["project_id"] == "demo"
+
+
+def test_a_probe_answers_the_link_question_too(client, tmp_path):
+    """Probe is what the person sees before deciding to register, so it has to answer
+    the same questions the listing does — including "is this work already reachable"."""
+    root = _workspace(tmp_path)
+
+    probed = client.post("/api/workspace-sources/probe", json={"path": str(root)}).json()
+
+    # This fixture's task.yaml records no primary_repo at all.
+    assert probed["tasks"][0]["repo_link"]["state"] == "not_recorded"
+
+
+def test_a_registry_that_cannot_list_projects_says_so_per_task(client, tmp_path, monkeypatch):
+    """The API's own half of the same rule: a failed project listing is neither "no
+    projects" nor silence."""
+    root = _workspace(tmp_path)
+    task = root / "tasks" / "alpha"
+    (task / "task.yaml").write_text(
+        "task:\n  id: alpha\nprimary_repo: D:/Projects/Alpha\n", encoding="utf-8"
+    )
+    client.post("/api/workspace-sources", json={"path": str(root)})
+
+    def refuse():
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(client.registry, "list_projects", refuse)
+
+    listed = client.get("/api/workspace-sources")
+
+    assert listed.status_code == 200, listed.text
+    assert listed.json()["sources"][0]["tasks"][0]["repo_link"]["state"] == "projects_unreadable"
+
+
 # --- registering and forgetting -------------------------------------------------------
 
 

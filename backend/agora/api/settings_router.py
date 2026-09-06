@@ -34,7 +34,11 @@ from agora.orchestration.runtime_capabilities import (
     collect_native_runtime_capabilities,
 )
 from agora.projects import ProjectRegistry
-from agora.projects.workspace_tasks import read_workspace_source
+from agora.projects.workspace_tasks import (
+    PROJECTS_UNREADABLE,
+    ProjectRoots,
+    read_workspace_source,
+)
 from agora.workspaces.models import ProvisionRequest
 from agora.workspaces.provisioner import WorkspaceProvisioner
 
@@ -277,8 +281,28 @@ class WorkspaceSourcePathRequest(BaseModel):
     path: str = Field(min_length=1, max_length=4096)
 
 
-def _source_payload(root: Path) -> dict[str, Any]:
-    return read_workspace_source(root).payload()
+def _project_roots(registry: ProjectRegistry) -> ProjectRoots:
+    """`{project_id: root}` for the registered projects, for the repo link only.
+
+    A lookup, never a key: `Project.root` says in as many words that nothing may key,
+    join or dedupe on it, because it is a project's location in the *local* environment
+    and moves to a per-environment table when W3 lands. This mapping is built per
+    request, never stored, and only decides whether a task's `primary_repo` is somewhere
+    the person can already open. See tasks/agora/adr/0006.
+    """
+    try:
+        return {pid: project.root for pid, project in registry.list_projects().items()}
+    except Exception:
+        # A registry that cannot list is not "no projects". Returning {} would make every
+        # task read "that repository is not registered" — a claim about projects this
+        # request never saw. None is not right either: that is "nobody looked", and the
+        # panel renders it as nothing at all, so a person watching would see their links
+        # disappear with no sentence anywhere saying the project list failed to read.
+        return PROJECTS_UNREADABLE
+
+
+def _source_payload(root: Path, project_roots: ProjectRoots) -> dict[str, Any]:
+    return read_workspace_source(root, project_roots=project_roots).payload()
 
 
 @router.get("/workspace-sources")
@@ -292,11 +316,18 @@ def list_workspace_sources(
     an invalidation story to be worth its risk of showing yesterday's RESUME as today's.
     """
     sources = registry.workspace_sources()
-    return {"sources": [_source_payload(root) for root in sources]}
+    # Resolved once for the whole response: the link is the same question for every
+    # task, and asking the registry per task would make a listing's cost depend on how
+    # much work the person has recorded.
+    roots = _project_roots(registry)
+    return {"sources": [_source_payload(root, roots) for root in sources]}
 
 
 @router.post("/workspace-sources/probe")
-def probe_workspace_source(request: WorkspaceSourcePathRequest) -> dict[str, Any]:
+def probe_workspace_source(
+    request: WorkspaceSourcePathRequest,
+    registry: ProjectRegistry = Depends(get_project_registry),
+) -> dict[str, Any]:
     """What this path would yield, without registering it. Never raises for a bad path:
     an unreadable directory is an answer to show, not a 422 to interpret."""
     path = Path(request.path).expanduser()
@@ -305,7 +336,7 @@ def probe_workspace_source(request: WorkspaceSourcePathRequest) -> dict[str, Any
             status.HTTP_422_UNPROCESSABLE_CONTENT,
             "A workspace directory must be given as an absolute path",
         )
-    return _source_payload(path)
+    return _source_payload(path, _project_roots(registry))
 
 
 @router.post("/workspace-sources", status_code=status.HTTP_201_CREATED)
@@ -318,7 +349,7 @@ def register_workspace_source(
         resolved = registry.register_workspace_source(request.path)
     except (ValueError, OSError) as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from None
-    return _source_payload(resolved)
+    return _source_payload(resolved, _project_roots(registry))
 
 
 @router.delete("/workspace-sources")

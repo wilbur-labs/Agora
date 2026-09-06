@@ -37,6 +37,7 @@ this module adds is the *shape of a workspace* and nothing about how a table is 
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -136,6 +137,16 @@ class TaskManifestRead:
     goal: str | None
     status: str | None
     machine: str | None
+    #: `primary_repo`, verbatim from the file. The repository this task's work happens
+    #: in, which the working model has always recorded and which nothing read until now.
+    #: None both when the manifest could not be read and when the file does not name one
+    #: — `available` is what tells those apart.
+    primary_repo: str | None
+    #: True when the key is there and its value is not a usable path — `primary_repo: 123`,
+    #: a list, or an empty string. Without this the value would fall to None and the panel
+    #: would say "no primary_repo recorded" about a file that records one and needs it
+    #: fixed: two different things to do, one sentence.
+    primary_repo_malformed: bool
     #: Milestone ids and their statuses, in file order. None when unavailable.
     milestones: tuple[tuple[str, str], ...] | None
 
@@ -147,6 +158,8 @@ class TaskManifestRead:
             "goal": self.goal,
             "status": self.status,
             "machine": self.machine,
+            "primary_repo": self.primary_repo,
+            "primary_repo_malformed": self.primary_repo_malformed,
             "milestones": (
                 None if self.milestones is None
                 else [{"id": i, "status": s} for i, s in self.milestones]
@@ -183,6 +196,109 @@ class ResumeRead:
         }
 
 
+class ProjectsUnreadable:
+    """Sentinel: the project list could not be read at all.
+
+    A third thing, distinct from a mapping (looked, here is what there is) and from None
+    (nobody looked). Folding it into either was the review's finding: as `{}` every task
+    reads "that repository is not registered", a claim about projects the request never
+    saw; as None it reads `unknown`, which the panel renders as nothing at all — the
+    links a person had a moment ago simply vanish with nothing on screen saying why.
+    """
+
+    __slots__ = ()
+
+
+#: The one instance callers pass. A sentinel rather than a second boolean parameter, so
+#: there is no pair of arguments that can disagree.
+PROJECTS_UNREADABLE = ProjectsUnreadable()
+
+ProjectRoots = Mapping[str, Path] | None | ProjectsUnreadable
+
+
+def _normalised(path: Path) -> Path:
+    """The path as the filesystem sees it, when it can be asked.
+
+    `Path.__eq__` is lexical: it does not follow a junction or a symlink and does not
+    fold `..`, so `D:/Projects/A/../Agora` and a link to the real directory compare
+    unequal to it. Project roots are stored already resolved (`ProjectRegistry.add`),
+    while `task.yaml` holds whatever the person typed — so without this the two sides
+    are normalised differently and the answer becomes "not registered" about a
+    repository that is registered.
+
+    Falls back to the lexical path when resolution cannot happen (offline share, a
+    permission the process lacks): a comparison that could not be normalised is still
+    worth making, and it is the same answer this had before.
+    """
+    try:
+        return path.resolve()
+    except OSError:
+        return path
+
+
+@dataclass(frozen=True)
+class RepoLink:
+    """Whether this task's repository is one Agora already knows, and how sure that is.
+
+    Six states, because each one is a different next move: open it / register that
+    directory / write `primary_repo` into the task / fix the value that is there / try
+    again once the project list can be read / say nothing at all. Collapsing any pair of
+    them recommends the wrong one, and two of these exist because a review found exactly
+    that collapse.
+
+    **This is a lookup, not a key.** `Project.root` carries an explicit warning that
+    nothing may key, join or dedupe on it, because a project's root is its location in
+    the *local* environment and moves into a per-environment table when W3 lands.
+    Nothing here is stored, nothing is decided by it, and no identity is derived from
+    it: one function turns a path into a candidate `project_id` for a link the person
+    may click, and when roots stop living on `Project` this is the one place that has
+    to change. `project_id` remains the only key. Recorded in tasks/agora/adr/0006.
+    """
+
+    #: "linked" | "not_registered" | "not_recorded" | "repo_malformed"
+    #: | "projects_unreadable" | "unknown"
+    #:
+    #: `not_recorded` — the manifest was read and names no `primary_repo`.
+    #: `repo_malformed` — it names one whose value is not a usable path.
+    #: `not_registered` — it names one, and no registered project sits at that path.
+    #: `projects_unreadable` — the task read fine; the project list did not.
+    #: `unknown` — nobody looked, or the manifest could not be read at all. Never say
+    #: "not registered" about a file you could not open.
+    state: str
+    #: The path as the task file wrote it. None unless the manifest was read and had one.
+    repo: str | None
+    #: Only ever set on "linked".
+    project_id: str | None
+
+    def payload(self) -> dict[str, Any]:
+        return {"state": self.state, "repo": self.repo, "project_id": self.project_id}
+
+
+def link_repo(manifest: TaskManifestRead, project_roots: ProjectRoots) -> RepoLink:
+    """Match a task's `primary_repo` against the roots of registered projects.
+
+    Compared as normalised paths: `Path.__eq__` gets Windows case and separators right,
+    and `_normalised` gets junctions, symlinks and `..` right. String comparison gets
+    neither — the same defect the registration path had once.
+    """
+    if not manifest.available:
+        return RepoLink(state="unknown", repo=None, project_id=None)
+    if manifest.primary_repo_malformed:
+        return RepoLink(state="repo_malformed", repo=None, project_id=None)
+    if manifest.primary_repo is None:
+        return RepoLink(state="not_recorded", repo=None, project_id=None)
+    if isinstance(project_roots, ProjectsUnreadable):
+        return RepoLink(state="projects_unreadable", repo=manifest.primary_repo, project_id=None)
+    if project_roots is None:
+        return RepoLink(state="unknown", repo=manifest.primary_repo, project_id=None)
+
+    wanted = _normalised(Path(manifest.primary_repo).expanduser())
+    for project_id, root in project_roots.items():
+        if _normalised(Path(root)) == wanted:
+            return RepoLink(state="linked", repo=manifest.primary_repo, project_id=project_id)
+    return RepoLink(state="not_registered", repo=manifest.primary_repo, project_id=None)
+
+
 @dataclass(frozen=True)
 class WorkspaceTask:
     """One `tasks/<name>/` directory, whatever of it could be read."""
@@ -198,6 +314,8 @@ class WorkspaceTask:
     #: Whether `WORKFLOW.md` is there. Not parsed — the hook shows its first 40 lines and
     #: nothing here needs its content, so this says only that it exists.
     has_workflow: bool
+    #: Where this task's work happens, if Agora knows that place. See `RepoLink`.
+    repo_link: RepoLink
 
     def payload(self) -> dict[str, Any]:
         return {
@@ -207,6 +325,7 @@ class WorkspaceTask:
             "cr_log": self.cr_log.payload(),
             "decisions": self.decisions.payload(),
             "has_workflow": self.has_workflow,
+            "repo_link": self.repo_link.payload(),
         }
 
 
@@ -262,7 +381,8 @@ class WorkspaceSource:
 def _read_manifest(path: Path) -> TaskManifestRead:
     unavailable = lambda reason: TaskManifestRead(  # noqa: E731 - one shape, many exits
         available=False, reason=reason, title=None, goal=None,
-        status=None, machine=None, milestones=None,
+        status=None, machine=None, primary_repo=None, primary_repo_malformed=False,
+        milestones=None,
     )
     probe = probe_path(path)
     if probe.absent:
@@ -318,6 +438,12 @@ def _read_manifest(path: Path) -> TaskManifestRead:
         goal=text_of(task.get("goal")),
         status=text_of(task.get("status")),
         machine=text_of(task.get("machine")),
+        # Top level, not under `task:` — that is where the working model writes
+        # it, and this reader follows the file rather than tidying it.
+        primary_repo=text_of(document.get("primary_repo")),
+        primary_repo_malformed=(
+            "primary_repo" in document and text_of(document.get("primary_repo")) is None
+        ),
         milestones=tuple(milestones),
     )
 
@@ -348,8 +474,16 @@ def _read_resume(path: Path) -> ResumeRead:
     )
 
 
-def read_workspace_source(root: Path) -> WorkspaceSource:
-    """Read one workspace directory. Never raises — every failure is a reason to show."""
+def read_workspace_source(
+    root: Path, *, project_roots: ProjectRoots = None
+) -> WorkspaceSource:
+    """Read one workspace directory. Never raises — every failure is a reason to show.
+
+    `project_roots` is `{project_id: root}` for the projects Agora has registered, used
+    only to decide whether a task's `primary_repo` is somewhere the person can already
+    open. Omit it and every task reports `unknown` rather than "not registered": a
+    caller that did not look has not established an absence.
+    """
     shown_root = root.as_posix()
     unavailable = lambda reason: WorkspaceSource(  # noqa: E731 - one shape, several exits
         available=False, reason=reason, root=shown_root, tasks=None, skipped=None,
@@ -399,9 +533,10 @@ def read_workspace_source(root: Path) -> WorkspaceSource:
             skipped.append(entry.name)
             continue
         resume_path = entry / RESUME_MD
+        manifest = _read_manifest(entry / TASK_YAML)
         tasks.append(WorkspaceTask(
             name=entry.name,
-            manifest=_read_manifest(entry / TASK_YAML),
+            manifest=manifest,
             resume=_read_resume(resume_path),
             # The CR table lives inside RESUME.md here, not in a file of its own, which
             # is the whole reason `read_cr_log_file` takes a path.
@@ -412,6 +547,7 @@ def read_workspace_source(root: Path) -> WorkspaceSource:
                 entry / ADR_DIR, (TASKS_DIR / entry.name / ADR_DIR).as_posix()
             ),
             has_workflow=probe_path(entry / WORKFLOW_MD).is_file(),
+            repo_link=link_repo(manifest, project_roots),
         ))
 
     return WorkspaceSource(

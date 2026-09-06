@@ -24,6 +24,8 @@ from pathlib import Path
 import pytest
 
 from agora.projects.workspace_tasks import (
+    PROJECTS_UNREADABLE,
+    link_repo,
     MAX_RESUME_BYTES,
     MAX_TASK_YAML_BYTES,
     TEMPLATE_DIR_NAME,
@@ -411,6 +413,190 @@ def test_no_milestones_key_yields_an_empty_tuple_on_a_readable_manifest(tmp_path
 
     assert manifest.available is True
     assert manifest.milestones == ()
+
+
+# --- the repository a task names, and whether Agora knows it -------------------------
+
+
+REPO_YAML = "task:\n  id: alpha\n  goal: g\nprimary_repo: D:/Projects/Alpha\n"
+
+
+def test_primary_repo_is_read_from_the_top_level_where_the_model_writes_it(tmp_path):
+    _task(tmp_path, "alpha", manifest=REPO_YAML)
+
+    manifest = read_workspace_source(tmp_path).tasks[0].manifest
+
+    assert manifest.primary_repo == "D:/Projects/Alpha"
+
+
+def test_a_task_whose_repo_is_a_registered_project_links_to_it(tmp_path):
+    _task(tmp_path, "alpha", manifest=REPO_YAML)
+
+    source = read_workspace_source(
+        tmp_path, project_roots={"alpha-repo": Path("D:/Projects/Alpha")}
+    )
+
+    link = source.tasks[0].repo_link
+    assert (link.state, link.project_id) == ("linked", "alpha-repo")
+    assert link.repo == "D:/Projects/Alpha"
+
+
+def test_the_repo_match_uses_path_rules_not_string_equality(tmp_path):
+    """`D:/Projects/Alpha` and `D:\\Projects\\Alpha` are one directory. Comparing the
+    two as strings is the defect the registration path already had once."""
+    _task(tmp_path, "alpha", manifest=REPO_YAML)
+
+    source = read_workspace_source(
+        tmp_path, project_roots={"alpha-repo": Path("D:\\Projects\\Alpha")}
+    )
+
+    assert source.tasks[0].repo_link.state == "linked"
+
+
+def test_a_repo_no_project_sits_at_is_not_registered_not_unknown(tmp_path):
+    _task(tmp_path, "alpha", manifest=REPO_YAML)
+
+    source = read_workspace_source(tmp_path, project_roots={"other": Path("D:/Projects/Other")})
+
+    link = source.tasks[0].repo_link
+    assert (link.state, link.project_id) == ("not_registered", None)
+    # The path still travels: the next move is "register that directory", and the person
+    # needs to know which one.
+    assert link.repo == "D:/Projects/Alpha"
+
+
+def test_a_manifest_with_no_primary_repo_says_so_rather_than_not_registered(tmp_path):
+    """Read the file, it names no repository. That is a different sentence from "the
+    repository it names is not registered", and a different thing to do about it."""
+    _task(tmp_path, "alpha")  # the default manifest has no primary_repo
+
+    source = read_workspace_source(tmp_path, project_roots={"other": Path("D:/x")})
+
+    link = source.tasks[0].repo_link
+    assert (link.state, link.repo, link.project_id) == ("not_recorded", None, None)
+
+
+def test_an_unreadable_manifest_leaves_the_link_unknown(tmp_path):
+    """Never "not registered" about a file nobody could open."""
+    _task(tmp_path, "alpha", manifest="task:\n  goal: [unclosed\n")
+
+    source = read_workspace_source(tmp_path, project_roots={"other": Path("D:/x")})
+
+    assert source.tasks[0].repo_link.state == "unknown"
+
+
+def test_a_caller_that_did_not_look_gets_unknown_not_an_absence(tmp_path):
+    """`read_workspace_source` without `project_roots` has established nothing about
+    projects, and an omitted argument must not turn into a claim."""
+    _task(tmp_path, "alpha", manifest=REPO_YAML)
+
+    link = read_workspace_source(tmp_path).tasks[0].repo_link
+
+    assert link.state == "unknown"
+    assert link.repo == "D:/Projects/Alpha"
+
+
+def test_link_repo_treats_an_empty_project_list_as_looked_and_found_none(tmp_path):
+    """The distinction the API layer depends on: `{}` is "I listed the projects and
+    there are none", `None` is "the listing failed". Only the first may say
+    "not registered"."""
+    _task(tmp_path, "alpha", manifest=REPO_YAML)
+    manifest = read_workspace_source(tmp_path).tasks[0].manifest
+
+    assert link_repo(manifest, {}).state == "not_registered"
+    assert link_repo(manifest, None).state == "unknown"
+
+
+def test_a_repo_reached_by_a_different_spelling_still_links(tmp_path):
+    """`ProjectRegistry.add` stores `root.resolve()`; `task.yaml` holds what the person
+    typed. Comparing those lexically calls a registered repository "not registered" the
+    moment the file says `.../backend/..` or points through a junction.
+    """
+    real = tmp_path / "repos" / "alpha"
+    real.mkdir(parents=True)
+    detour = tmp_path / "repos" / "alpha" / "sub" / ".."
+    (real / "sub").mkdir()
+    _task(tmp_path, "alpha", manifest=f"task:\n  id: alpha\nprimary_repo: {detour.as_posix()}\n")
+
+    source = read_workspace_source(tmp_path, project_roots={"alpha-repo": real.resolve()})
+
+    assert source.tasks[0].repo_link.state == "linked"
+
+
+def test_a_path_that_cannot_be_resolved_still_gets_compared(tmp_path):
+    """Resolution is a best effort, not a precondition: an offline share must not turn
+    a comparison into an exception, and the lexical answer is what this had before."""
+    _task(tmp_path, "alpha", manifest="task:\n  id: alpha\nprimary_repo: D:/Offline/Alpha\n")
+
+    def refuse(self, *args, **kwargs):
+        raise OSError(53, "The network path was not found")
+
+    import agora.projects.workspace_tasks as module
+    original = Path.resolve
+    try:
+        Path.resolve = refuse  # type: ignore[method-assign]
+        source = read_workspace_source(
+            tmp_path, project_roots={"alpha-repo": Path("D:/Offline/Alpha")}
+        )
+    finally:
+        Path.resolve = original  # type: ignore[method-assign]
+    assert module is not None
+    assert source.tasks[0].repo_link.state == "linked"
+
+
+def test_a_primary_repo_that_is_not_a_path_says_the_value_is_wrong(tmp_path):
+    """`primary_repo: 123` records a repository and records it wrongly. Reporting "no
+    primary_repo recorded" sends the person to add a line that is already there."""
+    _task(tmp_path, "alpha", manifest="task:\n  id: alpha\nprimary_repo: 123\n")
+
+    manifest = read_workspace_source(tmp_path).tasks[0].manifest
+    link = read_workspace_source(tmp_path, project_roots={}).tasks[0].repo_link
+
+    assert manifest.primary_repo_malformed is True
+    assert manifest.primary_repo is None
+    assert link.state == "repo_malformed"
+
+
+def test_a_blank_primary_repo_is_wrong_rather_than_absent(tmp_path):
+    """An empty value is a line someone left unfinished, not a line nobody wrote."""
+    _task(tmp_path, "alpha", manifest='task:\n  id: alpha\nprimary_repo: "  "\n')
+
+    assert read_workspace_source(tmp_path, project_roots={}).tasks[0].repo_link.state == (
+        "repo_malformed"
+    )
+
+
+def test_a_missing_key_is_still_not_recorded_not_malformed(tmp_path):
+    _task(tmp_path, "alpha")  # no primary_repo key at all
+
+    manifest = read_workspace_source(tmp_path).tasks[0].manifest
+
+    assert manifest.primary_repo_malformed is False
+    assert read_workspace_source(tmp_path, project_roots={}).tasks[0].repo_link.state == (
+        "not_recorded"
+    )
+
+
+def test_a_project_list_that_could_not_be_read_is_its_own_state(tmp_path):
+    """Three causes, three answers. As `{}` every task would read "not registered" —
+    a claim about projects nobody saw. As `None` it reads `unknown`, which the panel
+    renders as nothing, so the links a person had a moment ago vanish silently.
+    """
+    _task(tmp_path, "alpha", manifest="task:\n  id: alpha\nprimary_repo: D:/Projects/Alpha\n")
+
+    link = read_workspace_source(tmp_path, project_roots=PROJECTS_UNREADABLE).tasks[0].repo_link
+
+    assert link.state == "projects_unreadable"
+    # The path still travels: it is the one thing the panel does know.
+    assert link.repo == "D:/Projects/Alpha"
+
+
+def test_an_unreadable_project_list_never_becomes_not_registered(tmp_path):
+    _task(tmp_path, "alpha", manifest="task:\n  id: alpha\nprimary_repo: D:/Projects/Alpha\n")
+    manifest = read_workspace_source(tmp_path).tasks[0].manifest
+
+    assert link_repo(manifest, PROJECTS_UNREADABLE).state != "not_registered"
+    assert link_repo(manifest, {}).state == "not_registered"
 
 
 # --- RESUME.md ---------------------------------------------------------------------
