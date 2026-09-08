@@ -7016,3 +7016,61 @@ claude and kiro need the same three-turn live test codex has. CR-43 (a file an a
 through its sandbox can be unreadable to the control plane) stays OPEN and wants a
 measurement before a fix: whether `snapshot_changes` records those files as *unknown* or as
 *absent* decides whether it is a nuisance or a lie.
+
+### Committed, and what the remaining twenty-six rounds cost
+
+`4fb5a3a`, on `feature/w8-session-ui`: 42 files, +11202 lines. The paragraph above
+was written after round six; review ran to **thirty-two**. The final gate is
+**1435 passed / 13 skipped** against a pre-W8 baseline of 1289 — **146 tests added**,
+one per finding that could be pinned to behaviour. Frontend: 298 tests, tsc 0,
+eslint 0, build 14 pages.
+
+**154 findings: 153 confirmed and fixed, one false positive.** The false positive is
+round 31's claim that the Today page asks for 501 rows against a limit of 500. The
+constants say otherwise — `MAX_PAGE = SERVER_PAGE_MAX - PROBE` = 499, so the request is
+exactly 500 — and `paged.ts` already documents that an earlier round fixed precisely
+that. The clamp written in response to it was reverted rather than kept: a guard that
+fixes nothing leaves a comment asserting a defect that does not exist.
+
+Rounds 1-4 were codex; from round 5 on **kiro substituted** because codex's quota was
+exhausted (adr/0017 — a substitute for the gate, never a second opinion on one diff).
+
+Three findings reached past W8's own surface, and each is worth more than its round:
+
+* **A run that committed its own work was recorded as delivering nothing.** With a clean
+  baseline, an agent that edits and then commits leaves an empty `git status`, so the
+  snapshot returned `files: []` — automatic review saw nothing to review, and handoff then
+  bound a commit no review had read. The baseline now records HEAD and the snapshot asks
+  what moved; a baseline that cannot answer says `commits_unread` rather than reporting an
+  empty list.
+* **A stop did not take the process tree.** An agent that starts a background script and
+  exits left it writing the worktree after the deliverables were frozen and the lock
+  released. Windows is now covered by a job object assigned at spawn — measured against a
+  grandchild whose parent had already exited, which `taskkill /T` cannot reach. Two of
+  that fix's own bugs were measured rather than reasoned about: an undeclared ctypes
+  `restype` truncates a 64-bit HANDLE and the next call is a *fatal* process exception,
+  and `AssignProcessToJobObject` needs `PROCESS_SET_QUOTA`. POSIX is untouched and says
+  so, carried by a skipped test naming the platform (CR-46).
+* **Japanese filenames were recorded as paths that do not exist.** `core.quotePath` is on
+  by default, so `git status` octal-escapes any non-ASCII path; the parser stripped quotes
+  and stopped. Now the snapshot reads `--porcelain=v1 -z`, where nothing is quoted and a
+  rename's two paths are two records — the format stops being ambiguous instead of the
+  parser getting cleverer.
+
+The recurring shape, stated because it cost the most: **most of each round's findings were
+consequences of the previous round's fixes.** One redaction guard took five attempts —
+leak, then silent deletion, then leak again, then deletion again — because each attempt
+answered "was this value cut, or did it end here?", which is not answerable from either
+half. The fifth stopped answering it: `safe_cut` makes the cut itself illegal anywhere
+inside a match. Twice the defect was a guard that existed but sat on a path the failure did
+not take, and once a bound that could not fire because a pending pipe read on Windows does
+not answer a cancel.
+
+### Next safe action (unchanged, plus what is waiting on the user)
+
+Nobody has typed into the conversation window yet — that is exit criterion 1 and only the
+user can close it. Four CRs wait on a decision: CR-44 (codex `bridge_mode`), CR-45
+(whether to narrow the seven-state session machine, which is where most late findings
+landed), CR-46 (the POSIX half of stopping a tree), CR-47 (adopting a session recorded
+before roles existed).
+
