@@ -8,6 +8,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import time
 import uuid
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -4010,3 +4011,154 @@ def test_execution_api_create_filter_cancel_and_not_found(tmp_path):
         assert client.get("/api/tasks/missing/runs").status_code == 404
     finally:
         app.dependency_overrides.clear()
+
+
+def test_a_cancel_racing_the_pid_binding_still_records_what_the_run_wrote(tmp_path):
+    """A cancel between the launch and ``attach_pid`` must not lose the files.
+
+    That branch used to stop the process and return the row as it found it: no
+    deliverable snapshot, no output record. The changes the agent had already
+    written were then absorbed into the *next* run's baseline, so they were
+    attributable to nothing — the one thing the whole deliverables machinery
+    exists to prevent.
+    """
+    workspace = tmp_path / "workspaces" / "codex"
+    workspace.mkdir(parents=True, exist_ok=True)
+    # The process writes a file immediately, then lingers so the cancel window
+    # is real rather than simulated by timing.
+    program = (
+        "import pathlib, sys, time; "
+        "pathlib.Path('written-before-cancel.txt').write_text('x', encoding='utf-8'); "
+        # A real codex first event, so the drained output names a session.
+        "print('{\"type\":\"thread.started\",\"thread_id\":\"sid-before-cancel\"}', flush=True); "
+        "print('printed-before-cancel', flush=True); "
+        "time.sleep(30)"
+    )
+    # codex's event format, declared: an overridden command does not inherit it,
+    # and the point of this test is what the drained output *said*.
+    config = _config(tmp_path, [sys.executable, "-c", program])
+    config["execution"]["adapters"]["codex"]["event_format"] = "codex_jsonl"
+    tasks = TaskStore(tmp_path / "agora.db")
+    store = ExecutionStore(tasks)
+    dispatcher = ExecutionDispatcher(
+        store, ProjectRegistry(config), build_adapter_registry(config),
+        allowed_workspace_roots=[tmp_path / "workspaces"],
+    )
+    task = _planned_task(tasks)
+    queued = dispatcher.queue(_request(task.task_id, timeout=30))
+
+    real_attach = store.attach_pid
+
+    written = workspace / "written-before-cancel.txt"
+
+    def cancel_then_conflict(run_id, *, expected_version, pid, command=None):
+        # Waited for deliberately: the race is "a cancel lands a moment after the
+        # process started", and the interesting case is the one where it already
+        # wrote something. Relying on scheduling instead would have tested an
+        # empty workspace most runs — which is exactly what the first version of
+        # this test did, and it passed against a snapshot of nothing.
+        for _ in range(200):
+            if written.exists():
+                break
+            time.sleep(0.05)
+        # The row is cancelled by someone else, so the optimistic write this call
+        # was about to make no longer applies.
+        current = store.require(run_id)
+        store.cancel(run_id, CancelRunRequest(expected_version=current.version))
+        raise RunConflictError("cancelled while binding the pid")
+
+    store.attach_pid = cancel_then_conflict
+    try:
+        result = asyncio.run(dispatcher.execute(queued.run_id))
+    finally:
+        store.attach_pid = real_attach
+
+    assert result.state == RunState.CANCELLED
+    assert written.exists(), "the child must have written before the cancel landed"
+    snapshot = store.deliverable_snapshot(queued.run_id)
+    assert snapshot is not None, "a cancelled run that already wrote files must say so"
+    recorded = json.dumps(snapshot, ensure_ascii=False)
+    assert "written-before-cancel.txt" in recorded
+    # And what it had already printed. Recording two empty tails here left the
+    # person with their own prompt and nothing else, while the branch's own
+    # comment claimed it fixed exactly that.
+    settled = store.require(queued.run_id)
+    assert "printed-before-cancel" in settled.stdout_tail
+    # And the session it announced. Saving the raw tail kept the text and threw
+    # away what it said: the session table stayed empty, so the next message
+    # opened a brand-new conversation over work that existed.
+    recorded = dispatcher.sessions.get(task.task_id, "codex", ROLE_WORKER)
+    assert recorded.session_id == "sid-before-cancel"
+
+
+def test_a_cancel_during_the_error_path_snapshot_still_records_the_deliverables(tmp_path, monkeypatch):
+    """The exception path re-reads the run after snapshotting, like the settle path.
+
+    Snapshotting a large worktree takes long enough for a cancel to land inside
+    it. The version captured before then made `finish` conflict, so the snapshot
+    was computed and thrown away — and the files it described were absorbed by
+    the next run's baseline, attributable to nobody.
+    """
+    from agora.execution import dispatcher as dispatcher_module
+
+    tasks, store, dispatcher = _system(tmp_path, [sys.executable, "-c", "print('ok')"])
+    task = _planned_task(tasks)
+    queued = dispatcher.queue(_request(task.task_id))
+
+    async def explode(*args, **kwargs):
+        raise RuntimeError("dispatcher blew up mid-turn")
+
+    def snapshot_and_cancel(workspace, baseline):
+        # The cancel lands *while* the snapshot is being taken.
+        current = store.require(queued.run_id)
+        store.cancel(queued.run_id, CancelRunRequest(expected_version=current.version))
+        return {"files": [{"path": "left-behind.txt", "change": "added"}], "truncated": False}
+
+    monkeypatch.setattr(dispatcher, "_read_streaming", explode)
+    monkeypatch.setattr(dispatcher_module, "snapshot_changes", snapshot_and_cancel)
+
+    # `_execute_guarded` is the wrapper `schedule()` runs a turn through, and the
+    # branch under test is its `except Exception`. `execute()` on its own lets the
+    # error out, which is what a caller awaiting it should see.
+    result = asyncio.run(dispatcher._execute_guarded(queued.run_id))
+
+    assert result.state == RunState.CANCELLED
+    snapshot = store.deliverable_snapshot(queued.run_id)
+    assert snapshot is not None, "the snapshot must not be computed and dropped"
+    assert "left-behind.txt" in json.dumps(snapshot, ensure_ascii=False)
+
+
+def test_a_failure_after_a_cancel_still_freezes_what_the_run_wrote(tmp_path, monkeypatch):
+    """The error path covers an already-cancelled row too.
+
+    The person cancels; then something on the way out fails — a locked database,
+    a full disk, anything the settle path can raise. Returning the row there
+    dropped both the snapshot and the baseline, so the files the agent had
+    already written were absorbed by the next run's baseline and attributed to
+    nobody.
+    """
+    from agora.execution import dispatcher as dispatcher_module
+
+    tasks, store, dispatcher = _system(tmp_path, [sys.executable, "-c", "print('ok')"])
+    task = _planned_task(tasks)
+    queued = dispatcher.queue(_request(task.task_id))
+
+    def cancel_then_explode(*args, **kwargs):
+        current = store.require(queued.run_id)
+        if current.state == RunState.RUNNING:
+            store.cancel(queued.run_id, CancelRunRequest(expected_version=current.version))
+        raise RuntimeError("settling blew up after the cancel")
+
+    def snapshot(workspace, baseline):
+        return {"files": [{"path": "written-then-cancelled.txt", "change": "added"}],
+                "truncated": False}
+
+    monkeypatch.setattr(dispatcher, "_settle_session", cancel_then_explode)
+    monkeypatch.setattr(dispatcher_module, "snapshot_changes", snapshot)
+
+    result = asyncio.run(dispatcher._execute_guarded(queued.run_id))
+
+    assert result.state == RunState.CANCELLED
+    delivered = store.deliverable_snapshot(queued.run_id)
+    assert delivered is not None, "a cancelled run's files must not be dropped by a later failure"
+    assert "written-then-cancelled.txt" in json.dumps(delivered, ensure_ascii=False)

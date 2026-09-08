@@ -198,6 +198,20 @@ export function listTasks(limit: number = SERVER_PAGE_MAX): Promise<TaskManifest
   return request(`/api/tasks?limit=${limit}`);
 }
 
+/**
+ * One task, read now.
+ *
+ * Needed because a task's `version` moves underneath a page that is holding it:
+ * dispatching the first run carries the task planned -> running, and `create`
+ * refuses a stale `expected_task_version` (correctly — a queued run outlives the
+ * state it was checked against). A conversation is a fast back-and-forth, so the
+ * message box re-reads the version at send time instead of waiting for the page
+ * around it to refresh between two sentences.
+ */
+export function getTask(taskId: string, signal?: AbortSignal): Promise<TaskManifest> {
+  return request(`/api/tasks/${encodeURIComponent(taskId)}`, { signal });
+}
+
 export type AttentionKind = "question" | "approval" | "blocker";
 
 export interface AttentionItem {
@@ -483,7 +497,13 @@ export interface RuntimeCapability {
   authenticated: boolean | null;
   auth_method: string | null;
   auth_check_status: "checked" | "not_configured" | "probe_failed" | "timed_out";
-  token_capture: "supported" | "unsupported";
+  /**
+   * Whether this adapter's configured output format has a usage reader.
+   * "unknown" is the adapter registry itself having failed to build — the
+   * payload used to claim "unsupported" for every adapter in that case, which was
+   * an assertion derived from a read that did not happen.
+   */
+  token_capture: "supported" | "unsupported" | "unknown";
   tokens_used: number;
 }
 

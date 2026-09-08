@@ -60,3 +60,9 @@ backend/.pytest-*
 # itself, CR-1, for what that costs and why it was accepted.
 .agora/development/CR-LOG.md
 .agora/workspaces/
+# Scratch root for looking at the app by hand: an isolated config.yaml, its own
+# control-plane database and a throwaway project. Kept out of the repository
+# because starting the API runs startup recovery, which dispatches queued runs,
+# and pointing that at the real database is the hazard backend/tests/conftest.py
+# describes.
+.live-test-tmp/

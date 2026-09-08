@@ -16,6 +16,15 @@ class RuntimeResultFormat(str, Enum):
     CODEX_JSONL_V1 = "codex_jsonl_v1"
     CLAUDE_JSON_V1 = "claude_json_v1"
     KIRO_CHAT_V1 = "kiro_chat_v1"
+    #: ``claude -p --output-format stream-json``. The event stream ends with a
+    #: ``result`` event carrying the same fields as the single-envelope ``json``
+    #: format, so the two share one reader.
+    CLAUDE_STREAM_JSON_V1 = "claude_stream_json_v1"
+    #: ``kiro-cli chat --agent-engine v2 --output-format stream-json``: ACP events.
+    #: Reports credits rather than token counts, so tokens read *unavailable*
+    #: here where KIRO_CHAT_V1 estimated them from byte length — a real loss of a
+    #: made-up number in exchange for a measured one.
+    KIRO_STREAM_JSON_V1 = "kiro_stream_json_v1"
 
 
 _KIRO_ASSISTANT_MARKER = "\x1b[38;5;141m> \x1b[0m"
@@ -44,6 +53,16 @@ def normalize_native_output(
         )
     if result_format == RuntimeResultFormat.CLAUDE_JSON_V1:
         return _normalize_claude_json(stdout, run_id=run_id, adapter=adapter)
+    if result_format == RuntimeResultFormat.CLAUDE_STREAM_JSON_V1:
+        return _normalize_claude_stream_json(
+            stdout, run_id=run_id, adapter=adapter,
+            stdout_prefix_truncated=stdout_prefix_truncated,
+        )
+    if result_format == RuntimeResultFormat.KIRO_STREAM_JSON_V1:
+        return _normalize_kiro_stream_json(
+            stdout, run_id=run_id, adapter=adapter,
+            stdout_prefix_truncated=stdout_prefix_truncated,
+        )
     if result_format == RuntimeResultFormat.KIRO_CHAT_V1:
         return _normalize_kiro_chat(
             stdout,
@@ -191,6 +210,168 @@ def _normalize_codex_jsonl(
     return messages[-1], observation
 
 
+def _jsonl_events(stdout: str, *, prefix_truncated: bool = False) -> list[dict[str, Any]] | None:
+    """Every JSON object in a JSON Lines stream, or None if a line is not one.
+
+    Shared by the two stream-json readers below. All-or-nothing on purpose: a
+    stream with an unparseable line is one whose shape this reader does not
+    actually know, and half-reading it would produce usage figures attributed to
+    a turn nobody verified.
+
+    ``prefix_truncated`` is the one exception, and it is format-only recovery of
+    exactly one line: the run's retained output is a byte *tail*, so when it
+    overflowed, its first line is the back half of an event. Discarding that one
+    fragment is what keeps a long run — the kind most worth measuring — from
+    losing its usage figures over a line that was never whole. Every later line
+    must still parse, and the closing event this reader needs is at the end.
+    """
+    events: list[dict[str, Any]] = []
+    for index, line in enumerate(stdout.splitlines()):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            event = json.loads(stripped)
+        except json.JSONDecodeError:
+            if index == 0 and prefix_truncated:
+                continue
+            return None
+        if not isinstance(event, dict):
+            if index == 0 and prefix_truncated:
+                continue
+            return None
+        events.append(event)
+    return events or None
+
+
+def _normalize_claude_stream_json(
+    stdout: str,
+    *,
+    run_id: str,
+    adapter: str,
+    stdout_prefix_truncated: bool = False,
+) -> tuple[str, ProviderUsageObservation | None]:
+    """``claude -p --output-format stream-json``: read the closing result event.
+
+    The final ``{"type": "result", ...}`` event carries ``result``, ``usage``,
+    ``total_cost_usd``, ``modelUsage`` and ``duration_ms`` — the same fields, with
+    the same meanings, as the whole envelope that ``--output-format json`` prints.
+    So it is handed to the same reader instead of a second copy of that logic,
+    and the two formats cannot drift into disagreeing about the same numbers.
+    """
+    events = _jsonl_events(stdout, prefix_truncated=stdout_prefix_truncated)
+    if events is None:
+        return stdout, None
+    results = [event for event in events if event.get("type") == "result"]
+    if len(results) != 1:
+        # None: the run died before its closing event, so there are no usage
+        # facts to report — not zero usage. More than one: this is not the single
+        # turn this reader knows how to attribute.
+        return stdout, None
+    semantic, observation = _claude_envelope(
+        results[0], run_id=run_id, adapter=adapter, source="claude_stream_json",
+    )
+    if observation is None:
+        # Envelope present but unreadable; the streamed text is still the better
+        # answer than a page of JSON, when the event carried one.
+        return (semantic if semantic else stdout), None
+    return semantic, observation
+
+
+def _normalize_kiro_stream_json(
+    stdout: str,
+    *,
+    run_id: str,
+    adapter: str,
+    stdout_prefix_truncated: bool = False,
+) -> tuple[str, ProviderUsageObservation | None]:
+    """``kiro-cli chat --agent-engine v2 --output-format stream-json``: ACP events.
+
+    Verified against kiro-cli 2.19.1 on 2026-09-08. Two things are taken from the
+    stream and one is deliberately refused:
+
+    - ``runFinished.finalText`` is the turn's answer, and
+      ``runFinished.finalTextTruncated`` says whether kiro itself cut it short. A
+      truncated answer is recorded **with that fact appended**, because a clipped
+      answer presented as a whole one is the product misreporting its own read.
+    - ``metadata.meteringUsage`` reports credits, which the observation records as
+      native credits — a measured provider figure.
+    - **Tokens are not estimated.** The plain-text reader divided byte length by
+      four; that number was always a guess, and having a real credit figure is no
+      reason to keep manufacturing a fake token one.
+    """
+    events = _jsonl_events(stdout, prefix_truncated=stdout_prefix_truncated)
+    if events is None:
+        return stdout, None
+    finished = [event for event in events if event.get("type") == "runFinished"]
+    if len(finished) != 1:
+        return stdout, None
+    data = finished[0].get("data")
+    if not isinstance(data, dict) or not isinstance(data.get("finalText"), str):
+        return stdout, None
+    semantic = data["finalText"]
+    if data.get("finalTextTruncated") is True:
+        semantic = f"{semantic}\n\n[kiro 声明这段最终文本被它自己截断了,显示的不是全文]"
+
+    credits = _kiro_credits(events)
+    duration_ms = None
+    for event in reversed(events):
+        if event.get("type") == "metadata" and isinstance(event.get("data"), dict):
+            duration_ms = _nonnegative_int(event["data"].get("turnDurationMs"))
+            if duration_ms is not None:
+                break
+    payload: dict[str, Any] = {
+        "schema_version": "1.0",
+        "run_id": run_id,
+        "adapter": adapter,
+        "provider": _provider(adapter),
+        "source": "kiro_acp_stream",
+        "source_payload_sha256": canonical_sha256({"credits": credits, "duration_ms": duration_ms}),
+        "duration_ms": duration_ms,
+        "token_measurement": "unavailable",
+        "token_method": "unavailable",
+        "cost_measurement": "unavailable",
+        "cost_method": "unavailable",
+    }
+    if credits is not None:
+        payload.update({
+            "native_credits": credits,
+            "native_credit_measurement": "exact",
+            "native_credit_method": "provider_reported_native_credits",
+        })
+    return semantic, _sealed(payload)
+
+
+def _kiro_credits(events: list[dict[str, Any]]) -> float | None:
+    """Credits from the last metering report, or None if none was reported.
+
+    The last one, not the sum of all: kiro repeats a running metering block on
+    successive ``metadata`` events within one turn, so adding them up would
+    multiply the turn's cost by however many times it reported.
+    """
+    for event in reversed(events):
+        if event.get("type") != "metadata":
+            continue
+        data = event.get("data")
+        if not isinstance(data, dict):
+            continue
+        metering = data.get("meteringUsage")
+        if not isinstance(metering, list) or not metering:
+            continue
+        total = 0.0
+        seen = False
+        for entry in metering:
+            if not isinstance(entry, dict) or entry.get("unit") != "credit":
+                continue
+            value = entry.get("value")
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
+                total += float(value)
+                seen = True
+        if seen:
+            return total
+    return None
+
+
 def _normalize_claude_json(
     stdout: str,
     *,
@@ -201,8 +382,22 @@ def _normalize_claude_json(
         envelope = json.loads(stdout)
     except json.JSONDecodeError:
         return stdout, None
-    if not isinstance(envelope, dict) or not isinstance(envelope.get("result"), str):
+    if not isinstance(envelope, dict):
         return stdout, None
+    semantic, observation = _claude_envelope(envelope, run_id=run_id, adapter=adapter)
+    return (semantic if semantic else stdout), observation
+
+
+def _claude_envelope(
+    envelope: dict[str, Any],
+    *,
+    run_id: str,
+    adapter: str,
+    source: str = "claude_print_json",
+) -> tuple[str, ProviderUsageObservation | None]:
+    """Usage facts from one claude result envelope, however it was delivered."""
+    if not isinstance(envelope.get("result"), str):
+        return "", None
     result = envelope["result"]
     usage = envelope.get("usage")
     if not isinstance(usage, dict):
@@ -241,7 +436,7 @@ def _normalize_claude_json(
         "run_id": run_id,
         "adapter": adapter,
         "provider": "anthropic",
-        "source": "claude_print_json",
+        "source": source,
         "source_payload_sha256": canonical_sha256(facts),
         "model": model,
         "duration_ms": duration_ms,

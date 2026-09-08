@@ -13,6 +13,9 @@ import { workflows } from "./dictionaries/workflows";
 import { attention } from "./dictionaries/attention";
 import { settings } from "./dictionaries/settings";
 import { workspace } from "./dictionaries/workspace";
+import { conversation } from "./dictionaries/conversation";
+import { today } from "./dictionaries/today";
+import { environments, skills } from "./dictionaries/environments";
 
 export type Locale = "en" | "zh";
 
@@ -32,6 +35,10 @@ export const messages = {
     attention: attention.en,
     settings: settings.en,
     workspace: workspace.en,
+    conversation: conversation.en,
+    today: today.en,
+    environments: environments.en,
+    skills: skills.en,
   },
   zh: {
     common: common.zh,
@@ -45,5 +52,9 @@ export const messages = {
     attention: attention.zh,
     settings: settings.zh,
     workspace: workspace.zh,
+    conversation: conversation.zh,
+    today: today.zh,
+    environments: environments.zh,
+    skills: skills.zh,
   },
 } as const;

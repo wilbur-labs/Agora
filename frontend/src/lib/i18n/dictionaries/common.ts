@@ -9,13 +9,20 @@ export const common = {
       tagline: "Delivery Control Plane",
     },
     nav: {
+      today: "Today",
+      workbench: "Workbench",
+      environments: "Environments",
+      skills: "Skills",
+      settings: "Settings",
+      // Kept for the pages that are still reachable by URL but no longer
+      // presented as the product (see the note on `links` in delivery-shell):
+      // each one still titles its own page.
       portfolio: "Portfolio",
       controlPlane: "Control Plane",
       requirements: "Requirements",
       runs: "Runs",
       workflows: "Workflows",
       attention: "Attention",
-      settings: "Settings",
     },
     action: {
       toggleTheme: "Toggle theme",
@@ -70,13 +77,17 @@ export const common = {
       tagline: "交付控制平面",
     },
     nav: {
+      today: "今天",
+      workbench: "项目工作台",
+      environments: "环境",
+      skills: "技能库",
+      settings: "设置",
       portfolio: "项目全景",
       controlPlane: "控制平面",
       requirements: "需求",
       runs: "运行记录",
       workflows: "工作流",
       attention: "关注事项",
-      settings: "设置",
     },
     action: {
       toggleTheme: "切换主题",

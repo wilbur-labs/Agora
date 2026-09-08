@@ -202,7 +202,17 @@ class ProviderUsageObservation(HashSealedModel):
     source: Literal[
         "codex_exec_jsonl",
         "claude_print_json",
+        # The closing ``result`` event of ``claude -p --output-format
+        # stream-json``. Named apart from ``claude_print_json`` even though the
+        # fields are identical: the source records where a figure was read, and a
+        # future divergence between the two formats has to be visible in the
+        # record rather than hidden behind a shared label.
+        "claude_stream_json",
         "kiro_cli_text",
+        # kiro's ACP event stream on the v2 engine. Carries provider credits and
+        # no token counts at all, which is why it is a different source from the
+        # text scrape it replaces.
+        "kiro_acp_stream",
         "custom_text",
         "process_not_started",
         "runtime_boundary",
@@ -338,7 +348,25 @@ class ProviderUsageObservation(HashSealedModel):
         elif self.native_credit_measurement != "unavailable":
             raise ValueError("measured native credits require a measurement method")
 
-        native_source = self.source in {"codex_exec_jsonl", "claude_print_json"}
+        # Sources whose figures were read out of a structured provider payload,
+        # and which therefore have a payload to hash. The two stream formats
+        # belong here for the same reason the other two do: their numbers come
+        # from named fields of parsed events, so the record can pin exactly which
+        # payload it read.
+        #
+        # Each is also bound to the adapter whose events it names. A source is a
+        # provenance claim — "these numbers came from claude's stream" — and
+        # without the binding any adapter could make it, which is the fail-closed
+        # parser rule in AGENTS.md read the other way round.
+        source_adapter = {
+            "codex_exec_jsonl": "codex",
+            "claude_print_json": "claude",
+            "claude_stream_json": "claude",
+            "kiro_acp_stream": "kiro",
+        }.get(self.source)
+        native_source = source_adapter is not None
+        if native_source and self.adapter != source_adapter:
+            raise ValueError("source does not match adapter provenance")
         if native_source != (self.source_payload_sha256 is not None):
             raise ValueError("structured native sources require a source payload hash")
         if self.source == "codex_exec_jsonl" and self.adapter != "codex":

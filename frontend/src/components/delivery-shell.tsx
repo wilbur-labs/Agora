@@ -4,28 +4,39 @@ import type { ReactNode } from "react";
 import Link from "next/link";
 import { useTheme } from "next-themes";
 import {
-  BellRing,
-  ClipboardCheck,
-  Columns3,
-  GitBranch,
   Languages,
+  Library,
+  MessagesSquare,
   Moon,
   Network,
-  Play,
+  Server,
   Settings,
-  ShieldCheck,
   Sun,
+  Sunrise,
 } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
+// The four screens of mockup v2, plus Settings.
+//
+// What left this list, and why (W8, tasks/agora/adr/0001 and adr/0007):
+//
+// - **Control Plane / Requirements / Workflows** were the top of the frozen
+//   AI-DLC layer. adr/0001 froze those 45k lines and said the UI must not expose
+//   them; they sat in the first-level navigation for eleven days anyway. The pages
+//   still answer at their URLs — nothing was deleted — they are simply no longer
+//   presented as the product.
+// - **Runs** is not a place any more. A run is a turn inside a task's
+//   conversation (adr/0007), so it is reached through the task it belongs to
+//   rather than through a global list of process launches.
+// - **Attention** and **Portfolio** are what Today is made of: what needs you,
+//   across every project, on one screen. Both pages are still reachable by URL
+//   while Today grows into them, and Today says which parts it does not show yet.
 const links = [
-  { href: "/portfolio", key: "portfolio", label: "Portfolio", icon: Columns3 },
-  { href: "/control-plane", key: "controlPlane", label: "Control Plane", icon: ShieldCheck },
-  { href: "/requirements", key: "requirements", label: "Requirements", icon: ClipboardCheck },
-  { href: "/runs", key: "runs", label: "Runs", icon: Play },
-  { href: "/workflows", key: "workflows", label: "Workflows", icon: GitBranch },
-  { href: "/attention", key: "attention", label: "Attention", icon: BellRing },
+  { href: "/", key: "today", label: "Today", icon: Sunrise },
+  { href: "/workspace", key: "workbench", label: "Workbench", icon: MessagesSquare },
+  { href: "/environments", key: "environments", label: "Environments", icon: Server },
+  { href: "/skills", key: "skills", label: "Skills", icon: Library },
   { href: "/settings", key: "settings", label: "Settings", icon: Settings },
 ] as const;
 

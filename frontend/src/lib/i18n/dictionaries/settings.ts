@@ -23,6 +23,7 @@ export const settings = {
       authUnknown: "Sign-in unverified",
       tokensUsed: "Tokens used: {value}",
       tokensNotCaptured: "Tokens: not captured",
+      tokensCaptureUnknown: "Tokens: whether they are captured is not known (the adapter registry could not be read)",
       authNote:
         "Installed does not mean signed in. A CLI can be present but its subscription not authenticated; that surfaces only when a run starts.",
     },
@@ -177,6 +178,7 @@ export const settings = {
       authUnknown: "登录状态未知",
       tokensUsed: "已用 token:{value}",
       tokensNotCaptured: "token:未采集",
+      tokensCaptureUnknown: "token:能不能采集，不知道（适配器注册表读不到）",
       authNote:
         "已安装 ≠ 已登录。CLI 可能已就位但订阅未认证;这只有在启动一次运行时才会暴露出来。",
     },

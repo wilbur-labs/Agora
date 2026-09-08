@@ -39,6 +39,8 @@ from .deliverables import (
 from .dispatcher import ExecutionDispatcher, workspace_unavailable_reason
 from .handoff import HandoffError, hand_off
 from .models import (
+    ACTIVE_RUN_STATES,
+    ROLE_WORKER,
     AdapterCapability,
     CancelRunRequest,
     CreateRunRequest,
@@ -47,7 +49,11 @@ from .models import (
     RunSummary,
     TERMINAL_RUN_STATES,
 )
+from .runlog import RunLogError
+from .security import redact_text
+from .sessions import AgentSession, SessionClearRefused
 from .store import (
+    OUTPUT_TAIL_LIMIT,
     ExecutionStore,
     RunConflictError,
     RunGateError,
@@ -67,7 +73,6 @@ class HandoffResponse(BaseModel):
 
 
 router = APIRouter(tags=["execution"])
-
 
 def _ready_worktree_for_run(registry: ProjectRegistry, run: ExecutionRun) -> bool:
     """Whether a run's workspace is exactly its project/adapter's provisioned
@@ -250,6 +255,252 @@ def get_run(
         return store.require(run_id)
     except RunNotFoundError:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Run not found") from None
+
+
+class RunOutputSlice(BaseModel):
+    """A window into a run's transcript, read from ``offset`` bytes in.
+
+    ``reachable`` is the honesty flag: false means this process could not read
+    the transcript, which a client must render as "读不到", never as a run that
+    has said nothing. ``complete`` says the run has settled, so a client knows
+    that reaching the end of the text is the end of the conversation turn rather
+    than a pause.
+    """
+
+    run_id: str
+    text: str
+    offset: int
+    next_offset: int
+    reachable: bool
+    unreachable_reason: str | None = None
+    more_available: bool = False
+    #: Output the agent produced that could not be saved to the transcript.
+    #: The text reads fine and is incomplete, which is why it needs its own
+    #: field rather than being folded into `reachable`.
+    lossy: bool = False
+    complete: bool = False
+    state: RunState
+    #: True when this text was rebuilt from the run's own stored record
+    #: because no transcript file exists — every run from before transcripts
+    #: existed, and any that failed before its first line was written. The
+    #: window says so rather than presenting it as a live transcript.
+    from_record: bool = False
+
+
+@router.get("/runs/{run_id}/output", response_model=RunOutputSlice)
+def run_output(
+    run_id: Annotated[str, PathParam(max_length=128)],
+    offset: int = Query(default=0, ge=0),
+    store: ExecutionStore = Depends(get_execution_store),
+    dispatcher: ExecutionDispatcher = Depends(get_execution_dispatcher),
+):
+    """The run's transcript so far — the conversation window's live feed.
+
+    Polled with the ``next_offset`` from the previous read, which is the same
+    contract a remote environment serves with ``tail -c +<offset>``. That is why
+    this is a plain GET and not a socket: when runs move to a remote host (W3-a),
+    the transport changes and this endpoint's shape does not.
+    """
+    try:
+        run = store.require(run_id)
+    except RunNotFoundError:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Run not found") from None
+    # Asked **before** the log is read, and it has to stay that way. A drain that
+    # finishes in between appends its tail and then leaves `_active`; asking
+    # afterwards returned "not draining" for a read taken before that tail
+    # existed, so the window was told the turn was complete and stopped polling
+    # with the last of the output still on disk. Reading it first makes the race
+    # cost one extra poll instead of a permanently truncated turn.
+    draining_before_read = dispatcher.is_draining(run_id)
+    try:
+        chunk = dispatcher.run_logs.read(run_id, offset)
+    except RunLogError:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Run id is not readable") from None
+    # Settled *and* nothing was still reading the process. A cancel marks the row
+    # terminal first and drains stdout afterwards; saying "complete" inside that
+    # window stopped the window polling, and the output the kill produced was
+    # written after the last read.
+    settled = run.state in TERMINAL_RUN_STATES and not draining_before_read
+    text = chunk.text
+    from_record = False
+    record_truncated = False
+    if chunk.reachable and not text and offset == 0 and settled and not _has_transcript(dispatcher, run_id):
+        # A settled run with no transcript file at all. Every run from before this
+        # slice existed is in that state, and so is one that failed before its
+        # prompt was echoed — and "reachable and empty" rendered them as turns
+        # that finished having said nothing, hiding the prompt and output their own
+        # record still holds. Reconstructed from that record, and flagged, so the
+        # window can say where the text came from rather than implying a live
+        # transcript.
+        text = _transcript_from_record(run)
+        from_record = True
+        # The record's own stdout is a **bounded tail**: everything before it was
+        # dropped when the run settled. Marked lossy, or the window presents the
+        # last few kilobytes of a long answer as the whole of it — complete, no
+        # notice, and no way for the reader to tell.
+        record_truncated = len(run.stdout_tail or "") >= OUTPUT_TAIL_LIMIT
+    return RunOutputSlice(
+        run_id=run_id,
+        # Redacted again here, over the contiguous slice being served. The writer
+        # redacts what it appends, but it sees the stream in pieces; a credential
+        # split across two rendered events is whole only in a window like this
+        # one. Cheap, and the last place before the text leaves the process.
+        text=redact_text(text),
+        offset=chunk.offset,
+        next_offset=chunk.next_offset if not from_record else 0,
+        reachable=chunk.reachable,
+        unreachable_reason=chunk.unreachable_reason,
+        more_available=chunk.more_available,
+        lossy=chunk.lossy or record_truncated,
+        complete=settled,
+        state=run.state,
+        from_record=from_record,
+    )
+
+
+def _has_transcript(dispatcher: ExecutionDispatcher, run_id: str) -> bool:
+    """Whether a transcript file exists for this run, as far as we can tell.
+
+    An unreadable answer counts as *present*: the caller uses this to decide
+    whether to substitute the run's own record, and substituting over a
+    transcript that is merely unreadable would replace "could not be read" with
+    text that looks complete.
+    """
+    try:
+        probe = probe_path(dispatcher.run_logs.path_for(run_id))
+    except RunLogError:
+        return False
+    return not probe.absent
+
+
+def _transcript_from_record(run: ExecutionRun) -> str:
+    """The best transcript available for a run that never wrote one.
+
+    Its prompt and its settled output, in the same two-part shape the live
+    transcript has, so one renderer draws both.
+    """
+    # Every line marked, exactly as _prompt_echo does it. Marking only the first
+    # line put the rest of a multi-line message into the terminal pane, where it
+    # read as something the agent had said — the same defect, in the fallback path.
+    parts = [f"› {line}" for line in run.prompt.strip().splitlines() if run.prompt.strip()]
+    if run.stdout_tail.strip():
+        parts.append(run.stdout_tail.rstrip())
+    if run.error_message:
+        parts.append(f"✖ {run.error_message}")
+    # stderr as well, for the reason the live failure note gives: the error
+    # message says what Agora concluded, and stderr says what the CLI actually
+    # complained about. Omitting it here left an upgraded installation's failed
+    # runs showing a generic "non-zero status" with the real cause — an expired
+    # login, a rejected flag — nowhere on screen.
+    stderr = (run.stderr_tail or "").strip()
+    if stderr:
+        parts.extend(stderr.splitlines()[-20:])
+    return "\n".join(parts) + ("\n" if parts else "")
+
+
+@router.get("/tasks/{task_id}/sessions", response_model=list[AgentSession])
+def list_task_sessions(
+    task_id: Annotated[str, PathParam(max_length=128)],
+    store: ExecutionStore = Depends(get_execution_store),
+    dispatcher: ExecutionDispatcher = Depends(get_execution_dispatcher),
+):
+    """Which conversation each adapter is holding for this task.
+
+    An empty list means no adapter has started one. A row whose ``state`` is
+    ``unreadable`` means a session exists that this configuration could not
+    continue — the window must say so rather than presenting a fresh start.
+    """
+    if store.tasks.get(task_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Task not found")
+    return dispatcher.sessions.list_for_task(task_id)
+
+
+@router.delete("/tasks/{task_id}/sessions/{adapter}", response_model=AgentSession)
+def forget_task_session(
+    task_id: Annotated[str, PathParam(max_length=128)],
+    adapter: Annotated[str, PathParam(max_length=128, pattern=r"^[a-z][a-z0-9_-]*$")],
+    # Sessions are keyed by role, so a reset has to name one. Without it this
+    # endpoint always cleared the worker's session, and a review session stuck in
+    # `lost` blocked every later review of that task with no way to recover it.
+    role: str = Query(default=ROLE_WORKER, pattern=r"^[a-z][a-z0-9_-]*$", max_length=64),
+    store: ExecutionStore = Depends(get_execution_store),
+    dispatcher: ExecutionDispatcher = Depends(get_execution_dispatcher),
+):
+    """Start over: drop the recorded session so the next turn opens a new one.
+
+    The explicit act that adr/0007 requires. Nothing else clears a session id —
+    an unreachable session keeps its id precisely so this stays a decision the
+    user makes rather than a fallback the dispatcher takes on their behalf.
+    """
+    if store.tasks.get(task_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Task not found")
+    # Refused while a run of this adapter is still going. Clearing then appeared
+    # to work — the response said "none" — and the live process's next session
+    # event wrote the old session straight back through `record_observed`, so the
+    # fresh start the person asked for silently did not happen.
+    # Asked as its own filtered question, not by scanning a page of recent
+    # history. A page fails toward *allowing* the clear — a long-running turn can
+    # be pushed off it by newer runs of other adapters — and the comment that
+    # used to sit here claimed the opposite.
+    live = store.list(
+        task_id=task_id, adapter=adapter,
+        states=sorted(ACTIVE_RUN_STATES, key=lambda item: item.value),
+        limit=1,
+    )
+    # A cancelled run is terminal in the database while its stdout is still
+    # being drained, and the events in that buffer go through `record_observed` —
+    # so a clear accepted in that window was written straight back, and the next
+    # turn resumed the context the person had just asked to drop.
+    # Asked of the dispatcher, whose `_active` set *is* the answer and is bounded
+    # by the concurrency limit. The previous version paged through the task's runs
+    # and tested each one — capped, and a cap fails toward allowing the clear.
+    draining = dispatcher.draining_for(task_id, adapter)
+    conflict = (
+        "这个适配器还有一轮在跑，现在清除会话不会生效——那个进程报出的下一条会话事件会把它写回来。"
+        "先等它结束或停止它，再新开会话。"
+    )
+    if live or draining:
+        raise HTTPException(status.HTTP_409_CONFLICT, conflict)
+    try:
+        # The same question again, this time **inside** the clearing transaction.
+        # The two checks above are reads: a run created between them and the write
+        # was already carrying the old session id, so the response said "none"
+        # while that turn continued the conversation the person had just dropped.
+        # A run row exists before its process starts, so this closes the window.
+        dispatcher.sessions.forget(
+            task_id=task_id, adapter=adapter, role=role,
+            blocking_run_states=[state.value for state in ACTIVE_RUN_STATES],
+        )
+    except SessionClearRefused:
+        raise HTTPException(status.HTTP_409_CONFLICT, conflict) from None
+    # The state after the act, not a bare 204: the caller is a window that has to
+    # redraw the session badge, and "none" is the answer it needs.
+    return dispatcher.sessions.get(task_id, adapter, role)
+
+
+@router.post(
+    "/tasks/{task_id}/sessions/{adapter}/retry",
+    response_model=AgentSession,
+)
+def retry_task_session(
+    task_id: Annotated[str, PathParam(max_length=128)],
+    adapter: Annotated[str, PathParam(max_length=64)],
+    role: str = Query(default=ROLE_WORKER, pattern=r"^[a-z][a-z0-9_-]*$", max_length=64),
+    store: ExecutionStore = Depends(get_execution_store),
+    dispatcher: ExecutionDispatcher = Depends(get_execution_dispatcher),
+):
+    """Try the recorded session once more, instead of dropping it.
+
+    The counterpart to clearing. A session recorded as `lost` refuses every turn
+    — correctly, because a resume of that id was observed to fail — but the
+    reason it shows says to fix the cause and carry on, and until this endpoint
+    existed the only button on that state was the one that throws the context
+    away.
+    """
+    if store.tasks.get(task_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Task not found")
+    dispatcher.sessions.retry(task_id=task_id, adapter=adapter, role=role)
+    return dispatcher.sessions.get(task_id, adapter, role)
 
 
 @router.get("/runs/{run_id}/deliverables")

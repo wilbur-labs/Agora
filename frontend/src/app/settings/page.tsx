@@ -187,12 +187,18 @@ function AuthLine({ adapter }: { adapter: RuntimeCapability }) {
 
 function TokenLine({ adapter }: { adapter: RuntimeCapability }) {
   const { t } = useI18n();
-  const supported = adapter.token_capture === "supported";
+  // Three answers, not two. "unknown" means the adapter registry could not be
+  // built, so whether usage is read was never established — printing "not
+  // captured" for it stated a confirmed absence and undid the very distinction
+  // the payload had just been fixed to carry.
+  const capture = adapter.token_capture;
   return (
-    <p className={cn("mt-1 text-[11px]", supported ? "text-foreground" : "text-muted-foreground")}>
-      {supported
+    <p className={cn("mt-1 text-[11px]", capture === "supported" ? "text-foreground" : "text-muted-foreground")}>
+      {capture === "supported"
         ? t("settings.runtimes.tokensUsed", { value: adapter.tokens_used.toLocaleString() })
-        : t("settings.runtimes.tokensNotCaptured")}
+        : capture === "unsupported"
+          ? t("settings.runtimes.tokensNotCaptured")
+          : t("settings.runtimes.tokensCaptureUnknown")}
     </p>
   );
 }

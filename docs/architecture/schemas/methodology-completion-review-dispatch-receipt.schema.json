@@ -1280,7 +1280,9 @@
           "enum": [
             "codex_exec_jsonl",
             "claude_print_json",
+            "claude_stream_json",
             "kiro_cli_text",
+            "kiro_acp_stream",
             "custom_text",
             "process_not_started",
             "runtime_boundary"

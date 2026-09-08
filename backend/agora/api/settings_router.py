@@ -24,7 +24,7 @@ from agora.fsprobe import PathProbe, probe_path
 from agora.tasks.router import get_project_registry, get_task_store
 from agora.tasks.store import TaskStore
 from agora.execution.adapters import build_adapter_registry
-from agora.execution.dispatcher import ExecutionDispatcher
+from agora.execution.dispatcher import token_capturable_adapters
 from agora.execution.models import RunState
 from agora.execution.router import get_execution_store
 from agora.execution.store import ExecutionStore
@@ -136,20 +136,25 @@ async def runtime_capabilities() -> dict[str, Any]:
     observation = await collect_native_runtime_capabilities(runtimes)
     # An installed CLI can still be signed out; probe sign-in status too.
     auth = await collect_runtime_auth([item.adapter for item in observation.adapters])
-    # Which adapters yield parseable per-run token usage (claude CLI today).
-    token_capturable = set(ExecutionDispatcher._USAGE_RESULT_FORMATS)
     # Per-adapter token totals Agora has observed so far.
     tokens = get_execution_store().token_usage_by_adapter()
 
     # Merge the execution-adapter capability declaration (how attention/approval
     # is delivered) onto each probed adapter, keyed by adapter name.
+    #
+    # ``token_capturable`` is None when the registry could not be built, and the
+    # payload then reports token capture as "unknown". It used to say
+    # "unsupported" in that case — a claim about every adapter, derived from a
+    # read that failed.
+    token_capturable: set[str] | None
     try:
-        exec_caps = {
-            adapter.name: adapter.capability()
-            for adapter in build_adapter_registry(config).values()
-        }
+        registry = build_adapter_registry(config)
     except ValueError:
         exec_caps = {}
+        token_capturable = None
+    else:
+        exec_caps = {adapter.name: adapter.capability() for adapter in registry.values()}
+        token_capturable = token_capturable_adapters(registry)
 
     adapters = []
     for item in observation.adapters:
@@ -170,7 +175,11 @@ async def runtime_capabilities() -> dict[str, Any]:
                 "authenticated": auth_probe.authenticated if auth_probe else None,
                 "auth_method": auth_probe.method if auth_probe else None,
                 "auth_check_status": auth_probe.check_status if auth_probe else "not_configured",
-                "token_capture": "supported" if item.adapter in token_capturable else "unsupported",
+                "token_capture": (
+                    "unknown" if token_capturable is None
+                    else "supported" if item.adapter in token_capturable
+                    else "unsupported"
+                ),
                 "tokens_used": tokens.get(item.adapter, {}).get("total_tokens", 0),
             }
         )

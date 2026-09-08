@@ -40,6 +40,13 @@ export interface RunSummary {
   started_at: string | null;
   finished_at: string | null;
   exit_code: number | null;
+  /**
+   * The run's identity, carried on the summary because every view that nests a
+   * review under the run it reviews reads it. Absent, it reads as "worker" — so
+   * a page of summaries drew each review as a top-level turn of its own.
+   */
+  role: string;
+  reviews_run_id: string | null;
 }
 
 export interface ExecutionRun extends RunSummary {
@@ -218,7 +225,110 @@ export function cancelRun(runId: string, input: CancelRunInput): Promise<Executi
   });
 }
 
+/** One polled window into a run's live transcript. */
+export interface RunOutputSlice {
+  run_id: string;
+  text: string;
+  offset: number;
+  next_offset: number;
+  /** False means the transcript could not be read — not that the run is quiet. */
+  reachable: boolean;
+  unreachable_reason: string | null;
+  more_available: boolean;
+  /** Output the agent produced that could not be saved to the transcript. */
+  lossy: boolean;
+  complete: boolean;
+  state: RunState;
+  /**
+   * True when the control plane rebuilt this text from the run's own record
+   * because no transcript file exists — a run from before transcripts, or one
+   * that ended before writing its first line. The window says so rather than
+   * presenting it as a live transcript.
+   */
+  from_record: boolean;
+}
+
+/**
+ * The run's transcript from `offset` bytes in.
+ *
+ * Polled with the previous read's `next_offset`, which is the contract a remote
+ * environment can serve with `tail -c +<offset>` when runs move off this machine.
+ */
+export function getRunOutput(runId: string, offset: number, signal?: AbortSignal): Promise<RunOutputSlice> {
+  const query = new URLSearchParams({ offset: String(Math.max(0, Math.trunc(offset))) });
+  return request(`/api/runs/${encodeURIComponent(runId)}/output?${query.toString()}`, { signal });
+}
+
+/** The provider session an adapter is holding for one task. */
+export interface AgentSession {
+  task_id: string;
+  adapter: ExecutionAdapter;
+  state: "none" | "active" | "unreadable" | "unsupported";
+  session_id: string | null;
+  workspace: string | null;
+  reason: string | null;
+  first_seen_at: string | null;
+  last_seen_at: string | null;
+  last_run_id: string | null;
+  turns: number;
+}
+
+export function listTaskSessions(taskId: string, signal?: AbortSignal): Promise<AgentSession[]> {
+  return request(`/api/tasks/${encodeURIComponent(taskId)}/sessions`, { signal });
+}
+
+/**
+ * Drop the recorded session so the next turn opens a new conversation.
+ *
+ * The only thing that clears a session id, and it is always the user's act: the
+ * dispatcher never starts a new conversation to work around one it could not
+ * reach (tasks/agora/adr/0007).
+ */
+export function retryTaskSession(
+  taskId: string,
+  adapter: ExecutionAdapter,
+  role: string = "worker",
+): Promise<AgentSession> {
+  // The counterpart to forgetting: keep the session id and ask for it to be
+  // tried again. A session the control plane recorded as unresumable told the
+  // person to fix the cause and carry on, while offering exactly one action —
+  // the one that drops the context.
+  const query = new URLSearchParams({ role });
+  return request(
+    `/api/tasks/${encodeURIComponent(taskId)}/sessions/${encodeURIComponent(adapter)}/retry?${query}`,
+    { method: "POST" },
+  );
+}
+
+export function forgetTaskSession(
+  taskId: string,
+  adapter: ExecutionAdapter,
+  role: string = "worker",
+): Promise<AgentSession> {
+  // The role is explicit even though the endpoint defaults to it: sessions are
+  // keyed by role, and a caller that means "the conversation in this window"
+  // should say so rather than inherit whichever default the API happens to have.
+  const query = new URLSearchParams({ role });
+  return request(
+    `/api/tasks/${encodeURIComponent(taskId)}/sessions/${encodeURIComponent(adapter)}?${query}`,
+    { method: "DELETE" },
+  );
+}
+
 export function asRunSummary(run: ExecutionRun): RunSummary {
   const { run_id, task_id, project_id, adapter, state, version, queued_at, started_at, finished_at, exit_code } = run;
-  return { run_id, task_id, project_id, adapter, state, version, queued_at, started_at, finished_at, exit_code };
+  // The identity comes off the metadata, with the same defaults the control
+  // plane uses (`role_of`: an untagged run is somebody's implementation work).
+  // Dropping it here would put a locally-built summary into a list whose other
+  // rows carry it, and the run tree would place this one differently from the
+  // same run after the next refresh.
+  const metadata = run.result_metadata ?? {};
+  const role = typeof metadata["agora_role"] === "string" ? metadata["agora_role"] : "worker";
+  const reviews = metadata["reviews_run_id"];
+  return {
+    run_id, task_id, project_id, adapter, state, version, queued_at, started_at,
+    finished_at, exit_code,
+    role,
+    reviews_run_id: typeof reviews === "string" && reviews ? reviews : null,
+  };
 }

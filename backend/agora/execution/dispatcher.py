@@ -19,7 +19,19 @@ from agora.attention.bridges.codex_broker import CodexApprovalBroker
 
 from agora.workspaces.naming import worktree_branch
 
-from .adapters import ExecutionAdapter
+from .adapters import (
+    EVENT_FORMAT_CLAUDE_STREAM_JSON,
+    EVENT_FORMAT_CODEX_JSONL,
+    EVENT_FORMAT_KIRO_STREAM_JSON,
+    SESSION_ID_CALLER,
+    ExecutionAdapter,
+)
+from .runlog import RunLogStore
+from .sessions import (
+    MODE_RESUME,
+    AgentSessionStore,
+)
+from .transcript import TranscriptReader, reader_for
 from .deliverables import (
     MAX_FILES,
     baseline_state,
@@ -54,8 +66,18 @@ from .store import (
     RunNotFoundError,
     RunValidationError,
 )
-from .security import redact_text
+from .security import (
+    longest_environment_secret,
+    redact_text,
+    safe_cut,
+)
 
+
+#: Most bytes buffered while waiting for a newline. Larger than any settlement
+#: event these CLIs emit in practice, and small enough that a runaway stream
+#: cannot exhaust the process. Reached, the buffer is flushed as one fragment
+#: rather than grown.
+_MAX_PENDING_LINE = 4 * 1024 * 1024
 
 _REVIEW_PROMPT_BUDGET = 12_000
 _REVIEW_FILE_CHARS = 1_500
@@ -75,11 +97,66 @@ def workspace_unavailable_reason(probe: PathProbe) -> str:
     return "workspace is not a directory"
 
 
+#: Stored in ``_session_noted`` instead of a session id once a turn has been
+#: failed closed for naming two sessions. Not one of the ids: which one is on
+#: record is exactly what is in doubt, and using either would let the next line
+#: re-mark the run as though the conflict had just appeared.
+_CONFLICT_NOTED = "__conflict__"
+
+#: How long the output drain may take **after** the process has ended and its
+#: job has been terminated. Unbounded, this was a hang rather than a delay: a
+#: background process that inherited the pipes keeps them open, `proc.wait()`
+#: returns, and nothing ever reaches EOF — so the run never settled and its
+#: worktree lock was never released, long after `timeout_seconds` had passed.
+_DRAIN_TIMEOUT_SECONDS = 20
+
+class _ReaderGate:
+    """Whether a run's stdout reader may still write anything.
+
+    Held **by the reader itself**, not in a map on the dispatcher. The first
+    version kept a bounded set of closed run ids, which is a cache pretending to
+    be a guard: after 256 more such runs the oldest id was evicted, and a reader
+    still attached to a long-lived pipe could write again — including a session
+    event that would put an old id back over the one a later turn had
+    established. A flag the reader closes over cannot be evicted, and it costs
+    nothing to keep for as long as the reader lives.
+    """
+
+    __slots__ = ("open",)
+
+    def __init__(self) -> None:
+        self.open = True
+
+    def close(self) -> None:
+        self.open = False
+
 class ExecutionDispatcher:
-    # Only claude's CLI print mode yields parseable per-run token usage today.
-    # codex runs through the app-server bridge and kiro emits plain text, so
-    # neither surfaces usage on this path (see settings token capture notes).
-    _USAGE_RESULT_FORMATS = {"claude": RuntimeResultFormat.CLAUDE_JSON_V1}
+    # Which usage reader parses which event format. Keyed by the format an
+    # adapter **emits**, not by adapter name: the argv already decides the format
+    # (``--json`` / ``--output-format stream-json``), and a second adapter-keyed
+    # table was a second place to keep that decision, free to disagree with the
+    # first. It did disagree — the table said only claude yielded usage while
+    # codex's JSONL reader had existed, unreachable, the whole time, because the
+    # codex argv passed no ``--json``.
+    #
+    # An adapter whose format is absent here reports usage as unavailable, which
+    # is the honest answer for a format with no reader.
+    _USAGE_RESULT_FORMATS = {
+        EVENT_FORMAT_CODEX_JSONL: RuntimeResultFormat.CODEX_JSONL_V1,
+        EVENT_FORMAT_CLAUDE_STREAM_JSON: RuntimeResultFormat.CLAUDE_STREAM_JSON_V1,
+        EVENT_FORMAT_KIRO_STREAM_JSON: RuntimeResultFormat.KIRO_STREAM_JSON_V1,
+    }
+
+    #: Of those, the formats whose provider actually reports **token counts**.
+    #: kiro's ACP stream reports credits and no tokens at all, and its reader says
+    #: so (``token_measurement="unavailable"``) — so listing it as usage-readable
+    #: made the Environments page promise a token figure that path can never
+    #: produce. Having a reader and yielding tokens are two different facts, and
+    #: this is the second one.
+    _TOKEN_CAPTURE_FORMATS = frozenset({
+        EVENT_FORMAT_CODEX_JSONL,
+        EVENT_FORMAT_CLAUDE_STREAM_JSON,
+    })
 
     def __init__(
         self,
@@ -91,12 +168,20 @@ class ExecutionDispatcher:
         max_concurrent_per_project: int = 2,
         allowed_workspace_roots: list[Path] | None = None,
         auto_review: bool = False,
+        sessions: AgentSessionStore | None = None,
+        run_logs: RunLogStore | None = None,
     ):
         if max_concurrent_global < 1 or max_concurrent_per_project < 1:
             raise ValueError("execution concurrency limits must be positive")
         self.store = store
         self.projects = projects
         self.adapters = adapters
+        # Both default off the run store's own database path, so "where is
+        # Agora's state" keeps one answer and no caller can put the sessions on a
+        # different file from the runs that use them (the invariant
+        # resolve_control_plane_db_path exists to hold). Injectable for tests.
+        self.sessions = sessions or AgentSessionStore(store.db_path)
+        self.run_logs = run_logs or RunLogStore(Path(store.db_path).parent / "run-logs")
         # Opt-in: when true, a succeeded developer run auto-dispatches an
         # independent review run by the project's reviewer agent. Default off
         # keeps single-run behavior (and existing tests) unchanged.
@@ -117,6 +202,15 @@ class ExecutionDispatcher:
             lambda: asyncio.Semaphore(1)
         )
         self._active: dict[str, asyncio.subprocess.Process] = {}
+        #: The job object each run's process tree belongs to, on Windows. Keyed
+        #: by run so that `cancel` and the guarded wrapper — neither of which
+        #: sees the spawn — can stop the tree and not just the CLI.
+        self._jobs: dict[str, object] = {}
+
+        # run_id -> the session id already written for it while streaming, so the
+        # observed id is persisted once rather than on every line of output.
+        # Popped when the run settles.
+        self._session_noted: dict[str, str] = {}
         # Per-run pre-launch worktree state, so an abandoned run can still record
         # what it delivered (the CancelledError path lives outside execute()).
         # A missing or None entry means the baseline was never established, which
@@ -147,6 +241,38 @@ class ExecutionDispatcher:
         # a task cancelled before the loop ever ran its body has no body to raise
         # CancelledError in, so only the canceller knows which row is now orphaned.
         self._scheduled: dict[asyncio.Task[Any], str] = {}
+
+    def draining_for(self, task_id: str, adapter: str) -> bool:
+        """Whether any process still being read belongs to this conversation.
+
+        Asked instead of paging through a task's runs and testing each one. That
+        page was capped, and a cap here fails toward *allowing* a session clear:
+        two hundred newer runs push an older cancelled-but-still-draining one off
+        it, the clear is accepted, and that process's next session event writes
+        the id straight back. This set is bounded by the concurrency limit
+        instead, so there is nothing to cap.
+        """
+        for run_id in list(self._active):
+            try:
+                run = self.store.require(run_id)
+            except RunNotFoundError:
+                # Deleted under us. Nothing to attribute, and refusing on it
+                # would block the clear forever.
+                continue
+            if run.task_id == task_id and run.adapter == adapter:
+                return True
+        return False
+
+    def is_draining(self, run_id: str) -> bool:
+        """Whether a process for this run is still being read.
+
+        A cancel settles the row *before* the process is stopped and its stdout
+        drained, so a terminal state alone is not "the transcript is finished".
+        Callers that would tell a reader to stop polling have to ask this too, or
+        the tail a killed agent produced is written after the last read and never
+        shown.
+        """
+        return run_id in self._active
 
     @staticmethod
     def _workspace_key(workspace: str | Path) -> str:
@@ -302,7 +428,7 @@ class ExecutionDispatcher:
         except asyncio.CancelledError:
             proc = self._active.get(run_id)
             if proc is not None:
-                await self._stop(proc)
+                await self._stop(proc, self._jobs.get(run_id))
             current = self.store.require(run_id)
             if current.state == RunState.RUNNING:
                 # A run stopped mid-flight may already have written files. Freeze
@@ -331,7 +457,79 @@ class ExecutionDispatcher:
             raise
         except Exception as exc:
             current = self.store.require(run_id)
+            if current.state == RunState.CANCELLED and self._baselines.get(run_id) is not None:
+                # Cancelled, and then something failed on the way out — a locked
+                # database, a full disk, anything `_settle_session` can raise.
+                # Returning the row here dropped the snapshot *and* the baseline,
+                # so files the agent had already written were absorbed by the
+                # next run's baseline and attributed to nobody. The cancel path
+                # freezes them; so does this one.
+                try:
+                    delivered = await asyncio.to_thread(
+                        snapshot_changes,
+                        Path(current.workspace).expanduser().resolve(),
+                        self._baselines.get(run_id),
+                    )
+                    current = self.store.require(run_id)
+                    return self.store.record_cancelled_output(
+                        run_id,
+                        expected_version=current.version,
+                        stdout_tail=current.stdout_tail,
+                        stderr_tail=current.stderr_tail,
+                        exit_code=None,
+                        deliverables=delivered,
+                    )
+                except Exception:
+                    # The row is already terminal and the original failure is the
+                    # one worth reporting; this is a best effort on top of it.
+                    return self.store.require(run_id)
             if current.state in {RunState.QUEUED, RunState.RUNNING}:
+                # The same reasoning as the cancel branch above, and it was
+                # missing here: a run whose process had started may already have
+                # written files, and settling without freezing them left its
+                # record reading "unknown" for work sitting on disk — which the
+                # *next* run's baseline then absorbed, so those files ended up
+                # attributed to nobody. Only for RUNNING: a QUEUED run never had
+                # a workspace of its own to snapshot.
+                delivered = None
+                if current.state == RunState.RUNNING:
+                    try:
+                        delivered = await asyncio.to_thread(
+                            snapshot_changes,
+                            Path(current.workspace).expanduser().resolve(),
+                            self._baselines.get(run_id),
+                        )
+                    except Exception:
+                        # A file removed between `is_file()` and `stat()`, a
+                        # thread pool refusing work during shutdown. Escaping
+                        # here left the run RUNNING in the database while the
+                        # `finally` below dropped its baseline — so the next run
+                        # in that worktree absorbed its files, and nothing ever
+                        # settled the row. Settling without a delivery record is
+                        # worse than one; hanging on RUNNING for ever is worse
+                        # than both.
+                        delivered = None
+                    # Re-read AFTER the snapshot, and branch on what it says —
+                    # the same discipline the settle path documents and this one
+                    # was missing. Snapshotting a large worktree takes long
+                    # enough for a cancel to land inside it; the version captured
+                    # before then made `finish` conflict and return, so the
+                    # snapshot was computed and thrown away, and the files it
+                    # described were absorbed by the next run's baseline.
+                    current = self.store.require(run_id)
+                    if current.state == RunState.CANCELLED:
+                        return self.store.record_cancelled_output(
+                            run_id,
+                            expected_version=current.version,
+                            stdout_tail=current.stdout_tail,
+                            stderr_tail=current.stderr_tail,
+                            exit_code=None,
+                            deliverables=delivered,
+                        )
+                    if current.state not in {RunState.QUEUED, RunState.RUNNING}:
+                        # Settled by someone else while we snapshotted. The row is
+                        # authoritative; the deliverables it holds are theirs.
+                        return current
                 return self.store.finish(
                     run_id,
                     RunState.FAILED,
@@ -340,6 +538,7 @@ class ExecutionDispatcher:
                     stdout_tail=current.stdout_tail,
                     stderr_tail=current.stderr_tail,
                     error_message=redact_text(f"dispatcher error: {exc}"),
+                    deliverables=delivered,
                 )
             return current
         finally:
@@ -527,23 +726,83 @@ class ExecutionDispatcher:
             baseline = await asyncio.to_thread(baseline_state, workspace)
             self._baselines[run_id] = baseline
             if adapter.bridge_mode == "codex_app_server":
+                # This bridge keeps its own in-process conversation over JSON-RPC
+                # and has no resume path Agora has verified, so it carries no
+                # provider session. Said on the task's session record rather than
+                # left blank: a window that showed a continuing conversation over
+                # turns that each start from nothing is the exact failure
+                # adr/0007 forbids. Tracked as CR-39 (defer) — the trigger is
+                # test_sessions.py::test_app_server_records_unsupported_session.
+                self.sessions.mark_unsupported(
+                    task_id=run.task_id, adapter=run.adapter, workspace=workspace, role=role,
+                    reason=(
+                        "codex app-server 桥不参与会话续接：它自己在进程内持有对话，"
+                        "Agora 没有实测过它的 resume 路径。这条链路上每一轮都是独立调用。"
+                    ),
+                )
                 return await self._execute_codex_app_server(
                     running, adapter, workspace, role, reviews_run_id, baseline,
                 )
+            # Which conversation this turn belongs to, decided immediately before
+            # the command is built because the command *shape* depends on the
+            # answer (resume templates differ from start templates; see
+            # ExecutionAdapter.build_command). A refusal here settles the run with
+            # its reason and never falls back to starting a new session — that
+            # fallback would answer the user in a fresh context while the window
+            # still showed the conversation they believe they are in.
+            decision = self.sessions.decide(
+                task_id=run.task_id,
+                adapter=run.adapter,
+                workspace=workspace,
+                can_resume=adapter.can_resume(),
+                caller_chooses_id=adapter.session_id_source == SESSION_ID_CALLER,
+                # The role is part of the session's identity: a review turn gets
+                # its own conversation rather than resuming the work it reviews.
+                role=role,
+            )
+            if decision.refused:
+                if decision.condition_based:
+                    # Only a condition-based refusal writes this state. A `lost`
+                    # session refused here used to be overwritten with
+                    # `unreadable`, which is the self-healing one — so the next
+                    # turn was let through, exactly the block this promised to
+                    # hold.
+                    self.sessions.mark_unreadable(
+                        task_id=run.task_id, adapter=run.adapter, role=role,
+                        reason=decision.refusal or "",
+                    )
+                return self.store.finish(
+                    run_id, RunState.FAILED, expected_version=running.version, exit_code=None,
+                    stdout_tail="", stderr_tail="", error_message=decision.refusal,
+                )
+            resuming = decision.mode == MODE_RESUME
             # CLI adapters only: resolve the executable via PATHEXT and unwrap
             # Windows .cmd/.bat shims (npm's codex.cmd) into a CreateProcess-
             # launchable form. Only the command that will actually run is resolved.
             try:
-                command = resolve_runtime_command(list(adapter.build_command(run.prompt)))
-            except RuntimeLaunchError as exc:
+                command = resolve_runtime_command(list(adapter.build_command(
+                    run.prompt, session_id=decision.session_id, resume=resuming,
+                )))
+            except (RuntimeLaunchError, ValueError) as exc:
+                # ValueError comes from build_command refusing to expand a
+                # template it cannot satisfy. Caught here with the launch failure
+                # it is: letting it escape would leave the row RUNNING with no
+                # process behind it, which nothing later can settle.
                 return self.store.finish(
                     run_id, RunState.FAILED, expected_version=running.version, exit_code=None,
                     stdout_tail="", stderr_tail="", error_message=redact_text(f"process start failed: {exc}"),
                 )
+            self.run_logs.append(run_id, _prompt_echo(run.prompt, resuming))
             try:
                 proc = await asyncio.create_subprocess_exec(
                     *command,
                     cwd=str(workspace),
+                    # Closed, not inherited. codex reads stdin when it is not a
+                    # terminal ("Reading additional input from stdin...", seen on
+                    # 0.149.1), so an inherited handle that never reaches EOF is a
+                    # process that never starts working — indistinguishable, in
+                    # the conversation window, from an agent thinking hard.
+                    stdin=asyncio.subprocess.DEVNULL,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     env={
@@ -554,39 +813,292 @@ class ExecutionDispatcher:
                     },
                 )
             except (FileNotFoundError, OSError) as exc:
+                # Into the transcript as well. The prompt echo has already created
+                # it, so the record fallback will not fire — and the conversation
+                # showed the user's message followed by "ended with no output",
+                # with the actual cause (a permission, a broken executable, a
+                # Windows CreateProcess error) nowhere on screen.
+                reason = f"process start failed: {type(exc).__name__}"
+                self.run_logs.append(run_id, _failure_note(reason, ""))
                 return self.store.finish(
                     run_id, RunState.FAILED, expected_version=running.version, exit_code=None,
                     stdout_tail="", stderr_tail="",
-                    error_message=f"process start failed: {type(exc).__name__}",
+                    error_message=reason,
                 )
 
+            # Immediately after the spawn, so the window in which a child could
+            # be started outside the job is as small as two calls allow. Stated
+            # rather than hidden: a grandchild started inside that window is not
+            # in the job, and CR-46 carries what remains.
+            self._jobs[run_id] = self._adopt_process_tree(proc)
+            if os.name == "nt" and self._jobs[run_id] is None:
+                # Adoption failed — a nested-job restriction, a policy, an API
+                # that said no. Everything downstream (freezing the deliverables,
+                # releasing the worktree) assumes this run's children stop when
+                # it does, and here they may not. Said in the transcript rather
+                # than assumed away: if the snapshot later disagrees with the
+                # disk, this line is the explanation, and it is CR-46's case.
+                self.run_logs.append(
+                    run_id,
+                    "· 这一轮没能把子进程收进进程组（Windows job object 接管失败）。"
+                    "如果 agent 起了后台进程，它可能在这一轮结束之后还在写工作目录——"
+                    "交付物快照与磁盘内容届时可能对不上。\n",
+                )
             self._active[run_id] = proc
             try:
+                # Bound to its session only now that a process exists. Recorded
+                # *before* the launch, this used to insert an active session for a
+                # caller-chosen id even when the executable was missing — an id the
+                # provider had never seen, which every later message would then try
+                # to resume until someone cleared it by hand. A process that starts
+                # and dies a second later is a different case and still records: the
+                # session file exists by then.
+                #
+                # Inside the try, because a write that raises here (a locked
+                # database, a full disk) left the agent running with nothing
+                # tracking it: the outer guard settled the row FAILED, the
+                # semaphores were released, and the process kept editing the
+                # worktree while the next run was free to enter it.
+                self.sessions.record_launch(
+                    run_id=run_id, task_id=run.task_id, adapter=run.adapter,
+                    workspace=workspace, session_id=decision.session_id,
+                    mode=decision.mode, role=role,
+                    # A resume is continuing an id the provider has already
+                    # named; a start with a caller-chosen id has not been
+                    # acknowledged by anything yet.
+                    confirmed=resuming,
+                    # Checked against the generation this turn was decided under,
+                    # so a clear that landed in between is not resurrected here.
+                    expected_clear_seq=decision.clear_seq,
+                )
                 try:
                     running = self.store.attach_pid(
-                        run_id, expected_version=running.version, pid=proc.pid
+                        run_id, expected_version=running.version, pid=proc.pid,
+                        # The argv that actually ran. Queue time stored the *start*
+                        # template, and from turn two on the shape is different —
+                        # `codex exec resume` with its sandbox override, or
+                        # claude's `--resume`. An audit trail naming a command the
+                        # process never ran is worse than one naming none.
+                        command=adapter.stored_command(resume=resuming),
                     )
                 except RunConflictError:
-                    await self._stop(proc)
-                    return self.store.require(run_id)
+                    # A cancel landed between the launch and the pid binding. The
+                    # process is already running, and on a fast agent it may
+                    # already have written files — so this path settles the run
+                    # like any other cancel instead of returning the row as it
+                    # found it. Returning early recorded no deliverables and no
+                    # output: the next run's baseline absorbed those changes, and
+                    # they were attributable to nothing.
+                    await self._stop(proc, self._jobs.get(run_id))
+                    # The pipes, before the row. A fast process prints its error
+                    # or its result and *then* gets stopped, and recording two
+                    # empty tails here left the person with their own prompt and
+                    # nothing else — while the comment above claimed this branch
+                    # fixed exactly that. The reads are bounded and the process is
+                    # already dead, so they return what is in the buffers.
+                    # The head as well as the tail: the session id is in the
+                    # first event, and a chatty run pushes it out of a bounded
+                    # tail — so the turn was recorded as naming no session, and
+                    # the next message opened a new conversation over the files
+                    # this one had already written.
+                    # Bounded, like the ordinary drain. Unbounded, a background
+                    # process holding the pipes made this branch wait for ever:
+                    # the cancelled run never got its output or its deliverables
+                    # written, and its worktree lock was never released.
+                    conflict_out_task = asyncio.create_task(
+                        self._read_head_and_tail(proc.stdout, keep_head=OUTPUT_TAIL_LIMIT)
+                    )
+                    conflict_err_task = asyncio.create_task(self._read_tail(proc.stderr))
+                    conflict_done, _conflict_pending = await asyncio.wait(
+                        {conflict_out_task, conflict_err_task},
+                        timeout=_DRAIN_TIMEOUT_SECONDS,
+                    )
+                    out_head, out_tail, out_total = (
+                        conflict_out_task.result()
+                        if conflict_out_task in conflict_done else (b"", b"", 0)
+                    )
+                    err_tail = (
+                        conflict_err_task.result()
+                        if conflict_err_task in conflict_done else b""
+                    )
+                    conflict_err = redact_text(err_tail.decode("utf-8", errors="replace"))
+                    # **Through the reader**, not straight to the log. Saving the
+                    # raw tail kept the text and threw away what it *said*: a
+                    # first turn that had already created its session, written
+                    # files and announced its id left the session table empty, so
+                    # the next message opened a brand-new conversation over work
+                    # that existed. Rendering it here settles the session from the
+                    # same events the normal path uses.
+                    conflict_transcript = reader_for(adapter.event_format)
+                    conflict_writer = _RedactingWriter(self.run_logs, run_id)
+                    conflict_gate = _ReaderGate()
+                    # Merged on their actual overlap. `startswith` only
+                    # catches the case where the whole output fit in both; when
+                    # the total sits between one and two tail limits the two
+                    # pieces overlap *partially*, and concatenating them wrote
+                    # the middle twice — duplicated commands, file changes and
+                    # replies in the conversation, and an audit record that no
+                    # longer matched what the process printed.
+                    rendered_bytes = _merge_overlapping(out_head, out_tail, out_total)
+                    for line in rendered_bytes.split(b"\n"):
+                        if line:
+                            self._render_line(
+                                run, workspace, conflict_transcript, role,
+                                decision.session_id if resuming else None,
+                                line, conflict_writer, conflict_gate,
+                            )
+                    conflict_writer.close()
+                    self.run_logs.append(run_id, redact_text(conflict_transcript.finish()))
+                    self._settle_session(
+                        run_id=run_id,
+                        task_id=run.task_id,
+                        adapter=run.adapter,
+                        workspace=workspace,
+                        transcript=conflict_transcript,
+                        resuming=resuming,
+                        exit_code=proc.returncode,
+                        role=role,
+                        requested=decision.session_id if resuming else None,
+                        killed=True,
+                    )
+                    conflict_out = redact_text(out_tail.decode("utf-8", errors="replace"))
+                    delivered = await asyncio.to_thread(snapshot_changes, workspace, baseline)
+                    current = self.store.require(run_id)
+                    if current.state != RunState.CANCELLED:
+                        # Something else moved the row. Nothing to correct here,
+                        # and guessing a state would be worse than the row.
+                        return current
+                    try:
+                        return self.store.record_cancelled_output(
+                            run_id,
+                            expected_version=current.version,
+                            stdout_tail=conflict_out[-OUTPUT_TAIL_LIMIT:],
+                            stderr_tail=conflict_err[-OUTPUT_TAIL_LIMIT:],
+                            exit_code=None,
+                            deliverables=delivered,
+                        )
+                    except RunConflictError:
+                        # Raced again while snapshotting. The row is authoritative.
+                        return self.store.require(run_id)
 
                 timed_out = False
-                stdout_reader = asyncio.create_task(self._read_tail(proc.stdout))
+                # stdout is read twice over, from one pass: the bounded byte tail
+                # the usage normaliser parses once the run settles, and a rendered
+                # transcript appended as events arrive. The second is what makes
+                # the conversation window show text before the process exits.
+                transcript = reader_for(adapter.event_format)
+                # One gate per run, held by the reader that may outlive the
+                # turn. Closing it is what stops an abandoned reader from writing
+                # into a conversation the window has already finished.
+                gate = _ReaderGate()
+                stdout_reader = asyncio.create_task(
+                    self._read_streaming(
+                        proc.stdout, run, workspace, transcript, role,
+                        decision.session_id if resuming else None, gate,
+                    )
+                )
                 stderr_reader = asyncio.create_task(self._read_tail(proc.stderr))
                 try:
                     await asyncio.wait_for(proc.wait(), timeout=running.timeout_seconds)
                 except (TimeoutError, asyncio.TimeoutError):
                     timed_out = True
-                    await self._stop(proc)
+                    await self._stop(proc, self._jobs.get(run_id))
                 except asyncio.CancelledError:
-                    await self._stop(proc)
-                    await asyncio.gather(stdout_reader, stderr_reader, return_exceptions=True)
+                    await self._stop(proc, self._jobs.get(run_id))
+                    # Bounded, like the ordinary drain: a background process
+                    # holding the pipes made this wait for ever, so a cancel
+                    # never finished cancelling and the worktree lock was never
+                    # released.
+                    #
+                    # The gate closes **after** that wait, and only for a reader
+                    # still pending. Closing it first — which is what the first
+                    # version did — threw away the very output that was waiting
+                    # to be read: the agent's final reply, and the session id,
+                    # which the next turn then had to open a new conversation
+                    # without.
+                    _done, still_reading = await asyncio.wait(
+                        {stdout_reader, stderr_reader}, timeout=_DRAIN_TIMEOUT_SECONDS,
+                    )
+                    if still_reading:
+                        gate.close()
                     raise
 
-                stdout, stderr = await asyncio.gather(stdout_reader, stderr_reader)
+                # The CLI has exited (or been stopped). **Everything it left
+                # behind stops here**, before its output is drained and before
+                # the worktree is frozen. Two failures came from doing this
+                # later:
+                #
+                # * the snapshot ran while a background copy was still writing,
+                #   so the record missed files or caught them half-written — and
+                #   the kill that followed could truncate the very file it had
+                #   just recorded;
+                # * a background process inherits the pipes, so `proc.wait()`
+                #   returned while nothing ever reached EOF, and the drain below
+                #   waited for ever: the run never settled and its worktree lock
+                #   was never released, with `timeout_seconds` already spent.
+                self._kill_process_tree(self._jobs.get(run_id))
+                # Waited for, **not** cancelled and awaited. Measured on
+                # Windows: a pending pipe read does not answer a cancel until the
+                # I/O itself completes, so `wait_for` — which cancels the inner
+                # task and then waits for it — took the full ninety seconds of
+                # the process holding the pipe, bound or no bound. Abandoning the
+                # readers is what actually ends the turn: the run settles, its
+                # worktree lock is released, and the task finishes on its own
+                # whenever the pipe finally closes.
+                done, pending = await asyncio.wait(
+                    {stdout_reader, stderr_reader}, timeout=_DRAIN_TIMEOUT_SECONDS,
+                )
+                if pending:
+                    stdout, stdout_truncated = (
+                        stdout_reader.result() if stdout_reader in done else (b"", True)
+                    )
+                    stderr = stderr_reader.result() if stderr_reader in done else b""
+                    # Said in the transcript, because the settled output below is
+                    # what the usage reader parses and it will be short: the
+                    # window must not present a truncated turn as a whole one.
+                    self.run_logs.append(
+                        run_id,
+                        "\n· 这一轮的输出没能读完：进程已经结束，但还有东西占着它的管道"
+                        f"（等了 {_DRAIN_TIMEOUT_SECONDS} 秒）。上面显示的是已经读到的部分。\n",
+                    )
+                    # The abandoned reader is still attached to that pipe. Marked
+                    # closed so it writes nothing more: the window has been told
+                    # the turn is complete and has stopped polling, and a late
+                    # session event from this run could otherwise overwrite the
+                    # session the *next* turn has already established.
+                    gate.close()
+                else:
+                    (stdout, stdout_truncated), stderr = (
+                        stdout_reader.result(), stderr_reader.result(),
+                    )
+                self.run_logs.append(run_id, redact_text(transcript.finish()))
+                self._settle_session(
+                    run_id=run_id,
+                    task_id=run.task_id,
+                    adapter=run.adapter,
+                    workspace=workspace,
+                    transcript=transcript,
+                    resuming=resuming,
+                    exit_code=proc.returncode,
+                    role=role,
+                    requested=decision.session_id,
+                    # What is knowable here: Agora killed it (timeout), or a
+                    # cancel has already been recorded. `target` is computed
+                    # further down — and a cancelled run returns before it — so
+                    # the facts travel rather than the verdict.
+                    killed=timed_out or self.store.require(run_id).state == RunState.CANCELLED,
+                )
 
+                settled_stdout, prefix_truncated = _settlement_stdout(
+                    stdout.decode("utf-8", errors="replace"), stdout_truncated, transcript,
+                )
                 semantic, usage_metadata = self._observe_usage(
-                    run.adapter, stdout.decode("utf-8", errors="replace"), run_id, run.prompt
+                    adapter, settled_stdout, run_id, run.prompt,
+                    # Whether what is being parsed begins mid-event. Only the
+                    # byte tail can; a stream rebuilt from retained whole lines
+                    # cannot, and saying it did would make the reader discard its
+                    # first line.
+                    stdout_prefix_truncated=prefix_truncated,
                 )
                 out = redact_text(semantic)
                 err = redact_text(stderr.decode("utf-8", errors="replace"))
@@ -615,6 +1127,13 @@ class ExecutionDispatcher:
                     f"timeout after {running.timeout_seconds}s" if timed_out
                     else (None if proc.returncode == 0 else "process exited with a non-zero status")
                 )
+                # Why it failed, into the transcript. The window reads the
+                # conversation, and the record fallback cannot help here: the
+                # prompt echo already created the file, so the run *has* a
+                # transcript — one that held the user's message and nothing about
+                # a CLI that refused to start. The reason was on screen nowhere.
+                if target is not RunState.SUCCEEDED:
+                    self.run_logs.append(run_id, _failure_note(error, err))
                 finished = self.store.finish(
                     run_id,
                     target,
@@ -634,8 +1153,21 @@ class ExecutionDispatcher:
                 )
                 await self._after_run(finished, role, reviews_run_id)
                 return finished
+            except BaseException:
+                # Anything that escapes the body with a live process — including a
+                # failed session write above — stops that process first. Without
+                # this the run was settled and forgotten while the agent carried on
+                # writing to a worktree the next run could take.
+                await self._stop(proc, self._jobs.get(run_id))
+                raise
             finally:
                 self._active.pop(run_id, None)
+                self._session_noted.pop(run_id, None)
+                # Closing the job kills anything still in it. That is deliberate:
+                # a process still writing after its run settled is exactly what
+                # makes the frozen deliverables disagree with the disk, and the
+                # next run enters that worktree.
+                self._release_process_tree(self._jobs.pop(run_id, None))
 
     async def _execute_codex_app_server(
         self, running: ExecutionRun, adapter: ExecutionAdapter, workspace: Path,
@@ -649,13 +1181,14 @@ class ExecutionDispatcher:
 
         async def on_process(proc: asyncio.subprocess.Process) -> None:
             nonlocal attached
+            self._jobs[running.run_id] = self._adopt_process_tree(proc)
             self._active[running.run_id] = proc
             try:
                 attached = self.store.attach_pid(
                     running.run_id, expected_version=attached.version, pid=proc.pid,
                 )
             except RunConflictError:
-                await self._stop(proc)
+                await self._stop(proc, self._jobs.get(running.run_id))
                 raise
 
         env = {
@@ -686,6 +1219,12 @@ class ExecutionDispatcher:
             failure = redact_text(f"app-server error: {type(exc).__name__}: {exc}")
         finally:
             self._active.pop(running.run_id, None)
+            # And the job, which this path assigns exactly like the CLI path and
+            # was the only one that never released. `KILL_ON_JOB_CLOSE` then
+            # never fired: a background process the agent left behind kept
+            # writing the worktree after the snapshot was frozen and the lock
+            # released, which is the whole hazard the job exists to close.
+            self._release_process_tree(self._jobs.pop(running.run_id, None))
 
         safe_out = redact_text(out.decode("utf-8", errors="replace"))[-OUTPUT_TAIL_LIMIT:]
         safe_err = redact_text(err.decode("utf-8", errors="replace"))[-OUTPUT_TAIL_LIMIT:]
@@ -716,7 +1255,7 @@ class ExecutionDispatcher:
         cancelled = await asyncio.to_thread(self.store.cancel, run_id, request)
         proc = self._active.get(run_id)
         if proc is not None and proc.returncode is None:
-            await self._stop(proc)
+            await self._stop(proc, self._jobs.get(run_id))
         # Cancelling a review run leaves the work it was going to review unreviewed,
         # and since N1 that no longer discharges the obligation by itself. Record the
         # blocker now so the human has the item — and its exits — at the moment they
@@ -739,19 +1278,26 @@ class ExecutionDispatcher:
             self._settle_unstarted(run_id)
 
     def _observe_usage(
-        self, adapter: str, raw_stdout: str, run_id: str, prompt: str,
+        self,
+        adapter: ExecutionAdapter,
+        raw_stdout: str,
+        run_id: str,
+        prompt: str,
+        *,
+        stdout_prefix_truncated: bool = False,
     ) -> tuple[str, dict[str, Any]]:
         """Return clean semantic text and token usage; parsing never breaks a run."""
-        result_format = self._USAGE_RESULT_FORMATS.get(adapter)
+        result_format = self._USAGE_RESULT_FORMATS.get(adapter.event_format)
         if result_format is None:
             return raw_stdout, {}
         try:
             semantic, observation = normalize_native_output(
-                adapter=adapter,
+                adapter=adapter.name,
                 result_format=result_format,
                 stdout=raw_stdout,
                 run_id=run_id,
                 prompt=prompt,
+                stdout_prefix_truncated=stdout_prefix_truncated,
             )
         except Exception:
             # A malformed or oversized payload must not fail the run; fall back
@@ -761,8 +1307,24 @@ class ExecutionDispatcher:
 
     @staticmethod
     def _usage_metadata(observation: Any) -> dict[str, Any]:
-        if observation is None or observation.token_measurement == "unavailable":
+        if observation is None:
             return {}
+        if observation.token_measurement == "unavailable":
+            # Not "no usage": a provider can report a cost without reporting
+            # tokens, which is exactly what kiro does (credits, no token counts).
+            # Gating the whole block on tokens threw those measured credits away
+            # on every run.
+            credits = getattr(observation, "native_credits", None)
+            if credits is None:
+                return {}
+            return {
+                "usage": {
+                    "measurement": "unavailable",
+                    "credits": credits,
+                    "credit_measurement": observation.native_credit_measurement,
+                    "model": observation.model,
+                }
+            }
         # NOTE: keys must not contain "token" — sanitize_data() redacts any key
         # matching a secret marker (KEY/TOKEN/SECRET/...). These are token counts,
         # not secrets, so they live under neutral names inside the `usage` block.
@@ -1281,9 +1843,202 @@ class ExecutionDispatcher:
         return self._workspace_is_allowed(workspace.expanduser().resolve(), project.root)
 
     @staticmethod
-    async def _stop(proc: asyncio.subprocess.Process) -> None:
+    def _job_api():
+        """The four kernel32 calls the job object needs, with real prototypes.
+
+        Declaring them is not optional. Left to ctypes' defaults, ``restype`` is
+        a C ``int``, so a 64-bit HANDLE comes back **truncated** — and the next
+        call on it raises STATUS_INVALID_HANDLE, which on Windows is a fatal
+        process exception, not a Python error. Measured: it killed the test
+        runner outright.
+        """
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
+        kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+        kernel32.SetInformationJobObject.argtypes = [
+            wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD,
+        ]
+        kernel32.SetInformationJobObject.restype = wintypes.BOOL
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+        kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+        kernel32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        kernel32.TerminateJobObject.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        return ctypes, wintypes, kernel32
+
+    @staticmethod
+    def _adopt_process_tree(proc: asyncio.subprocess.Process) -> object | None:
+        """Put a run's process **and everything it starts** into one job object.
+
+        Windows only, and the mechanism that covers what ``taskkill /T`` cannot:
+        a job holds every descendant, so an agent that launches a background
+        script and exits does not leave it running. Configured to kill its
+        members when the last handle closes, which also covers Agora going away
+        — a stray handle is not what should keep a worktree being written to.
+
+        Returns the handle to hold for the run's lifetime, or ``None`` when the
+        platform or the API says no. Failure is not fatal: the signal path in
+        ``_stop`` still stops the run itself, which is what the caller waits on.
+        """
+        if os.name != "nt":
+            return None
+        try:
+            ctypes, wintypes, kernel32 = ExecutionDispatcher._job_api()
+
+            class _BasicLimits(ctypes.Structure):
+                _fields_ = [
+                    ("PerProcessUserTimeLimit", ctypes.c_int64),
+                    ("PerJobUserTimeLimit", ctypes.c_int64),
+                    ("LimitFlags", wintypes.DWORD),
+                    ("MinimumWorkingSetSize", ctypes.c_size_t),
+                    ("MaximumWorkingSetSize", ctypes.c_size_t),
+                    ("ActiveProcessLimit", wintypes.DWORD),
+                    ("Affinity", ctypes.POINTER(ctypes.c_ulong)),
+                    ("PriorityClass", wintypes.DWORD),
+                    ("SchedulingClass", wintypes.DWORD),
+                ]
+
+            class _IoCounters(ctypes.Structure):
+                _fields_ = [
+                    ("ReadOperationCount", ctypes.c_uint64),
+                    ("WriteOperationCount", ctypes.c_uint64),
+                    ("OtherOperationCount", ctypes.c_uint64),
+                    ("ReadTransferCount", ctypes.c_uint64),
+                    ("WriteTransferCount", ctypes.c_uint64),
+                    ("OtherTransferCount", ctypes.c_uint64),
+                ]
+
+            class _ExtendedLimits(ctypes.Structure):
+                _fields_ = [
+                    ("BasicLimitInformation", _BasicLimits),
+                    ("IoInfo", _IoCounters),
+                    ("ProcessMemoryLimit", ctypes.c_size_t),
+                    ("JobMemoryLimit", ctypes.c_size_t),
+                    ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                    ("PeakJobMemoryUsed", ctypes.c_size_t),
+                ]
+
+            job = kernel32.CreateJobObjectW(None, None)
+            if not job:
+                return None
+            limits = _ExtendedLimits()
+            limits.BasicLimitInformation.LimitFlags = 0x00002000  # KILL_ON_JOB_CLOSE
+            if not kernel32.SetInformationJobObject(
+                job, 9, ctypes.byref(limits), ctypes.sizeof(limits),
+            ):
+                kernel32.CloseHandle(job)
+                return None
+            # PROCESS_SET_QUOTA is the one that matters: without it
+            # AssignProcessToJobObject returns ACCESS_DENIED, which is what
+            # the first version of this got — measured, not guessed.
+            handle = kernel32.OpenProcess(
+                0x0100 | 0x0001 | 0x0400,  # SET_QUOTA | TERMINATE | QUERY_INFORMATION
+                False, proc.pid,
+            )
+            if not handle:
+                kernel32.CloseHandle(job)
+                return None
+            assigned = kernel32.AssignProcessToJobObject(job, handle)
+            kernel32.CloseHandle(handle)
+            if not assigned:
+                kernel32.CloseHandle(job)
+                return None
+            return job
+        except Exception:
+            # ctypes on an unexpected build, a policy that forbids jobs, a
+            # nested-job restriction. The stop path below runs then, and CR-46
+            # says what that leaves uncovered.
+            return None
+
+    @staticmethod
+    def _kill_process_tree(job: object | None) -> None:
+        """Terminate a job object's members — the run and everything under it.
+
+        **Terminating only.** Closing the handle here as well was a double close:
+        a stop and the run's own release both ran, the second `CloseHandle` was
+        given a handle that no longer existed, and on Windows that is a *fatal
+        process exception* (STATUS_INVALID_HANDLE), not an error code — measured
+        as the test runner dying mid-suite. The handle has exactly one owner: the
+        run, which releases it in its `finally`.
+        """
+        if job is None or os.name != "nt":
+            return
+        try:
+            _, _, kernel32 = ExecutionDispatcher._job_api()
+            kernel32.TerminateJobObject(job, 1)
+        except Exception:
+            return
+
+    @staticmethod
+    def _release_process_tree(job: object | None) -> None:
+        """Kill whatever is left in the job and close it, once, at the run's end."""
+        if job is None or os.name != "nt":
+            return
+        try:
+            _, _, kernel32 = ExecutionDispatcher._job_api()
+            kernel32.TerminateJobObject(job, 1)
+            kernel32.CloseHandle(job)
+        except Exception:
+            return
+
+    @staticmethod
+    async def _stop(
+        proc: asyncio.subprocess.Process, job: object | None = None
+    ) -> None:
+        """Stop a run's process — and on Windows, the tree under it.
+
+        An agent's own children are the ones holding the worktree: a shell, a
+        copy, a build. Signalling only the CLI left those running while Agora had
+        already snapshotted the deliverables and released the workspace lock, so
+        the next run entered a worktree a live process was still writing to.
+
+        **Exactly what this covers: Windows.** Every descendant, whether or not
+        the CLI itself is still alive, because the run was assigned to a job
+        object at spawn (:meth:`_adopt_process_tree`) and killing the job kills
+        its members. ``taskkill /T`` remains as the path for a run started before
+        a job could be created — it walks the tree from a *live* parent, which is
+        why the job is the mechanism and it is the fallback.
+
+        **POSIX is not covered, and is not claimed to be.** The signal path below
+        reaches the CLI and not the shell or copy it started; closing it needs the
+        children in their own process group, which changes how signals reach every
+        run and cannot be measured from this machine. CR-46 carries it, with a
+        skipped test naming the platform.
+        """
+        # First, and whether or not the parent is still alive — that is the whole
+        # point of the job. A run whose CLI exited leaving a background script
+        # behind used to reach the early return below and keep writing the
+        # worktree while Agora froze the snapshot and released the lock.
+        ExecutionDispatcher._kill_process_tree(job)
         if proc.returncode is not None:
             return
+        pid = getattr(proc, "pid", None)
+        if os.name == "nt" and pid:
+            # Tried first, and while the parent is alive: `taskkill /T` walks the
+            # tree from it, so killing the parent first would orphan exactly the
+            # children this exists to reach. Skipped without a pid — a reaped
+            # process, or a stub standing in for one in a test of the signal
+            # path below — since there is no tree to walk from.
+            try:
+                killer = await asyncio.create_subprocess_exec(
+                    "taskkill", "/PID", str(pid), "/T", "/F",
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+                await asyncio.wait_for(killer.wait(), timeout=10)
+            except (OSError, TimeoutError, asyncio.TimeoutError):
+                # Not found, or too slow. The signal path below is the backstop:
+                # it still stops the run itself, which is the part the caller is
+                # waiting on.
+                pass
+            if proc.returncode is not None:
+                return
         try:
             proc.terminate()
         except ProcessLookupError:
@@ -1297,11 +2052,164 @@ class ExecutionDispatcher:
                 return
             await proc.wait()
 
-    @staticmethod
-    async def _read_tail(stream: asyncio.StreamReader | None) -> bytes:
+    def _settle_session(
+        self,
+        *,
+        run_id: str,
+        task_id: str,
+        adapter: str,
+        workspace: Path,
+        transcript: TranscriptReader,
+        resuming: bool,
+        exit_code: int | None,
+        role: str,
+        requested: str | None,
+        killed: bool,
+    ) -> None:
+        """Record what this turn established about the task's session.
+
+        Two writes, and the second one is narrow on purpose.
+
+        **The id.** If the provider announced a session id, record it. For codex
+        and kiro this is the only way it is ever learned; for claude it confirms
+        the id Agora handed over.
+
+        **The failure.** A *resumed* turn that failed **without the provider ever
+        naming a session** is the one shape that says the session could not be
+        picked up: all three CLIs announce the session in their first event, so
+        silence means the process died before it had one. That is what gets
+        marked unreadable.
+
+        What this deliberately does **not** claim: that every unreachable session
+        is caught here. A resume that fails *after* announcing its session (the
+        work itself failed), or a provider that stops announcing sessions in a
+        future version, both leave the state ``active``. The narrower guard is
+        the one that is true; the state is a report of what was observed, not a
+        proof of reachability, and the window says so by showing the last turn's
+        outcome next to it.
+        """
+        if transcript.session_conflict is not None:
+            # Two sessions in one turn. Which one holds the work is not knowable
+            # from here — the second is the better guess and a guess is exactly
+            # what must not be recorded as a live session — so this fails closed:
+            # the next turn is refused until the person starts a new conversation.
+            first, second = transcript.session_conflict
+            self.sessions.mark_lost(
+                task_id=task_id, adapter=adapter, role=role,
+                reason=(
+                    f"这一轮的输出里出现了两个不同的会话 id（先 {first}，后 {second}）。"
+                    "工作很可能落在后一个里，而记录指向前一个——继续续接任何一个都可能"
+                    "接不上这一轮、甚至重做或覆盖它写过的文件。所以这里停下来，"
+                    "要继续请显式新开一个会话。"
+                ),
+            )
+            return
+        if transcript.session_id:
+            if resuming and requested and transcript.session_id != requested:
+                # The provider answered in a different session than the one this
+                # turn asked to continue. Recording it as a healthy active
+                # session — which is what happened before — overwrote the id the
+                # conversation had and left the badge reading "session live"
+                # while the context was gone.
+                self.sessions.mark_forked(
+                    task_id=task_id, adapter=adapter, role=role,
+                    observed=transcript.session_id, previous=requested,
+                    run_id=run_id,
+                )
+                return
+            self.sessions.record_observed(
+                run_id=run_id, task_id=task_id, adapter=adapter,
+                workspace=workspace, session_id=transcript.session_id, role=role,
+            )
+            return
+        # Only a process that **ended on its own** is evidence about the session.
+        # A cancelled turn says nothing: the person clicked Stop, often on a CLI
+        # that was merely slow to print its first event — and marking the session
+        # lost there refused every later message and left "start a new session",
+        # which throws the context away, as the only way out. A timeout is
+        # excluded for the same reason: Agora killed it.
+        if not resuming:
+            # A first turn that never named a session. There is no id to resume,
+            # so the next message must start a new conversation — but it has to
+            # say that this turn's context is not coming with it. Recording
+            # nothing left the next turn reading as a clean first turn, which is
+            # the silence adr/0007 exists to forbid.
+            self.sessions.mark_unidentified(
+                task_id=task_id, adapter=adapter, workspace=workspace, role=role,
+                reason=(
+                    "这一轮跑过了，但它的输出里读不到会话 id"
+                    f"（退出码 {exit_code}）。可能供应商那边确实有一个会话，"
+                    "只是 Agora 叫不出它的名字——所以下一条消息会开一段新的对话，"
+                    "这一轮的上下文不会被带过去。"
+                ),
+            )
+            return
+        if resuming and exit_code == 0 and not killed:
+            # It resumed, it succeeded, and it never named a session. The row was
+            # left `active` — the badge kept saying "session live · N turns" —
+            # which asserts something this turn did not show. All three CLIs
+            # announce the session in their first event, so silence means either
+            # the resume was ignored (the work went somewhere Agora cannot see)
+            # or the reader no longer recognises the event. Either way continuity
+            # is unproven, and `unreadable` is the honest state: it says so,
+            # ``decide`` re-derives the conditions next turn rather than blocking,
+            # and the id is kept because the conversation is probably still there.
+            self.sessions.mark_unreadable(
+                task_id=task_id, adapter=adapter, role=role,
+                reason=(
+                    f"这一轮续接跑完了（退出码 {exit_code}），"
+                    "但输出里始终没有出现会话 id——所以没法确认它接上的是同一段会话。"
+                    "可能是 CLI 换了事件格式（Agora 读不出来），"
+                    "也可能是它忽略了 resume、在另一段会话里干了这一轮的活。"
+                    "下一条消息仍会按记录里的 id 续接；如果你发现上下文接不上，请显式新开一个会话。"
+                ),
+            )
+            return
+        if resuming and exit_code != 0 and not killed:
+            self.sessions.mark_lost(
+                task_id=task_id, adapter=adapter, role=role,
+                reason=(
+                    f"上一次续接会话失败（退出码 {exit_code}），"
+                    "而且这一轮里供应商始终没有报出会话 id —— 说明它没能接上这段会话。"
+                    "上下文可能还在，但这次没读到。"
+                ),
+            )
+
+    async def _read_streaming(
+        self,
+        stream: asyncio.StreamReader | None,
+        run: ExecutionRun,
+        workspace: Path,
+        transcript: TranscriptReader,
+        role: str,
+        requested: str | None,
+        gate: "_ReaderGate",
+    ) -> tuple[bytes, bool]:
+        """Read stdout once: the bounded tail, a live transcript, and the session id.
+
+        Returns the tail and **whether anything was dropped from its front**. The
+        tail is byte-identical to what ``_read_tail`` would have returned, so the
+        usage normaliser sees what it always saw; the flag is what tells it the
+        first line may be half an event.
+
+        Rendering happens on whole lines only — every supported format is JSON
+        Lines, and half a line is not an event.
+
+        **Redaction spans events**, which the first version of this got wrong. It
+        redacted each rendered unit on its own and claimed a secret could not be
+        split across two writes — false for exactly the two adapters whose
+        streaming this was built for: claude and kiro emit text token by token, so
+        an API key arrives as several deltas, each individually harmless, and the
+        log concatenated them back into the original. Text is now held in a
+        buffer until a boundary, redacted with its neighbours in hand, and the
+        API redacts again over the contiguous slice it serves.
+        """
         if stream is None:
-            return b""
+            return b"", False
         tail = bytearray()
+        pending = bytearray()
+        dropped = False
+        writer = _RedactingWriter(self.run_logs, run.run_id)
         while True:
             chunk = await stream.read(8192)
             if not chunk:
@@ -1309,9 +2217,457 @@ class ExecutionDispatcher:
             tail.extend(chunk)
             if len(tail) > OUTPUT_TAIL_LIMIT * 2:
                 del tail[:-OUTPUT_TAIL_LIMIT]
-        return bytes(tail[-OUTPUT_TAIL_LIMIT:])
+                dropped = True
+            pending.extend(chunk)
+            # Whole lines first, **then** the ceiling. Checking the ceiling first
+            # swallowed everything in the buffer as one unparseable fragment —
+            # including complete events sitting behind the newline that ended the
+            # long one, in the same 8 KiB read. Those events are where the session
+            # id, the final text and the usage live: losing them silently made the
+            # next turn look like a new conversation.
+            while True:
+                newline = pending.find(b"\n")
+                if newline < 0:
+                    break
+                line = bytes(pending[:newline])
+                del pending[: newline + 1]
+                self._render_line(
+                    run, workspace, transcript, role, requested, line, writer, gate,
+                )
+            if len(pending) > _MAX_PENDING_LINE:
+                # What is left holds no newline at all, so this is genuinely one
+                # "line" too long to be one. A JSONL event can legitimately be
+                # large — a command's aggregated output — but without a ceiling a
+                # CLI that never emits a newline grew this buffer until the
+                # control plane ran out of memory while its child kept editing the
+                # worktree. Fed as-is: the reader shows an unparseable fragment
+                # verbatim, which is the honest rendering of output that arrived
+                # without structure.
+                self._render_line(
+                    run, workspace, transcript, role, requested, bytes(pending), writer,
+                    gate,
+                )
+                pending.clear()
+        if pending:
+            # A last line with no trailing newline. Fed rather than dropped: it is
+            # a whole event whenever the process was killed between writing an
+            # event and its newline, and the reader handles a fragment by showing
+            # it verbatim.
+            self._render_line(
+                run, workspace, transcript, role, requested, bytes(pending), writer, gate,
+            )
+        if gate.open:
+            # The gate covers the *writer's* last flush too. A chunk with no
+            # newline sits in its buffer until close, so a reader abandoned at
+            # the drain bound wrote that text into a turn the window had already
+            # been told was complete — text nobody would see without reloading.
+            writer.close()
+        # The final trim can drop a front the loop never counted.
+        dropped = dropped or len(tail) > OUTPUT_TAIL_LIMIT
+        return bytes(tail[-OUTPUT_TAIL_LIMIT:]), dropped
+
+    def _render_line(
+        self,
+        run: ExecutionRun,
+        workspace: Path,
+        transcript: TranscriptReader,
+        role: str,
+        requested: str | None,
+        line: bytes,
+        writer: "_RedactingWriter",
+        gate: "_ReaderGate",
+    ) -> None:
+        if not gate.open:
+            # The turn settled without this reader; whatever it is holding now
+            # belongs to a conversation the window has already finished drawing,
+            # and its session events would overwrite what a later turn
+            # established.
+            return
+        try:
+            rendered = transcript.feed(line.decode("utf-8", errors="replace"))
+        except Exception:
+            # Rendering is a reading surface. A reader that trips over an event
+            # shape must not be able to kill a run that is otherwise fine; the
+            # cost is a gap in the transcript, and the run's own settled output is
+            # unaffected because it comes from the byte tail.
+            return
+        if rendered:
+            writer.write(rendered)
+        # Persist the session id the moment the provider names it, not when the
+        # run settles. codex and kiro announce it in their first event, and a
+        # first turn that announced its session and then died — a crash, a
+        # dispatcher shutdown, a kill — used to leave the database saying "no
+        # session at all", so the *next* message opened a fresh context in
+        # silence. That is the one failure adr/0007 exists to prevent, and it was
+        # reachable through the ordinary crash path.
+        # Checked **outside** the "a new id appeared" guard below, and before it.
+        # The reader keeps the *first* id and records the conflict beside it, so
+        # `session_id` does not change when the second one arrives — and keying
+        # the whole persistence block on that change meant the conflict was never
+        # seen while streaming. The first id stayed on record as `active`, and a
+        # crash before settlement left the next turn resuming a session that does
+        # not hold this turn's work, free to redo it or overwrite the files the
+        # second session wrote.
+        if transcript.session_conflict is not None:
+            if self._session_noted.get(run.run_id) != _CONFLICT_NOTED:
+                self._session_noted[run.run_id] = _CONFLICT_NOTED
+                first, second = transcript.session_conflict
+                try:
+                    self.sessions.mark_lost(
+                        task_id=run.task_id, adapter=run.adapter, role=role,
+                        reason=(
+                            f"这一轮的输出里出现了两个不同的会话 id（先 {first}，后 {second}）。"
+                            "工作很可能落在后一个里——继续续接任何一个都可能接不上这一轮，"
+                            "甚至重做或覆盖它写过的文件。要继续请显式新开一个会话。"
+                        ),
+                    )
+                except Exception:
+                    # Retried on the next line, and again at settlement.
+                    self._session_noted.pop(run.run_id, None)
+            return
+        if transcript.session_id and self._session_noted.get(run.run_id) != transcript.session_id:
+            self._session_noted[run.run_id] = transcript.session_id
+            try:
+                if requested and transcript.session_id != requested:
+                    # A resume that landed somewhere else, recorded **here**
+                    # rather than at settlement. Writing it as a healthy observed
+                    # session and correcting it later meant a dispatcher that
+                    # stopped in between lost both the old id and the fact that a
+                    # fork happened — and the window then claimed continuity the
+                    # new session does not have.
+                    self.sessions.mark_forked(
+                        task_id=run.task_id, adapter=run.adapter, role=role,
+                        observed=transcript.session_id, previous=requested,
+                        run_id=run.run_id,
+                    )
+                    return
+                self.sessions.record_observed(
+                    run_id=run.run_id, task_id=run.task_id, adapter=run.adapter,
+                    workspace=workspace, session_id=transcript.session_id, role=role,
+                )
+            except Exception:
+                # Same reasoning as the render guard: a failed write costs the
+                # session record, which `_settle_session` will try again at the
+                # end, and must not take the run down with it. Cleared so that
+                # retry is not skipped as already-done.
+                self._session_noted.pop(run.run_id, None)
+
+    @staticmethod
+    async def _read_tail(stream: asyncio.StreamReader | None) -> bytes:
+        if stream is None:
+            return b""
+        _head, tail, _total = await ExecutionDispatcher._read_head_and_tail(
+            stream, keep_head=0
+        )
+        return tail
+
+    @staticmethod
+    async def _read_head_and_tail(
+        stream: asyncio.StreamReader | None, *, keep_head: int
+    ) -> tuple[bytes, bytes, int]:
+        """Drain a pipe, keeping its first ``keep_head`` bytes and its last tail.
+
+        The head matters for one question only, and it is the important one: all
+        three CLIs announce the session in their **first** event. A reader given
+        only the bounded tail of a chatty run therefore reported "no session
+        could be named" for a turn that had named one in its opening line, and
+        the next message opened a new conversation over work that existed.
+        """
+        if stream is None:
+            return b"", b"", 0
+        head = bytearray()
+        tail = bytearray()
+        total = 0
+        while True:
+            chunk = await stream.read(8192)
+            if not chunk:
+                break
+            if keep_head and len(head) < keep_head:
+                head.extend(chunk[: keep_head - len(head)])
+            total += len(chunk)
+            tail.extend(chunk)
+            if len(tail) > OUTPUT_TAIL_LIMIT * 2:
+                del tail[:-OUTPUT_TAIL_LIMIT]
+        # The total is returned because it is the only thing that says how the
+        # two pieces relate. Inferring the overlap from their *bytes* — the first
+        # version — found a false one wherever the output repeats: a newline, a
+        # run of spaces, a duplicated log block. It then deleted real output and
+        # reported no gap.
+        return bytes(head), bytes(tail[-OUTPUT_TAIL_LIMIT:]), total
 
 
 def redact_output(value: str) -> str:
     """Compatibility wrapper for callers that imported the original helper."""
     return redact_text(value)
+
+
+class _RedactingWriter:
+    """Buffers a run's rendered transcript so redaction can see across events.
+
+    The problem it solves: claude and kiro stream assistant text token by token,
+    so ``sk-…`` reaches this code as several rendered chunks. Redacting each chunk
+    alone matches nothing and the log ends up holding the whole secret, which the
+    output API then serves.
+
+    So text is held until a **line boundary**, and the whole buffer is redacted
+    *before* any of it is written. Secret patterns are single-line by
+    construction (a key, a token, an ``api_key=value`` assignment), so a completed
+    line is the right unit — and redacting the buffer as a whole is what makes the
+    unit hold: a secret anywhere in it is matched while both of its halves are
+    still in hand.
+
+    The first version of this got that wrong in a way worth keeping written down.
+    It redacted only the part it was about to write and kept ``_OVERLAP``
+    characters back "so a pattern straddling the cut is still whole on the next
+    pass" — but the cut had already been written by then, unredacted, and the
+    retained half alone matches nothing. The name promised an overlap the code
+    did not perform.
+
+    A forced flush — a single line longer than ``_FLUSH_LIMIT`` — is the one cut
+    the buffer cannot avoid, and two things make it safe rather than merely
+    documented:
+
+    * what is **retained** is as long as the longest secret in this process's
+      environment, read from it rather than assumed, so an exact-match secret
+      spanning the cut is still whole on the next pass; and
+    * a redaction that ran to the very end of the buffer means a ``key=value``
+      value was cut mid-flight, and whatever arrives next is its continuation:
+      those characters are dropped until the value's own terminator (whitespace,
+      ``,`` or ``;``) rather than written. The marker is already in the text, so
+      the reader sees a redaction, not a hole.
+
+    This used to be written down as an accepted exception, with the API's second
+    redaction pass offered as the cover. It is not cover: that pass sees one
+    served window, and the two halves of a long credential are in the log by
+    then. What is *still* not covered is stated exactly — a secret longer than
+    ``_FLUSH_LIMIT`` that redaction cannot recognise from either half alone.
+    """
+
+    #: Force a flush rather than buffer without limit — a single line of output
+    #: can be megabytes, and a window showing nothing until it ends is the
+    #: three-minute silence this whole surface exists to remove.
+    _FLUSH_LIMIT = 8192
+    #: Retained at the end of every emit, so a redaction *pattern* whose literal
+    #: prefix has arrived but whose value has not (``api_`` with ``key=…`` still
+    #: to come) is still whole on the next pass. Sized for those literals, not for
+    #: secrets: an exact environment secret is recognised by ``safe_cut`` from its
+    #: prefix, so it needs no size assumption at all — which is what the previous
+    #: version made, and it was wrong in both directions (too small to matter for
+    #: a straddling secret, large enough to hold the live transcript back).
+    _KEEP = 64
+    #: Characters that end a value, per the redaction patterns' own definition of
+    #: one. Named here because the hold below has to end at exactly the same
+    #: place a pattern would.
+    _VALUE_END = " \t\r\n,;"
+    #: Ceiling on an unfinished value the buffer is holding whole. Only output
+    #: with none of the separators the patterns look for reaches it; at that
+    #: point the run becomes the marker rather than being kept, because it cannot
+    #: be shown to be safe and it cannot be held for ever.
+    _HOLD_LIMIT = 64 * 1024
+
+    def __init__(self, logs: RunLogStore, run_id: str) -> None:
+        self._logs = logs
+        self._run_id = run_id
+        self._buffer = ""
+        # Bounded by the flush limit: retaining more than the buffer holds would
+        # mean never emitting anything, which is the silence this surface exists
+        # to remove.
+        self._keep = self._KEEP
+        #: Set when a value grew past `_HOLD_LIMIT` and was collapsed to a
+        #: marker. What arrives next is the rest of *that* value — the trigger
+        #: word is gone, so redaction cannot recognise it — and it is dropped up
+        #: to the value's own terminator. This is the one place a guess is not
+        #: needed: the collapse only happens when a value was still growing.
+        self._dropping = False
+
+    def write(self, text: str) -> None:
+        if self._dropping:
+            cut = next(
+                (index for index, char in enumerate(text) if char in self._VALUE_END),
+                None,
+            )
+            if cut is None:
+                # Still the same run. Nothing of it is written: the marker that
+                # replaced its first 64 KiB already stands in the transcript.
+                return
+            text = text[cut:]
+            self._dropping = False
+        self._buffer += text
+        # Redact the whole buffer first, every time. Idempotent on text that has
+        # already been through it, so re-redacting the retained tail costs
+        # nothing and guarantees no half of a secret is ever written alone.
+        # Measured on what is actually held, not on the redacted copy. Redaction
+        # can shrink text — an `api_key=` prefix followed by an endless value
+        # collapses to one short marker — so a limit read off the redacted length
+        # was never reached: the buffer grew without bound and every delta
+        # re-scanned all of it.
+        held_text = self._buffer
+        held = len(held_text)
+        cut = held_text.rfind("\n")
+        if cut >= 0:
+            # A completed line is the unit — but the cut still goes through
+            # `safe_cut`. A multi-line environment secret (a PEM, the ordinary
+            # case) matches nothing while only its first line has arrived, and
+            # emitting on the newline wrote that line in clear, permanently.
+            line_cut = safe_cut(held_text, min(cut + 1, held - self._keep))
+            if line_cut > 0:
+                self._logs.append(self._run_id, redact_text(held_text[:line_cut]))
+                self._buffer = held_text[line_cut:]
+            return
+        if held > self._FLUSH_LIMIT:
+            # Where the cut may fall is one question, and `safe_cut` is the
+            # one place that answers it: never inside a redaction, and never
+            # inside one that reaches the end (it may still be growing). Asking
+            # it in pieces produced four wrong versions — see that function for
+            # what each of them leaked or ate.
+            cut_point = safe_cut(held_text, held - self._keep)
+            if held - cut_point > self._HOLD_LIMIT:
+                # The buffer cannot be cut anywhere near the end and has grown
+                # past any length a value plausibly has. Whatever is holding it
+                # open cannot be shown safe and cannot be held for ever, so it
+                # becomes the marker — a redaction the reader can see, not a
+                # silent hole.
+                keep_from = safe_cut(held_text, held - self._HOLD_LIMIT)
+                self._logs.append(self._run_id, redact_text(held_text[:keep_from]))
+                self._buffer = "[REDACTED]"
+                # And the rest of that value is dropped rather than appended
+                # after the marker: its trigger word went with the collapse, so
+                # redaction would never match it again and the tail of the
+                # credential would be written in clear.
+                self._dropping = True
+                return
+            head = redact_text(held_text[:cut_point])
+            self._buffer = held_text[cut_point:]
+            if head:
+                self._logs.append(self._run_id, head)
+
+    def close(self) -> None:
+        # The end of the stream: nothing more is coming, so everything held back
+        # for a secret that might still complete is redacted as it stands and
+        # written. A half-arrived secret matches nothing and is emitted — which
+        # is correct, because half of a secret that never finished arriving is
+        # what the agent actually printed.
+        tail = redact_text(self._buffer)
+        self._buffer = ""
+        if tail:
+            self._logs.append(self._run_id, tail)
+
+
+def token_capturable_adapters(adapters: dict[str, ExecutionAdapter]) -> set[str]:
+    """Adapter names whose configured execution path actually yields token counts.
+
+    Derived from the registry rather than listed: an adapter reconfigured to a
+    different output format changes the answer, and a hand-kept list would keep
+    reporting the old one.
+
+    The **execution path** is part of that answer, not just the format. Reading
+    the format alone reported codex as token-capable while it was configured on
+    the app-server bridge, which produces no usage result at all — so the
+    settings page promised numbers that never arrive. A configuration that can be
+    switched back in one line (see config.yaml, CR-44) must not be described by
+    the half of it that happens to look right.
+    """
+    return {
+        name for name, adapter in adapters.items()
+        if adapter.event_format in ExecutionDispatcher._TOKEN_CAPTURE_FORMATS
+        and adapter.bridge_mode != "codex_app_server"
+    }
+
+
+#: Written between a kept head and a bounded tail that do not meet. The reader
+#: shows it verbatim, so a turn whose middle was dropped does not read as one
+#: continuous answer.
+_MERGE_GAP_NOTICE = "\n· 中间的输出没有保留：这一轮打印的内容超过了缓冲上限，上下两段之间缺了一截。\n".encode()
+
+
+def _merge_overlapping(head: bytes, tail: bytes, total: int) -> bytes:
+    """Join a stream's kept head and its bounded tail, using how many bytes there were.
+
+    ``total`` is what the reader counted going past it, so the relationship is
+    arithmetic, not a guess: the two pieces overlap by
+    ``len(head) + len(tail) - total`` when that is positive, and everything
+    between them was dropped when it is not.
+
+    The first version inferred the overlap by matching bytes — the longest suffix
+    of ``head`` that is a prefix of ``tail`` — which finds a false overlap
+    wherever output repeats: one shared newline is enough. It then deleted real
+    output *and* reported no gap, so the audit transcript disagreed with what the
+    process printed and said nothing about it.
+    """
+    if not head:
+        return tail
+    if not tail:
+        return head
+    overlap = len(head) + len(tail) - total
+    if overlap >= len(tail):
+        # Everything the tail holds is already in the head — a short run that fit
+        # in both.
+        return head
+    if overlap > 0:
+        return head + tail[overlap:]
+    if overlap == 0:
+        return head + tail
+    # A gap: `total` exceeds what the two pieces hold. Said, not silently closed
+    # with a newline — the record used to read as one continuous output,
+    # complete and not lossy, with its whole middle gone.
+    return head + _MERGE_GAP_NOTICE + tail
+
+
+def _settlement_stdout(
+    tail: str, truncated: bool, transcript: TranscriptReader,
+) -> tuple[str, bool]:
+    """What the usage reader should parse, and whether it starts mid-event.
+
+    Normally the byte tail, exactly as before. But a final answer can be a single
+    JSON line **larger than the whole tail** — a long claude ``result``, a long
+    kiro ``runFinished``, a long codex ``agent_message`` — and once that happens
+    the tail holds no complete copy of it at all: the semantic text degrades to a
+    JSON fragment and the token, cost and credit figures are simply gone, on
+    precisely the runs whose cost is worth knowing.
+
+    So when the tail was truncated and the reader retained the settlement lines
+    while they streamed past, those lines are what gets parsed. They are whole by
+    construction, which is why the truncation flag comes back false with them.
+
+    The tail is still preferred when nothing was dropped: it is the complete
+    stream, and rebuilding from a handful of retained lines would throw away
+    context the readers are entitled to see.
+    """
+    if not truncated or not transcript.settlement:
+        return tail, truncated
+    return "\n".join(transcript.settlement.values()), False
+
+
+def _failure_note(error: str | None, stderr_tail: str) -> str:
+    """The turn's failure, as the conversation should read it.
+
+    Both halves matter and neither is enough alone: the error message says what
+    Agora concluded ("process exited with a non-zero status"), and stderr says
+    what the CLI actually complained about — a missing flag, an expired login, a
+    permission. A window showing only the first tells the person their message
+    failed without telling them why.
+    """
+    lines = [f"✖ {error}"] if error else []
+    tail = (stderr_tail or "").strip()
+    if tail:
+        lines.extend(tail.splitlines()[-20:])
+    return "".join(f"{line}\n" for line in lines) if lines else ""
+
+
+def _prompt_echo(prompt: str, resuming: bool) -> str:
+    """The user's own turn, opening the transcript.
+
+    The transcript is read as a conversation, so it has to contain both halves.
+    The marker also records which half of adr/0007's mechanism ran: ``›`` opened a
+    session, ``››`` continued one. That is the one place a reader can see
+    continuity actually happening rather than being asserted by a badge.
+
+    **Every line of the message carries the marker**, not just the first. The
+    message box is a textarea, so a two-paragraph instruction is ordinary — and
+    marking only the first line put the rest into the terminal pane, where it read
+    as something the *agent* had said. The window takes the leading run of marked
+    lines as the message, so the boundary is in the text rather than assumed.
+    """
+    marker = "››" if resuming else "›"
+    lines = prompt.strip().splitlines() or [""]
+    return redact_text("".join(f"{marker} {line}\n" for line in lines))

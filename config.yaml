@@ -118,20 +118,40 @@ execution:
   # When true, a succeeded developer run auto-dispatches an independent review
   # run by the project's reviewer agent; the review surfaces as an approval.
   auto_review: true
+  # **No `command` overrides here.** They used to pin all three, and each pinned
+  # copy was the pre-W8 command: `--ephemeral` for codex, `--no-session-persistence`
+  # for claude, the v1 engine for kiro — every one of which switches the provider's
+  # session off, which is the thing a second turn of a conversation resumes
+  # (tasks/agora/adr/0007). With them present, the verified defaults in
+  # `execution/adapters.py` were dead code on this installation: turn two would
+  # have opened a fresh context every time, and the window would have shown a
+  # conversation that was not one.
+  #
+  # One place decides these commands now, and it is the module whose flags were
+  # measured against the installed CLIs. Override here only to point an adapter at
+  # a different executable — and then supply `resume_command` too, or the adapter
+  # honestly reports that it cannot continue a session (a `command` override no
+  # longer inherits the real CLI's resume flags, which would have sent turn two of
+  # a stubbed adapter to the real binary).
   adapters:
     codex:
       enabled: true
-      command: [codex, exec, --skip-git-repo-check, --sandbox, workspace-write, --ephemeral, "{prompt}"]
       workspace_key: codex
-      bridge_mode: codex_app_server
+      # `cli`, not `codex_app_server`. The app-server bridge delivers command and
+      # file approvals over JSON-RPC, which the CLI path cannot — but it holds its
+      # conversation in-process and Agora has never verified a resume path for it,
+      # so on that bridge every turn starts from nothing (see CR-39, and the
+      # `unsupported` session state it produces). Since the primitive the product
+      # now offers is a continuing session, the trade is made in favour of
+      # continuity; `app_server_command` is kept below so switching back is one
+      # line. Raised as CR-44 for a decision rather than left as a silent swap.
+      bridge_mode: cli
       app_server_command: [codex, app-server, --listen, "stdio://"]
     claude:
       enabled: true
-      command: [claude, -p, "{prompt}", --output-format, json, --permission-mode, auto, --no-session-persistence]
       workspace_key: claude
     kiro:
       enabled: true
-      command: [kiro-cli, chat, --no-interactive, --trust-all-tools, "{prompt}"]
       workspace_key: kiro
 
 # Embedding for semantic skill matching and memory retrieval

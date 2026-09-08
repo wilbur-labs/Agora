@@ -239,24 +239,26 @@ def _read_changes(workspace: Path, env: Environment) -> tuple[list[dict], bool] 
     """
     if not _is_provisioned_worktree(env, workspace):
         return None
+    # `-z`: NUL-separated, never quoted, and a rename's two paths are two
+    # separate records. Without it the format is ambiguous by construction — a
+    # file may legitimately be called `a -> b.txt` (git quotes neither the space
+    # nor the arrow), and one called ` spaced.txt ` loses its own name to a
+    # strip(). Guessing where the path starts and ends silently recorded a file
+    # that does not exist, so its size, digest and contents were unreachable and
+    # the real change was left out of review.
     result = env.run(
-        [_GIT, "-C", str(workspace), "status", "--porcelain=v1", "--untracked-files=all"],
+        [_GIT, "-C", str(workspace), "status", "--porcelain=v1", "-z",
+         "--untracked-files=all"],
         timeout=_GIT_TIMEOUT,
     )
     if not result.ok:
         return None
     files: list[dict] = []
     truncated = False
-    for line in result.stdout.splitlines():
-        if not line.strip() or len(line) < 4:
-            continue
+    for code, path in _porcelain_z_entries(result.stdout):
         if len(files) >= MAX_FILES:
             truncated = True
             break
-        code = line[:2].strip()[:1]
-        rest = line[3:]
-        # Renamed/copied entries look like "old -> new"; keep the new path.
-        path = rest.split(" -> ")[-1].strip().strip('"')
         target = workspace / path
         files.append({
             "path": path,
@@ -265,6 +267,150 @@ def _read_changes(workspace: Path, env: Environment) -> tuple[list[dict], bool] 
         })
     files.sort(key=lambda item: item["path"])
     return files, truncated
+
+
+def _porcelain_z_entries(stdout: str) -> list[tuple[str, str]]:
+    """Parse ``git status --porcelain=v1 -z`` into (status code, path) pairs.
+
+    The format, exactly: each record is ``XY <path>`` terminated by NUL, and a
+    rename or copy (``R``/``C``) is followed by **one more** NUL-terminated
+    record holding the *original* path. Nothing is quoted and nothing is
+    escaped, so the path is whatever bytes lie between the third character and
+    the NUL — including spaces, arrows and quotes.
+
+    **Both halves of a rename are returned.** The source record used to be
+    consumed and thrown away, so a snapshot said "R archive/prod.yaml" and
+    nothing at all about ``config/prod.yaml`` having stopped existing — review,
+    approval and any later restore were left unaware that a file had been
+    removed. A copy is different: its source is untouched, so only the new path
+    is a change.
+    """
+    entries: list[tuple[str, str]] = []
+    removed: list[str] = []
+    records = [record for record in stdout.split("\0") if record]
+    index = 0
+    while index < len(records):
+        record = records[index]
+        index += 1
+        if len(record) < 4:
+            continue
+        # XY: the index state and the **worktree** state. Reading only X
+        # reported `MD` — staged as modified, then deleted from the worktree —
+        # as "modified", so the snapshot and the approval screen showed a file
+        # that is not there any more, and a later step could act on it as though
+        # it were. The worktree column is what describes the disk; the index
+        # column is the answer only when the worktree has nothing to say.
+        index_state, worktree_state = record[0], record[1]
+        code = (
+            worktree_state if worktree_state not in (" ", "")
+            else index_state
+        ).strip()[:1]
+        path = record[3:]
+        source = None
+        if index_state in ("R", "C") or worktree_state in ("R", "C"):
+            # The next record is the source path of this rename or copy.
+            if index < len(records):
+                source = records[index]
+            index += 1
+        if path:
+            entries.append((code, path))
+        if source and (index_state == "R" or worktree_state == "R"):
+            removed.append(source)
+    # A rename's source is gone from the worktree — **unless something put it
+    # back**. `git mv old new` followed by a new `old` produces both a rename and
+    # an untracked `old`, and adding the deletion anyway made the snapshot say
+    # the same file was deleted and present at once. Collected and filtered
+    # against the paths git actually reported.
+    reported = {path for _code, path in entries}
+    entries.extend(("D", source) for source in removed if source not in reported)
+    return entries
+
+
+def _porcelain_path(entry: str) -> str:
+    """The path git means, from one **quoted** ``status --porcelain`` entry.
+
+    Kept for readers that cannot pass ``-z``. The snapshot path does pass it, and
+    that is the parse to trust: this one has to guess where a path ends, and a
+    file may legitimately be called ``a -> b.txt``.
+
+    Two things this has to undo, and stripping quotes does neither:
+
+    * **C-style escapes.** With ``core.quotePath`` — the default — a name with
+      any non-ASCII byte comes back quoted and octal-escaped, so
+      ``日本語.txt`` arrives as ``"\346\227\245..."``. Taken literally, the
+      snapshot recorded a path that does not exist: no size, no digest, and the
+      real file could not be reached by anything downstream. On this user's
+      machines a Japanese filename is not an edge case.
+    * **A rename arrow inside a quoted name.** ``old -> new`` is the separator,
+      but a file can be *called* ``a -> b``. Splitting the raw line first turned
+      such a name into a path that was never touched.
+    """
+    text = entry.strip()
+    if text.startswith('"'):
+        # A quoted entry is one C-quoted string; a rename is `"old" -> "new"` and
+        # the arrow only counts *between* them.
+        closing = _closing_quote(text)
+        if closing is not None:
+            remainder = text[closing + 1:].lstrip()
+            if remainder.startswith("->"):
+                return _porcelain_path(remainder[2:])
+            return _unescape_c_quoted(text[1:closing])
+    if " -> " in text:
+        return _porcelain_path(text.split(" -> ", 1)[1])
+    return text
+
+
+def _closing_quote(text: str) -> int | None:
+    """Index of the quote that closes the one at position 0, escapes respected."""
+    index = 1
+    while index < len(text):
+        char = text[index]
+        if char == "\\":
+            index += 2
+            continue
+        if char == '"':
+            return index
+        index += 1
+    return None
+
+
+def _unescape_c_quoted(body: str) -> str:
+    """Undo git's C-style quoting, including its octal byte escapes.
+
+    Octal escapes are **bytes** of the path's own encoding (UTF-8 for these
+    repositories), so they are collected and decoded together — decoding them one
+    at a time would turn every multi-byte character into mojibake, which is the
+    same defect one layer down.
+    """
+    simple = {"n": b"\n", "t": b"\t", "r": b"\r", "\\": b"\\", '"': b'"',
+              "a": b"\a", "b": b"\b", "f": b"\f", "v": b"\v"}
+    out = bytearray()
+    index = 0
+    while index < len(body):
+        char = body[index]
+        if char != "\\":
+            out.extend(char.encode("utf-8"))
+            index += 1
+            continue
+        index += 1
+        if index >= len(body):
+            break
+        marker = body[index]
+        if marker in simple:
+            out.extend(simple[marker])
+            index += 1
+            continue
+        if marker.isdigit():
+            digits = body[index:index + 3]
+            try:
+                out.append(int(digits, 8))
+            except ValueError:
+                out.extend(("\\" + digits).encode("utf-8"))
+            index += 3
+            continue
+        out.extend(marker.encode("utf-8"))
+        index += 1
+    return out.decode("utf-8", errors="replace")
 
 
 def list_changes(workspace: Path, *, env: Environment | None = None) -> list[dict]:
@@ -345,11 +491,70 @@ def baseline_state(
     baseline is then only a prefix, and subtracting it cannot separate this run's
     work from what was already there.
     """
-    read = _read_changes(workspace, env or LocalEnvironment())
+    environment = env or LocalEnvironment()
+    read = _read_changes(workspace, environment)
     if read is None:
         return None
     files, truncated = read
-    return {item["path"]: _identity(workspace, item) for item in files}, not truncated
+    # The commit the worktree was on. A run that *commits* its work leaves a
+    # clean `git status`, so comparing status alone reported "delivered nothing"
+    # — automatic review saw no files, and handoff then bound a commit nothing
+    # had actually reviewed. With this, the snapshot can ask what moved.
+    return (
+        {item["path"]: _identity(workspace, item) for item in files},
+        not truncated,
+        _head_commit(workspace, environment),
+    )
+
+
+def _head_commit(workspace: Path, env: Environment) -> str | None:
+    """The commit HEAD points at, or None when it cannot be read."""
+    result = env.run(
+        [_GIT, "-C", str(workspace), "rev-parse", "HEAD"], timeout=_GIT_TIMEOUT
+    )
+    if not result.ok:
+        return None
+    head = (result.stdout or "").strip()
+    return head or None
+
+
+def _committed_during_run(
+    workspace: Path, env: Environment, before_head: str
+) -> list[dict] | None:
+    """Files whose content moved between ``before_head`` and HEAD.
+
+    None when the comparison cannot be made — an unborn branch, a rewritten
+    history, a git that would not answer. "I could not tell" is not "nothing
+    happened", so the caller says so rather than reporting an empty list.
+    """
+    now = _head_commit(workspace, env)
+    if now is None or now == before_head:
+        return []
+    result = env.run(
+        [_GIT, "-C", str(workspace), "diff", "--name-status", "-z",
+         f"{before_head}..{now}"],
+        timeout=_GIT_TIMEOUT,
+    )
+    if not result.ok:
+        return None
+    fields = [field for field in (result.stdout or "").split("\0") if field]
+    committed: list[dict] = []
+    index = 0
+    while index + 1 < len(fields):
+        status, path = fields[index][:1], fields[index + 1]
+        index += 2
+        if status in ("R", "C") and index < len(fields):
+            # A rename's second path is the new one.
+            path = fields[index]
+            index += 1
+        committed.append({
+            "path": path,
+            "status": _STATUS_LABELS.get(status, status or "changed"),
+            "size": None,
+            "sha256": None,
+            "committed_during_run": True,
+        })
+    return committed
 
 
 # An explicit, complete "the worktree held nothing before this run" baseline.
@@ -387,10 +592,16 @@ def snapshot_changes(
     """
     if baseline is None:
         return None
-    read = _read_changes(workspace, env or LocalEnvironment())
+    environment = env or LocalEnvironment()
+    read = _read_changes(workspace, environment)
     if read is None:
         return None
-    before, complete = baseline
+    # Two shapes are accepted: the pair this used to be, and the triple that also
+    # records the commit the worktree was on. The pair means no commit was
+    # recorded, so work this run committed cannot be attributed — stated below
+    # rather than reported as "nothing delivered".
+    before, complete, *recorded_head = baseline
+    before_head = recorded_head[0] if recorded_head else None
     if not complete:
         return None
     files, truncated = read
@@ -401,7 +612,64 @@ def snapshot_changes(
             continue  # unchanged since before this run started
         item["sha256"] = identity["sha256"]
         delivered.append(item)
-    return {"files": delivered, "truncated": truncated}
+    # A path the baseline held and the final list does not is a change too — the
+    # run deleted it, moved it, or committed it away. Iterating only what git
+    # still reports recorded such a run as having delivered *nothing*, so review,
+    # approval and any later restore never learned the file had gone. Skipped
+    # when the list was truncated: an absent path may simply be one of the
+    # entries that did not fit, and inventing a deletion is worse than silence.
+    if not truncated:
+        present = {item["path"] for item in files}
+        for path in sorted(before):
+            if path in present:
+                continue
+            # **Why** it left the list decides what this row says. A file can
+            # stop being reported because it was deleted, or because the run put
+            # it back the way HEAD has it — reverted, or committed. Calling the
+            # second one "deleted" told review and approval to expect a file
+            # that is sitting right there, and any restore step built on that
+            # would have removed it.
+            # `exists()` answers False for a file this process cannot reach —
+            # the ACL case CR-43 measured on this very machine — and for a
+            # dangling symlink. Calling either "deleted" tells review and any
+            # restore step that a file that is still there should be gone.
+            # `lstat` distinguishes the three answers: there, not there, and
+            # cannot tell.
+            try:
+                (workspace / path).lstat()
+                still_there: bool | None = True
+            except FileNotFoundError:
+                still_there = False
+            except OSError:
+                still_there = None
+            delivered.append({
+                "path": path,
+                "status": (
+                    "no longer differs" if still_there
+                    else "unreadable" if still_there is None
+                    else _STATUS_LABELS.get("D", "deleted")
+                ),
+                "size": None,
+                "sha256": None,
+                # Said plainly: this row is derived from the path no longer being
+                # reported, not from a status git printed for it.
+                "gone_since_baseline": True,
+                "exists": still_there,
+            })
+    committed_unknown = False
+    if before_head:
+        committed = _committed_during_run(workspace, environment, before_head)
+        if committed is None:
+            committed_unknown = True
+        else:
+            known = {item["path"] for item in delivered}
+            delivered.extend(item for item in committed if item["path"] not in known)
+    result: dict = {"files": delivered, "truncated": truncated}
+    if committed_unknown or not before_head:
+        # Said out loud: this run may have committed work that is not in the list
+        # above, and the comparison that would have found it could not be made.
+        result["commits_unread"] = True
+    return result
 
 
 def resolve_confined(workspace: Path, rel_path: str) -> Path:

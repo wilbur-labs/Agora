@@ -183,6 +183,18 @@ _ALLOWED: dict[RunState, set[RunState]] = {
 }
 
 
+def _reviews_link(raw: str | None) -> str | None:
+    """The reviewed-run id a stored run names, or None.
+
+    One reader for both the summary and the full record, so the two cannot
+    disagree about the same row — which is exactly what happened when only the
+    summary populated it.
+    """
+    metadata = json.loads(raw) if raw else {}
+    value = metadata.get(REVIEWS_RUN_KEY)
+    return value if isinstance(value, str) and value else None
+
+
 class ExecutionStore:
     def __init__(self, task_store: TaskStore):
         self.tasks = task_store
@@ -1077,19 +1089,45 @@ class ExecutionStore:
             event_payload={"pid": pid},
         )
 
-    def attach_pid(self, run_id: str, *, expected_version: int, pid: int) -> ExecutionRun:
+    def attach_pid(
+        self,
+        run_id: str,
+        *,
+        expected_version: int,
+        pid: int,
+        command: list[str] | None = None,
+    ) -> ExecutionRun:
+        """Record the process behind a RUNNING run.
+
+        ``command`` corrects what ``create`` had to guess. Queue time stores the
+        adapter's *start* template because that is the only one that exists yet;
+        the dispatcher decides at launch whether this turn starts a session or
+        resumes one, and the resume argv is a different shape. Passing it here —
+        the one write that already happens at launch, under the same optimistic
+        version — keeps the audit record naming the command that actually ran.
+        Omitted, the stored command is left alone.
+        """
         now = utc_now()
         with self._transaction() as db:
             row = db.execute("SELECT * FROM execution_runs WHERE run_id = ?", (run_id,)).fetchone()
             if row is None:
                 raise RunNotFoundError(run_id)
-            cursor = db.execute(
-                """
-                UPDATE execution_runs SET pid = ?, version = version + 1
-                WHERE run_id = ? AND state = ? AND version = ?
-                """,
-                (pid, run_id, RunState.RUNNING.value, expected_version),
-            )
+            if command is None:
+                cursor = db.execute(
+                    """
+                    UPDATE execution_runs SET pid = ?, version = version + 1
+                    WHERE run_id = ? AND state = ? AND version = ?
+                    """,
+                    (pid, run_id, RunState.RUNNING.value, expected_version),
+                )
+            else:
+                cursor = db.execute(
+                    """
+                    UPDATE execution_runs SET pid = ?, command = ?, version = version + 1
+                    WHERE run_id = ? AND state = ? AND version = ?
+                    """,
+                    (pid, self._json(sanitize_data(command)), run_id, RunState.RUNNING.value, expected_version),
+                )
             if cursor.rowcount != 1:
                 raise RunConflictError("Run changed while attaching the process")
             self._event(
@@ -2054,15 +2092,28 @@ class ExecutionStore:
             timeout_seconds=row["timeout_seconds"], pid=row["pid"], exit_code=row["exit_code"],
             stdout_tail=row["stdout_tail"], stderr_tail=row["stderr_tail"],
             result_metadata=json.loads(row["result_metadata"]), error_message=row["error_message"],
+            # The same identity the summary carries. Left to the field defaults,
+            # a full record fetched by id contradicted the summary of that very
+            # row: the list said `review`, the detail said `worker`.
+            role=role_of(json.loads(row["result_metadata"]) if row["result_metadata"] else {}),
+            reviews_run_id=_reviews_link(row["result_metadata"]),
             version=row["version"], queued_at=row["queued_at"], started_at=row["started_at"],
             finished_at=row["finished_at"], actor=row["actor"],
         )
 
     @staticmethod
     def _summary(row: sqlite3.Row) -> RunSummary:
+        # The identity keys travel with the summary. Every view that nests a
+        # review under the run it reviews reads them, and their absence reads as
+        # "this is a worker run" — so a page of summaries drew each review as a
+        # top-level turn of its own. Read through the same helpers the full
+        # record uses, so "what does an untagged run mean" has one answer.
+        metadata = json.loads(row["result_metadata"]) if row["result_metadata"] else {}
         return RunSummary(
             run_id=row["run_id"], task_id=row["task_id"], project_id=row["project_id"],
             adapter=row["adapter"], state=RunState(row["state"]), version=row["version"],
             queued_at=row["queued_at"], started_at=row["started_at"],
             finished_at=row["finished_at"], exit_code=row["exit_code"],
+            role=role_of(metadata),
+            reviews_run_id=_reviews_link(row["result_metadata"]),
         )

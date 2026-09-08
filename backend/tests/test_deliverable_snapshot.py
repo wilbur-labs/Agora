@@ -135,7 +135,13 @@ def test_snapshot_changes_adds_a_digest_per_file(tmp_path):
 
 def test_snapshot_of_a_clean_worktree_is_empty_not_unknown(tmp_path):
     workspace = _provision(tmp_path)
-    assert snapshot_changes(workspace, CLEAN_BASELINE) == {"files": [], "truncated": False}
+    snapshot = snapshot_changes(workspace, CLEAN_BASELINE)
+    assert snapshot["files"] == []
+    assert snapshot["truncated"] is False
+    # `CLEAN_BASELINE` records no commit, so work this run *committed* could not
+    # have been attributed. Said rather than implied: an empty list from a
+    # baseline that cannot see commits is not the same claim as one that can.
+    assert snapshot["commits_unread"] is True
 
 
 def test_collection_failure_is_unknown_not_empty(tmp_path):
@@ -160,8 +166,12 @@ def test_baseline_keeps_an_earlier_runs_files_out_of_a_later_snapshot(tmp_path):
 
     baseline = baseline_state(workspace)
     assert baseline is not None
-    identities, complete = baseline
+    # Three fields now: what was already changed, whether that list is
+    # complete, and the commit the worktree was on — which is what lets the
+    # snapshot see work this run commits rather than reporting nothing.
+    identities, complete, head = baseline
     assert set(identities) == {"from-run-1.txt"} and complete is True
+    assert head and len(head) == 40, head
 
     (workspace / "from-run-2.txt").write_text("later", encoding="utf-8")
     delivered = snapshot_changes(workspace, baseline)["files"]
@@ -546,3 +556,31 @@ def test_active_run_is_answered_from_the_live_worktree(tmp_path):
         assert [f["path"] for f in body["files"]] == ["in-flight.txt"]
     finally:
         app.dependency_overrides.clear()
+
+
+def test_work_the_run_committed_is_still_reported_as_delivered(tmp_path):
+    """A run that commits its work leaves a clean `git status`.
+
+    Comparing status alone reported "delivered nothing": automatic review saw no
+    files, and handoff then bound a commit nothing had actually reviewed. The
+    baseline records HEAD so the snapshot can ask what moved.
+    """
+    import subprocess
+
+    workspace = _provision(tmp_path)
+
+    def git(*args):
+        subprocess.run(["git", "-C", str(workspace), *args], check=True, capture_output=True)
+
+    baseline = baseline_state(workspace)
+    assert baseline is not None and baseline[2], "the baseline records HEAD"
+
+    (workspace / "delivered.txt").write_text("work", encoding="utf-8")
+    git("add", "-A")
+    git("commit", "-q", "-m", "the run's own commit")
+
+    snapshot = snapshot_changes(workspace, baseline)
+    paths = {item["path"]: item for item in snapshot["files"]}
+    assert "delivered.txt" in paths, snapshot
+    assert paths["delivered.txt"]["committed_during_run"] is True
+    assert "commits_unread" not in snapshot

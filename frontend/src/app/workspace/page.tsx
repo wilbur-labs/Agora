@@ -128,6 +128,7 @@ import { taskTrustLineOf, workspaceProjectStripOf,
 import { ProgressSnapshotBar } from "@/components/progress-snapshot-bar";
 import { useI18n, type Translate, type TranslateEnum } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
+import { Conversation } from "@/components/conversation";
 
 // The ball is in the human's court whenever a task awaits a decision; a running
 // task is the agent's; review is its own stage; terminal/verified is done. The
@@ -1319,8 +1320,20 @@ function TaskWorkspace({ task, refreshNonce, railAttention, railRuns, onTaskMayH
           plus the deep link to the Requirements page. */}
       <RequirementsStrip task={task} specs={specs} error={specsError} />
       <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
-        {/* Center: the unified, chat-like task timeline + message box. */}
-        <TimelineColumn taskId={task.task_id} verdict={timeline} specs={specs} runHistoryLimit={RUN_HISTORY_LIMIT} onPosted={(eventId) => { setPostedEventId(eventId); loadEvents(); loadRecap(); }} />
+        {/* Center: the conversation, with the task timeline still one click away.
+            The conversation is the primitive the user handles (adr/0007) so it
+            leads; the timeline is the task's whole process — notes, spec
+            approvals, stage changes — and its completeness judgement (CR-26) is
+            not something to drop for a redesign, so it keeps its column rather
+            than being merged into a stream that cannot make the same claim. */}
+        <CenterColumn
+          task={task}
+          timeline={timeline}
+          specs={specs}
+          onPosted={(eventId) => { setPostedEventId(eventId); loadEvents(); loadRecap(); }}
+          onTurnSettled={() => { void loadRuns(); void loadActiveRuns(); loadEvents(); loadRecap(); }}
+          onTaskMayHaveChanged={onTaskMayHaveChanged}
+        />
         {/* Right: the run. While one is unsettled the column IS its output; once it
             settles the column IS what it changed plus the gate before done. Which
             of the two is decided by run state alone (lib/run-column.ts). */}
@@ -1335,6 +1348,68 @@ function TaskWorkspace({ task, refreshNonce, railAttention, railRuns, onTaskMayH
           deliveryAsked={task.state === "done"}
         />
       </div>
+    </div>
+  );
+}
+
+// The centre column: the conversation, or the task timeline.
+//
+// Two views of the same task that answer different questions, so neither can
+// stand in for the other. The conversation is "what am I saying to the agent, and
+// what is it doing right now" — one continuing session per task, streamed as it
+// happens. The timeline is "what has happened to this task at all", including
+// everything no agent turn produced (a spec approved, a stage moved, a note
+// written) and its own account of what it could not read.
+//
+// The conversation leads because it is the primitive the user handles.
+function CenterColumn({
+  task,
+  timeline,
+  specs,
+  onPosted,
+  onTurnSettled,
+  onTaskMayHaveChanged,
+}: {
+  task: TaskManifest;
+  timeline: TimelineVerdict<TaskEvent, ExecutionRun>;
+  specs: RequirementSpec[] | null;
+  onPosted: (eventId: string) => void;
+  onTurnSettled: () => void;
+  onTaskMayHaveChanged: () => void;
+}) {
+  const { t } = useI18n();
+  const [view, setView] = useState<"conversation" | "timeline">("conversation");
+  return (
+    <div className="flex min-h-0 flex-1 flex-col border-r">
+      <div className="flex gap-1 border-b bg-muted/20 px-4 pt-2">
+        {(["conversation", "timeline"] as const).map((key) => (
+          <button
+            key={key}
+            role="tab"
+            aria-selected={view === key}
+            onClick={() => setView(key)}
+            className={cn(
+              "-mb-px border-b-2 px-3 pb-2 pt-1 text-sm",
+              view === key
+                ? "border-b-primary font-semibold text-foreground"
+                : "border-b-transparent text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {key === "conversation" ? t("conversation.title") : t("workspace.timeline.title")}
+          </button>
+        ))}
+      </div>
+      {view === "conversation" ? (
+        <Conversation task={task} onTurnSettled={onTurnSettled} onTaskMayHaveChanged={onTaskMayHaveChanged} />
+      ) : (
+        <TimelineColumn
+          taskId={task.task_id}
+          verdict={timeline}
+          specs={specs}
+          runHistoryLimit={RUN_HISTORY_LIMIT}
+          onPosted={onPosted}
+        />
+      )}
     </div>
   );
 }

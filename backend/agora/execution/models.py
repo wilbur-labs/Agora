@@ -235,6 +235,12 @@ class ExecutionRun(BaseModel):
     started_at: str | None
     finished_at: str | None
     actor: str
+    #: The same identity the summary of this row carries. Populated from the
+    #: stored metadata by one shared reader: left to the defaults, a record
+    #: fetched by id contradicted the list it appeared in — the list said
+    #: `review`, the detail said `worker`.
+    role: str = ROLE_WORKER
+    reviews_run_id: str | None = None
 
 
 class RunSummary(BaseModel):
@@ -248,6 +254,16 @@ class RunSummary(BaseModel):
     started_at: str | None
     finished_at: str | None
     exit_code: int | None
+    #: The run's **identity**, carried on the summary because consumers place
+    #: runs by it. A summary without them is not a smaller answer, it is a wrong
+    #: one: every view that nests a review under the run it reviews reads these
+    #: two keys, and their absence reads as "this is a worker run" — so a list of
+    #: summaries drew every review as a top-level turn of its own.
+    #:
+    #: Defaults match ``role_of``: an untagged run counts as somebody's
+    #: implementation work, and no reviewed-run link means it reviews nothing.
+    role: str = ROLE_WORKER
+    reviews_run_id: str | None = None
 
 
 class AdapterCapability(BaseModel):

@@ -6908,3 +6908,111 @@ untouched, 158/158 not re-run.
 
 Next safe action: W4 (Goal / Requirement / CR Log / ADR into the UI), per CR-9's ordering.
 CR-14 stays OPEN and belongs to W3.
+
+## W8 — the primitive becomes a conversation, and four rounds of being wrong about it
+
+A task is now one continuing session with an agent: say something, it does it; say the
+next thing, it remembers the last one. Decision and the four rejected alternatives are in
+`tasks/agora/adr/0008` (mechanism) under `adr/0007` (the primitive itself). Runs did not
+disappear — a turn *is* a run, with its workspace, exit code, files and review — the
+person just stopped having to think in them.
+
+### Measured, not argued
+
+Three of the four mechanism decisions exist because a CLI refused the obvious spelling,
+found by running the installed binaries on 2026-09-08 rather than reading a matrix:
+
+- `codex exec resume` accepts **no** `--sandbox` (nor `-C/--cd`), so the sandbox travels
+  as `-c sandbox_mode="workspace-write"`. Without it every follow-up turn silently loses
+  the ability to edit a file — and the failure reads like a model refusing to work.
+- `claude -p --output-format stream-json` **requires** `--verbose`; it exits 1 otherwise.
+- `kiro --output-format stream-json` **requires** `--agent-engine v2`, and the v1 engine's
+  refusal arrives as a `runError` *event*, so a misconfigured engine surfaces as a
+  readable line rather than an empty window.
+
+kiro also grew structured chat output since 2026-08-27, which `lessons/coding-agent-cli-
+headless-resume.md` had recorded as absent. That lesson's own first gotcha — capability
+matrices expire fast — has now been right twice about itself.
+
+Acceptance is a re-runnable test, not a screenshot: `tests/test_session_continuity_live.py`
+(marked `integration`, so the ordinary gate never spends quota) drives **three real codex
+turns** in a throwaway worktree. Turn two answers with the word turn one was given; turn
+three edits a file from inside the resumed session. 1 passed.
+
+### Four review rounds, 35 findings, every one confirmed
+
+Rounds 1, 2 and 4 were codex; **round 3 was kiro**, standing in while codex's quota was
+exhausted (`adr/0017`). Counts: 7, 15, 6, 7. **No false positives in any round.** Three
+findings are worth carrying forward as a pattern, because all three are the same mistake:
+
+1. **A comment claiming protection the code did not provide.** `_read_streaming` said "a
+   secret cannot be split across two writes" — false for exactly the two adapters whose
+   streaming it was written for, since claude and kiro emit text token by token. The first
+   fix then named its own buffer `_OVERLAP` and did not overlap: the cut had already been
+   written by the time the retained half arrived. Three attempts, and only the third
+   (redact the whole buffer, then cut) is what the sentence claimed. Its residual limit —
+   a secret straddling a forced flush of a single 8 KiB line — is now written down instead
+   of covered over.
+2. **A key that defeated a gate from outside it.** Sessions keyed by `(task_id, adapter)`
+   made the automatic review *resume the implementation session* whenever worker and
+   reviewer share an adapter, which is an ordinary configuration. The independent second
+   opinion inherited the implementer's entire context — `adr/0002` undone by a primary
+   key. The role is now part of that key.
+3. **A fix that produced the next finding.** Each round's repairs created the following
+   round's defects: role in the backend key left the frontend picking rows by adapter
+   alone; `SESSION_LOST` made the refusal path downgrade it to the self-healing state;
+   marking a caller-chosen id `active` at launch left `--resume` pointing at a session
+   that may never have been created. This is the argument for re-reviewing after fixing
+   rather than committing on the round that found them.
+
+Also fixed, each with a test: the repository's own `config.yaml` pinned all three adapter
+commands to their pre-W8 form, so none of this would have taken effect on this
+installation (CR-44 — and codex found it, not me); an overridden `command` inherited the
+real CLI's resume command, sending turn two of a stubbed `claude` to the real binary;
+`/runtime-capabilities` claimed "token capture unsupported" for every adapter when the
+registry failed to build; the usage table was keyed by adapter name while argv decided the
+format, and the two had already drifted — codex's JSONL reader existed and was unreachable
+because the argv never passed `--json`; kiro's measured credits were discarded by a token
+check; a 64 KiB stdout tail starting mid-event lost the usage of exactly the long runs
+worth measuring; transcripts grew without bound; a missing transcript rendered every
+pre-W8 run as "finished, said nothing"; a dropped fetch was recorded as a permanent hole;
+a settled run with more than one page of log was unreachable.
+
+### The window
+
+`/workspace` keeps its rail and its two-state right column and gains a centre tab pair:
+the conversation, and the timeline it did not replace (the timeline's completeness
+judgement, CR-26, is not something to drop for a redesign). Navigation becomes mockup v2's
+four screens; **Control Plane / Requirements / Workflows leave the first level** — `adr/0001`
+froze that layer and said the UI must not expose it, and they had stayed in the sidebar for
+eleven days anyway. Runs stops being a place: a run is a turn inside a task.
+
+Environments and Skills show what can be read and say plainly what cannot. There is one
+environment implementation and no skill reader at all, so neither screen invents an
+inventory to fill the space.
+
+### Gates
+
+Backend **1374 collected, 1361 passed, 12 skipped** (12m32s), one deselected — the live
+acceptance test. Baseline before W8 was 1301/1289/12, so **72 tests were added and the
+skipped count did not move**. Frontend **293 tests, 292 passed, 1 skipped** (the
+pre-existing one), tsc 0, eslint 0, build 14 pages.
+
+Those figures are the last gate of six review rounds, not of the first: rounds five and six
+added twelve more tests, and the earlier draft of this paragraph quoted the round-four
+numbers for a while. A record whose figures cannot be reproduced is not a record, which is
+the whole reason AGENTS.md asks for the collected count as well.
+
+Not verified, and stated rather than implied: the conversation component itself is not
+exercised by a test — CR-18 is why, and its decisions therefore live in
+`lib/conversation.ts`, which the node runner can mount. The browser path was checked only
+by rendering every route; nobody has typed into the window.
+
+### Next safe action
+
+W8's remaining exit criteria: the W7 workspace tasks belong in the workbench rather than a
+settings card, and changed files plus gates belong inside the conversation stream. Then
+claude and kiro need the same three-turn live test codex has. CR-43 (a file an agent writes
+through its sandbox can be unreadable to the control plane) stays OPEN and wants a
+measurement before a fix: whether `snapshot_changes` records those files as *unknown* or as
+*absent* decides whether it is a nuisance or a lie.
