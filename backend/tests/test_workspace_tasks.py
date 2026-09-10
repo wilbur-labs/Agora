@@ -625,12 +625,102 @@ def test_a_deeper_heading_belongs_to_the_section_above_it(tmp_path):
     assert "先打通" not in resume.current_state
 
 
-def test_the_progress_markers_are_counted_by_the_same_counter_as_the_progress_bar(tmp_path):
+def test_the_progress_snapshot_is_read_by_the_same_verdict_as_the_progress_bar(tmp_path):
+    """The default RESUME's 进度快照 is marker-written, so its verdict is `markers`
+    with the three counts — and, crucially, it comes from `count_progress_verdict`, the
+    reader the dashboard's bar uses, not the marker-only counter it used before."""
     _task(tmp_path, "alpha")
 
-    resume = read_workspace_source(tmp_path).tasks[0].resume
+    progress = read_workspace_source(tmp_path).tasks[0].resume.progress
 
-    assert resume.progress == {"done": 1, "in_progress": 1, "todo": 1}
+    assert progress is not None
+    assert (progress.done, progress.in_progress, progress.todo) == (1, 1, 1)
+    assert (progress.convention, progress.reason) == ("markers", None)
+
+
+def _resume_with_snapshot(body: str) -> str:
+    """A RESUME whose 进度快照 section holds exactly `body`. The section sits under
+    当前状态 the way these files write it, and 下一步 follows so the section ends."""
+    return (
+        "# RESUME — alpha\n\n## 当前状态\n\n停在这里。\n\n"
+        f"### 进度快照\n\n{body}\n\n## 下一步\n\n继续。\n"
+    )
+
+
+def test_a_checkbox_snapshot_is_counted_with_in_progress_unknown_not_zero(tmp_path):
+    """The finding's root cause: a 进度快照 written with `- [x]` boxes used to reach
+    `count_progress_markers`, which knows only ✅/🔵/⬜, and came back three zeros —
+    read upstream as "tracks nothing yet". The verdict counts it: done + not-done
+    partition the whole list, and in_progress is None (the convention has no form for
+    work in flight, so 0 would assert something the file never said)."""
+    _task(tmp_path, "alpha", resume=_resume_with_snapshot(
+        "- [x] W1 完成\n- [X] W1.5 也完成\n- [ ] W2 未完成\n"
+    ))
+
+    progress = read_workspace_source(tmp_path).tasks[0].resume.progress
+
+    assert progress is not None
+    assert (progress.done, progress.in_progress, progress.todo) == (2, None, 1)
+    assert (progress.convention, progress.reason) == ("checkboxes", None)
+
+
+def test_a_snapshot_mixing_both_conventions_is_uncountable_not_empty(tmp_path):
+    """Read fine, but it carries both markers and boxes — neither reading is the file's,
+    so the verdict is `mixed_conventions` with no counts. This must reach the UI as
+    "read but uncountable", not "empty" and not "RESUME unreadable"."""
+    _task(tmp_path, "alpha", resume=_resume_with_snapshot(
+        "- ✅ marker item\n- [x] box item, the other convention\n"
+    ))
+
+    progress = read_workspace_source(tmp_path).tasks[0].resume.progress
+
+    assert progress is not None
+    assert (progress.done, progress.in_progress, progress.todo) == (None, None, None)
+    assert (progress.convention, progress.reason) == (None, "mixed_conventions")
+
+
+def test_a_snapshot_of_marks_this_reader_cannot_count_is_uncountable_not_empty(tmp_path):
+    """A checklist in marks with no agreed meaning here (`[/]`, `[-]`). Counting the
+    rest would be a floor, so the verdict is `uncounted_markers` — again read fine,
+    just uncountable, and distinct from an empty snapshot."""
+    _task(tmp_path, "alpha", resume=_resume_with_snapshot(
+        "- [x] done\n- [ ] not yet\n- [/] a mark with no meaning here\n"
+    ))
+
+    progress = read_workspace_source(tmp_path).tasks[0].resume.progress
+
+    assert progress is not None
+    assert (progress.done, progress.in_progress, progress.todo) == (None, None, None)
+    assert (progress.convention, progress.reason) == (None, "uncounted_markers")
+
+
+def test_a_snapshot_section_that_lists_nothing_is_convention_none_not_a_reason(tmp_path):
+    """A 进度快照 section that exists and lists no item of either convention: counted,
+    three zeros, convention `none`. That is "empty", and it must stay apart from both
+    "no section at all" (progress is None) and "uncountable" (a reason)."""
+    _task(tmp_path, "alpha", resume=_resume_with_snapshot("还没有开始记录条目。"))
+
+    progress = read_workspace_source(tmp_path).tasks[0].resume.progress
+
+    assert progress is not None
+    assert (progress.done, progress.in_progress, progress.todo) == (0, 0, 0)
+    assert (progress.convention, progress.reason) == ("none", None)
+
+
+def test_the_resume_progress_payload_carries_convention_and_reason(tmp_path):
+    """The wire shape the frontend reads: counts flattened alongside `convention` and
+    `reason`, so `taskProgressOf` can tell a counted checkbox file from an uncountable
+    one without a second field. None stays None — no 进度快照 section."""
+    _task(tmp_path, "alpha", resume=_resume_with_snapshot(
+        "- [x] W1\n- [ ] W2\n"
+    ))
+
+    payload = read_workspace_source(tmp_path).tasks[0].resume.payload()["progress"]
+
+    assert payload == {
+        "done": 1, "in_progress": None, "todo": 1,
+        "convention": "checkboxes", "reason": None,
+    }
 
 
 def test_a_missing_section_is_none_on_a_file_that_was_read(tmp_path):

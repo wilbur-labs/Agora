@@ -529,6 +529,74 @@ export const workspace = {
     errors: {
       loadFailed: "Could not load the workspace: {error}",
     },
+    // The tasks a registered workspace directory already holds (W7), read live and
+    // shown here in the workbench — not tucked away on a Settings card. Registration
+    // itself stays in Settings; what lives here is the task list. The three-answer
+    // honesty is the whole point (a reason is not a count), so every "nothing here"
+    // sentence names which nothing it is.
+    workspaceTasks: {
+      title: "Workspace tasks",
+      // The board as a whole. "Could not read the list" is not "none registered".
+      loading: "Reading workspace sources…",
+      unreadable: "The workspace source list could not be read, so registered sources may be missing or out of date.",
+      none: "No workspace sources registered. Add one in Settings to see the tasks it already holds.",
+      manage: "Manage in Settings",
+      // Per-source, when the directory itself yields no task list. The specific reason
+      // comes from settings.sources.reason.* via SOURCE_REASON_KEY.
+      emptyTasksDir: "Has a tasks/ folder with nothing in it.",
+      skipped: "Skipped: {names}",
+      taskCount: "{count} task(s)",
+      taskCountAtLeast: "At least {count} task(s) — some could not be read.",
+      unreadableEntries: "Could not read: {names}",
+      goalEmpty: "No goal recorded yet.",
+      // Progress from the RESUME 「进度快照」. done-only percentage; the non-bar
+      // answers are kept apart from a real "0 of N".
+      progress: {
+        counts: "{done} done · {inProgress} in progress · {todo} to do",
+        // The checkbox convention has no form for work in flight, so it says done /
+        // not-done and never an in-progress figure — a 0 there would assert nothing is
+        // in flight, which the file never said.
+        countsCheckbox: "{done} done · {notDone} not done",
+        // The section exists and lists nothing — not a missing snapshot.
+        empty: "Progress snapshot tracks nothing yet.",
+        // Read fine; the task records no 进度快照 section at all. Deliberately says
+        // nothing about a percentage.
+        none: "No progress snapshot recorded.",
+        // The RESUME file could not be read — not the same as "no snapshot".
+        unreadable: "Progress could not be read.",
+        // Read fine, but the section cannot be counted — a different fact from both
+        // "empty" and "unreadable". The two reasons name themselves; this is the
+        // fallback for a reason the UI has no specific sentence for.
+        uncountable: "Progress snapshot was read but can't be counted.",
+        // Both a marker checklist and a task-list in one section: neither reading is
+        // the file's, so counting either would report a floor.
+        mixedConventions: "Progress snapshot mixes ✅ markers and [ ] checkboxes, so it can't be counted.",
+        // Boxes holding marks this reader has no meaning for ([/], [-], …): counting the
+        // rest would be a floor, so nothing is counted.
+        uncountedMarkers: "Progress snapshot uses checklist marks this reader can't count.",
+      },
+      // Where onward goes; sentences shared with Settings live under settings.sources.*.
+      openProject: "Open {project}",
+      // The CR/ADR standing and the way onward, moved here with the task list (W8). An
+      // open CR never travels without the rows whose status could not be read; a read
+      // failure is its own amber sentence, not a blank that reads as "none".
+      crOpen: "{open} open CR",
+      crUnrecognised: "{n} row(s) whose status could not be read",
+      crUnavailable: "CR log could not be read",
+      adrCount: "{n} decision record(s)",
+      adrUnavailable: "decision records could not be read",
+      // The five non-`open` onward states, each a different next move.
+      repoNotRegistered: "its repository is not registered here: {repo}",
+      noRepoRecorded: "no primary_repo recorded",
+      repoMalformed: "primary_repo is not a usable path",
+      projectsUnreadable: "the project list could not be read, so this is unknown",
+      currentState: "Where it stopped",
+      nextStep: "What's next",
+      sectionMissing: "Not recorded.",
+      resumeUnreadable: "Could not read RESUME.",
+      expand: "Show more",
+      collapse: "Show less",
+    },
   },
   zh: {
     title: "工作台",
@@ -872,6 +940,45 @@ export const workspace = {
     },
     errors: {
       loadFailed: "无法加载工作台:{error}",
+    },
+    workspaceTasks: {
+      title: "工作区任务",
+      loading: "正在读取工作区来源……",
+      unreadable: "无法读取工作区来源列表,已注册的来源可能缺失或已过时。",
+      none: "尚未注册任何工作区来源。请在“设置”中添加,以查看它已有的任务。",
+      manage: "在设置中管理",
+      emptyTasksDir: "有 tasks/ 目录,但里面什么都没有。",
+      skipped: "已跳过:{names}",
+      taskCount: "{count} 个任务",
+      taskCountAtLeast: "至少 {count} 个任务——有些无法读取。",
+      unreadableEntries: "无法读取:{names}",
+      goalEmpty: "尚未记录目标。",
+      progress: {
+        counts: "{done} 已完成 · {inProgress} 进行中 · {todo} 待办",
+        countsCheckbox: "{done} 已完成 · {notDone} 未完成",
+        empty: "进度快照尚未记录任何条目。",
+        none: "没有记录进度快照。",
+        unreadable: "无法读取进度。",
+        uncountable: "进度快照已读取，但无法计数。",
+        mixedConventions: "进度快照同时使用了 ✅ 标记和 [ ] 复选框，因此无法计数。",
+        uncountedMarkers: "进度快照使用了本读取器无法识别的清单标记。",
+      },
+      openProject: "打开 {project}",
+      crOpen: "{open} 项未决 CR",
+      crUnrecognised: "{n} 行状态无法读取",
+      crUnavailable: "无法读取 CR 日志",
+      adrCount: "{n} 条决策记录",
+      adrUnavailable: "无法读取决策记录",
+      repoNotRegistered: "它的仓库尚未在此注册：{repo}",
+      noRepoRecorded: "未记录 primary_repo",
+      repoMalformed: "primary_repo 不是可用的路径",
+      projectsUnreadable: "项目列表读取失败，因此这一项属于未知",
+      currentState: "停在哪里",
+      nextStep: "下一步",
+      sectionMissing: "未记录。",
+      resumeUnreadable: "无法读取 RESUME。",
+      expand: "展开",
+      collapse: "收起",
     },
   },
 } as const;

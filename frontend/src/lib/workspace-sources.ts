@@ -12,7 +12,16 @@
 // substitution the timeline and the portfolio were both corrected for.
 //
 // Deliberately free of React and of "@/" path aliases: `node --test` executes the
-// companion test file (tests/workspace-sources.test.mts) directly.
+// companion test file (tests/workspace-sources.test.mts) directly. The relative
+// `./progress-snapshot.ts` import (extension and all) follows the same rule — it is how
+// timeline.ts already reaches run-column.ts under the same runner.
+
+import {
+  SNAPSHOT_ABSENT_REASON,
+  progressBarOf,
+  type ProgressBar,
+  type ProgressSnapshotLike,
+} from "./progress-snapshot.ts";
 
 /** Why a source has nothing to show. Mirrors `WorkspaceSource.reason`. */
 export type SourceReason = "absent" | "unreadable" | "not_a_directory" | "no_tasks_dir";
@@ -38,7 +47,30 @@ export interface ResumePayload {
   reason: string | null;
   current_state: string | null;
   next_step: string | null;
-  progress: Record<string, number> | null;
+  progress: ProgressVerdictPayload | null;
+}
+
+/**
+ * The 进度快照 section's verdict, mirroring `progress_snapshot.ProgressVerdict` as the
+ * RESUME reader flattens it onto the payload.
+ *
+ * The counts are nullable for one honest reason each: on the `checkboxes` convention
+ * `in_progress` is `null` because that convention has no form for work in flight (a 0
+ * there would assert nothing is in flight, which the file never said); and all three are
+ * `null` when `reason` is set, because the section was read but cannot be counted.
+ *
+ * Exactly one of `convention` / `reason` is ever set, the same discipline the backend
+ * keeps: `convention` names how it was counted (`markers` | `checkboxes` | `none`),
+ * `reason` names why it could not be (`mixed_conventions` | `uncounted_markers`). A
+ * consumer reads which is present to tell "counted, here it is" from "read fine, cannot
+ * be counted" — never collapsing the second into "empty" or into "RESUME unreadable".
+ */
+export interface ProgressVerdictPayload {
+  done: number | null;
+  in_progress: number | null;
+  todo: number | null;
+  convention: string | null;
+  reason: string | null;
 }
 
 export interface CrLogPayload {
@@ -178,6 +210,82 @@ export function resumeSectionsOf(resume: ResumePayload): {
 }
 
 /**
+ * The task's progress bar, read from its RESUME 「进度快照」 verdict.
+ *
+ * This module does **not** decide the bar. `ProgressVerdictPayload` is the same shape
+ * the dashboard's `progress_snapshot` produces — both come from the backend's one
+ * `count_progress_verdict` — and `lib/progress-snapshot.ts` already owns the honest
+ * decision over that shape: which convention was counted, an unknown convention, a
+ * numeric `in_progress` under checkboxes, nulls or non-integers among the counts, a
+ * done-only percentage, and every wordless "there is no number here". Deciding it a
+ * second time here is exactly what produced round-2 finding 3 and round-3 finding B —
+ * two modules answering one question and drifting apart. So this maps the verdict to a
+ * `ProgressSnapshotLike` (the same map the backend's `ProgressVerdict.as_snapshot`
+ * makes) and hands it to `progressBarOf`.
+ *
+ * The one thing that has no snapshot counterpart is kept here, and only that one: the
+ * RESUME **file** could not be read. `progressBarOf` reasons about a snapshot's text; it
+ * has no notion of the file the section lives in being unreadable, and folding that into
+ * any snapshot reason would state a fact about the snapshot from a fact about the file —
+ * the very collapse this slice keeps correcting. `progress: null` with a readable RESUME
+ * is *not* this case: it means the file was read and records no 进度快照 section, which
+ * maps to the snapshot's own "no snapshot" (`absent`) answer.
+ */
+export type TaskProgress =
+  /** The RESUME file was not read. `reason` says why, and it is not "no snapshot". The
+   *  one answer with no `ProgressSnapshotLike` counterpart, so it stays its own value. */
+  | { show: "resumeUnreadable"; reason: string }
+  /** Everything the snapshot decision already covers: counts, empty, no snapshot,
+   *  uncountable, unknown convention — decided once, in `progressBarOf`. */
+  | { show: "bar"; bar: ProgressBar };
+
+/**
+ * Map the RESUME verdict onto the snapshot shape `progressBarOf` decides over, mirroring
+ * the backend's `ProgressVerdict.as_snapshot`: an uncountable verdict is unavailable with
+ * its reason; a counted one carries the counts and the convention it was counted in. A
+ * missing 进度快照 section (`progress: null` on a readable RESUME) is the snapshot's
+ * `absent` — the file records no snapshot — which `progressBarOf` renders as "no
+ * snapshot", blank and never 0%.
+ */
+function verdictAsSnapshot(verdict: ProgressVerdictPayload | null): ProgressSnapshotLike {
+  if (verdict === null) {
+    return { available: false, reason: SNAPSHOT_ABSENT_REASON };
+  }
+  if (verdict.reason !== null) {
+    return { available: false, reason: verdict.reason };
+  }
+  return {
+    available: true,
+    reason: null,
+    done: verdict.done,
+    in_progress: verdict.in_progress,
+    todo: verdict.todo,
+    convention: verdict.convention,
+  };
+}
+
+export function taskProgressOf(resume: ResumePayload): TaskProgress {
+  // A read that failed is never "no snapshot", and it is the one answer with no snapshot
+  // counterpart: `progressBarOf` decides over a snapshot's text and has no "the file was
+  // unreadable" verdict to reach for. Kept here, and only here — everything downstream of
+  // a readable RESUME is the snapshot decision, made once in `progressBarOf`.
+  if (!resume.available) {
+    return { show: "resumeUnreadable", reason: resume.reason ?? "unreadable" };
+  }
+  // Readable RESUME. `progress: null` (no 进度快照 section) and every counted or
+  // uncountable verdict all map onto the snapshot shape and are decided there — a
+  // dashboard snapshot is always in hand and always read, so those two facts are fixed.
+  return {
+    show: "bar",
+    bar: progressBarOf({
+      snapshot: verdictAsSnapshot(resume.progress),
+      dashboardLoaded: true,
+      dashboardReadFailed: false,
+    }),
+  };
+}
+
+/**
  * What the panel offers as the way onward from a task, as one value.
  *
  * Four states because each has a different next move, and the two that look alike are
@@ -216,6 +324,72 @@ export function taskOnwardOf(link: RepoLinkPayload): TaskOnward {
   // that sends half an answer gets the variant that claims nothing, not a crash and not
   // a guess.
   return { show: "unknown" };
+}
+
+/**
+ * Only the fields of a mouse click that decide whether we may replace the browser's own
+ * navigation with in-page state. A structural subset of React's `MouseEvent`, so the
+ * component can pass the event straight in, but small enough to construct in a node test
+ * without a DOM.
+ */
+export type ClickIntent = {
+  readonly button: number;
+  readonly metaKey: boolean;
+  readonly ctrlKey: boolean;
+  readonly shiftKey: boolean;
+  readonly altKey: boolean;
+};
+
+/**
+ * Should a click on an in-page `<Link>` be intercepted (default prevented, state changed
+ * in place) instead of left to the browser?
+ *
+ * Only a plain primary-button click is ours. A modified click — Ctrl/Cmd (new tab),
+ * Shift (new window), Alt (download), or any non-primary button (middle-click new tab) —
+ * is the browser expressing an intent our in-page handler cannot honour, so we must let
+ * the default happen against the real `href`. Calling `preventDefault` on those was the
+ * bug: it cancelled exactly the new-tab/new-window cases the `href` was kept for.
+ */
+export function shouldInterceptClick(event: ClickIntent): boolean {
+  if (event.button !== 0) return false;
+  if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return false;
+  return true;
+}
+
+/**
+ * What the workbench's workspace-task board shows as a whole, before any one source is
+ * rendered.
+ *
+ * Three answers the Settings card already kept apart and the workbench must not merge,
+ * the same `声明范围 > 检查范围` rule one level up from a single source: the list read
+ * failing is not the same as the list being empty, and neither is "still loading".
+ *
+ *   loading      -> no read has settled yet (`sources` null, read not marked failed).
+ *   unreadable   -> the `GET /api/workspace-sources` read failed. NOT "none registered":
+ *                   a person who has sources registered must not be told they have none
+ *                   because one request lost.
+ *   none         -> the read succeeded and returned an empty list. A settled answer.
+ *   sources      -> the read succeeded and returned sources; render each with
+ *                   `sourceVerdictOf`. `count` is how many, not how many have tasks —
+ *                   a registered source that is unreadable or empty is still one the
+ *                   person registered and still belongs on the board.
+ */
+export type WorkspaceBoard =
+  | { show: "loading" }
+  | { show: "unreadable" }
+  | { show: "none" }
+  | { show: "sources"; count: number };
+
+export function workspaceBoardOf(
+  { sources, readFailed }: { sources: readonly WorkspaceSourcePayload[] | null; readFailed: boolean },
+): WorkspaceBoard {
+  // A failed read outranks a stale list: if the last read failed we say so, even when an
+  // earlier read left sources in hand, because the board cannot vouch that they are still
+  // registered. This matches every other read in the workbench that keeps "could not
+  // read" apart from "there are none".
+  if (readFailed) return { show: "unreadable" };
+  if (sources === null) return { show: "loading" };
+  return sources.length === 0 ? { show: "none" } : { show: "sources", count: sources.length };
 }
 
 /** The i18n key for each reason a source has nothing to show. */

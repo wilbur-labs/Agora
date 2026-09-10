@@ -9,6 +9,7 @@ import {
   ChevronDown,
   CircleCheck,
   ExternalLink,
+  FolderOpen,
   Languages,
   Moon,
   Network,
@@ -34,6 +35,7 @@ import {
   listSpecs,
   listTaskEvents,
   listTasks,
+  listWorkspaceSources,
   OPEN_ATTENTION_PAGE_LIMIT,
   type AttentionItem,
   type AttentionKind,
@@ -126,6 +128,24 @@ import { progressBarOf, type ProgressBar } from "@/lib/progress-snapshot";
 import { taskTrustLineOf, workspaceProjectStripOf,
   type TaskTrustLine, type WorkspaceProjectStrip } from "@/lib/portfolio-bucket";
 import { ProgressSnapshotBar } from "@/components/progress-snapshot-bar";
+// The tasks a registered workspace directory already holds (W7), read live. All
+// judgement — the board's three-answer honesty, a source's verdict, a task's
+// progress and its way onward — lives in lib/workspace-sources.ts with node tests;
+// the components below only render what those functions decide.
+import {
+  MANIFEST_REASON_KEY,
+  SOURCE_REASON_KEY,
+  crSummaryOf,
+  resumeSectionsOf,
+  shouldInterceptClick,
+  sourceVerdictOf,
+  taskOnwardOf,
+  taskProgressOf,
+  workspaceBoardOf,
+  type TaskProgress,
+  type WorkspaceSourcePayload,
+  type WorkspaceTaskPayload,
+} from "@/lib/workspace-sources";
 import { useI18n, type Translate, type TranslateEnum } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import { Conversation } from "@/components/conversation";
@@ -203,6 +223,16 @@ export default function WorkspacePage() {
   const [projectIds, setProjectIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // The tasks a registered workspace directory already holds (W7), read live and shown
+  // in the rail so they are usable here in the workbench rather than only on a Settings
+  // card. Its own read, kept apart from the control-plane rail reads above: a workspace
+  // source is a different thing from a control-plane task, its failure has nothing to do
+  // with theirs, and folding the two would let one empty the other. `null` is "not read
+  // yet"; `workspaceReadFailed` is "the list read failed" — never rendered as "none
+  // registered" (workspaceBoardOf keeps them apart).
+  const [workspaceSources, setWorkspaceSources] = useState<WorkspaceSourcePayload[] | null>(null);
+  const [workspaceReadFailed, setWorkspaceReadFailed] = useState(false);
 
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [projectFilter, setProjectFilter] = useState("all");
@@ -283,6 +313,28 @@ export default function WorkspacePage() {
   }, []);
 
   useEffect(() => { void load(); }, [load]);
+
+  // The workspace-sources read, token-guarded and separate from `load`. Separate
+  // because it is a separate fact: `load` reloads the control-plane rail and this
+  // reads registered directories off disk; a Refresh reloads both, but a failure in
+  // one must not disturb the other's state. Only the newest read may write, so a slow
+  // earlier response cannot land after a faster later one and revive a stale list.
+  const workspaceRequest = useRef(0);
+  const loadWorkspaceSources = useCallback(async () => {
+    const token = ++workspaceRequest.current;
+    try {
+      const listed = await listWorkspaceSources();
+      if (token !== workspaceRequest.current) return;
+      setWorkspaceSources(listed);
+      setWorkspaceReadFailed(false);
+    } catch {
+      if (token !== workspaceRequest.current) return;
+      // Not `setWorkspaceSources([])`: an empty array is the settled answer "none
+      // registered", and a failed read has established no such thing.
+      setWorkspaceReadFailed(true);
+    }
+  }, []);
+  useEffect(() => { void loadWorkspaceSources(); }, [loadWorkspaceSources]);
 
   // Read the initial selection from the URL (query params, not a dynamic route —
   // the app is statically exported).
@@ -379,6 +431,27 @@ export default function WorkspacePage() {
     window.history.replaceState(null, "", `${window.location.pathname}?${params}`);
   }, []);
 
+  // The way onward from a workspace-task row. Its target is this very page
+  // (`/workspace?project=X`), and a `next/link` to the page you are already on is a
+  // client-side navigation that does not remount — so the mount-only effect that reads
+  // `?project` never re-runs and the filter never moves: the link looked live and did
+  // nothing. So a plain primary click (see `shouldInterceptClick`) sets the filter
+  // itself, exactly as `selectTask` does, and `replaceState` keeps the URL honest so a
+  // real reload still lands on the same view. The row keeps the `href` as an accessible,
+  // real-navigation fallback; this handler is what actually changes the state on click.
+  const openProject = useCallback((projectId: string) => {
+    setProjectFilter(projectId);
+    // Opening a project must not leave a task from a different project named in the URL:
+    // the click claims the project-only `href`, so the URL it produces must match it.
+    // Clear the selection and drop the `task` param, or a copied/reloaded URL would
+    // mount a task that does not belong to the project it names.
+    setSelectedTaskId(null);
+    const params = new URLSearchParams(window.location.search);
+    params.set("project", projectId);
+    params.delete("task");
+    window.history.replaceState(null, "", `${window.location.pathname}?${params}`);
+  }, []);
+
   return (
     <div className="flex h-screen overflow-hidden bg-muted/20">
       <TaskRail
@@ -393,8 +466,11 @@ export default function WorkspacePage() {
         selectedTaskId={selectedTaskId}
         onSelect={selectTask}
         onNewTask={() => setShowCreate(true)}
-        onRefresh={load}
+        onRefresh={() => { void load(); void loadWorkspaceSources(); }}
         loading={loading}
+        workspaceSources={workspaceSources}
+        workspaceReadFailed={workspaceReadFailed}
+        onOpenProject={openProject}
       />
       <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
         {error && <div className="m-4 shrink-0 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{t("workspace.errors.loadFailed", { error })}</div>}
@@ -431,6 +507,7 @@ export default function WorkspacePage() {
 
 function TaskRail({
   groups, attentionReach, staleOrigins, projectIds, projectFilter, onProjectFilter, query, onQuery, selectedTaskId, onSelect, onNewTask, onRefresh, loading,
+  workspaceSources, workspaceReadFailed, onOpenProject,
 }: {
   groups: Record<RailGroup, Array<{ task: TaskManifest; ask: string | null; run: RunSummary | null; activity: string }>>;
   attentionReach: AttentionReach;
@@ -439,6 +516,11 @@ function TaskRail({
   query: string; onQuery: (value: string) => void;
   selectedTaskId: string | null; onSelect: (task: TaskManifest) => void;
   onNewTask: () => void; onRefresh: () => void; loading: boolean;
+  workspaceSources: WorkspaceSourcePayload[] | null; workspaceReadFailed: boolean;
+  /** Set the project filter to a workspace task's project — the row's "open" onward.
+   *  Threaded from the page rather than a link, because the target is this same page
+   *  and a client-side navigation to it would not remount the filter effect. */
+  onOpenProject: (projectId: string) => void;
 }) {
   const { t, te } = useI18n();
   const { resolvedTheme, setTheme } = useTheme();
@@ -550,10 +632,328 @@ function TaskRail({
             </section>
           );
         })}
+        {/* The tasks a registered workspace directory already holds (W7), living here
+            in the workbench instead of on a Settings card. Kept visually apart from the
+            control-plane groups above — they are a different kind of thing (a live,
+            read-only import), and merging them into the lifecycle groups would claim a
+            lifecycle they do not have. */}
+        <WorkspaceTasksPanel sources={workspaceSources} readFailed={workspaceReadFailed} onOpenProject={onOpenProject} />
       </div>
     </aside>
   );
 }
+
+// The workspace-task board: the whole thing decided by workspaceBoardOf, then one
+// source at a time by sourceVerdictOf. Nothing here re-derives a state; the three
+// answers a careless version collapses (loading / could-not-read / none registered)
+// are kept apart by the type it renders.
+function WorkspaceTasksPanel({ sources, readFailed, onOpenProject }: { sources: WorkspaceSourcePayload[] | null; readFailed: boolean; onOpenProject: (projectId: string) => void }) {
+  const { t } = useI18n();
+  const [open, setOpen] = useState(true);
+  const board = workspaceBoardOf({ sources, readFailed });
+  return (
+    <section className="mt-4 border-t pt-3">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="flex w-full items-center gap-2 px-2 py-1.5 text-left"
+      >
+        <ChevronDown className={cn("size-3 shrink-0 text-muted-foreground transition-transform", !open && "-rotate-90")} />
+        <FolderOpen className="size-3.5 shrink-0 text-muted-foreground" />
+        <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{t("workspace.workspaceTasks.title")}</span>
+        {board.show === "sources" && <span className="text-[11px] text-muted-foreground">{board.count}</span>}
+      </button>
+      {open && (
+        <div className="mt-1 px-2">
+          {board.show === "loading" ? (
+            <p className="px-1 py-2 text-[11px] text-muted-foreground">{t("workspace.workspaceTasks.loading")}</p>
+          ) : board.show === "unreadable" ? (
+            // A failed list read. Never "none registered": a person with sources
+            // registered must not be told they have none because one request lost.
+            <p className="px-1 py-2 text-[11px] text-amber-600 dark:text-amber-400">{t("workspace.workspaceTasks.unreadable")}</p>
+          ) : board.show === "none" ? (
+            <div className="px-1 py-2">
+              <p className="text-[11px] text-muted-foreground">{t("workspace.workspaceTasks.none")}</p>
+              <Link href="/settings" className="mt-1 inline-block text-[11px] font-medium text-primary hover:underline">{t("workspace.workspaceTasks.manage")}</Link>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {(sources ?? []).map((source) => <WorkspaceSourceBlock key={source.root} source={source} onOpenProject={onOpenProject} />)}
+              <Link href="/settings" className="inline-block px-1 text-[11px] font-medium text-primary hover:underline">{t("workspace.workspaceTasks.manage")}</Link>
+            </div>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
+// One registered source: its root, then either the tasks it holds or the one sentence
+// that says why it holds none. Every branch of sourceVerdictOf says something
+// different; none of them renders "0" for a directory nobody could read.
+function WorkspaceSourceBlock({ source, onOpenProject }: { source: WorkspaceSourcePayload; onOpenProject: (projectId: string) => void }) {
+  const { t } = useI18n();
+  const verdict = sourceVerdictOf(source);
+  return (
+    <div className="rounded-lg border bg-background/40 p-2">
+      <p className="break-all font-mono text-[10px] text-muted-foreground">{source.root}</p>
+      {verdict.show === "unavailable" ? (
+        <p className="mt-1 text-[11px] text-amber-600 dark:text-amber-400">{t(SOURCE_REASON_KEY[verdict.reason])}</p>
+      ) : verdict.show === "empty" ? (
+        <p className="mt-1 text-[11px] text-muted-foreground">
+          {t("workspace.workspaceTasks.emptyTasksDir")}
+          {verdict.skipped.length > 0 ? ` ${t("workspace.workspaceTasks.skipped", { names: verdict.skipped.join(", ") })}` : ""}
+        </p>
+      ) : (
+        <>
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            {verdict.show === "partial"
+              ? t("workspace.workspaceTasks.taskCountAtLeast", { count: String(verdict.count) })
+              : t("workspace.workspaceTasks.taskCount", { count: String(verdict.count) })}
+            {verdict.skipped.length > 0 ? ` · ${t("workspace.workspaceTasks.skipped", { names: verdict.skipped.join(", ") })}` : ""}
+          </p>
+          {/* An entry the server listed but could not stat: named, because the count
+              above is a floor and the alternative is a task missing from the only place
+              it shows. */}
+          {verdict.show === "partial" && (
+            <p className="mt-1 text-[11px] text-amber-600 dark:text-amber-400">
+              {t("workspace.workspaceTasks.unreadableEntries", { names: verdict.unreadable.join(", ") })}
+            </p>
+          )}
+          <ul className="mt-2 space-y-1.5">
+            {(source.tasks ?? []).map((task) => <WorkspaceTaskRow key={task.name} task={task} onOpenProject={onOpenProject} />)}
+          </ul>
+        </>
+      )}
+    </div>
+  );
+}
+
+// One workspace task, compact: its name and goal, a progress bar from the RESUME
+// 「进度快照」 (✅ only in the percentage), its CR/ADR standing, and where it leads.
+function WorkspaceTaskRow({ task, onOpenProject }: { task: WorkspaceTaskPayload; onOpenProject: (projectId: string) => void }) {
+  const { t } = useI18n();
+  const [open, setOpen] = useState(false);
+  const onward = taskOnwardOf(task.repo_link);
+  const progress = taskProgressOf(task.resume);
+  const { currentState, nextStep } = resumeSectionsOf(task.resume);
+  return (
+    <li className="rounded-md bg-muted/40 px-2 py-1.5">
+      <div className="flex items-center gap-1.5">
+        <button onClick={() => setOpen((v) => !v)} className="flex min-w-0 flex-1 items-center gap-1.5 text-left" aria-expanded={open}>
+          <ChevronDown className={cn("size-3 shrink-0 text-muted-foreground transition-transform", !open && "-rotate-90")} />
+          <span className="min-w-0 truncate text-xs font-medium">{task.name}</span>
+        </button>
+        {onward.show === "open" && (
+          // The target is this very page (`onward.href` is `/workspace?project=…`), so a
+          // plain link click would navigate client-side without remounting and the
+          // filter would never move — the link would look live and do nothing. So a
+          // plain primary click is intercepted: `href` stays for real navigation and the
+          // click sets the filter directly. But a modified click (Ctrl/Cmd new tab, Shift
+          // new window, Alt, or any non-primary button) is the browser's own intent that
+          // the in-page handler cannot honour, so `shouldInterceptClick` lets those fall
+          // through to the default against the real `href`.
+          <Link
+            href={onward.href}
+            onClick={(e) => {
+              if (!shouldInterceptClick(e)) return;
+              e.preventDefault();
+              onOpenProject(onward.projectId);
+            }}
+            className="inline-flex shrink-0 items-center gap-0.5 text-[11px] font-medium text-primary hover:underline"
+          >
+            {t("workspace.workspaceTasks.openProject", { project: onward.projectId })}
+            <ExternalLink className="size-2.5" />
+          </Link>
+        )}
+      </div>
+      {/* Goal, or which of its files could not be read — not "no goal". */}
+      <p className="mt-0.5 truncate pl-4 text-[11px] text-muted-foreground">
+        {task.manifest.available
+          ? (task.manifest.goal ?? t("workspace.workspaceTasks.goalEmpty"))
+          : <span className="text-amber-600 dark:text-amber-400">{t(MANIFEST_REASON_KEY[task.manifest.reason ?? "unreadable"])}</span>}
+      </p>
+      <div className="mt-1 pl-4">
+        <WorkspaceTaskProgress progress={progress} />
+      </div>
+      {/* CR/ADR standing and the way onward, moved here from the deleted Settings card:
+          an OPEN or UNRECOGNISED CR, an unreadable ADR directory, and every state of
+          `taskOnwardOf` that is not the header link above are honest-failure facts, and
+          dropping them was the slice's number-one recorded sin. */}
+      <WorkspaceTaskStanding task={task} onward={onward} />
+      {open && (
+        <div className="mt-1.5 space-y-1 pl-4">
+          {([["workspace.workspaceTasks.currentState", currentState], ["workspace.workspaceTasks.nextStep", nextStep]] as const).map(([label, section]) => (
+            <p key={label} className="text-[11px]">
+              <span className="text-muted-foreground">{t(label)}: </span>
+              {section.show === "text" ? (
+                <span className="whitespace-pre-wrap">{section.text}</span>
+              ) : section.show === "missing" ? (
+                <span className="text-muted-foreground">{t("workspace.workspaceTasks.sectionMissing")}</span>
+              ) : (
+                <span className="text-amber-600 dark:text-amber-400">{t("workspace.workspaceTasks.resumeUnreadable")}</span>
+              )}
+            </p>
+          ))}
+        </div>
+      )}
+    </li>
+  );
+}
+
+// The task's CR log summary, its ADR count, and the way onward — the per-task detail
+// the W8 move dropped. Every branch here is a state the payload carries and the deleted
+// Settings renderer used to show; none of them may be silently swallowed:
+//
+//  * CR: `crSummaryOf` (reused, not re-summarised) keeps an open count from ever
+//    travelling without the rows whose status could not be read, and renders "could not
+//    read the CR log" as its own amber sentence rather than as blank — the very
+//    substitution the workspace readers exist to refuse.
+//  * ADR: `records: null` is "could not read adr/" (amber, unless the ordinary `absent`,
+//    which says nothing); a number is the count.
+//  * onward: `open` is the header link; the other five states each name a different next
+//    move (register a directory, write/fix `primary_repo`, retry the project list, or —
+//    for `unknown` — claim nothing at all).
+function WorkspaceTaskStanding({
+  task, onward,
+}: { task: WorkspaceTaskPayload; onward: ReturnType<typeof taskOnwardOf> }) {
+  const { t } = useI18n();
+  const cr = crSummaryOf(task.cr_log);
+  const adr = task.decisions.records?.length ?? null;
+  const adrUnavailable = adr === null && task.decisions.reason !== "absent";
+  // `unknown` claims nothing and the header carries `open`, so those two render no line;
+  // everything else here is a fact owed to the reader.
+  const hasOnwardLine = onward.show !== "open" && onward.show !== "unknown";
+  if (cr.show !== "counts" && cr.show !== "unavailable" && adr === null && !adrUnavailable && !hasOnwardLine) {
+    return null;
+  }
+  return (
+    <div className="mt-0.5 flex flex-wrap items-baseline gap-x-2 gap-y-0.5 pl-4 text-[11px]">
+      {cr.show === "counts" ? (
+        <span className="text-muted-foreground">
+          {t("workspace.workspaceTasks.crOpen", { open: String(cr.open) })}
+          {/* Never shown without this: an open count says nothing about rows whose
+              status could not be read, and on the first real log there were nine. */}
+          {cr.unrecognised > 0
+            ? ` · ${t("workspace.workspaceTasks.crUnrecognised", { n: String(cr.unrecognised) })}`
+            : ""}
+        </span>
+      ) : (
+        // Not blank: "the CR log could not be read" must not look like "this task has
+        // no CRs" — the collapse the whole panel refuses.
+        <span className="text-amber-600 dark:text-amber-400">{t("workspace.workspaceTasks.crUnavailable")}</span>
+      )}
+      {adrUnavailable ? (
+        <span className="text-amber-600 dark:text-amber-400">{t("workspace.workspaceTasks.adrUnavailable")}</span>
+      ) : adr !== null && adr > 0 ? (
+        <span className="text-muted-foreground">{t("workspace.workspaceTasks.adrCount", { n: String(adr) })}</span>
+      ) : null}
+      {onward.show === "notRegistered" ? (
+        <span className="text-muted-foreground">{t("workspace.workspaceTasks.repoNotRegistered", { repo: onward.repo })}</span>
+      ) : onward.show === "noRepoRecorded" ? (
+        <span className="text-muted-foreground">{t("workspace.workspaceTasks.noRepoRecorded")}</span>
+      ) : onward.show === "repoMalformed" ? (
+        <span className="text-amber-600 dark:text-amber-400">{t("workspace.workspaceTasks.repoMalformed")}</span>
+      ) : onward.show === "projectsUnreadable" ? (
+        // About the project list, not this task: nothing here failed, but a person whose
+        // links just vanished is owed the sentence rather than a blank.
+        <span className="text-amber-600 dark:text-amber-400">{t("workspace.workspaceTasks.projectsUnreadable")}</span>
+      ) : null}
+    </div>
+  );
+}
+
+// The workspace task's progress bar. Four answers, three of them wordless-but-not-a-bar:
+// a percentage exists only on the `counts` branch, so a read that failed, a task with no
+// snapshot, and an empty snapshot can none of them render a number by accident.
+function WorkspaceTaskProgress({ progress }: { progress: TaskProgress }) {
+  const { t } = useI18n();
+  // The one answer with no snapshot counterpart: the RESUME file could not be read.
+  // Its own amber sentence — not "no snapshot", which would state a fact about the
+  // snapshot from a fact about the file.
+  if (progress.show === "resumeUnreadable") {
+    return (
+      <span className="text-[11px] text-amber-600 dark:text-amber-400">
+        {t("workspace.workspaceTasks.progress.unreadable")}
+      </span>
+    );
+  }
+  // Everything else is the snapshot decision, made once in `progressBarOf`. This
+  // renders the `ProgressBar` it returned and decides nothing: the same value type,
+  // and the same rules, the portfolio cockpit's bar renders.
+  const bar = progress.bar;
+  if (bar.kind === "counts" || bar.kind === "countsDoneOnly") {
+    // The count wording differs by convention: a marker snapshot has a real in-progress
+    // figure; a checkbox snapshot cannot express one (`countsDoneOnly` carries no
+    // in-progress field at all), so it says done / not-done and draws no in-flight
+    // segment — a 0 there would claim nothing is in flight, which the file never said.
+    const counts = bar.kind === "countsDoneOnly"
+      ? t("workspace.workspaceTasks.progress.countsCheckbox", {
+          done: bar.done, notDone: bar.notDone,
+        })
+      : t("workspace.workspaceTasks.progress.counts", {
+          done: bar.done, inProgress: bar.inProgress, todo: bar.todo,
+        });
+    return (
+      <span className="inline-flex items-center gap-2" title={counts}>
+        <span className="text-[11px] font-semibold tabular-nums">{bar.donePct}%</span>
+        <span className="inline-flex h-1.5 w-24 overflow-hidden rounded-full bg-muted align-middle" role="img" aria-label={counts}>
+          {/* Solid: done. Translucent: in progress — its own segment, never folded
+              into the percentage above (🔵 is not half credit). Absent entirely on a
+              checkbox snapshot (`countsDoneOnly`), whose in-flight count is unknown,
+              not zero, and which carries no `inProgressPct` field to draw from. */}
+          <span className="h-full bg-emerald-500" style={{ width: `${bar.donePct}%` }} />
+          {bar.kind === "counts" && bar.inProgressPct > 0 && (
+            <span className="h-full bg-emerald-500/40" style={{ width: `${bar.inProgressPct}%` }} />
+          )}
+        </span>
+      </span>
+    );
+  }
+  // `loading` cannot occur here — the task path always maps a snapshot that is in hand
+  // and read (`dashboardLoaded: true`) — but the shared `ProgressBar` type carries it,
+  // so it is handled rather than asserted away: a dash, never a false "no snapshot".
+  if (bar.kind === "loading") {
+    return <span className="text-[11px] text-muted-foreground">—</span>;
+  }
+  // No number, and the sentence differs by which non-answer it is — decided by
+  // `progressBarOf`, worded here. An empty snapshot (tracks nothing yet), a task that
+  // records no 进度快照 section (`empty`/`noSnapshot`), and a section read but not
+  // countable (`unknown` with a `because`) are each a different fact; the amber ones
+  // are read failures, the muted ones are settled facts about the task.
+  const isFailure = bar.kind === "unknown";
+  return (
+    <span className={cn("text-[11px]", isFailure ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground")}>
+      {t(WORKSPACE_PROGRESS_KEY[bar.because])}
+    </span>
+  );
+}
+
+/**
+ * The task-worded sentence for each wordless `ProgressBar` outcome. `progressBarOf`
+ * decides *which* outcome; this only chooses the copy, so a workspace RESUME reads in
+ * task terms ("no progress snapshot recorded") while the same decision drives the
+ * project-worded cockpit bar. A `because` with no specific key falls back to the
+ * general "read but uncountable" line rather than to silence.
+ */
+const WORKSPACE_PROGRESS_KEY: Record<string, string> = {
+  // A snapshot that exists and lists nothing yet, and a RESUME that records no 进度快照
+  // section at all — the two `empty` reasons `progressBarOf` distinguishes.
+  noItems: "workspace.workspaceTasks.progress.empty",
+  noSnapshot: "workspace.workspaceTasks.progress.none",
+  // Read fine, cannot be counted. Each names itself; the rest are read failures the
+  // task panel shows as its general uncountable line.
+  mixedConventions: "workspace.workspaceTasks.progress.mixedConventions",
+  markersNotCounted: "workspace.workspaceTasks.progress.uncountedMarkers",
+  countsUnusable: "workspace.workspaceTasks.progress.uncountable",
+  snapshotUnread: "workspace.workspaceTasks.progress.uncountable",
+  // A verdict for a task never carries these — they are dashboard-load facts, and the
+  // task path always maps a snapshot that is in hand and read. Mapped to the general
+  // uncountable line rather than left to crash if a payload ever produces one.
+  dashboardUnread: "workspace.workspaceTasks.progress.uncountable",
+  notReported: "workspace.workspaceTasks.progress.uncountable",
+  conventionNotReported: "workspace.workspaceTasks.progress.uncountable",
+};
 
 function EmptyWorkspace({ hasTasks }: { hasTasks: boolean }) {
   const { t } = useI18n();

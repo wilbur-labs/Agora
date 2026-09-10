@@ -30,14 +30,9 @@ import {
   type SettingsOverview,
 } from "@/lib/control-plane";
 import {
-  MANIFEST_REASON_KEY,
   SOURCE_REASON_KEY,
-  crSummaryOf,
   sourceVerdictOf,
-  resumeSectionsOf,
-  taskOnwardOf,
   type WorkspaceSourcePayload,
-  type WorkspaceTaskPayload,
 } from "@/lib/workspace-sources";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n";
@@ -430,8 +425,12 @@ function WorkSourcesCard({ onError }: { onError: (msg: string | null) => void })
   );
 }
 
-// One source, as one sentence plus its tasks. Every branch of the verdict says
-// something different; none of them says "0".
+// One source, as one sentence about what it holds. Every branch of the verdict says
+// something different; none of them says "0". The per-task detail — goal, progress,
+// where it stopped and what is next, the way onward — no longer lives here: W8 moved
+// the task list itself to the workbench (项目工作台), and this card keeps only what
+// registration needs, which is the confirmation that the folder is a workspace and how
+// many tasks it holds.
 function SourceSummary({ source }: { source: WorkspaceSourcePayload }) {
   const { t } = useI18n();
   const verdict = sourceVerdictOf(source);
@@ -467,139 +466,10 @@ function SourceSummary({ source }: { source: WorkspaceSourcePayload }) {
               {t("settings.sources.unreadableEntries", { names: verdict.unreadable.join(", ") })}
             </p>
           )}
-          <ul className="mt-2 space-y-1">
-            {(source.tasks ?? []).map((task) => <TaskLine key={task.name} task={task} />)}
-          </ul>
         </>
       )}
     </div>
   );
-}
-
-function TaskLine({ task }: { task: WorkspaceTaskPayload }) {
-  const { t } = useI18n();
-  const cr = crSummaryOf(task.cr_log);
-  const adr = task.decisions.records?.length ?? null;
-  return (
-    <li className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-xs">
-      <span className="font-medium">{task.name}</span>
-      {task.manifest.available ? (
-        <span className="min-w-0 truncate text-muted-foreground">
-          {task.manifest.goal ?? t("settings.sources.goalEmpty")}
-        </span>
-      ) : (
-        // Not "no goal": the file was not read, and saying which is the whole point.
-        <span className="text-amber-600">{t(MANIFEST_REASON_KEY[task.manifest.reason ?? "unreadable"])}</span>
-      )}
-      {cr.show === "counts" ? (
-        <span className="text-muted-foreground">
-          {t("settings.sources.crOpen", { open: String(cr.open) })}
-          {/* Never shown without this: an open count says nothing about the rows whose
-              status could not be read, and on the first real log there were nine. */}
-          {cr.unrecognised > 0
-            ? ` · ${t("settings.sources.crUnrecognised", { n: String(cr.unrecognised) })}`
-            : ""}
-        </span>
-      ) : (
-        // Not nothing. The first version rendered this branch as blank, so "the CR log
-        // could not be read" looked exactly like "this task has no CRs" — the
-        // substitution the whole panel exists to refuse, in the panel that refuses it.
-        <span className="text-amber-600">{t("settings.sources.crUnavailable")}</span>
-      )}
-      {adr === null ? (
-        // `records: null` is "could not read adr/", including a directory that is there
-        // and unreadable. Absent is the ordinary case and says nothing, so it is the
-        // only one that renders nothing.
-        task.decisions.reason === "absent"
-          ? null
-          : <span className="text-amber-600">{t("settings.sources.adrUnavailable")}</span>
-      ) : adr > 0 ? (
-        <span className="text-muted-foreground">{t("settings.sources.adrCount", { n: String(adr) })}</span>
-      ) : null}
-      <TaskOnward task={task} />
-      <TaskProgressLines task={task} />
-    </li>
-  );
-}
-
-/** Where the task stopped and what is next — the two questions the panel exists for.
- *
- *  Clamped rather than truncated in the payload: the whole section is in the DOM and two
- *  lines of it are shown, so "there is more" is visible and nothing here has to decide
- *  what part of someone's next step is the important part. The `expand` control reveals
- *  the rest in place. (The response itself is the size problem, and that is CR-35.) */
-function TaskProgressLines({ task }: { task: WorkspaceTaskPayload }) {
-  const { t } = useI18n();
-  const [expanded, setExpanded] = useState(false);
-  const { currentState, nextStep } = resumeSectionsOf(task.resume);
-  const rows: [string, typeof currentState][] = [
-    ["settings.sources.currentState", currentState],
-    ["settings.sources.nextStep", nextStep],
-  ];
-  const anyText = rows.some(([, section]) => section.show === "text");
-  return (
-    <div className="mt-1 w-full space-y-0.5">
-      {rows.map(([label, section]) => (
-        <p key={label} className="text-xs">
-          <span className="text-muted-foreground">{t(label)}: </span>
-          {section.show === "text" ? (
-            <span className={cn("whitespace-pre-wrap", !expanded && "line-clamp-2")}>
-              {section.text}
-            </span>
-          ) : section.show === "missing" ? (
-            // A fact about the task, not a failure: it has not written this section.
-            <span className="text-muted-foreground">{t("settings.sources.sectionMissing")}</span>
-          ) : (
-            // And this one is a failure, which is why it cannot share the sentence above.
-            <span className="text-amber-600">{t("settings.sources.resumeUnreadable")}</span>
-          )}
-        </p>
-      ))}
-      {anyText && (
-        <button
-          type="button"
-          className="text-xs text-muted-foreground underline underline-offset-2"
-          onClick={() => setExpanded((was) => !was)}
-        >
-          {t(expanded ? "settings.sources.collapse" : "settings.sources.expand")}
-        </button>
-      )}
-    </div>
-  );
-}
-
-/** The way onward from a task: open the project its `primary_repo` names, or say
- *  precisely which of the three other things is true. */
-function TaskOnward({ task }: { task: WorkspaceTaskPayload }) {
-  const { t } = useI18n();
-  const onward = taskOnwardOf(task.repo_link);
-  if (onward.show === "open") {
-    return (
-      <a className="text-xs text-primary underline underline-offset-2" href={onward.href}>
-        {t("settings.sources.openProject", { project: onward.projectId })}
-      </a>
-    );
-  }
-  if (onward.show === "notRegistered") {
-    // Names the directory: the next move is to add *that* one as a project.
-    return (
-      <span className="text-xs text-muted-foreground">
-        {t("settings.sources.repoNotRegistered", { repo: onward.repo })}
-      </span>
-    );
-  }
-  if (onward.show === "noRepoRecorded") {
-    return <span className="text-xs text-muted-foreground">{t("settings.sources.noRepoRecorded")}</span>;
-  }
-  if (onward.show === "repoMalformed") {
-    return <span className="text-xs text-amber-600">{t("settings.sources.repoMalformed")}</span>;
-  }
-  if (onward.show === "projectsUnreadable") {
-    // Amber, and about the project list rather than about this task: nothing here failed.
-    return <span className="text-xs text-amber-600">{t("settings.sources.projectsUnreadable")}</span>;
-  }
-  // `unknown`: nothing was established, so nothing is claimed.
-  return null;
 }
 
 function ProjectImportNotice({ status }: { status: ProjectImportStatus | null }) {

@@ -25,6 +25,7 @@ from agora.projects.progress_snapshot import (
     UNCOUNTED_MARKERS_REASON,
     count_checkbox_items,
     count_progress_markers,
+    count_progress_verdict,
     read_progress_snapshot,
 )
 from tests.acl_support import deny_self_traverse, restore_traverse
@@ -64,6 +65,40 @@ def test_prose_mentioning_a_marker_is_not_an_item():
 
 def test_one_item_per_line_even_when_a_line_carries_several_markers():
     assert count_progress_markers("- ✅ done ⬜ ⬜ ⬜\n") == {"done": 1, "in_progress": 0, "todo": 0}
+
+
+def test_the_text_verdict_is_exactly_what_read_from_disk_reports(tmp_path):
+    """`count_progress_verdict` is the decision `read_progress_snapshot` used to inline,
+    lifted out so a second reader reaches the same answer. Pinned as parity: for each
+    shape, counting the text directly and reading the same text off disk agree on
+    counts, convention and reason. If they ever diverge, the extraction changed the
+    file-level behavior the docstring promises it must not.
+    """
+    cases = {
+        "markers": "- ✅ a\n- 🔵 b\n- ⬜ c\n",
+        "checkboxes": "- [x] a\n- [ ] b\n",
+        "none": "just prose, no items\n",
+        MIXED_CONVENTIONS_REASON: "- ✅ a\n- [x] b\n",
+        UNCOUNTED_MARKERS_REASON: "- [x] a\n- [/] b\n",
+    }
+    for label, text in cases.items():
+        verdict = count_progress_verdict(text)
+        snapshot = read_progress_snapshot_of(tmp_path, text)
+        assert verdict.done == snapshot.done, label
+        assert verdict.in_progress == snapshot.in_progress, label
+        assert verdict.todo == snapshot.todo, label
+        assert verdict.convention == snapshot.convention, label
+        # A countable verdict is an available snapshot with no reason; an uncountable
+        # verdict's reason is the snapshot's reason. Exactly one of the two per case.
+        assert verdict.countable == snapshot.available, label
+        assert verdict.reason == (None if snapshot.available else snapshot.reason), label
+
+
+def read_progress_snapshot_of(root: Path, text: str):
+    """Write `text` to the snapshot path and read it back — the file-level path, for the
+    parity check above."""
+    _write(root, text)
+    return read_progress_snapshot(root)
 
 
 def test_absent_snapshot_reports_absent_with_no_counts(tmp_path):

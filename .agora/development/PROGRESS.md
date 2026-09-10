@@ -7074,3 +7074,176 @@ user can close it. Four CRs wait on a decision: CR-44 (codex `bridge_mode`), CR-
 landed), CR-46 (the POSIX half of stopping a tree), CR-47 (adopting a session recorded
 before roles existed).
 
+## W8 exit criterion 6 — workspace tasks in the workbench, and the progress verdict reuse
+
+`feature/w8-session-ui`, on top of `4fb5a3a`, not yet committed. Two things landed in
+this slice: the W7 workspace-task list moved off the Settings card into the workbench
+rail (exit criterion 6), and — the substance of codex rounds 33–34 — the task progress
+bar stopped deciding progress a second time and now delegates to the one honest module
+that already answered that question.
+
+### The progress-verdict reuse (round-3 finding B)
+
+`taskProgressOf` in `frontend/src/lib/workspace-sources.ts` had grown a parallel copy of
+a decision `frontend/src/lib/progress-snapshot.ts` already owns: which checklist
+convention a snapshot was counted in, an unknown convention, a numeric `in_progress`
+smuggled under checkboxes, nulls or non-integers among the counts, the done-only
+percentage, and every wordless "there is no number here". Round 2 had already removed the
+only justification for the duplication — it changed `_read_resume` to report
+counts + `convention` + `reason`, which is exactly `ProgressVerdict`'s shape (the RESUME
+reader and the dashboard snapshot now share `count_progress_verdict`). Two modules
+deciding one question is what produced round-2 finding 3 and round-3 finding B.
+
+The fix maps the RESUME verdict onto `ProgressSnapshotLike` — the same map the backend's
+`ProgressVerdict.as_snapshot` makes — and hands it to `progressBarOf`. The one answer
+kept in `taskProgressOf` is the only one with no snapshot counterpart: the RESUME **file**
+could not be read (`progressBarOf` reasons about a snapshot's *text* and has no notion of
+the file being unreadable; folding that into a snapshot reason would state a fact about
+the snapshot from a fact about the file). `progress: null` on a *readable* RESUME is not
+that case — it means the file records no 进度快照 section, which maps to the snapshot's own
+`absent` and renders "no snapshot", blank, never 0%. `TaskProgress` is now
+`{ show: "resumeUnreadable" } | { show: "bar"; bar: ProgressBar }`; the workspace renderer
+draws the `ProgressBar` and decides nothing, wording the wordless outcomes in task terms
+(a `WORKSPACE_PROGRESS_KEY` map) rather than re-deciding them.
+
+Delegating fixed round-3 finding A's twin gaps for free: the payload-shape contradictions
+codex named — an unknown convention with a credible count, `checkboxes` carrying a numeric
+`in_progress`, `markers` carrying nulls — were already refused by `progressBarOf`, and are
+now pinned at this boundary too (each comes out `unknown`, never a percentage).
+
+### Round-3 finding A — the onward link was inert
+
+`taskOnwardOf` targets `/workspace?project=X`, which is the page the row is already on. The
+URL-reading effect in `workspace/page.tsx` is mount-only (`[]` deps, no `useSearchParams`),
+so a `next/link` client-navigation to the same page never remounted it and `projectFilter`
+never moved — the link looked live and did nothing. Fixed by reusing the `selectTask`
+pattern: a new `openProject` handler sets the filter and `window.history.replaceState`s the
+URL (so a real reload still lands on the same view), threaded down
+`TaskRail → WorkspaceTasksPanel → WorkspaceSourceBlock → WorkspaceTaskRow`. The row keeps
+the `href` as the accessible real-navigation fallback (new tab, reload, no-JS) and a plain
+primary click sets the filter directly.
+
+### Round-4 (codex round 35) — two navigation defects in that same click, and two record fixes
+
+* **Finding 2: modifier-key clicks must keep the browser's navigation.** The round-3 handler
+  called `event.preventDefault()` unconditionally, which cancelled Ctrl/Cmd/Shift-click and
+  middle-click — the exact new-tab/new-window cases the `href` was kept for. The decision
+  "should this click be intercepted?" is now a pure predicate `shouldInterceptClick(event)`
+  in `frontend/src/lib/workspace-sources.ts`: it returns true only for a plain primary-button
+  click (`button === 0` and no meta/ctrl/shift/alt), so a modified or non-primary click falls
+  through to the default against the real `href`. The `WorkspaceTaskRow` click handler now
+  bails (`if (!shouldInterceptClick(e)) return;`) before `preventDefault`.
+* **Finding 3: opening a project clears the stale task selection.** `openProject` set the
+  `project` filter and param but left any existing `task=A` in the URL, so the URL named a
+  task that did not belong to the project it named; a copied or reloaded URL would mount the
+  wrong task briefly before the in-page effect corrected it. `openProject` now also calls
+  `setSelectedTaskId(null)` and `params.delete("task")`, so the URL it produces matches the
+  project-only `href` the click claims.
+
+### Gate
+
+Backend `pytest tests -m "not integration" -q`: **1440 passed / 13 skipped**, 1 deselected
+— **collected 1454**, the 1 deselected being the single integration test. This slice *did*
+change the backend: `backend/agora/projects/progress_snapshot.py`,
+`backend/agora/projects/workspace_tasks.py`, `backend/tests/test_progress_snapshot.py`, and
+`backend/tests/test_workspace_tasks.py`. Baseline collected was 1448 before this slice;
+those changes took it to **1454** (**+6 backend tests**). The 1440 passed / 13 skipped / 1
+deselected figure was measured in round 2, *after* those backend changes landed; round 3
+changed only frontend files, so that measurement still stood then — the backend suite was
+not re-run in round 3 because no backend file moved. Do not read this as "no backend file
+touched": the backend suite must be re-run whenever a backend file changes, and it did
+change in this slice. Schema check `scripts/export_protocol_schemas.py --check` exits 0 (no
+drift). Frontend `npm run test:control-plane`: **collected 319, 318 passed, 1 skipped** (the
+pre-existing one) — up from 293 collected before this slice, so **26 frontend tests added**,
+covering the verdict→snapshot mapping, the resume-unreadable answer kept out of
+`progressBarOf`, the four distinct non-bar facts, and the three payload-shape
+contradictions. `npx tsc --noEmit` 0, `npx eslint` 0, `npm run build` 14 pages.
+
+**Round-4 gate (run against the tree as it is about to be committed).** Backend
+`pytest tests -m "not integration" -q` re-run in full this round: **1440 passed / 13 skipped
+/ 1 deselected — collected 1454** (16m26s). This is the figure that stands, measured against
+the current state of all four backend files; it matches the round-2 number, confirming round
+3's frontend-only changes did not disturb the backend. Frontend `npm run test:control-plane`:
+**collected 323, 322 passed, 1 skipped** (the pre-existing one) — up from 319 in round 3, so
+**+4 frontend tests**, all covering `shouldInterceptClick` (a plain primary click is
+intercepted; each of meta/ctrl/shift/alt yields to the browser; middle/right button yields;
+a modifier on the primary button still yields). `npx tsc --noEmit` 0, `npx eslint` 0,
+`npm run build` 14 pages. Schema check `scripts/export_protocol_schemas.py --check` exits 0.
+
+Not verified, stated rather than implied: no automated test exercises the click *behaviour*
+in a browser. Three things remain browser-owed and the node runner cannot mount them: (i)
+round-3 finding A's inert-link fix (client navigation of `next/link` against a mount-only
+effect); (ii) round-4 finding 2, that a Ctrl/Cmd/Shift/Alt or middle click actually opens a
+new tab/window rather than being cancelled; (iii) round-4 finding 3, that opening a project
+leaves a URL with no stale `task` param. What *is* tested: `shouldInterceptClick` is a pure
+predicate with node tests, and the `openProject` param-clearing is a plain state/URL write
+checked by tsc, eslint, and the static build. Nobody has clicked these in a browser; that
+check is owed.
+
+### Review state
+
+* **codex round 33** and **round 34** on this slice. Round 34 raised four P2: (A) the inert
+  onward link, (B) `taskProgressOf` validating `reason`/numbers but not `convention` against
+  the field shape so an unknown convention rendered a credible percentage and a `checkboxes`
+  numeric `in_progress` / `markers` nulls were accepted, (C) this PROGRESS.md entry was owed,
+  and (D) exclude `.claude/settings.local.json` from the change.
+* **A, B, C confirmed and fixed** as above.
+* **D corrected as an over-claim.** On the author's machine `.claude/settings.local.json` is
+  covered by the user's global git ignore:
+  `git check-ignore -v .claude/settings.local.json` resolves to
+  `"C:\Users\wuche/.config/git/ignore":1:**/.claude/settings.local.json`, and
+  `git status --porcelain --untracked-files=all | grep -c settings.local` is 0 here. But that
+  is a property of *this environment* with that per-user config readable, not a property of
+  the repo: codex reports that in its environment `git status` and
+  `git ls-files --others --exclude-standard` both list the file, because
+  `~/.config/git/ignore` was not readable there. Both measurements are true. The earlier
+  wording ("never appears untracked and cannot be swept into a commit by any bulk `git add`")
+  read as a guarantee about the repo and was not one — a guard narrower than the claim it
+  makes. The actual mitigation is procedural, not a repo property: **the commit stages this
+  slice's files explicitly (the ten modified paths named above); there is no bulk `git add`.**
+  No repo-level ignore entry was added and the file was not touched — repo-ignore policy is a
+  separate decision that does not belong in a slice about the workspace task list.
+* **codex round 35** raised four items on this slice, all addressed this round: (1) a record
+  defect with a wrong diagnosis — the backend suite *had* covered the change (round-2 number,
+  measured after the backend files changed), but the sentence around it falsely said "no
+  backend file touched"; the Gate paragraph is rewritten to name the four backend files and
+  the 1448→1454 (+6) collected change, and the full backend suite was re-run this round
+  against the current tree (1440 passed / 13 skipped / 1 deselected, collected 1454). (2)
+  modifier/middle clicks must keep browser navigation — fixed via `shouldInterceptClick`.
+  (3) opening a project must clear the stale task selection — fixed in `openProject`. (4) the
+  finding-D wording was an over-claim about repo behaviour — corrected to say what was
+  measured and where, and to name the explicit-staging mitigation. Findings 2 and 3 are
+  browser-owed behaviours; the testable predicate was lifted out and given node tests, and
+  the residual browser check is recorded as owed above.
+* **The independent-reviewer gate is closed for this slice, by Kiro standing in for codex.**
+  codex round 37 was interrupted mid-review by `You've hit your usage limit` (quota resets
+  19:57 local), so the gate ran as `scripts/kiro-review.sh` — model pinned `gpt-5.6-sol`,
+  `--effort max`, read-only. This is the documented substitution (adr/0017): a substitute for
+  that run, never a second opinion alongside codex, and never chosen because codex was slow or
+  noisy. The reviewer is not the model that wrote the code. It raised **one P2 and no P1**:
+  this file said "nine slice files" where the diff is ten and where its own Gate paragraph
+  says "ten modified paths" — a maintainer following it literally would have staged nine and
+  most likely dropped this record from the commit. Fixed in the Next safe action below. The
+  commit message says that Kiro stood in, so the history does not claim a codex review that
+  did not happen.
+
+### Blockers
+
+None.
+
+### Next safe action
+
+Commit the **ten** slice files on `feature/w8-session-ui`, staged explicitly. (The count is
+ten, matching the ten modified paths named in the Gate paragraph: eight implementation/test
+files, `frontend/src/app/settings/page.tsx`, and this record. An earlier revision of this
+line said nine, which would have left one file — most likely this record — out of the
+commit.)
+
+W8's remaining exit criteria: **exit criterion 1 (typing into the conversation window) still
+waits on the user**, and with it three browser-owed navigation checks named above. **CRs 44–47
+no longer wait on a decision** — all four were decided on 2026-09-10: CR-44 keep codex
+`bridge_mode: cli` (session continuity over app-server's two-way approvals); CR-45 narrow the
+session state machine to four states, but only after W8's remaining exit criteria (carried by
+a new W8-b milestone, so the decision has something to land on); CR-46 accept the POSIX
+process-tree gap as a known platform difference, the skipped test staying as its trigger;
+CR-47 session claiming for `role=unknown` goes to the backlog.

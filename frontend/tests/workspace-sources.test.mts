@@ -7,13 +7,19 @@ import {
   crSummaryOf,
   sourceVerdictOf,
   resumeSectionsOf,
+  shouldInterceptClick,
   taskOnwardOf,
+  taskProgressOf,
+  workspaceBoardOf,
   type CrLogPayload,
   type ManifestReason,
+  type ProgressVerdictPayload,
+  type ResumePayload,
   type SourceReason,
   type WorkspaceSourcePayload,
 } from "../src/lib/workspace-sources.ts";
 import { settings as settingsDictionary } from "../src/lib/i18n/dictionaries/settings.ts";
+import { workspace as workspaceDictionary } from "../src/lib/i18n/dictionaries/workspace.ts";
 
 type Locale = "en" | "zh";
 
@@ -286,4 +292,372 @@ test("half an answer from the server claims nothing rather than guessing", () =>
   // cannot name what to register. Neither may be rendered as though it could.
   assert.deepEqual(taskOnwardOf({ state: "linked", repo: "D:/x", project_id: null }), { show: "unknown" });
   assert.deepEqual(taskOnwardOf({ state: "not_registered", repo: null, project_id: null }), { show: "unknown" });
+});
+
+// --- progress: the decision is delegated to progressBarOf; only the file-level
+// "RESUME unreadable" answer stays here (W8 rule 5, round-3 finding B) --------------
+//
+// taskProgressOf no longer decides the bar. `ProgressVerdictPayload` is the same shape
+// the dashboard snapshot produces, so the honest decision — conventions, unknown
+// conventions, nulls and non-integers, the done-only percentage, every wordless
+// non-answer — lives once in lib/progress-snapshot.ts and is exercised by
+// progress-snapshot.test.mts. These tests pin the *mapping* (verdict -> snapshot) and
+// the one answer with no snapshot counterpart (the RESUME file could not be read), and
+// they re-assert the payload-shape contradictions at this boundary so the delegation
+// cannot silently start manufacturing a percentage from a broken verdict.
+
+const resume = (over: Partial<ResumePayload> = {}): ResumePayload => ({
+  available: true, reason: null, current_state: null, next_step: null, progress: null, ...over,
+});
+
+// A counted 进度快照 verdict. Marker convention by default (the shape most tests use);
+// pass `convention`/`reason`/nullable counts to build the checkbox and uncountable
+// shapes the backend now sends.
+const verdict = (over: Partial<ProgressVerdictPayload> = {}): ProgressVerdictPayload => ({
+  done: 0, in_progress: 0, todo: 0, convention: "markers", reason: null, ...over,
+});
+
+// The delegated bar, or a thrown assertion if the RESUME-unreadable branch was reached
+// instead — the tests below that want a bar always want a readable RESUME.
+const barOf = (r: ResumePayload) => {
+  const p = taskProgressOf(r);
+  assert.equal(p.show, "bar");
+  assert.ok(p.show === "bar");
+  return p.bar;
+};
+
+test("progress counts ✅ only — 🔵 is not half credit", () => {
+  // The whole point of rule 5: work in flight earns no fraction of the bar. With
+  // done=1, in_progress=1, todo=2 the percentage is 1/4 = 25, not 2/4 = 50. Delegated
+  // to progressBarOf, which returns the marker `counts` variant.
+  const bar = barOf(resume({ progress: verdict({ done: 1, in_progress: 1, todo: 2 }) }));
+  assert.equal(bar.kind, "counts");
+  assert.equal(bar.kind === "counts" && bar.donePct, 25);
+  // 🔵 still gets its own translucent segment, it just is not in the number.
+  assert.equal(bar.kind === "counts" && bar.inProgress, 1);
+  assert.equal(bar.kind === "counts" && bar.total, 4);
+});
+
+test("an all-done snapshot is 100%, and a barely-started one never rounds to 0%", () => {
+  const full = barOf(resume({ progress: verdict({ done: 3, in_progress: 0, todo: 0 }) }));
+  assert.equal(full.kind === "counts" && full.donePct, 100);
+  // 1 of 300 is 1%, not 0% — a 0% beside a non-empty done count reads as "nothing done".
+  const barely = barOf(resume({ progress: verdict({ done: 1, in_progress: 0, todo: 299 }) }));
+  assert.equal(barely.kind === "counts" && barely.donePct, 1);
+  // …and one item short of complete never rounds up to 100%.
+  const nearly = barOf(resume({ progress: verdict({ done: 299, in_progress: 0, todo: 1 }) }));
+  assert.equal(nearly.kind === "counts" && nearly.donePct, 99);
+});
+
+test("a checkbox snapshot is countsDoneOnly — no in-progress field at all, not a zero", () => {
+  // The finding's whole point at the display layer: the checkbox convention has no form
+  // for work in flight, so the verdict's `in_progress` is null. progressBarOf returns
+  // the `countsDoneOnly` variant, which has NO inProgress/inProgressPct field to draw a
+  // zero-width segment from — the collapse is unrepresentable, not merely avoided. Here
+  // 1 done of 1+3 = 25%.
+  const bar = barOf(resume({
+    progress: verdict({ done: 1, in_progress: null, todo: 3, convention: "checkboxes" }),
+  }));
+  assert.equal(bar.kind, "countsDoneOnly");
+  assert.equal(bar.kind === "countsDoneOnly" && bar.done, 1);
+  assert.equal(bar.kind === "countsDoneOnly" && bar.notDone, 3);
+  assert.equal(bar.kind === "countsDoneOnly" && bar.total, 4);
+  assert.equal(bar.kind === "countsDoneOnly" && bar.donePct, 25);
+  // @ts-expect-error — there is no in-progress field on the checkbox variant to read.
+  assert.equal(bar.inProgress, undefined);
+});
+
+test("a mixed-convention section is 'unknown', NOT empty and NOT a read failure", () => {
+  // Read fine — the file is not unreadable — but it carries both conventions, so any
+  // count is a floor. progressBarOf gives it its own `unknown` sentence; collapsing it
+  // into 'empty' (a false "tracks nothing") is the exact 声明范围 > 检查范围 trap.
+  const bar = barOf(resume({
+    progress: verdict({ done: null, in_progress: null, todo: null, convention: null, reason: "mixed_conventions" }),
+  }));
+  assert.deepEqual(bar, { kind: "unknown", because: "mixedConventions" });
+  // @ts-expect-error — no percentage on the unknown branch.
+  assert.equal(bar.donePct, undefined);
+});
+
+test("a section of marks this reader cannot count is 'unknown' with its own reason", () => {
+  const bar = barOf(resume({
+    progress: verdict({ done: null, in_progress: null, todo: null, convention: null, reason: "uncounted_markers" }),
+  }));
+  assert.deepEqual(bar, { kind: "unknown", because: "markersNotCounted" });
+});
+
+test("uncountable, empty-snapshot, no-snapshot and resume-unreadable stay four distinct answers", () => {
+  // The four that are not a plain bar, each a different sentence on screen. Pinned
+  // together because the finding is precisely that they had collapsed toward 'empty'.
+  // Three are snapshot-decided (unknown / empty-noItems / empty-noSnapshot); the fourth
+  // has no snapshot counterpart and is decided here.
+  const uncountable = barOf(resume({
+    progress: verdict({ done: null, in_progress: null, todo: null, convention: null, reason: "mixed_conventions" }),
+  }));
+  const emptyItems = barOf(resume({ progress: verdict({ done: 0, in_progress: 0, todo: 0, convention: "none" }) }));
+  const noSnapshot = barOf(resume({ available: true, progress: null }));
+  const resumeUnread = taskProgressOf(resume({ available: false, reason: "too_large", progress: null }));
+  assert.deepEqual(uncountable, { kind: "unknown", because: "mixedConventions" });
+  assert.deepEqual(emptyItems, { kind: "empty", because: "noItems" });
+  assert.deepEqual(noSnapshot, { kind: "empty", because: "noSnapshot" });
+  assert.deepEqual(resumeUnread, { show: "resumeUnreadable", reason: "too_large" });
+  // No two of the four describe the same on-screen fact.
+  const facts = [
+    `unknown:${uncountable.kind === "unknown" ? uncountable.because : ""}`,
+    `empty:${emptyItems.kind === "empty" ? emptyItems.because : ""}`,
+    `empty:${noSnapshot.kind === "empty" ? noSnapshot.because : ""}`,
+    resumeUnread.show,
+  ];
+  assert.equal(new Set(facts).size, 4);
+});
+
+test("a RESUME that was NOT read is 'resumeUnreadable', never 'no snapshot'", () => {
+  // The load-bearing case for this slice, and the one answer kept out of progressBarOf:
+  // `progress` is null both when the file could not be read and when it records no
+  // 进度快照 section, so reading the field alone would turn a failed read into the
+  // settled claim "this task tracks no progress". The reached path is `!resume.available`
+  // inside taskProgressOf, before any snapshot mapping.
+  for (const reason of ["absent", "unreadable", "too_large"]) {
+    const p = taskProgressOf(resume({ available: false, reason, progress: null }));
+    assert.deepEqual(p, { show: "resumeUnreadable", reason });
+    // …and there is no bar on that branch to read a percentage from.
+    // @ts-expect-error — `bar` lives only on the delegated variant.
+    assert.equal(p.bar, undefined);
+  }
+});
+
+test("an unreadable RESUME with no reason still does not read as 'no snapshot'", () => {
+  const p = taskProgressOf(resume({ available: false, reason: null, progress: null }));
+  assert.deepEqual(p, { show: "resumeUnreadable", reason: "unreadable" });
+});
+
+test("a RESUME read fine with no 进度快照 section maps to 'no snapshot' — blank, not 0%", () => {
+  // available: true, progress: null. A fact about the task (it records no snapshot). It
+  // maps to the snapshot's own `absent`, which progressBarOf renders as empty/noSnapshot
+  // — distinct from the resume-unreadable answer above and from an empty section below.
+  const bar = barOf(resume({ available: true, progress: null }));
+  assert.deepEqual(bar, { kind: "empty", because: "noSnapshot" });
+});
+
+test("a 进度快照 that exists and lists nothing is empty/noItems, not no-snapshot and not a bar", () => {
+  // A section present with three zeros (convention 'none'). There is no percentage of
+  // zero items, so it is not a bar; and it is a snapshot that exists, so it is not the
+  // no-snapshot answer either.
+  const bar = barOf(resume({ progress: verdict({ done: 0, in_progress: 0, todo: 0, convention: "none" }) }));
+  assert.deepEqual(bar, { kind: "empty", because: "noItems" });
+});
+
+test("a verdict with an unusable count is 'unknown', never a percentage from zero", () => {
+  // `reason: null` with a count that is not a non-negative integer is a contradiction in
+  // the payload. `?? 0` would have made a bar out of it; progressBarOf classifies it
+  // `unknown/countsUnusable`, and never a number.
+  const negative = barOf(resume({ progress: verdict({ done: -1, in_progress: 0, todo: 1 }) }));
+  assert.deepEqual(negative, { kind: "unknown", because: "countsUnusable" });
+  const fractional = barOf(resume({ progress: verdict({ done: 1.5, in_progress: 0, todo: 1 }) as never }));
+  assert.deepEqual(fractional, { kind: "unknown", because: "countsUnusable" });
+});
+
+// --- payload-shape contradictions the round-3 finding names: each MUST come out
+// unreadable/uncountable, never a percentage (round-3 rule) ------------------------
+
+test("an unknown convention with a credible count is 'unknown', never a percentage", () => {
+  // The exact shape codex flagged: a convention this reader has no meaning for, carrying
+  // counts that would render a believable bar. reason:null so it is not caught as
+  // uncountable; the convention gate is what refuses it. NOT markers, NOT checkboxes,
+  // NOT none — progressBarOf's final `!== CONVENTION_MARKERS` guard.
+  const bar = barOf(resume({
+    progress: verdict({ done: 3, in_progress: 1, todo: 1, convention: "kanban" }),
+  }));
+  assert.deepEqual(bar, { kind: "unknown", because: "countsUnusable" });
+  // @ts-expect-error — no percentage produced from an unknown convention.
+  assert.equal(bar.donePct, undefined);
+});
+
+test("checkboxes carrying a numeric in_progress is a contradiction — 'unknown', not a bar", () => {
+  // The checkbox convention has no in-flight form, so a number there is the payload
+  // contradicting itself. It must not become a `counts` bar with a third segment; it is
+  // unusable. (done/not-done are otherwise perfectly credible, which is the trap.)
+  const bar = barOf(resume({
+    progress: verdict({ done: 2, in_progress: 1, todo: 3, convention: "checkboxes" }),
+  }));
+  assert.deepEqual(bar, { kind: "unknown", because: "countsUnusable" });
+  // @ts-expect-error — no percentage from a self-contradicting checkbox verdict.
+  assert.equal(bar.donePct, undefined);
+});
+
+test("markers carrying nulls is a contradiction — 'unknown', never a percentage", () => {
+  // A marker verdict (reason:null, convention 'markers') whose counts are null. Under
+  // markers all three are required; a null is not "unknown in-flight" as it is under
+  // checkboxes — it is a broken count, and it must stay unreadable rather than be read
+  // as zero and rendered as a floor.
+  const inProgressNull = barOf(resume({
+    progress: verdict({ done: 2, in_progress: null, todo: 1, convention: "markers" }),
+  }));
+  assert.deepEqual(inProgressNull, { kind: "unknown", because: "countsUnusable" });
+  const doneNull = barOf(resume({
+    progress: verdict({ done: null, in_progress: 1, todo: 1, convention: "markers" }),
+  }));
+  assert.deepEqual(doneNull, { kind: "unknown", because: "countsUnusable" });
+  const todoNull = barOf(resume({
+    progress: verdict({ done: 1, in_progress: 1, todo: null, convention: "markers" }),
+  }));
+  assert.deepEqual(todoNull, { kind: "unknown", because: "countsUnusable" });
+  // None of the three produced a number.
+  for (const bar of [inProgressNull, doneNull, todoNull]) {
+    // @ts-expect-error — no percentage on the unknown branch.
+    assert.equal(bar.donePct, undefined);
+  }
+});
+
+// --- the board as a whole: read-failed is not empty (W8) ---------------------------
+
+test("a workspace-sources read that has not settled is loading, not empty", () => {
+  assert.deepEqual(workspaceBoardOf({ sources: null, readFailed: false }), { show: "loading" });
+});
+
+test("a failed list read says so and never renders as 'none registered'", () => {
+  // The board's copy of the rule the whole module enforces: a person who registered
+  // sources must not be told they have none because one request lost. A failed read
+  // outranks a stale in-hand list, too.
+  assert.deepEqual(workspaceBoardOf({ sources: null, readFailed: true }), { show: "unreadable" });
+  assert.deepEqual(
+    workspaceBoardOf({ sources: [source({ tasks: [task("agora")] })], readFailed: true }),
+    { show: "unreadable" },
+  );
+});
+
+test("a read that returned an empty list is a settled 'none registered'", () => {
+  assert.deepEqual(workspaceBoardOf({ sources: [], readFailed: false }), { show: "none" });
+});
+
+test("a read that returned sources reports how many, including unreadable ones", () => {
+  // count is how many were registered, not how many have tasks: an unreadable or empty
+  // source is still one the person registered and still belongs on the board.
+  const board = workspaceBoardOf({
+    sources: [
+      source({ tasks: [task("agora")] }),
+      source({ available: false, reason: "absent", tasks: null, root: "D:/gone" }),
+    ],
+    readFailed: false,
+  });
+  assert.deepEqual(board, { show: "sources", count: 2 });
+});
+
+// --- the sentences the workbench task row now carries (W8 round 2) -----------------
+
+function lookupWorkspace(locale: Locale, key: string): string | undefined {
+  const parts = key.split(".");
+  assert.equal(parts.shift(), "workspace", `key must be in the workspace namespace: ${key}`);
+  let node: unknown = workspaceDictionary[locale];
+  for (const part of parts) {
+    if (!node || typeof node !== "object" || !(part in (node as Record<string, unknown>))) {
+      return undefined;
+    }
+    node = (node as Record<string, unknown>)[part];
+  }
+  return typeof node === "string" ? node : undefined;
+}
+
+test("every CR/ADR/onward sentence moved into the workbench exists in both locales", () => {
+  // The move dropped these renderers; a missing key renders as the raw key, so a
+  // dropped sentence would come back as a bare identifier rather than a fact. Both
+  // languages, because the finding required i18n for every one.
+  const keys = [
+    "workspace.workspaceTasks.crOpen",
+    "workspace.workspaceTasks.crUnrecognised",
+    "workspace.workspaceTasks.crUnavailable",
+    "workspace.workspaceTasks.adrCount",
+    "workspace.workspaceTasks.adrUnavailable",
+    "workspace.workspaceTasks.repoNotRegistered",
+    "workspace.workspaceTasks.noRepoRecorded",
+    "workspace.workspaceTasks.repoMalformed",
+    "workspace.workspaceTasks.projectsUnreadable",
+  ];
+  for (const locale of ["en", "zh"] as const) {
+    for (const key of keys) {
+      assert.ok(lookupWorkspace(locale, key), `${locale} missing ${key}`);
+    }
+  }
+});
+
+test("every progress state the verdict can express has a sentence in both locales", () => {
+  // One key per branch of TaskProgress, including the two the payload gained: a checkbox
+  // count worded without an in-progress figure, and the two uncountable reasons that
+  // are neither 'empty' nor a generic read failure.
+  const keys = [
+    "workspace.workspaceTasks.progress.counts",
+    "workspace.workspaceTasks.progress.countsCheckbox",
+    "workspace.workspaceTasks.progress.empty",
+    "workspace.workspaceTasks.progress.none",
+    "workspace.workspaceTasks.progress.unreadable",
+    "workspace.workspaceTasks.progress.uncountable",
+    "workspace.workspaceTasks.progress.mixedConventions",
+    "workspace.workspaceTasks.progress.uncountedMarkers",
+  ];
+  for (const locale of ["en", "zh"] as const) {
+    for (const key of keys) {
+      assert.ok(lookupWorkspace(locale, key), `${locale} missing ${key}`);
+    }
+  }
+});
+
+test("no progress non-bar sentence states a count of zero, in either locale", () => {
+  // The same rule as the source reasons: 'empty', 'none', 'unreadable' and the two
+  // uncountable sentences describe the absence of a countable bar and must not contain
+  // a literal 0 — that is exactly the collapse this slice exists to refuse. (The two
+  // count lines are excluded: they legitimately carry numbers.)
+  const nonBar = [
+    "workspace.workspaceTasks.progress.empty",
+    "workspace.workspaceTasks.progress.none",
+    "workspace.workspaceTasks.progress.unreadable",
+    "workspace.workspaceTasks.progress.uncountable",
+    "workspace.workspaceTasks.progress.mixedConventions",
+    "workspace.workspaceTasks.progress.uncountedMarkers",
+  ];
+  for (const locale of ["en", "zh"] as const) {
+    for (const key of nonBar) {
+      const sentence = lookupWorkspace(locale, key) ?? "";
+      assert.ok(!/\b0\b|零/.test(sentence), `${locale} ${key} states a count: ${sentence}`);
+    }
+  }
+});
+
+// --- a click's intent: intercept only a plain primary-button click --------------------
+//
+// The row keeps its `href` so the browser can open the project in a new tab/window; the
+// in-page handler only replaces navigation for a plain left-click. The predicate over the
+// event's button/modifier fields is the whole decision, lifted out of the DOM so it is
+// testable without mounting: the click *behaviour* (preventDefault + openProject) the node
+// runner still cannot exercise, and PROGRESS.md records that browser check as owed. These
+// tests pin the predicate that behaviour consults.
+
+const click = (over: Partial<Parameters<typeof shouldInterceptClick>[0]> = {}) => ({
+  button: 0, metaKey: false, ctrlKey: false, shiftKey: false, altKey: false, ...over,
+});
+
+test("a plain primary-button click is ours to intercept", () => {
+  assert.equal(shouldInterceptClick(click()), true);
+});
+
+test("a modified click is the browser's own intent and is left alone", () => {
+  // The bug this predicate fixes: an unconditional preventDefault cancelled exactly these.
+  // Cmd/Ctrl open a new tab, Shift a new window, Alt a download — none of which the in-page
+  // filter change can honour, so each must fall through to the default against the href.
+  assert.equal(shouldInterceptClick(click({ metaKey: true })), false);
+  assert.equal(shouldInterceptClick(click({ ctrlKey: true })), false);
+  assert.equal(shouldInterceptClick(click({ shiftKey: true })), false);
+  assert.equal(shouldInterceptClick(click({ altKey: true })), false);
+});
+
+test("a non-primary button (middle/right) is never intercepted", () => {
+  // Middle-click is the other new-tab gesture; right-click raises the context menu. Both
+  // are non-zero buttons and must reach the browser, even with no modifier held.
+  assert.equal(shouldInterceptClick(click({ button: 1 })), false);
+  assert.equal(shouldInterceptClick(click({ button: 2 })), false);
+});
+
+test("a modifier on the primary button still yields to the browser", () => {
+  // The combination that would slip through a button-only check: left button held with a
+  // modifier is still a new-tab/new-window request, not a plain click.
+  assert.equal(shouldInterceptClick(click({ button: 0, ctrlKey: true })), false);
 });

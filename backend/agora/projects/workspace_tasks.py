@@ -29,7 +29,9 @@ the first edit; a link cannot. It also keeps the product inside `adr/0003`, wher
 
 Parsing is reused rather than reimplemented: the CR table comes from `cr_log.py`'s
 `read_cr_log_file`, the decision records from `decisions.py`'s `read_decisions_dir`, the
-progress markers from `progress_snapshot.py`'s `count_progress_markers`, and the strict
+进度快照 verdict from `progress_snapshot.py`'s `count_progress_verdict` — the same
+reader the project dashboard's progress bar uses, not the marker-only counter, so a
+checkbox snapshot is counted rather than read as tracking nothing — and the strict
 YAML loader from `importer.py`. Every one of those was already text- or path-level; what
 this module adds is the *shape of a workspace* and nothing about how a table is read.
 """
@@ -48,7 +50,7 @@ from agora.fsprobe import probe_path
 from agora.projects.cr_log import CRLog, read_cr_log_file
 from agora.projects.decisions import DecisionLog, read_decisions_dir
 from agora.projects.importer import DuplicateKeyError, StrictLoader
-from agora.projects.progress_snapshot import count_progress_markers
+from agora.projects.progress_snapshot import ProgressVerdict, count_progress_verdict
 
 #: Where a workspace keeps its tasks. One fixed name, not a search.
 TASKS_DIR = Path("tasks")
@@ -182,9 +184,18 @@ class ResumeRead:
     reason: str | None
     current_state: str | None
     next_step: str | None
-    #: Marker counts from the 进度快照 section — the same counter the progress bar uses.
-    #: None when the section is not there; an empty dict never happens.
-    progress: dict[str, int] | None
+    #: The 进度快照 section's verdict, or None when the section is not there.
+    #:
+    #: The same reader the project dashboard's progress bar uses
+    #: (`progress_snapshot.count_progress_verdict`), *not* the marker-only counter it
+    #: called before: that one knows ✅/🔵/⬜ alone, so a snapshot written with `- [x]`
+    #: checkboxes — which is how agora's own is written — came back three zeros and read
+    #: as "tracks nothing yet". A verdict carries the counts, the `convention` they were
+    #: read in, and, when the section was read but cannot be counted, the `reason`
+    #: (`mixed_conventions` / `uncounted_markers`) — so the UI can tell "read fine but
+    #: uncountable" from "empty" from "the RESUME itself was unreadable". None here means
+    #: only that the file has no 进度快照 section; an empty dict never happens.
+    progress: ProgressVerdict | None
 
     def payload(self) -> dict[str, Any]:
         return {
@@ -192,7 +203,15 @@ class ResumeRead:
             "reason": self.reason,
             "current_state": self.current_state,
             "next_step": self.next_step,
-            "progress": self.progress,
+            # The verdict flattened: counts plus the convention they were read in, or
+            # the reason the section could not be counted. None stays None — no section.
+            "progress": None if self.progress is None else {
+                "done": self.progress.done,
+                "in_progress": self.progress.in_progress,
+                "todo": self.progress.todo,
+                "convention": self.progress.convention,
+                "reason": self.progress.reason,
+            },
         }
 
 
@@ -470,7 +489,10 @@ def _read_resume(path: Path) -> ResumeRead:
         reason=None,
         current_state=_section(text, CURRENT_STATE_HEADING),
         next_step=_section(text, NEXT_STEP_HEADING),
-        progress=None if progress_section is None else count_progress_markers(progress_section),
+        # The same verdict the dashboard's progress bar is driven by, on the section's
+        # own text — counts, the convention they were read in, and the reason when the
+        # section was read but cannot be counted. None only when there is no section.
+        progress=None if progress_section is None else count_progress_verdict(progress_section),
     )
 
 

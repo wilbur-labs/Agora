@@ -487,6 +487,114 @@ def _count_boxes(blocks: list[tuple[str, bool]], references: set[str]) -> dict[s
     return counts
 
 
+@dataclass(frozen=True)
+class ProgressVerdict:
+    """The counts a snapshot's *text* yields, or the reason its text cannot be counted.
+
+    This is the decision `read_progress_snapshot` used to make inline, lifted out so a
+    second caller reaches the same answer from the same parse. It is text-level on
+    purpose: it says nothing about a path, a file that is absent, one past the size
+    bound, or one that could not be read — those are the file-level reasons, and they
+    belong to a caller that touched the disk.
+
+    ``convention`` is set whenever the text was counted (``markers`` / ``checkboxes`` /
+    ``none``); ``reason`` is set instead when it could not be (``mixed_conventions`` /
+    ``uncounted_markers``). Exactly one of the two is ever present, so a consumer can
+    tell "counted, here it is" from "read fine, cannot be counted" without a third
+    field — the same discipline the payload has always kept between a count and a
+    reason.
+    """
+
+    #: ``None`` when the text carries both conventions or a mark this reader does not
+    #: count, so any count would be a floor.
+    done: int | None
+    #: ``None`` on a checkbox file even when countable — the convention has no form for
+    #: work in flight, so 0 would assert something the text never said — and ``None``
+    #: whenever the whole text is uncountable.
+    in_progress: int | None
+    #: Under ``checkboxes`` this is *not done*, which may include work in flight.
+    todo: int | None
+    #: "markers" | "checkboxes" | "none" when counted; None when not.
+    convention: str | None
+    #: MIXED_CONVENTIONS_REASON | UNCOUNTED_MARKERS_REASON when the text cannot be
+    #: counted; None when it was.
+    reason: str | None
+
+    @property
+    def countable(self) -> bool:
+        return self.reason is None
+
+    def as_snapshot(self, source: str) -> ProgressSnapshot:
+        """This text-level verdict as the file-level :class:`ProgressSnapshot`, for the
+        one caller that read the file at ``source``. An uncountable verdict is
+        unavailable with its reason; a counted one carries the counts and convention."""
+        if not self.countable:
+            return ProgressSnapshot(
+                available=False, reason=self.reason, done=None, in_progress=None,
+                todo=None, source=source, convention=None,
+            )
+        return ProgressSnapshot(
+            available=True, reason=None, done=self.done, in_progress=self.in_progress,
+            todo=self.todo, source=source, convention=self.convention,
+        )
+
+
+def count_progress_verdict(text: str) -> ProgressVerdict:
+    """Count a snapshot's text and decide which convention, if any, it is written in.
+
+    One parse, both counts, one decision — the logic `read_progress_snapshot` used to
+    inline. Extracted so the workspace RESUME reader can reach the *same* answer on the
+    进度快照 section instead of calling `count_progress_markers` alone: that counter
+    knows only ✅/🔵/⬜, so a section written with `- [x]` checkboxes came back as three
+    zeros and read as "tracks nothing yet" — a false statement about a section that
+    plainly lists work. This function counts checkboxes too, reports the convention, and
+    names the two shapes it will not count (both conventions at once, or a mark it has
+    no meaning for) rather than reporting a floor.
+    """
+    blocks, references = _text_blocks(text)
+    markers = _count_markers(blocks)
+    boxes = _count_boxes(blocks, references)
+    has_markers = any(markers.values())
+    has_boxes = any(boxes.values())
+
+    if has_markers and has_boxes:
+        # Both conventions in one file. Neither reading is the file's own, and
+        # picking one drops the other's items into a floor.
+        return ProgressVerdict(
+            done=None, in_progress=None, todo=None, convention=None,
+            reason=MIXED_CONVENTIONS_REASON,
+        )
+    if has_boxes:
+        if boxes["uncounted"]:
+            # It plainly tracks items, in marks with no agreed meaning here. Counting
+            # the ones this reader does understand would report a floor.
+            return ProgressVerdict(
+                done=None, in_progress=None, todo=None, convention=None,
+                reason=UNCOUNTED_MARKERS_REASON,
+            )
+        return ProgressVerdict(
+            done=boxes["done"],
+            # Unknown, not zero: this convention has no form for work in flight, so a
+            # 0 here would be this reader asserting something the file never said.
+            in_progress=None,
+            todo=boxes["not_done"],
+            convention=CONVENTION_CHECKBOXES,
+            reason=None,
+        )
+    return ProgressVerdict(
+        done=markers["done"],
+        in_progress=markers["in_progress"],
+        todo=markers["todo"],
+        # A readable file with no item of either convention is counted with three zeros
+        # and says so as its own convention value. Reporting nothing here would collide
+        # with the payload of a server too old to have the field, and those two have to
+        # stay distinguishable: one is "this file lists nothing", the other is "this
+        # server's counts cannot be trusted to be complete".
+        convention=CONVENTION_MARKERS if has_markers else CONVENTION_NONE,
+        reason=None,
+    )
+
+
 def read_progress_snapshot(root: Path) -> ProgressSnapshot:
     """Read and count one project's snapshot. Never raises: every failure is a
     reason the UI can render as unknown, because a 500 on the dashboard would take
@@ -518,46 +626,8 @@ def read_progress_snapshot(root: Path) -> ProgressSnapshot:
     except (OSError, UnicodeDecodeError):
         return unavailable("unreadable")
 
-    # One parse, both counts. The two public helpers each parse for themselves, which
-    # is right for a caller holding only text and wrong here: this is the hot path, on
-    # the dashboard a task switch waits for.
-    blocks, references = _text_blocks(text)
-    markers = _count_markers(blocks)
-    boxes = _count_boxes(blocks, references)
-    has_markers = any(markers.values())
-    has_boxes = any(boxes.values())
-
-    if has_markers and has_boxes:
-        # Both conventions in one file. Neither reading is the file's own, and
-        # picking one drops the other's items into a floor.
-        return unavailable(MIXED_CONVENTIONS_REASON)
-    if has_boxes:
-        if boxes["uncounted"]:
-            # It plainly tracks items, in marks with no agreed meaning here. Counting
-            # the ones this reader does understand would report a floor.
-            return unavailable(UNCOUNTED_MARKERS_REASON)
-        return ProgressSnapshot(
-            available=True,
-            reason=None,
-            done=boxes["done"],
-            # Unknown, not zero: this convention has no form for work in flight, so a
-            # 0 here would be this reader asserting something the file never said.
-            in_progress=None,
-            todo=boxes["not_done"],
-            source=source,
-            convention=CONVENTION_CHECKBOXES,
-        )
-    return ProgressSnapshot(
-        available=True,
-        reason=None,
-        done=markers["done"],
-        in_progress=markers["in_progress"],
-        todo=markers["todo"],
-        source=source,
-        # A readable file with no item of either convention is available with three
-        # zeros, and says so as its own convention value. Reporting nothing here would
-        # collide with the payload of a server too old to have the field, and those
-        # two have to stay distinguishable: one is "this file lists nothing", the
-        # other is "this server's counts cannot be trusted to be complete".
-        convention=CONVENTION_MARKERS if has_markers else CONVENTION_NONE,
-    )
+    # One parse, both counts, one decision — the verdict below is exactly what this
+    # function used to inline, lifted out so a second reader (workspace RESUME's
+    # 进度快照 section) reaches the *same* answer instead of calling the marker
+    # counter alone and mistaking a checkbox file for one that tracks nothing.
+    return count_progress_verdict(text).as_snapshot(source)
