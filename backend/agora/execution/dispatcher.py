@@ -9,6 +9,7 @@ from typing import Any
 
 from agora.projects import ProjectRegistry
 from agora.fsprobe import PathProbe, probe_path
+from agora.environments import Environment, GRACE_SECONDS, LocalEnvironment, ProcessHandle
 from agora.orchestration.runtime import RuntimeLaunchError, resolve_runtime_command
 from agora.orchestration.provider_usage import RuntimeResultFormat, normalize_native_output
 from agora.tasks.store import TaskNotFoundError, TaskStore
@@ -116,7 +117,7 @@ class ExecutionDispatcher:
         self._workspace_limits: defaultdict[str, asyncio.Semaphore] = defaultdict(
             lambda: asyncio.Semaphore(1)
         )
-        self._active: dict[str, asyncio.subprocess.Process] = {}
+        self._active: dict[str, asyncio.subprocess.Process | ProcessHandle] = {}
         # Per-run pre-launch worktree state, so an abandoned run can still record
         # what it delivered (the CancelledError path lives outside execute()).
         # A missing or None entry means the baseline was never established, which
@@ -541,11 +542,15 @@ class ExecutionDispatcher:
                     stdout_tail="", stderr_tail="", error_message=redact_text(f"process start failed: {exc}"),
                 )
             try:
-                proc = await asyncio.create_subprocess_exec(
-                    *command,
-                    cwd=str(workspace),
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
+                # W3: launch through the Environment rather than spawning directly,
+                # so the dispatcher no longer knows or cares whether the process is
+                # local or remote — a RemoteEnvironment (U2) drops in at this seam
+                # with no change here. U1 wires the local one; env selection by
+                # adapter is U2's job.
+                env: Environment = LocalEnvironment()
+                handle = await env.launch(
+                    command,
+                    cwd=workspace,
                     env={
                         **os.environ,
                         "AGORA_TASK_ID": run.task_id,
@@ -560,26 +565,29 @@ class ExecutionDispatcher:
                     error_message=f"process start failed: {type(exc).__name__}",
                 )
 
-            self._active[run_id] = proc
+            self._active[run_id] = handle
             try:
                 try:
                     running = self.store.attach_pid(
-                        run_id, expected_version=running.version, pid=proc.pid
+                        run_id, expected_version=running.version, pid=handle.pid
                     )
                 except RunConflictError:
-                    await self._stop(proc)
+                    await self._stop(handle)
                     return self.store.require(run_id)
 
                 timed_out = False
-                stdout_reader = asyncio.create_task(self._read_tail(proc.stdout))
-                stderr_reader = asyncio.create_task(self._read_tail(proc.stderr))
+                stdout_reader = asyncio.create_task(self._read_tail(handle.stdout))
+                stderr_reader = asyncio.create_task(self._read_tail(handle.stderr))
                 try:
-                    await asyncio.wait_for(proc.wait(), timeout=running.timeout_seconds)
-                except (TimeoutError, asyncio.TimeoutError):
-                    timed_out = True
-                    await self._stop(proc)
+                    exit_code = await handle.wait(timeout=running.timeout_seconds)
+                    if exit_code is None:
+                        # Deadline passed without exit: escalate terminate -> kill,
+                        # same as the local path always did (now via the handle).
+                        timed_out = True
+                        await self._stop(handle)
+                        exit_code = handle.returncode
                 except asyncio.CancelledError:
-                    await self._stop(proc)
+                    await self._stop(handle)
                     await asyncio.gather(stdout_reader, stderr_reader, return_exceptions=True)
                     raise
 
@@ -605,21 +613,21 @@ class ExecutionDispatcher:
                         expected_version=current.version,
                         stdout_tail=out[-OUTPUT_TAIL_LIMIT:],
                         stderr_tail=err[-OUTPUT_TAIL_LIMIT:],
-                        exit_code=proc.returncode,
+                        exit_code=exit_code,
                         deliverables=delivered,
                     )
                 target = RunState.TIMED_OUT if timed_out else (
-                    RunState.SUCCEEDED if proc.returncode == 0 else RunState.FAILED
+                    RunState.SUCCEEDED if exit_code == 0 else RunState.FAILED
                 )
                 error = (
                     f"timeout after {running.timeout_seconds}s" if timed_out
-                    else (None if proc.returncode == 0 else "process exited with a non-zero status")
+                    else (None if exit_code == 0 else "process exited with a non-zero status")
                 )
                 finished = self.store.finish(
                     run_id,
                     target,
                     expected_version=current.version,
-                    exit_code=proc.returncode,
+                    exit_code=exit_code,
                     stdout_tail=out[-OUTPUT_TAIL_LIMIT:],
                     stderr_tail=err[-OUTPUT_TAIL_LIMIT:],
                     error_message=error,
@@ -1281,20 +1289,37 @@ class ExecutionDispatcher:
         return self._workspace_is_allowed(workspace.expanduser().resolve(), project.root)
 
     @staticmethod
-    async def _stop(proc: asyncio.subprocess.Process) -> None:
+    async def _stop(proc: "asyncio.subprocess.Process | ProcessHandle") -> None:
+        """SIGTERM, wait a grace period, then SIGKILL. Accepts either a raw
+        subprocess (codex_app_server path) or a ProcessHandle (CLI path, which now
+        goes through ``env.launch``). Same escalation either way.
+
+        Dispatch on the CONCRETE ``asyncio.subprocess.Process`` first, NOT on
+        ``isinstance(proc, ProcessHandle)``: ProcessHandle is a runtime_checkable
+        Protocol, and a raw Process structurally satisfies it (it has pid/streams/
+        wait/terminate/kill), so a handle-first test would route the raw subprocess
+        into the async branch and ``await`` its synchronous ``terminate()`` — a
+        TypeError. The concrete class check has no such ambiguity."""
         if proc.returncode is not None:
             return
-        try:
-            proc.terminate()
-        except ProcessLookupError:
-            return
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=5)
-        except (TimeoutError, asyncio.TimeoutError):
+        if isinstance(proc, asyncio.subprocess.Process):
             try:
-                proc.kill()
+                proc.terminate()
             except ProcessLookupError:
                 return
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=GRACE_SECONDS)
+            except (TimeoutError, asyncio.TimeoutError):
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    return
+                await proc.wait()
+            return
+        # A ProcessHandle: terminate/kill are async and idempotent on an exited process.
+        await proc.terminate()
+        if await proc.wait(timeout=GRACE_SECONDS) is None:
+            await proc.kill()
             await proc.wait()
 
     @staticmethod
