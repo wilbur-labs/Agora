@@ -108,7 +108,8 @@ mockup 左栏 8 项里 3 项后端无支撑：**已知缺陷**（UI 里完全没
 | **能力状态槽判断层** `frontend/src/lib/nav-capability.ts` + 16 条 node 测试 | ✅ commit `61a96fd` |
 | **左栏改成项目级导航** `frontend/src/components/project-nav.tsx` | ✅ 见下 |
 | 步骤 B：已知缺陷真实读取 | ⬜ 等权威来源 |
-| 「项目」页 / Today 三档 / 中栏卡片流 / 壳 | ⬜ 未开工 |
+| **「项目」页接回一级导航** | ✅ 见下 |
+| Today 三档 / 中栏卡片流 / 壳 | ⬜ 未开工 |
 
 前端门禁：**339 tests / 338 pass / 1 skip** · tsc 0 · eslint **0** · build 14 页。
 
@@ -190,3 +191,21 @@ mockup 左栏 8 项里 3 项后端无支撑：**已知缺陷**（UI 里完全没
 **本机实测门禁基线**（与 PROJECT-STATUS §3.6 记的不一致，以实测为准）：后端 **1443 passed / 9 skipped**
 （39m51s，比文档说的 20~29 分钟更久）；前端 **323 tests / 322 pass / 1 skip**；eslint 0；next build 14 页。
 ⚠️ 后端 `tests/test_web_ui.py` 依赖前端**已 build**，否则 `GET /` 是 404 会误报 1 failed —— 门禁有顺序依赖。
+
+### 「项目」页（第二刀）已落地
+
+/portfolio 上个里程碑被撑出一级导航，理由记在壳里：「Attention 和 Portfolio 都是 Today 的组成部分」。
+重读 mockup 发现这只对一半 —— Today 的设计说明原文：**「全部项目的库存视图另开『项目』页：Today 回答『今天推什么』，
+项目页回答『我都有什么』」**。Attention 确实画在 Today 屏里（「卡住 / 需要你 跟全部项目」），所以它继续留在 Today；
+但库存视图是独立一屏，已接回导航。页面标题从「交付项目全景（Portfolio）」改为「项目」，与导航一致。
+
+⚠️ **位置是临时的**：mockup 顶栏只有四个 tab，「项目」不在其中 —— 它只写在 Today 的设计说明里，没被画出来。
+现在放进一级导航是 Reach before polish：Today 还是任务行，一个只存在于“重做后的 Today”上的入口等于没人今天够得到。
+Today 落地后按设计调整位置。
+
+加了一条回归保护（评审建议）：断言壳里有 /portfolio 链接、且标签来自两语言字典。页面自己的测试防不住它
+**再从导航里消失** —— 而那才是让它够不到的那种失败，URL 全程都是通的。
+
+评审另提一个**留后**的阅读陷阱：links 里的 label 字段看似展示文本，实际当 active 匹配的内部 ID（展示文本走 i18n）。
+它建议改成按 key/href 匹配或重命名为 ctiveId，但**明确说不要为这个小改动扩大重构范围**。
+

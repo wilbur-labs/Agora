@@ -4,7 +4,10 @@ export const portfolio = {
   en: {
     header: {
       eyebrow: "All projects",
-      title: "Delivery Portfolio",
+      // The screen answers "what do I have" -- Today answers "what am I pushing today".
+      // Named after the question rather than after a section of a product tour, because
+      // the split between the two screens is the point (W9).
+      title: "Projects",
     },
     filter: {
       label: "Filter by project",
@@ -257,7 +260,7 @@ export const portfolio = {
   zh: {
     header: {
       eyebrow: "全部项目",
-      title: "交付项目全景（Portfolio）",
+      title: "项目",
     },
     filter: {
       label: "按项目筛选",

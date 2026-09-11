@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import Link from "next/link";
 import { useTheme } from "next-themes";
 import {
+  FolderKanban,
   Languages,
   Library,
   MessagesSquare,
@@ -17,7 +18,7 @@ import {
 import { useI18n } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
-// The four screens of mockup v2, plus Settings.
+// The four screens of mockup v2, plus the projects inventory and Settings.
 //
 // What left this list, and why (W8, tasks/agora/adr/0001 and adr/0007):
 //
@@ -29,11 +30,24 @@ import { cn } from "@/lib/utils";
 // - **Runs** is not a place any more. A run is a turn inside a task's
 //   conversation (adr/0007), so it is reached through the task it belongs to
 //   rather than through a global list of process launches.
-// - **Attention** and **Portfolio** are what Today is made of: what needs you,
-//   across every project, on one screen. Both pages are still reachable by URL
-//   while Today grows into them, and Today says which parts it does not show yet.
+// - **Attention** is what Today is made of: what needs you, across every project,
+//   on one screen. The mockup draws exactly that at the foot of Today ("卡住 / 需要你
+//   跨全部项目"), so it stays out of here while Today grows into it.
+//
+// **Portfolio came back (W9).** It was taken out with Attention on the reasoning that
+// Today would absorb both. Re-reading the mockup says otherwise, in as many words:
+// "全部项目的库存视图另开「项目」页：Today 回答「今天推什么」，项目页回答「我都有什么」".
+// Those are two different questions, and one screen answering both is what the three-tier
+// Today exists to avoid. So the inventory is its own screen again.
+//
+// Its position here is provisional. The mockup's top bar has four tabs and this is not
+// one of them — the projects screen is named in Today's design note, not drawn. Putting
+// it in the first-level navigation now is Reach before polish: with Today still showing
+// task rows, an entry that only exists on the rebuilt Today is an entry nobody can reach
+// today. When Today lands, this moves to where the design puts it.
 const links = [
   { href: "/", key: "today", label: "Today", icon: Sunrise },
+  { href: "/portfolio", key: "projects", label: "Portfolio", icon: FolderKanban },
   { href: "/workspace", key: "workbench", label: "Workbench", icon: MessagesSquare },
   { href: "/environments", key: "environments", label: "Environments", icon: Server },
   { href: "/skills", key: "skills", label: "Skills", icon: Library },

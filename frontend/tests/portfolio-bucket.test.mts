@@ -676,3 +676,25 @@ test("the workspace page renders these decisions and does not restate them", asy
   assert.ok(source.includes("dashError ? null : dashTask?.next_action"),
     "a stale dashTask must not supply this task's next action");
 });
+
+test("the projects screen is reachable from the first-level navigation", async () => {
+  // It was removed from the navigation once, on the reasoning that Today would absorb it.
+  // The mockup says otherwise in as many words: Today answers what to push today, this
+  // screen answers what I have. Neither this suite's bucket tests nor the page's own
+  // assertions can catch it vanishing from the shell again -- and that is the failure that
+  // made it unreachable, because the URL kept working the whole time.
+  const { readFile } = await import("node:fs/promises");
+  const shell = await readFile(
+    new URL("../src/components/delivery-shell.tsx", import.meta.url), "utf8");
+  assert.ok(/href:\s*"\/portfolio"/.test(shell),
+    "the shell's first-level navigation must link to the projects screen");
+
+  // And it must be labelled from the dictionary in both locales rather than hard-coded,
+  // so the entry cannot appear untranslated.
+  const { common } = await import("../src/lib/i18n/dictionaries/common.ts");
+  for (const locale of ["en", "zh"] as const) {
+    const label: string = common[locale].nav.projects;
+    assert.equal(typeof label, "string");
+    assert.ok(label.trim().length > 0, locale + ": the projects entry needs a label");
+  }
+});
