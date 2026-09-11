@@ -47,12 +47,9 @@ import {
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { CapabilitySlot } from "@/components/capability-slot";
 import { useI18n } from "@/lib/i18n";
-import {
-  countSayable,
-  navCapabilityKey,
-  type NavCapability,
-} from "@/lib/nav-capability";
+import type { NavCapability } from "@/lib/nav-capability";
 
 export interface ProjectNavTask {
   task_id: string;
@@ -96,61 +93,6 @@ const RESOURCE_ICONS = {
   skills: Library,
   files: FolderTree,
 } as const;
-
-/**
- * The trailing slot on a nav row.
- *
- * A number only when a read produced one. Otherwise the short form of whichever sentence
- * applies, with the long form on `title` — never a bare grey dash, which would be the
- * three sentences merged into one again.
- */
-function CapabilitySlot({ capability }: { capability: NavCapability }) {
-  const { t } = useI18n();
-  const key = navCapabilityKey(capability);
-
-  if (countSayable(capability)) {
-    const caveat = capability.caveat;
-    return (
-      <span
-        className={cn(
-          "shrink-0 text-[11px] tabular-nums",
-          caveat ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground",
-        )}
-        title={
-          caveat
-            ? t(`workspace.nav.why.caveat.${caveat.kind}`, { caveat: caveat.count })
-            : undefined
-        }
-      >
-        {t(key, { value: capability.value, caveat: caveat?.count ?? 0 })}
-      </span>
-    );
-  }
-
-  // Not a count. The row still renders and stays clickable — an item whose read is
-  // missing is not a tombstone, it is an item that can explain itself.
-  const why =
-    capability.kind === "unbuilt"
-      ? t("workspace.nav.why.unbuiltWithMilestone", { milestone: capability.milestone })
-      : capability.kind === "noReader"
-        ? t(`workspace.nav.why.noReader.${capability.reason}`)
-        : capability.kind === "unreadable"
-          ? t(`workspace.nav.why.unreadable.${capability.reason}`)
-          : capability.kind === "unreported"
-            ? t("workspace.nav.why.unreported")
-            : t("workspace.nav.why.none");
-
-  return (
-    <span
-      className="shrink-0 truncate text-[10px] italic text-muted-foreground/80"
-      title={why}
-    >
-      {t(key, {
-        milestone: capability.kind === "unbuilt" ? capability.milestone : "",
-      })}
-    </span>
-  );
-}
 
 function NavRow({
   itemKey,

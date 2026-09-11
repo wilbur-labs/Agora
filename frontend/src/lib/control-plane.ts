@@ -611,6 +611,24 @@ export interface ProjectListItem {
   root: string;
   worker_agent: AdapterName;
   reviewer_agent: AdapterName;
+  // Always sent (normalised server-side to the same shape, empty strings and empty
+  // lists when nothing is recorded), so Today can print the goal line from the list
+  // read alone without a dashboard request per project.
+  charter: Charter;
+}
+
+/**
+ * Today's top tier, as `GET /api/projects` reports it (docs/W9-mockup-alignment.md, D-1).
+ * `is_full` is the server's verdict and the only one the UI repeats: unresolved ids
+ * occupy seats on the server's count, and the fourth promotion is refused on that same
+ * count, so a client that recomputed fullness from `project_ids.length` alone would
+ * offer a seat the server does not have.
+ */
+export interface TodayFocusPayload {
+  project_ids: string[];
+  unresolved_ids: string[];
+  limit: number;
+  is_full: boolean;
 }
 
 export interface ProjectList {
@@ -618,10 +636,31 @@ export interface ProjectList {
   projects_base: string;
   import_status: ProjectImportStatus;
   items: ProjectListItem[];
+  // Optional in the *type* for the reason the dashboard's snapshot and CR Log fields
+  // are: a server older than this UI sends no such field, and "this server does not
+  // report a focus tier" must stay distinguishable from "nothing is promoted" — the
+  // second is 0/3 with a promote button, the first is neither.
+  today_focus?: TodayFocusPayload;
 }
 
 export function listProjects(): Promise<ProjectList> {
   return request("/api/projects");
+}
+
+/**
+ * Promote a project into today's focus tier. Idempotent. Refused with 409 when the tier
+ * is full (the server does not evict — see lib/today-focus.ts `promoteRefusalOf`), 404
+ * for an unregistered project. Returns the whole tier, so the caller replaces its copy
+ * rather than patching it.
+ */
+export function promoteProjectToToday(projectId: string): Promise<TodayFocusPayload> {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/focus`, { method: "PUT" });
+}
+
+/** Take a project out of today's focus tier. Idempotent; accepts an id that no longer
+ *  resolves, which is how a leftover seat is released. Returns the whole tier. */
+export function demoteProjectFromToday(projectId: string): Promise<TodayFocusPayload> {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/focus`, { method: "DELETE" });
 }
 
 export function createProject(

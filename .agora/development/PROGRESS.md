@@ -7247,3 +7247,185 @@ session state machine to four states, but only after W8's remaining exit criteri
 a new W8-b milestone, so the decision has something to land on); CR-46 accept the POSIX
 process-tree gap as a known platform difference, the skipped test staying as its trigger;
 CR-47 session claiming for `role=unknown` goes to the backlog.
+
+
+## W9 — Today's three tiers (screen 1), the frontend half
+
+`feature/w8-session-ui`, on top of `72a1aac`, not yet committed. The backend half of D-1
+(`today_focus` on `GET /api/projects`, `PUT`/`DELETE /api/projects/{id}/focus`) landed on
+2026-09-11 as `bfeeb7c`; this slice is the screen that uses it. Decisions and the mockup
+comparison are in `docs/W9-mockup-alignment.md`; the how-to this slice followed is
+`docs/NEXT-STEPS.md` §一.1.
+
+### What the screen now is
+
+Today reads three things, each settled on its own (projects with `today_focus`, the task
+page, open attention), and draws the mockup's tiers from them:
+
+* **今天主推** — up to `limit` big cards in the server's promotion order. Each card reads
+  its own dashboard (three requests at most) for the next step, the blocking count and the
+  progress snapshot bar; the goal comes off the project list. "3 / 3 已满 —— 第 4 个要上来，
+  得先放下一个" is the server's `is_full` repeated, never `length >= limit` recomputed here.
+  A refused promotion (409) shows that sentence on the row that asked; an unresolved
+  promoted id is shown holding its seat, with a release button.
+* **在推进，但不是今天的重点** — compact rows: an open task updated in the last 14 days,
+  measured from the task read; one-click 提升为主推.
+* **N 个休眠项目** — folded to one line; only on a complete task read.
+* **在推进还是休眠 —— 说不了** — the tier the mockup does not have and this product needs:
+  projects that are neither observed advancing nor provably dormant, each row saying why
+  (the read fell short, or an open task's update time could not be read).
+* **卡住 / 需要你** — the cross-project stuck list, migrated here from the workbench rail
+  (W9 first cut's recorded debt #1), deliberately not grouped by project.
+
+Card fields the mockup draws that this product cannot read — milestone, environment,
+branch/commit/pushed, 上次, 发现 — render as capability slots (`lib/nav-capability.ts`,
+shared `components/capability-slot.tsx` moved out of the project nav), never blank and
+never a number. 在册 (known defects) shares the nav's slot, so the two surfaces cannot
+disagree. The mockup's "换个 agent" button is not on the card (cut by decision); its resume
+footnote is not either (sessions are per task; nothing rolls one up per project). "继续工作 →"
+opens the project's most recently updated open task and is offered only from a complete
+task read (the global page is ordered by priority, so a capped page cannot name the latest);
+"先看看这个项目" opens the workbench inside the project without starting anything.
+
+### Files
+
+`frontend/src/lib/today-focus.ts` (new; the judgements), `frontend/tests/today-focus.test.mts`
+(new; 21 tests as collected — 18 top-level `test(` calls plus one loop declaring three,
+one per short read outcome — incl. two source scans), `frontend/src/app/page.tsx` (rewritten),
+`frontend/src/components/today-focus-card.tsx` (new), `frontend/src/components/capability-slot.tsx`
+(new, extracted), `frontend/src/components/project-nav.tsx` (imports the shared slot),
+`frontend/src/lib/control-plane.ts` (`charter` on `ProjectListItem`, `TodayFocusPayload`,
+`today_focus?` on `ProjectList`, the two mutations), `frontend/src/lib/i18n/dictionaries/today.ts`
+(rewritten), `frontend/package.json` (test script), and this record. No backend file.
+
+### Gate
+
+* Frontend: `pnpm run test:control-plane` **361 collected / 360 passed / 1 skipped**
+  (was 340 / 339 / 1 at `d6e2c99`; +21 collected, all in the new suite). `tsc --noEmit` 0.
+  `eslint` 0 on the changed files. `next build` 14 pages.
+* Backend: no backend file touched. `tests/test_web_ui.py` re-run against the fresh build
+  as the one backend test that depends on it: **14 collected / 14 passed** in 28.95s. The full backend suite was not
+  re-run for a frontend-only change.
+* End to end against the running server: `GET /` 200 with the build mounted;
+  `GET /api/projects` carries `today_focus`; `PUT /api/projects/agora/focus` →
+  `{project_ids:[agora], limit:3, is_full:false}`; unknown project → 404; `DELETE` → `[]`.
+  This machine registers two projects and no tasks, so the 409 path and the tier placement
+  were exercised by the node tests, not by hand.
+
+### Review state
+
+Fourteen rounds of independent review on this slice, 35 findings: 27 confirmed and
+fixed, eight rejected — two findings, one raised six times and one twice, with their
+reasons below; round 14 raised nothing else, which is what closed the gate. codex ran
+rounds 1, 2 and 7; **Kiro stood in for rounds 3–6 and 8–14** (`scripts/kiro-review.sh`, `gpt-5.6-sol`, `--effort max`) because
+codex answered `You've hit your usage limit` from 20:1x local and again from the eighth
+round on — the documented substitution (adr/0017), never alongside codex. The commit
+message says so.
+
+What the rounds caught, in the order they came, because each is a shape this repository
+keeps producing:
+
+1. `failed` treated as open work — it is terminal (`tasks/transitions.py`), and a "continue"
+   pointed at it would start something, not continue it.
+2. Focus mutations replacing the whole snapshot without ordering — a write token now
+   guards every `setFocus`, buttons are exclusive while one is in flight, and refresh is
+   disabled during a mutation.
+3. Promote buttons drawn under a server that reported no focus tier — hidden there.
+4. Demote's transport failure asserted as semantic failure — the endpoint is idempotent;
+   the tier is re-read and the notice says "unconfirmed" until that lands, then retires.
+5. "Most recently updated" picked off a priority-ordered capped page — complete reads only.
+6. Heading counted only the second tier — the mockup's "4 个在推进" counts the focus cards.
+7. `atLeast: 0` on a failed read — `TierCount` gained `unknown`, same contract as
+   `portfolioGroupCountOf`.
+8. A stale "3/3 full" refusal surviving a demotion — retired when any snapshot shows
+   the tier open.
+9. Archived tasks filtered from the stuck list while all-clear stood — archiving is a
+   display property, not a state; they stay, and they count as open work everywhere here.
+10. An unparseable `updated_at` read as inactivity — now `unknown`; such a project is
+    unplaced, not dormant, and its row says which doubt it carries.
+11. A retained dashboard rendered as current across demote → promote and across refresh —
+    dropped the moment its project leaves the tier (`applyFocus`) and re-read per load.
+12. The dashboard effect's bookkeeping re-reading unchanged cards and racing its own
+    abort — it now remembers what it answered for and forgets the rest synchronously.
+13. (round 8, P1) An open item whose task is not on the task page was dropped, and the
+    two "complete" reads then supported an all-clear over it. The reads are not one
+    snapshot; the item is on the page, so it is now shown from its own words
+    (`OrphanRow`), counted, and never invents the task's title or state.
+14. (round 8) On refresh the cards rendered the dashboards from before the refresh until
+    an effect's timer dropped them — dropped in `load` now, in the same batch as the new
+    tiers.
+15. (round 8) A promote whose answer was lost read as "the change was not made"; the
+    PUT may well have landed. Worded as unconfirmed until the re-read lands, and every
+    refusal but a still-true "full" is retired by a successful re-read.
+16. (round 9, P1) Orphan items were deduplicated by task — a task off the page holding an
+    approval *and* a blocker showed only the first. Every item is now its own row.
+17. (round 9) A dashboard answer arriving after a refresh emptied the map, or after a
+    demotion pruned it, wrote itself back before the effect could abort it. Requests now
+    carry a generation and write only while their id is still wanted; a demotion forgets
+    its ids synchronously, not in the effect.
+18. (round 9) Two record defects: the W9 alignment table repeated a review tally that had
+    already drifted from this file (it now points here instead of restating numbers), and
+    this file claimed 24 new tests where the suite defines 21 as collected.
+19. (round 10) The stuck list was one row per task, so a task holding an approval and a
+    blocker showed one row and an "exact" count of 1. It is now one row per stuck thing —
+    each observed item its own row, a task reached on state alone one row — which is also
+    how the mockup draws the list and how the orphan items were already shown.
+20. (round 11) A task carrying items lost its own state row: a `failed` task with an open
+    approval showed the approval and not the failure. The state that demands action by
+    itself is now a row of its own, alongside the item rows.
+21. (round 11) Item rows took the task's aggregate column, so a blocker under a question
+    was coloured as a question. Each row is now placed by its own signal — an item by its
+    kind, a state by its state — through the same `portfolioBucketOf`.
+22. (round 12) A promotion started during a refresh whose project read then failed left
+    the new focus in hand and the project list empty, so every focus id was placed as
+    "unresolved" — each with a release button that really demotes a registered project.
+    The focus tier is now placed only against a project list that was read (otherwise it
+    says the list could not be read and offers nothing), and no mutation button is
+    enabled while a refresh is in flight.
+23. (round 13) The dormant line said "no task activity in 14 days" while the tier measures
+    whether any *open* task moved — a task that closed an hour ago made its project
+    dormant under a sentence that denied it. The sentence now says what is measured; the
+    capped-read notice was corrected the same way.
+
+Rejected, one other, twice (rounds 13 and 14): the three reads are awaited together, so one hung
+request holds back the two that answered, and the page's header comment said "each
+settles on its own" — which described the failure paths, not the timing. The comment is
+reworded; the structure is not changed: it is the pattern every board in this app uses,
+and a hung request is a request-layer concern (a timeout in `request`) that would have to
+land for all of them at once, not in one screen.
+
+Rejected, the same finding six times (rounds 8, 11, twice in 12, 13, 14): (round 8, P2) the
+projects read and the task read are not one snapshot, so a project created — with a
+recent task — between the two requests of one load could be filed dormant until the next
+refresh; (round 11, P1) likewise the task read and the attention read, so an item raised
+between them against a task the task read did carry is missed and the all-clear sentence
+stands until the next refresh. Both true,
+neither fixed here: the three requests are issued concurrently inside one `Promise.all`,
+the window is the difference in their round trips, a refresh closes it, and closing it for
+good means a joint snapshot the backend does not offer — a contract change outside a
+frontend-only slice, and the same window the Portfolio and the old Today have always had.
+Recorded so it is not mistaken for an oversight; if it is to be closed, it is a backend
+CR, not a frontend fix. Noted and left: `.claude/settings.local.json` appears untracked in
+codex's environment (it is ignored by this machine's global git ignore, not by the repo);
+the commit stages this slice's files explicitly, as the previous slice's record already
+requires, so it cannot be swept in.
+
+One contract wrinkle recorded rather than fixed here (backend untouched by instruction):
+the 409 detail is `{error: "today_focus_full", limit}` while the shared error parser reads a
+`code` field, so the discriminator does not survive the trip. The client maps by status —
+this endpoint documents exactly one 409 — and `promoteRefusalOf` says where a second 409
+would have to be told apart.
+
+### Blockers
+
+None. The browser check of the rendered page is owed: the Chrome extension was not
+connected this session, so the page was verified by build + the API round trip + the node
+tests, not by eye.
+
+### Next safe action
+
+Commit the slice files on `feature/w8-session-ui`, staged explicitly, and push to
+`private`. Then, per `docs/NEXT-STEPS.md`: the middle column's Run card stream (§一.2), and
+the shell/top bar (§一.3) which also moves the projects entry to where the design puts it.
+Update the progress table in `docs/W9-mockup-alignment.md` (Today 三档：前端 → ✅) in the
+same commit.
