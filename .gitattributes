@@ -1,0 +1,28 @@
+# Working-tree line endings are LF, on every platform.
+#
+# Not a style preference. This repo has tests that assert on source text
+# itself -- frontend/tests/portfolio-bucket.test.mts checks that a page.tsx
+# contains a specific multi-line snippet, and the expectation is written with
+# \n. Under a CRLF checkout, which is what core.autocrlf=true gives you on
+# Windows, those tests fail for a reason that has nothing to do with the code,
+# and the failure reads exactly like a real one. Note that `git checkout-index
+# -f` does not undo it: git considers the normalized content identical and
+# leaves the existing CRLF files untouched. `git ls-files --eol` is what shows
+# the truth (i/lf w/crlf).
+#
+# Pinning eol=lf here means a fresh clone passes on any platform, instead of
+# every developer on Windows rediscovering this and configuring git by hand.
+# Existing checkouts are not rewritten by adding this file -- a working tree
+# that is already CRLF needs one conversion pass.
+* text=auto eol=lf
+
+# text=auto already detects binary content; these are explicit so that a newly
+# added asset cannot be misdetected and corrupted by newline translation.
+*.png binary
+*.gif binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.pdf binary
