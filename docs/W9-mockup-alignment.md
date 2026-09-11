@@ -218,8 +218,15 @@ promote → `ids=[agora] limit=3 full=False`、幂等、GET 能看到、demote �
 放进本仓库 `docs/` 即可（本仓库是 private）。
 
 **mockup 本体**：`docs/Agora 控制台.html` + `docs/Agora 控制台_files/_t.html`（后者 98,419 字节 = 真图，
-外层只是 Claude 的壳）目前是 **untracked，且按 PROJECT-STATUS §6.0 的判断不纳入版本管理**（含真实服务器
-公网 IP / ssh 密钥路径 / 带公司名的技能名）。两台机器各自持有即可，不要提交。
+外层只是 Claude 的壳）**已入库**（2026-09-11，commit `811b11b`，连同样式表与查看器资源共 458 KB）。
+
+这推翻了 `PROJECT-STATUS.md` §6.0 建议的「不纳入版本管理」—— 那条判断针对的是**错误的仓库**：mockup 里有真实
+主机、ssh 密钥路径、带公司名的技能名，那些**绝不能进 public `wilbur-labs/Agora`**；而本仓库是 private，正是
+为了让这些东西有地方存在。两台机器都拿它当设计真源逐屏核对，让它只以 untracked 文件存在，等于把最该保住的
+东西放在最容易丢的地方。
+
+⚠️ **由此产生一个约束**：这些路径现在在本仓库历史里，所以将来向 public 仓库回馈代码时，**必须按路径
+cherry-pick，不能按提交区间同步**。
 
 ## 本机环境（公司那台，仅供参考）
 
