@@ -105,9 +105,31 @@ mockup 左栏 8 项里 3 项后端无支撑：**已知缺陷**（UI 里完全没
 | 项 | 状态 |
 |---|---|
 | `.gitattributes`（根治 CRLF 让源码断言测试假失败） | ✅ commit `7b307cb` |
-| 步骤 A：左栏项目级导航 + 能力状态槽 | 🔵 进行中 |
+| **能力状态槽判断层** `frontend/src/lib/nav-capability.ts` + 16 条 node 测试 | ✅ commit `61a96fd` |
+| 步骤 A 余下：左栏 JSX 改项目级导航（`workspace/page.tsx` 的 `TaskRail`，531–642 行） | 🔵 下一步 |
 | 步骤 B：已知缺陷真实读取 | ⬜ 等权威来源 |
 | 「项目」页 / Today 三档 / 中栏卡片流 / 壳 | ⬜ 未开工 |
+
+前端门禁：**339 tests / 338 pass / 1 skip**（新增 16 条）· eslint 0 · build 14 页。
+
+### 能力状态槽（`NavCapability`）已落地的形状
+
+六个变体，每个是**一句不同的话**：`count`（带 caveat：部分行无法分类 / 部分记录打不开）·
+`none`（确定的没有）· `unbuilt`（功能未建 + 里程碑）· `noReader`（东西在但无读取路径，**带原因**：
+`reader_unbuilt` / `no_structured_source`）· `unreadable`（读取失败 + 原因）· `unreported`（**这台服务器
+没报告这个字段** —— 与上面五个分开，因为旧服务器不作答不能被打扮成关于项目的事实）。
+
+两个谓词，刻意分开：`countSayable`（能否画成数字，只有 `count` 能）与 `supportsAbsenceClaim`（能否说
+「一个也没有」—— `count: 0` 若带 caveat 则**不能**，因为 0 旁边有 2 条打不开的记录时，决策很可能存在，
+只是读不到）。
+
+它**只做映射**，不重新判断：CR 用 `lib/cr-log.ts` 已有的 `CRLogView`，ADR 用 decisions payload 自己报告的
+可达性。对同一次读取给出第二个意见，正是「一个问题两个答案」的来源 —— 单是 CR Log 计数这一处，
+`cr-log.ts` 的注释就记录了同类缺陷发生过三次。
+
+⚠️ **独立评审在这个模块上抓到它自己犯了它要防的错**：`unreadable_count ?? 0` 把「字段缺失」读成
+「确认的零」，会让计数显示得像完整性已被确认。修法是把输入类型的字段全部改为必填（与 `ProjectDecisions`
+契约一致），这样根本没有「缺失值」可供兜底。**改这个模块时别把 optional 加回来。**
 
 ## 给另一台机器的 agent
 
