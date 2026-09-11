@@ -116,6 +116,9 @@ mockup：顶栏横排四个 tab（Today / 项目工作台 / 环境 / 技能库�
 
 放进本仓库 `docs/` 即可（本仓库 private）。
 
+**✅ 2026-09-11 已解**：缺陷 → `docs/known-defects.md`（权威副本）；ADR 0001-0008 → `.agora/decisions/`（已入库，
+UI 直接读得到）；验收线按用户决定不复制，见 `W9-mockup-alignment.md`「给另一台机器的 agent」。
+
 ---
 
 ## 四、今天得到的经验

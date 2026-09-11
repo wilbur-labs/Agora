@@ -217,6 +217,12 @@ promote → `ids=[agora] limit=3 full=False`、幂等、GET 能看到、demote �
 
 放进本仓库 `docs/` 即可（本仓库是 private）。
 
+**✅ 2026-09-11 家里机已送到（用户拍板：ADR 原文与缺陷清单过去，验收线不复制）**：
+① ADR 0001-0008 入库在 **`.agora/decisions/`** —— 不是 `docs/`，因为那正是 `GET /api/projects/{id}/decisions`
+读取的目录（`.gitignore` 原本把它当运行时状态忽略，已改为跟踪并注明理由），所以左栏「决策 ADR」在两台机器上
+都会显示真实计数。② 缺陷 D-1~D-6 原文在 **`docs/known-defects.md`**，自此它是权威副本，workspace RESUME 只留指针；
+步骤 B 建结构化来源时以它为输入。③ W9 验收线**不复制**，以 workspace `task.yaml` 为准，避免两份真相。
+
 **mockup 本体**：`docs/Agora 控制台.html` + `docs/Agora 控制台_files/_t.html`（后者 98,419 字节 = 真图，
 外层只是 Claude 的壳）**已入库**（2026-09-11，commit `811b11b`，连同样式表与查看器资源共 458 KB）。
 

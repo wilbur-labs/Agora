@@ -54,7 +54,10 @@ backend/.pytest-*
 .agora/audit.log
 .agora/research/
 .agora/specs/
-.agora/decisions/
+# .agora/decisions/ is tracked since 2026-09-11: the decision records are the
+# project's own (adr/0004) and both machines need the same set. This branch is
+# pushed to the private remote only; when feeding the public repository, pick by
+# path and leave this directory out.
 # The project's own change log. Local by decision, not by oversight: this
 # repository is public and its change record is not. See .agora/development/CR-LOG.md
 # itself, CR-1, for what that costs and why it was accepted.
