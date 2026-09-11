@@ -73,12 +73,28 @@ argument) raises.
 """
 from __future__ import annotations
 
+import asyncio
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Protocol, Sequence
+from typing import Literal, Mapping, Protocol, Sequence, runtime_checkable
 
 from agora.fsprobe import PathProbe, probe_path
+
+#: SIGTERM -> grace period -> SIGKILL. Shared by Local and Remote process handles
+#: so timeout cleanup behaves identically wherever a process runs (Q1). Matches the
+#: 5s the dispatcher's own ``_stop`` has always used.
+GRACE_SECONDS = 5
+
+#: Remote (SSH) connection tuning (U2). Named constants, not config — config-izing
+#: the environment layer is deferred to a later unit (see CR-2). A long agent run can
+#: sit idle on the SSH channel long enough for a NAT/firewall to drop it, so keepalive
+#: probes keep it observable; connect is bounded-retried for transient flakiness.
+CONNECT_TIMEOUT = 30.0        #: seconds to establish the SSH connection
+KEEPALIVE_INTERVAL = 30.0     #: seconds between keepalive probes on an idle channel
+KEEPALIVE_MAX_MISSED = 3      #: drop the connection after this many unanswered probes
+CONNECT_MAX_RETRIES = 2       #: retries after the first attempt (3 attempts total)
+CONNECT_RETRY_BACKOFF = 0.5   #: base seconds for exponential backoff (0.5s, 1.0s, ...)
 
 #: ``completed`` — the command ran and exited; ``returncode`` says how.
 #: ``unstartable`` — it never ran (executable missing, permission, spawn failure).
@@ -124,9 +140,83 @@ class CommandResult:
         return f"exit {self.returncode}"
 
 
+@runtime_checkable
+class _ByteReader(Protocol):
+    """A stream that hands back bytes. Deliberately NOT bound to
+    ``asyncio.StreamReader`` (Q1): a remote asyncssh channel and a local
+    subprocess pipe both satisfy this, so the dispatcher's two-``_read_tail``-task
+    consumer reads them the same way. Bytes, never str — the caller decodes as
+    UTF-8, so a remote host's locale never gets to mangle the output."""
+
+    async def read(self, n: int = -1) -> bytes:
+        ...
+
+
+@runtime_checkable
+class ProcessHandle(Protocol):
+    """A live process, not a result — the third capability ``launch`` returns.
+
+    ``run`` hands back what a finished command produced; this hands back a handle to
+    one still running, so the dispatcher can record its pid, tail its two streams
+    while it lives, and kill it on timeout. The three the module docstring named.
+
+    Neither ``terminate`` nor ``kill`` raises for an already-exited process: they are
+    idempotent, matching the dispatcher's own ``_stop``. Timeout cleanup is
+    ``wait(timeout)`` -> on timeout ``terminate()`` -> wait ``GRACE_SECONDS`` ->
+    ``kill()`` (Q1); local sends real signals, remote sends them over the channel."""
+
+    @property
+    def pid(self) -> int | None:
+        """The OS pid locally. ``None`` when it cannot be known — a remote process's
+        pid is not this machine's, and is not needed to kill it (that goes over the
+        channel), so a remote handle reports ``None`` rather than a fake sentinel."""
+        ...
+
+    @property
+    def returncode(self) -> int | None:
+        """Exit code once the process has exited, else ``None``. Part of the contract
+        (not just LocalProcessHandle's convenience) because the dispatcher reads it
+        directly on the timeout and cancel paths — every implementation must provide
+        it, or a conforming handle would AttributeError there."""
+        ...
+
+    @property
+    def stdout(self) -> _ByteReader:
+        ...
+
+    @property
+    def stderr(self) -> _ByteReader:
+        ...
+
+    async def wait(self, timeout: float | None = None) -> int | None:
+        """The exit code once it exits; ``None`` if it has not by ``timeout``."""
+        ...
+
+    async def terminate(self) -> None:
+        """Ask it to stop (SIGTERM locally). Idempotent on an exited process."""
+        ...
+
+    async def kill(self) -> None:
+        """Force it to stop (SIGKILL locally). Idempotent on an exited process."""
+        ...
+
+
 class Environment(Protocol):
-    """Run a bounded command, and look at a path. See the module docstring for the
-    two things this deliberately does not cover."""
+    """Run a bounded command, look at a path, and launch a live process. See the
+    module docstring for what W2 deliberately left out and W3 now adds.
+
+    ``run``/``probe`` stay SYNCHRONOUS (W2's contract, unchanged): the existing
+    call chains — provisioner, deliverables, handoff, router, store — call them
+    synchronously and only ever run locally today, so async-ifying them now would
+    break a large web of callers for no present benefit. ``launch`` is async because
+    it is the one capability W3 adds and the dispatcher awaits it.
+
+    The async ``run``/``probe`` a RemoteEnvironment needs (asyncssh on a single loop)
+    is a SEPARATE, later contract introduced when U2 builds RemoteEnvironment — not
+    folded into this one, so a local sync implementation and a remote async one never
+    have to pretend to share a signature (CR-4, amending CR-1). ``LocalEnvironment``
+    keeps its synchronous run/probe; callers on the async path wrap them in
+    ``asyncio.to_thread`` exactly as the provisioner already does."""
 
     def run(
         self,
@@ -146,6 +236,70 @@ class Environment(Protocol):
 
     def probe(self, path: Path, *, follow_symlinks: bool = True) -> PathProbe:
         """What is at ``path``, with absence and unknown kept apart."""
+        ...
+
+    async def launch(
+        self,
+        argv: Sequence[str],
+        *,
+        cwd: Path | None = None,
+        env: "Mapping[str, str] | None" = None,
+    ) -> ProcessHandle:
+        """Start ``argv`` and hand back a live :class:`ProcessHandle` without waiting
+        for it to finish. ``env`` is the environment the caller INTENDS for the child;
+        how much of it actually reaches the process is the implementation's call,
+        decided by the trust boundary it crosses (CR-8):
+          - :class:`LocalEnvironment` runs on this same host, so it forwards ``env`` as
+            given (the caller typically passes ``{**os.environ, AGORA_*}``).
+          - A remote environment crosses a trust boundary, so it forwards only a safe
+            allowlist (the AGORA_* the agent needs) and drops the SSH credential and
+            any other local secrets — sending the full local environment to a remote
+            host would leak them. The agent still gets AGORA_TASK_ID/RUN_ID/PROJECT_ID.
+        The caller's deadline lives on ``ProcessHandle.wait``, not here."""
+        ...
+
+
+class AsyncExecutionEnvironment(Protocol):
+    """The async ``run``/``probe`` a remote implementation needs — kept apart from the
+    synchronous :class:`Environment` (CR-4). A remote environment talks over asyncssh,
+    which is async and holds one connection on a single event loop; it cannot honor
+    the sync ``Environment.run/probe`` signature, and bridging one through a
+    short-lived loop cannot reuse that connection safely. So a remote impl provides
+    THESE (async run/probe) plus the async ``Environment.launch`` (shared, already
+    async) — never the sync run/probe. The local sync chains (provisioner,
+    deliverables, ...) keep using :class:`Environment`; nothing has to pretend one
+    signature fits both.
+
+    NOT ``@runtime_checkable`` on purpose: a runtime protocol check verifies only that
+    the attributes EXIST, not that ``run``/``probe`` are async — so a sync
+    ``LocalEnvironment`` would structurally satisfy it and a caller could ``await`` its
+    synchronous ``run`` (a CommandResult, not a coroutine). Callers pick this vs the
+    sync Environment by the execution PATH they are on, not by isinstance.
+
+    ``run``/``probe`` return the SAME :class:`CommandResult` / :class:`PathProbe` as
+    the sync contract — only the call convention differs."""
+
+    async def run(
+        self,
+        argv: Sequence[str],
+        *,
+        cwd: Path | None = None,
+        timeout: float,
+        read_only: bool = False,
+    ) -> CommandResult:
+        """Run ``argv`` to completion over the remote transport. Same outcome contract
+        as :meth:`Environment.run` (never raises for the command's own failure).
+
+        ``read_only`` is the caller's DECLARATION that this run is idempotent and safe
+        to retry on a transport error — decided by contract, not by parsing the command
+        (``git status`` and ``git commit`` are both ``run(git ...)``). Default ``False``
+        means a transport failure is not retried, so a side-effecting run is never run
+        twice."""
+        ...
+
+    async def probe(self, path: Path, *, follow_symlinks: bool = True) -> PathProbe:
+        """What is at ``path`` on the remote, absence and unknown kept apart. Inherently
+        read-only, so it may be retried on a transport error without a flag."""
         ...
 
 
@@ -196,6 +350,80 @@ class LocalEnvironment:
 
     def probe(self, path: Path, *, follow_symlinks: bool = True) -> PathProbe:
         return probe_path(path, follow_symlinks=follow_symlinks)
+
+    async def launch(
+        self,
+        argv: Sequence[str],
+        *,
+        cwd: Path | None = None,
+        env: Mapping[str, str] | None = None,
+    ) -> ProcessHandle:
+        if not argv:
+            raise ValueError("argv must name a program to run")
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
+            cwd=str(cwd) if cwd is not None else None,
+            env=dict(env) if env is not None else None,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        return LocalProcessHandle(proc)
+
+
+class LocalProcessHandle:
+    """A local subprocess as a :class:`ProcessHandle`. Wraps
+    ``asyncio.subprocess.Process``; ``terminate``/``kill`` send real signals and
+    tolerate an already-exited process (``ProcessLookupError``), the same contract
+    the dispatcher's ``_stop`` has always honored."""
+
+    def __init__(self, proc: asyncio.subprocess.Process) -> None:
+        self._proc = proc
+
+    @property
+    def pid(self) -> int | None:
+        return self._proc.pid
+
+    @property
+    def returncode(self) -> int | None:
+        """Exit code once known, else ``None``. Present so the dispatcher's cancel
+        path can ask ``handle.returncode is None`` the same way it asks a raw
+        subprocess — the two are interchangeable in ``_active``."""
+        return self._proc.returncode
+
+    @property
+    def stdout(self) -> _ByteReader:
+        # asyncio.StreamReader satisfies _ByteReader (async read(n) -> bytes).
+        assert self._proc.stdout is not None  # PIPE was requested in launch
+        return self._proc.stdout
+
+    @property
+    def stderr(self) -> _ByteReader:
+        assert self._proc.stderr is not None
+        return self._proc.stderr
+
+    async def wait(self, timeout: float | None = None) -> int | None:
+        if timeout is None:
+            return await self._proc.wait()
+        try:
+            return await asyncio.wait_for(self._proc.wait(), timeout=timeout)
+        except (TimeoutError, asyncio.TimeoutError):
+            return None
+
+    async def terminate(self) -> None:
+        if self._proc.returncode is not None:
+            return
+        try:
+            self._proc.terminate()
+        except ProcessLookupError:
+            return
+
+    async def kill(self) -> None:
+        if self._proc.returncode is not None:
+            return
+        try:
+            self._proc.kill()
+        except ProcessLookupError:
+            return
 
 
 def _decoded(raw: str | bytes | None) -> str:

@@ -13,6 +13,15 @@ dependencies = [
     # the block context (fences, indented code, list nesting) produced a steady stream
     # of miscounts — including one that read a file full of items as tracking nothing.
     "markdown-it-py>=3.0,<5",
+    # SSH transport for RemoteEnvironment. Speaking SSH over the event loop keeps
+    # streaming, timeout and cancellation first-class on the remote path, the same way
+    # they already are locally; shelling out to the system ssh client would put a
+    # process boundary in the middle of exactly those three.
+    # Floor is 2.14.2, not 2.14: that release added the strict-kex countermeasure for
+    # the Terrapin attack (CVE-2023-48795), and 2.14.1 hardened the state machine
+    # against message injection (CVE-2023-46445/46446). Earlier versions negotiate a
+    # session an attacker can silently truncate, which defeats the point of SSH here.
+    "asyncssh>=2.14.2",
 ]
 
 [project.optional-dependencies]

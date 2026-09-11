@@ -7,8 +7,12 @@ import subprocess
 from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from pydantic import Field
+
+if TYPE_CHECKING:
+    from agora.environments import Environment
 
 from agora.protocol.hashing import canonical_json_bytes, canonical_sha256, seal_model_payload
 from agora.protocol.models import (
@@ -62,8 +66,35 @@ class ProtocolRunDefinition(ProtocolModel):
     prompt: str = Field(min_length=1, max_length=PROTOCOL_PROMPT_LIMIT)
 
 
-def resolve_git_revision(root: Path, *, repository_id: str) -> RepositoryRevision:
-    """Resolve the exact Git ref and commit without invoking a shell."""
+def resolve_git_revision(
+    root: Path, *, repository_id: str, env: "Environment | None" = None
+) -> RepositoryRevision:
+    """Resolve the exact Git ref and commit without invoking a shell.
+
+    D5 (W3): this is the one git call site inside the frozen orchestration tree, and
+    it used to run ``git -C <root>`` on THIS host unconditionally — which is wrong the
+    moment ``root`` names a path that lives on a remote Environment. It now takes the
+    ``env`` the run executes in and **fails closed for a non-local environment** rather
+    than silently resolving a remote path's revision against the local filesystem.
+
+    The minimal, boundary-respecting form (see the task's D5 decision = C): local runs
+    keep the existing synchronous ``git`` exactly as before; a remote ``env`` gets an
+    explicit error here. Full remote revision resolution — needed to bind a handoff to
+    the remote commit — is deferred to the remote-deliverables unit, which owns that
+    surface and can extend this without widening the frozen tree's async surface now.
+
+    ``env=None`` (the default, and what the local resolver passes) means local."""
+    from agora.environments import LocalEnvironment
+
+    if env is not None and not isinstance(env, LocalEnvironment):
+        # A remote (or any non-local) environment: refuse rather than run local git
+        # against a path this host does not own. This is the hazard the frozen-tree
+        # skip test named; W3 turns "silently wrong" into "explicitly unsupported here".
+        raise ValueError(
+            "Revision resolution for a non-local environment is not supported yet "
+            "(deferred to remote-deliverables); it must not run local git against a "
+            "remote path"
+        )
 
     def git(*args: str, allow_empty: bool = False) -> str:
         try:
