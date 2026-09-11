@@ -7429,3 +7429,143 @@ Commit the slice files on `feature/w8-session-ui`, staged explicitly, and push t
 the shell/top bar (§一.3) which also moves the projects entry to where the design puts it.
 Update the progress table in `docs/W9-mockup-alignment.md` (Today 三档：前端 → ✅) in the
 same commit.
+
+
+## W9 — the middle column is one stream (screen 2), and W8 exit criterion 4 closes
+
+`feature/w8-session-ui`, on top of `cf2156a`, not yet committed. The fourth of W9's cuts
+(`docs/NEXT-STEPS.md` §一.2): the workbench's middle column stops being two tabs and
+becomes the mockup's stream of run cards with the task's history between them.
+
+### What changed on screen
+
+* **One column, no tabs.** The conversation now takes the page's events read and
+  interleaves it with its turns by time — notes, stage changes, specs, gates between the
+  cards — through the same `timelineVerdictOf` / `timelineReadOf` the separate timeline
+  tab used, so the completeness caveats (partial page, read in flight, record known to be
+  missing, genuinely empty) are the same four sentences in the same places. The tab bar
+  and `TimelineColumn` are gone; `TimelineEntry` and its wording moved to
+  `components/timeline-entry.tsx` unchanged.
+* **The card carries what the mockup draws and the records hold.** Executor · run id ·
+  state with exit code · when · duration (settled turns only, from both stamps; a live
+  turn says "in progress" rather than ticking a clock) · the prompt and the terminal ·
+  **the files it delivered**, through a `DeliverablesBlock` shared with the right column
+  (view / open per file, and the six ways of saying "no list here" kept apart) · reviews
+  indented under the turn they review, each with its own state pill and its transcript on
+  demand · a footnote with the worktree the run ran in and the nested count.
+* **Not drawn, because the data does not carry it:** a retry nested under the run it
+  retries (no record says "retries" — lib/run-tree.ts; retries stay top-level and the
+  footnote says "other", never "retry"); an environment picker (runs execute on this
+  machine until W3-a; a labelled "环境 · 本机" says so and no dropdown promises otherwise);
+  `exec resume <session>` on the card (the session id is per adapter, not per run).
+* **The message box does both things the mockup's placeholder names:** 派活 (a turn) and
+  記一笔 (a `user_message` event, whose id goes up to the page so the stream can say it is
+  missing an entry until the read that fetches it lands).
+* **Events older than the oldest shown turn are folded with the earlier turns** and the
+  "earlier turns exist" line says how many; on a complete page nothing is folded.
+
+W8's exit criterion 4 — "Run 仍然看得见：改动文件、门禁、复核/重试的嵌套，显示在对话流里面" —
+is met by this: files on the card, reviews nested, gate events interleaved; the gate's
+own block stays in the right column where the mockup draws it.
+
+### Files
+
+`frontend/src/components/conversation.tsx` (the stream), `frontend/src/components/timeline-entry.tsx`
+(new; moved out of the page), `frontend/src/components/run-deliverables.tsx` (new; the shared
+files block, `FileRow` moved into it), `frontend/src/app/workspace/page.tsx` (tabs, timeline column,
+`RunCard`, `FileRow` and `relTime` removed; `SettledRunChanges` uses the shared block),
+`frontend/src/lib/conversation.ts` (`turnDurationMs`, `formatDuration`, `streamEventsOf`,
+`nestedSummaryOf`), `frontend/tests/conversation.test.mts` (+5 tests incl. one source scan), `frontend/tests/run-tree.test.mts`
+(+1: summaries nest their reviews), `frontend/src/lib/run-column.ts` (identity from both shapes),
+`frontend/src/lib/i18n/dictionaries/workspace.ts`,
+`frontend/src/lib/i18n/dictionaries/conversation.ts`, and this record. No backend file.
+
+### Gate
+
+* Frontend: `pnpm run test:control-plane` **367 collected / 366 passed / 1 skipped**
+  (was 361 / 360 / 1). `tsc --noEmit` 0. `eslint` 0 on the changed files. `next build`
+  14 pages. The page shrank by about 480 lines (moved, not deleted).
+* Backend: no backend file touched.
+* Not exercised by hand: this machine holds no task, so the stream was verified by the
+  node tests and the build, not by a live conversation. The browser check is owed, as it
+  was for the Today slice.
+
+### Review state
+
+Nine rounds of independent review on this slice, 23 findings: 17 confirmed and fixed,
+six rejected with their reasons below. **Every round ran as Kiro standing in for codex**
+(`scripts/kiro-review.sh`, `gpt-5.6-sol`, `--effort max`): codex answered
+`You've hit your usage limit` at every attempt this session — the documented substitution
+(adr/0017), never alongside codex. The commit message says so.
+
+What the rounds caught, because each is a shape this repository keeps producing:
+
+1. Events folded behind "earlier turns" at the 500-turn ceiling, where the probe is
+   gone and older turns are not proven — folded behind *proven* older turns only now,
+   and at the ceiling a page shorter than the ceiling is the whole history.
+2. Review runs' files excluded from the card — offered on the nested card on demand: a
+   reviewer that wrote a report delivered something.
+3. A failed files read with no retry for the session — the block offers one, and the
+   right column's own read re-asks too.
+4. A note's success cleared whatever was in the box, including text typed meanwhile —
+   both send and note clear only if the box was not edited since (by edit count, not by
+   text: the next message may be the same words).
+5. A stale comment at the call site still describing the tabs.
+6. The nested card showed the reviewed run's id and not its own — two reviews of one turn
+   by the same executor were indistinguishable.
+7. The file preview ignored the server's `truncated` — said now, so half a file is not
+   approved as the whole. And every preview failure read as "changed since"; only a 409
+   does now, the rest say unavailable and can be retried.
+8. "Only the turns are shown" while the page retained the previous events on a failed
+   refresh — two sentences now: nothing ever landed, or the entries are from the last read.
+9. **Run summaries carry their identity as top-level `role` / `reviews_run_id` and no
+   `result_metadata`; `runRole` / `reviewedRunId` read only the metadata, so every review
+   on a summaries page was a worker turn of its own.** The conversation had this before
+   this slice — the old timeline tab, fed full records, hid it. `lib/run-column.ts` reads
+   both shapes; pinned in `tests/run-tree.test.mts`.
+10. "0s" for a turn whose end precedes its start — a clock set back measures nothing;
+    the duration is unknown, not instantaneous.
+11. No scroll to the newest entry — restored from the timeline column, keyed on the entry
+    count so a transcript poll does not yank a reader who scrolled up.
+12. The conversation had no way to learn of a run the page knew — a review queued after
+    its worker settled stayed invisible until something local bumped a nonce. It now
+    derives the gap from the page's authoritative active-run read (`runsLackKnown`, the
+    page's own pattern) and re-reads once per time the gap appears; the stream says
+    "not shown yet" meanwhile.
+13. A note whose answer was lost was told to "check the stream" while nothing re-read it —
+    the page's history read is asked for on that path now.
+14. "Not recorded" for a run's files, frozen for the session — a re-ask is offered there
+    too; a run settled a moment ago may still be having its snapshot written.
+
+Rejected, six, in three groups:
+
+* **The note endpoint has no idempotency key** (rounds 2, 7, 8): a `POST` whose answer is
+  lost after the server committed leaves the client unable to make a retry safe. True.
+  The client now says the answer was lost rather than that the note failed, re-reads the
+  history, and points at the stream; making the retry *safe* is a backend contract
+  change (an idempotency key on `appendTaskEvent`) and is recorded here as the CR it
+  would be, not fixed in a frontend slice.
+* **Relative times do not tick** (rounds 3 and 9): `relTime` is computed at render and a
+  card left on screen keeps saying "just now". True of every relative time in this app
+  — the rail, the right column, the Today page — since they were written; a minute
+  ticker is an app-wide change and would be one, not one card's.
+* **A review nested under its worker sits at the worker's time** (round 9), so a note
+  written between the two renders after both. That is the recorded ordering rule — 按工作
+  单元排，不按进程启动次数排 (mockup v2 screen 2; lib/timeline.ts) — and the timeline tab
+  ordered the same way. Not a defect of this slice; changing it is changing the decision.
+
+Also raised and not counted above: the page's `onPosted` issues a read and the
+`eventsGap` effect a second, and if the second fails while the first succeeds the later
+answer is dropped (round 3). Pre-existing wiring of the page, untouched by this slice,
+noted for whoever next works on `loadEvents`.
+
+### Blockers
+
+None.
+
+### Next safe action
+
+Commit the slice files on `feature/w8-session-ui`, staged explicitly, and push to
+`private`. Then `docs/NEXT-STEPS.md` §一.3: the shell and top bar (four tabs, the
+environment and CLI versions on the right), which also moves the projects entry to where
+the design puts it. Update `docs/W9-mockup-alignment.md`'s table in the same commit.

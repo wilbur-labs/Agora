@@ -28,7 +28,17 @@
 
 import type { AttentionLike, TaskAttentionView } from "./task-attention.ts";
 
-/** The fields the column needs from a run record; a structural subset. */
+/**
+ * The fields the column needs from a run record; a structural subset.
+ *
+ * A run's identity — its role and the run it reviews — arrives in one of two places.
+ * The full record (`ExecutionRun`) carries it inside `result_metadata` under the keys
+ * below. A **summary** (`RunSummary`, what the run *list* returns) carries no metadata at
+ * all and instead lifts the two keys to top-level fields, precisely so that a page of
+ * summaries can nest reviews (backend/agora/execution/models.py, `RunSummary`). Both
+ * shapes are read here; a reader that looked at the metadata alone filed every review on
+ * a summaries page as a worker turn of its own — which is what the conversation did.
+ */
 export interface ColumnRunLike {
   run_id: string;
   state: string;
@@ -37,6 +47,9 @@ export interface ColumnRunLike {
   started_at: string | null;
   finished_at: string | null;
   result_metadata?: Record<string, unknown> | null;
+  /** The summary's lifted identity. `undefined` when the shape does not carry it. */
+  role?: string;
+  reviews_run_id?: string | null;
 }
 
 /**
@@ -66,12 +79,18 @@ export const ROLE_REVIEW = "review";
  * caller declines to treat it as the delivered result rather than mislabelling it.
  */
 export function runRole(run: ColumnRunLike): string {
+  // The summary's lifted field first: when the shape carries it, it is the backend's own
+  // reading of the metadata (`role_of`), and the metadata is not on the summary at all.
+  if (typeof run.role === "string") return run.role;
   const raw = (run.result_metadata ?? {})[RUN_ROLE_KEY];
   return raw === undefined || raw === null ? ROLE_WORKER : String(raw);
 }
 
 /** The run a review run reviews, or "" when it names none. */
 export function reviewedRunId(run: ColumnRunLike): string {
+  // `undefined` means the shape has no such field; `null` means it has one and it names
+  // nothing. Only the first falls through to the metadata.
+  if (run.reviews_run_id !== undefined) return run.reviews_run_id ?? "";
   const raw = (run.result_metadata ?? {})[RUN_REVIEWS_KEY];
   return raw === undefined || raw === null ? "" : String(raw);
 }

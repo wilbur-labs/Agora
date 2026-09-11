@@ -14,8 +14,13 @@ import {
   sessionVerdict,
   willContinue,
   willStartFresh,
+  formatDuration,
+  nestedSummaryOf,
+  streamEventsOf,
+  turnDurationMs,
   type AgentSessionLike,
   type OutputSliceLike,
+  type TurnLike,
 } from "../src/lib/conversation.ts";
 
 function session(overrides: Partial<AgentSessionLike> = {}): AgentSessionLike {
@@ -317,4 +322,83 @@ test("the turn probe never asks for more than the server allows", () => {
   assert.equal(probeFor(MAX_PAGE - 1), MAX_PAGE);
   assert.equal(probeFor(MAX_PAGE), MAX_PAGE, "the probe must not exceed the ceiling");
   assert.ok(probeFor(MAX_PAGE) <= MAX_PAGE);
+});
+
+// --- the stream --------------------------------------------------------------------------
+
+function turn(run_id: string, queued_at: string, overrides: Partial<TurnLike> = {}): TurnLike {
+  return {
+    run_id, state: "succeeded", adapter: "codex", queued_at,
+    started_at: null, finished_at: null, exit_code: 0, ...overrides,
+  };
+}
+
+test("a turn's duration needs both ends, and both readable", () => {
+  assert.equal(turnDurationMs(turn("r", "2026-09-12T09:00:00Z", {
+    started_at: "2026-09-12T09:41:00Z", finished_at: "2026-09-12T09:44:12Z",
+  })), 192_000);
+  // Live: started, not finished — no number, not "0s so far".
+  assert.equal(turnDurationMs(turn("r", "x", { started_at: "2026-09-12T09:41:00Z" })), null);
+  assert.equal(turnDurationMs(turn("r", "x", { finished_at: "2026-09-12T09:41:00Z" })), null);
+  assert.equal(turnDurationMs(turn("r", "x", { started_at: "?", finished_at: "2026-09-12T09:41:00Z" })), null);
+  // A clock that went backwards measures nothing — not "0s", which would say instantaneous.
+  assert.equal(turnDurationMs(turn("r", "x", {
+    started_at: "2026-09-12T09:44:00Z", finished_at: "2026-09-12T09:41:00Z",
+  })), null);
+});
+
+test("durations take the mockup's shapes: seconds, minutes and seconds, hours and minutes", () => {
+  assert.equal(formatDuration(42_000), "42s");
+  assert.equal(formatDuration(192_000), "3m 12s");
+  assert.equal(formatDuration(65 * 60_000), "1h 05m");
+  assert.equal(formatDuration(0), "0s");
+});
+
+test("the stream drops run.* events, and holds back events older than the oldest shown turn only when older turns exist", () => {
+  const events = [
+    { event_id: "e0", event_type: "task_created", created_at: "2026-09-10T08:00:00Z" },
+    { event_id: "e1", event_type: "user_message", created_at: "2026-09-11T08:00:00Z" },
+    { event_id: "e2", event_type: "run.queued", created_at: "2026-09-12T09:00:00Z" },
+    { event_id: "e3", event_type: "spec.approved", created_at: "2026-09-12T10:00:00Z" },
+  ];
+  const turns = [turn("b", "2026-09-12T09:30:00Z"), turn("a", "2026-09-12T09:00:00Z")];
+  // Older turns exist: the two entries before the oldest shown turn are folded with them.
+  const shown = streamEventsOf(events, turns, true);
+  assert.deepEqual(shown.events.map((e) => e.event_id), ["e3"]);
+  assert.equal(shown.heldBack, 2);
+  // A complete page: nothing is older than history itself; only run.* goes.
+  const whole = streamEventsOf(events, turns, false);
+  assert.deepEqual(whole.events.map((e) => e.event_id), ["e0", "e1", "e3"]);
+  assert.equal(whole.heldBack, 0);
+  // No turns on the page at all: nothing to be older than, even if older turns exist.
+  assert.equal(streamEventsOf(events, [], true).heldBack, 0);
+});
+
+test("the footnote counts reviews by role and calls everything else nested 'other' — never 'retry'", () => {
+  assert.deepEqual(nestedSummaryOf([]), { total: 0, reviews: 0, others: 0 });
+  assert.deepEqual(
+    nestedSummaryOf([{ role: "review" }, { role: "review" }, { role: "worker" }]),
+    { total: 3, reviews: 2, others: 1 },
+  );
+});
+
+test("the workbench's middle column is one stream: the conversation carries the timeline, and the tabs are gone", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const page = await readFile(new URL("../src/app/workspace/page.tsx", import.meta.url), "utf8");
+  const pageSource = page.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
+  assert.ok(!pageSource.includes('role="tab"'), "the middle column must not be a tab bar");
+  assert.ok(!pageSource.includes("TimelineColumn"), "the separate timeline column must be gone");
+  assert.ok(pageSource.includes("<Conversation"), "the conversation is the column");
+  const conversation = await readFile(new URL("../src/components/conversation.tsx", import.meta.url), "utf8");
+  const source = conversation.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
+  // The interleave and its completeness claim come from the one module that already
+  // makes them; the component must not re-decide what "may not be the whole history" means.
+  for (const call of ["timelineVerdictOf(", "timelineReadOf(", "streamEventsOf(", "turnDurationMs(", "nestedSummaryOf("]) {
+    assert.ok(source.includes(call), `the conversation must derive from ${call}`);
+  }
+  // Changed files come from the shared block, so a run's files read the same here and in
+  // the right column.
+  assert.ok(source.includes("DeliverablesBlock"), "the turn card must render files through the shared block");
+  // A live turn shows its state, never a ticking guess at its duration.
+  assert.ok(!source.includes("Date.now()"), "the card must not compute a live duration from the clock");
 });

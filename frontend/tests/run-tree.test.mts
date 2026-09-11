@@ -263,3 +263,19 @@ test("every unplaceable reason and the nesting labels are worded in both locales
     }
   }
 });
+
+test("a page of summaries nests its reviews: identity is read from the lifted fields, not only the metadata", () => {
+  // `RunSummary` (the run list) carries `role` and `reviews_run_id` at top level and no
+  // `result_metadata`. Reading the metadata alone filed every review as a worker turn.
+  const worker = { run_id: "w1", state: "succeeded", adapter: "codex", queued_at: "2026-09-12T09:00:00Z", started_at: null, finished_at: null, role: "worker", reviews_run_id: null };
+  const review = { run_id: "r1", state: "succeeded", adapter: "claude", queued_at: "2026-09-12T09:05:00Z", started_at: null, finished_at: null, role: "review", reviews_run_id: "w1" };
+  const tree = runTreeOf([worker, review]);
+  assert.equal(tree.units.length, 1);
+  assert.equal(tree.units[0].run.run_id, "w1");
+  assert.deepEqual(tree.units[0].nested.map((run) => run.run_id), ["r1"]);
+  assert.deepEqual(tree.unplaceable, []);
+  // And a lifted `null` link is "names no run", not "fall through to the metadata".
+  const orphanReview = { ...review, run_id: "r2", reviews_run_id: null, result_metadata: { agora_role: "review", reviews_run_id: "w1" } };
+  const tree2 = runTreeOf([worker, orphanReview]);
+  assert.deepEqual(tree2.unplaceable.map((u) => [u.run.run_id, u.because]), [["r2", "namesNoRun"]]);
+});

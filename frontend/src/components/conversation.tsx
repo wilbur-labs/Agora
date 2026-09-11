@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * One task's conversation with an agent.
+ * One task's conversation with an agent — and, since W9, the whole middle column.
  *
  * The primitive the user handles is a continuing session (tasks/agora/adr/0007):
  * type a message, it continues; type another, the agent remembers the last one.
@@ -10,25 +10,48 @@
  * what every honesty guard from W0 through W7 is attached to. Runs did not
  * disappear; they moved *inside* the conversation.
  *
+ * Mockup v2, screen 2, draws the middle column as one stream of run cards: executor,
+ * run id, exit, time and duration, the prompt, the terminal, the files changed with a
+ * "view" on each, review runs indented under the worker run they review, a footnote
+ * (worktree · nested runs), and a message box at the bottom that either notes
+ * something into the task's history or dispatches it to an agent. The task's other
+ * history — notes, stage changes, specs, gates — is interleaved between the cards by
+ * time; it used to be a second tab, which is where notes went to not be seen.
+ *
  * Every decision this component makes about what it is allowed to claim lives in
- * `lib/conversation.ts`, which `node --test` can mount. What is left here is
- * rendering.
+ * `lib/conversation.ts` and `lib/timeline.ts`, which `node --test` can mount. What is
+ * left here is rendering. Two things the mockup draws that the data does not carry are
+ * not drawn: a retry nested under the run it retries (no record says "retries" —
+ * lib/run-tree.ts), and an environment picker (runs execute on this machine until
+ * W3-a; the label says so).
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Loader2, RotateCcw, Send, Square } from "lucide-react";
+import { Loader2, PenLine, RotateCcw, Send, Square } from "lucide-react";
 
+import { DeliverablesBlock, type DeliverablesRead } from "@/components/run-deliverables";
+import { TimelineEntry, relTime, specForEvent } from "@/components/timeline-entry";
 import { useI18n } from "@/lib/i18n";
-import { getTask } from "@/lib/control-plane";
+import {
+  appendTaskEvent,
+  getTask,
+  listProjects,
+  type RequirementSpec,
+  type TaskEvent,
+} from "@/lib/control-plane";
 import { cn } from "@/lib/utils";
 import {
   EMPTY_TRANSCRIPT,
   conversationOrder,
+  formatDuration,
   mergeTranscript,
+  nestedSummaryOf,
   nextPollDelay,
   WORKER_ROLE,
   orphanSession,
   REVIEW_ROLE,
+  streamEventsOf,
+  turnDurationMs,
   UNKNOWN_ROLE,
   sendWouldBeRefused,
   sessionVerdict,
@@ -37,16 +60,17 @@ import {
   type SessionVerdict,
   type Transcript,
 } from "@/lib/conversation";
-import { runTreeOf, type RunUnit, type UnplacedRun } from "@/lib/run-tree";
+import type { RunUnit, UnplacedRun } from "@/lib/run-tree";
+import { runsLackKnown, timelineReadOf, timelineVerdictOf } from "@/lib/timeline";
 import { CONTINUE_TIMEOUT_SECONDS } from "@/lib/continue-run";
 import { MAX_PAGE } from "@/lib/paged";
-import { listProjects } from "@/lib/control-plane";
 import {
   cancelRun,
   createRun,
   forgetTaskSession,
   retryTaskSession,
   getRun,
+  getRunDeliverables,
   getRunOutput,
   listExecutionAdapters,
   listRuns,
@@ -67,7 +91,7 @@ const TURNS_SHOWN = 12;
  * emptied the window and hid everything already loaded.
  */
 const TURNS_CEILING = MAX_PAGE;
-/** How many turns' transcripts are fetched up front. */
+/** How many turns' transcripts — and settled turns' file lists — are fetched up front. */
 const TRANSCRIPTS_PREFETCHED = 4;
 
 /**
@@ -94,16 +118,53 @@ interface TaskLike {
 
 export function Conversation({
   task,
+  events,
+  eventsReadFailed,
+  eventsBehind,
+  specs,
+  knownActiveRuns = null,
+  onHistoryMayHaveChanged,
+  onPosted,
   onTurnSettled,
   onTaskMayHaveChanged,
 }: {
   task: TaskLike;
+  /**
+   * The task's whole event history, read by the page (the endpoint takes no limit, so
+   * the read is never capped). `null` until it lands or when it failed — told apart by
+   * `eventsReadFailed`.
+   */
+  events: TaskEvent[] | null;
+  eventsReadFailed: boolean;
+  /** The page holds a record this list lacks (a note just posted, a gate raised mid-run). */
+  eventsBehind: boolean;
+  specs: RequirementSpec[] | null;
+  /**
+   * The task's unsettled runs as the page's own authoritative read knows them. A run
+   * the page knows and this list of turns does not — a review queued after its worker
+   * settled, a turn dispatched from another window — is a gap this component can see
+   * and close by re-reading, instead of waiting for something local to bump it.
+   * `null` when the page has no such read yet.
+   */
+  knownActiveRuns?: readonly RunSummary[] | null;
+  /**
+   * Told when the task's history may have changed without an id to wait for — a note
+   * whose answer was lost may still be on record, and the only honest thing to do is
+   * read again before the person decides whether to write it twice.
+   */
+  onHistoryMayHaveChanged?: () => void;
+  /**
+   * Told the id of a note just recorded. The page re-reads its events and, until that
+   * read carries the id, the stream says a recorded entry is not shown yet (`eventsBehind`)
+   * — it does not promise the read will land.
+   */
+  onPosted?: (eventId: string) => void;
   /** Told when a turn settles, so the page's other panels can re-read. */
   onTurnSettled?: () => void;
   /** Told when a turn is dispatched: creating a run moves the task's version. */
   onTaskMayHaveChanged?: () => void;
 }) {
-  const { t } = useI18n();
+  const { t, te } = useI18n();
   const [adapters, setAdapters] = useState<AdapterCapability[] | null>(null);
   const [adapter, setAdapter] = useState<ExecutionAdapter>("codex");
   const [sessions, setSessions] = useState<AgentSession[] | null>(null);
@@ -115,8 +176,15 @@ export function Conversation({
   // make the window slower the more it has been used.
   const [shown, setShown] = useState(TURNS_SHOWN);
   const [transcripts, setTranscripts] = useState<Record<string, Transcript>>({});
+  // The files each settled turn delivered, keyed by run id; absent = not asked yet.
+  const [deliverables, setDeliverables] = useState<Record<string, DeliverablesRead>>({});
   const [draft, setDraft] = useState("");
+  // Bumped on every edit of the box. A send or a note captures the value it saw and
+  // clears the box only if nothing was typed meanwhile — compared by edit count, not by
+  // text, because the next message can legitimately be the same words as the last.
+  const draftEdits = useRef(0);
   const [sending, setSending] = useState(false);
+  const [noting, setNoting] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
 
@@ -256,14 +324,59 @@ export function Conversation({
   }, [task.task_id, nonce, shown]);
 
   const ordered = useMemo(() => conversationOrder(turns ?? []), [turns]);
-  const tree = useMemo(() => runTreeOf(turns ?? []), [turns]);
-  // Nested review/retry runs hang off their worker turn (the mockup's indented
-  // cards); only worker units are top-level, so the stream reads as "two things
-  // happened", not "five processes started".
-  const units = useMemo(() => {
-    const byId = new Map(tree.units.map((unit) => [unit.run.run_id, unit]));
-    return ordered.map((run) => byId.get(run.run_id)).filter((unit): unit is RunUnit<RunSummary> => Boolean(unit));
-  }, [ordered, tree]);
+
+  // A run the page knows to be unsettled that this list does not hold. Derived, not
+  // tracked, the way the page derives its own gaps: presence in the authoritative
+  // active-run read is evidence, absence from it is not. Closed by re-reading — once per
+  // time the gap appears; a boolean dependency cannot re-fire while it stays true, so a
+  // run that never lands in the page cannot make this loop. Only the unsettled set is
+  // compared: an unsettled run is by construction among the newest turns, while the
+  // page's full history and the rail's global list both hold runs older than this
+  // page shows, and comparing against those would call a complete page short forever.
+  const turnsBehind = runsLackKnown(turns, [knownActiveRuns]);
+  useEffect(() => {
+    if (turnsBehind) setNonce((value) => value + 1);
+  }, [turnsBehind]);
+
+  // The stream: the task's history interleaved with its turns by time, and what may be
+  // said about its completeness. Both decided in lib/timeline.ts — the interleave, the
+  // nesting of reviews under the run they review (via runTreeOf), the runs that cannot
+  // be placed, and the four silences an empty list can mean. The turns read is capped by
+  // the page being shown; the events read is never capped (the endpoint takes no limit)
+  // but can be behind a record the page already holds.
+  const atCeiling = shown >= TURNS_CEILING;
+  // At the ceiling there is no probe left, so "older turns exist" cannot be shown — but
+  // it can be *ruled out*: a page that came back smaller than the ceiling is the whole
+  // history. Only a full page at the ceiling leaves the history unvouched for.
+  const ceilingUnvouched = atCeiling && turns !== null && turns.length >= shown;
+  // Folded behind *proven* older turns only: folding the early history behind turns
+  // that may not exist would hide readable records under a sentence about them.
+  const stream = useMemo(
+    () => streamEventsOf(events ?? [], turns ?? [], olderExist),
+    [events, turns, olderExist],
+  );
+  const streamVerdict = useMemo(
+    () => timelineVerdictOf(
+      timelineReadOf(events === null ? null : stream.events, { failed: eventsReadFailed, capped: false, behind: eventsBehind }),
+      timelineReadOf(turns, { failed: turnsUnreadable, capped: olderExist || ceilingUnvouched, behind: turnsBehind }),
+    ),
+    [events, stream.events, eventsReadFailed, eventsBehind, turns, turnsUnreadable, olderExist, ceilingUnvouched, turnsBehind],
+  );
+
+  // Keep the newest entry in view as the stream grows — on open, and when a turn or a
+  // note is appended. Keyed on the entry count, as the timeline column was: a poll that
+  // changes nothing but a transcript must not yank a reader who scrolled up.
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const entryCount = streamVerdict.show === "entries" ? streamVerdict.items.length : 0;
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [entryCount]);
+  const specsById = useMemo(() => {
+    const map = new Map<string, RequirementSpec>();
+    for (const spec of specs ?? []) map.set(spec.spec_id, spec);
+    return map;
+  }, [specs]);
 
   // Every unsettled turn, not just the first. A worker turn and the review it
   // triggers can be live at once, and polling only the first left the other one's
@@ -302,15 +415,34 @@ export function Conversation({
     }
   }, [transcripts, onTurnSettled]);
 
+  // The files a turn delivered. Asked once per run; a failure is recorded as a failure
+  // ("could not load"), never as an empty list.
+  const loadFiles = useCallback((runId: string) => {
+    setDeliverables((prev) => ({ ...prev, [runId]: "loading" }));
+    getRunDeliverables(runId)
+      .then((value) => setDeliverables((prev) => ({ ...prev, [runId]: value })))
+      .catch(() => setDeliverables((prev) => ({ ...prev, [runId]: "failed" })));
+  }, []);
+
   // Prefetch the newest few turns once, so reopening the page shows the
-  // conversation rather than a list of collapsed run ids.
+  // conversation rather than a list of collapsed run ids. Their file lists too, for
+  // the settled worker turns among them: the mockup's card carries its files, and a
+  // card that hides them behind a click is a card the reader scrolls past. A live
+  // turn's files are not asked for here — its list would be the moving worktree, and
+  // it is asked for once the turn has settled (the list re-derives on each settle).
   const prefetched = useRef<Set<string>>(new Set());
+  const filesRequested = useRef<Set<string>>(new Set());
   useEffect(() => {
     const newest = ordered.slice(-TRANSCRIPTS_PREFETCHED);
     for (const turn of newest) {
-      if (prefetched.current.has(turn.run_id)) continue;
-      prefetched.current.add(turn.run_id);
-      void pull(turn.run_id);
+      if (!prefetched.current.has(turn.run_id)) {
+        prefetched.current.add(turn.run_id);
+        void pull(turn.run_id);
+      }
+      if (!turnIsActive(turn) && turn.role !== REVIEW_ROLE && !filesRequested.current.has(turn.run_id)) {
+        filesRequested.current.add(turn.run_id);
+        loadFiles(turn.run_id);
+      }
     }
     // `pull` is intentionally not a dependency: it changes on every transcript
     // update, and re-running this effect for that would re-enter the prefetch
@@ -361,6 +493,7 @@ export function Conversation({
 
   async function send() {
     const prompt = draft.trim();
+    const edits = draftEdits.current;
     // `refuseSend` guards the action, not just the notice above the box. It used
     // to only render a warning, so the button and Ctrl+Enter still submitted a
     // message the dispatcher was certain to refuse — a failed turn in the
@@ -369,7 +502,7 @@ export function Conversation({
     // `seeding`: the project's own worker is not known yet, and sending now
     // would put this turn in whichever agent's worktree the picker happens to
     // show.
-    if (!prompt || sending || refuseSend || seeding) return;
+    if (!prompt || sending || noting || refuseSend || seeding) return;
     setSending(true);
     setSendError(null);
     try {
@@ -391,7 +524,10 @@ export function Conversation({
         timeout_seconds: CONTINUE_TIMEOUT_SECONDS,
         expected_task_version: version,
       });
-      setDraft("");
+      // Clear what was sent, not whatever is in the box now: the textarea stays
+      // editable while the request is out, and a line typed meanwhile is the next
+      // message, not part of this one.
+      if (draftEdits.current === edits) setDraft("");
       prefetched.current.add(run.run_id);
       setNonce((value) => value + 1);
       onTaskMayHaveChanged?.();
@@ -400,6 +536,33 @@ export function Conversation({
       setSendError(error instanceof Error ? error.message : String(error));
     } finally {
       setSending(false);
+    }
+  }
+
+  // The other thing the box does: record a note in the task's history without
+  // dispatching anything. The written record's id goes up to the page, which is what
+  // lets the stream say it is missing an entry while the read that would fetch it has
+  // not carried it (`eventsBehind`), instead of the note silently not appearing.
+  async function note() {
+    const text = draft.trim();
+    const edits = draftEdits.current;
+    if (!text || sending || noting) return;
+    setNoting(true);
+    setSendError(null);
+    try {
+      const written = await appendTaskEvent(task.task_id, "user_message", { text });
+      // Same rule as send(): only the text that was recorded leaves the box.
+      if (draftEdits.current === edits) setDraft("");
+      onPosted?.(written.event_id);
+    } catch (error) {
+      // A lost answer is not a refusal: the note may well be on record. The endpoint has
+      // no idempotency key, so this side cannot make a retry safe — it can only say so,
+      // ask the page to read the history again so a recorded note shows up, and point at
+      // the stream before the person decides whether to write it twice.
+      setSendError(t("conversation.stream.noteFailed", { reason: error instanceof Error ? error.message : String(error) }));
+      onHistoryMayHaveChanged?.();
+    } finally {
+      setNoting(false);
     }
   }
 
@@ -444,6 +607,19 @@ export function Conversation({
     }
     setNonce((value) => value + 1);
   }
+
+  const cardProps: CardProps = {
+    transcriptOf: (runId: string) => transcripts[runId] ?? null,
+    deliverablesOf: (runId: string) => deliverables[runId] ?? null,
+    onLoadTranscript: (runId: string) => void pull(runId),
+    // Also the retry after a failed read: the block offers it, and asking again is the
+    // only way a transient failure stops being the answer for the rest of the session.
+    onLoadFiles: (runId: string) => {
+      filesRequested.current.add(runId);
+      loadFiles(runId);
+    },
+    onStop: (runId: string) => void stop(runId),
+  };
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -492,56 +668,83 @@ export function Conversation({
         </div>
       )}
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
         {turnsUnreadable && <Notice tone="warn">{t("conversation.errors.turnsUnreadable")}</Notice>}
-        {(olderExist || shown >= TURNS_CEILING) && (
+        {/* Two different failures of the events read: nothing ever landed (only the turns
+            are here), or a refresh failed and the entries between the cards are from
+            before it. The page keeps the old list on a failed refresh by design; what the
+            stream must not do is call that list current, or call it absent. */}
+        {eventsReadFailed && (
+          <Notice tone="warn">
+            {events === null ? t("conversation.stream.eventsUnreadable") : t("conversation.stream.eventsStale")}
+          </Notice>
+        )}
+        {/* "Earlier turns exist" only when the probe proved it. At the ceiling the probe
+            is gone: a full page says where this view stops and no more; a short page is
+            the whole history and says nothing. */}
+        {(olderExist || ceilingUnvouched) && (
           <p className="mb-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-            {t("conversation.errors.olderTurns", { shown })}
-            {olderExist && shown < TURNS_CEILING ? (
-              <button
-                className="text-primary hover:underline"
-                onClick={() => setShown((value) => Math.min(TURNS_CEILING, value + TURNS_SHOWN))}
-              >
-                {t("conversation.errors.loadOlder")}
-              </button>
+            {olderExist ? (
+              <>
+                {t("conversation.errors.olderTurns", { shown })}
+                <button
+                  className="text-primary hover:underline"
+                  onClick={() => setShown((value) => Math.min(TURNS_CEILING, value + TURNS_SHOWN))}
+                >
+                  {t("conversation.errors.loadOlder")}
+                </button>
+              </>
             ) : (
               <span>{t("conversation.errors.olderCeiling", { limit: TURNS_CEILING })}</span>
             )}
+            {stream.heldBack > 0 && <span>{t("conversation.stream.heldBack", { count: stream.heldBack })}</span>}
           </p>
         )}
-        {turns !== null && units.length === 0 && (
-          <p className="py-10 text-center text-sm text-muted-foreground">{t("conversation.firstTurn")}</p>
-        )}
-        <div className="space-y-4">
-          {units.map((unit) => (
-            <TurnCard
-              key={unit.run.run_id}
-              unit={unit}
-              transcript={transcripts[unit.run.run_id] ?? null}
-              onLoad={() => void pull(unit.run.run_id)}
-              onStop={() => void stop(unit.run.run_id)}
-            />
-          ))}
-          {/* Turns the tree could not nest, shown with the reason they stand
-              alone. The page of turns is capped, so "the turn this reviews is not
-              in this page" is ordinary — and it means the placement is unknown,
-              not that the turn is a top-level one. Dropping them would hide work
-              that happened; promoting them silently would file a review as a turn
-              of its own. */}
-          {tree.unplaceable.map((unplaced) => (
-            <div key={unplaced.run.run_id} className="rounded-lg border border-dashed p-2">
-              <p className="mb-1 text-[11px] leading-snug text-muted-foreground">
-                {t(UNPLACED_TURN_KEY[unplaced.because], { limit: TURNS_SHOWN })}
+
+        {/* One branch per thing the stream may say. The "may not be the whole
+            history" caveat lives inside the branch that has entries — the only branch it
+            can apply to — and above them, because a caveat under a list nobody scrolls is
+            a caveat nobody reads. The four silences are four sentences, none borrowed:
+            a read in flight, a read that fell short, a record known to be missing, and
+            a history that is genuinely empty. */}
+        {streamVerdict.show !== "entries" ? (
+          <p className="py-10 text-center text-sm text-muted-foreground">
+            {streamVerdict.show === "loading" ? "…"
+              : streamVerdict.show === "unknown" ? t("workspace.timeline.unknown")
+              : streamVerdict.show === "missing" ? t("workspace.timeline.notShownYet")
+              : t("conversation.firstTurn")}
+          </p>
+        ) : (
+          <>
+            {streamVerdict.partial !== null && (
+              <p className="pb-2 text-center text-xs text-muted-foreground">
+                {t(streamVerdict.partial === "loading" ? "workspace.timeline.stillChecking"
+                  : streamVerdict.partial === "missing" ? "workspace.timeline.notShownYet"
+                  : "workspace.timeline.partial")}
               </p>
-              <TurnCard
-                unit={{ run: unplaced.run, nested: [] }}
-                transcript={transcripts[unplaced.run.run_id] ?? null}
-                onLoad={() => void pull(unplaced.run.run_id)}
-                onStop={() => void stop(unplaced.run.run_id)}
-              />
+            )}
+            <div className="space-y-4">
+              {streamVerdict.items.map((item) => item.kind === "event" ? (
+                <TimelineEntry key={item.key} event={item.event} spec={specForEvent(item.event, specsById)} t={t} te={te} />
+              ) : item.kind === "unit" ? (
+                <TurnCard key={item.key} unit={item.unit} {...cardProps} />
+              ) : (
+                /* Turns the tree could not nest, shown with the reason they stand
+                   alone. The page of turns is capped, so "the turn this reviews is not
+                   in this page" is ordinary — and it means the placement is unknown,
+                   not that the turn is a top-level one. Dropping them would hide work
+                   that happened; promoting them silently would file a review as a turn
+                   of its own. */
+                <div key={item.key} className="rounded-lg border border-dashed p-2">
+                  <p className="mb-1 text-[11px] leading-snug text-muted-foreground">
+                    {t(UNPLACED_TURN_KEY[item.unplaced.because], { limit: shown })}
+                  </p>
+                  <TurnCard unit={{ run: item.unplaced.run, nested: [] }} {...cardProps} />
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
+          </>
+        )}
       </div>
 
       <div className="border-t bg-muted/30 px-5 py-3">
@@ -572,7 +775,10 @@ export function Conversation({
               // and the window does not know which.
               : t("conversation.placeholderUnsure")
             }
-            onChange={(event) => setDraft(event.target.value)}
+            onChange={(event) => {
+              draftEdits.current += 1;
+              setDraft(event.target.value);
+            }}
             onKeyDown={(event) => {
               if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
                 event.preventDefault();
@@ -581,27 +787,50 @@ export function Conversation({
             }}
           />
           <div className="flex flex-col items-stretch gap-2">
-            <select
-              className="rounded-md border bg-background px-2 py-1 text-xs"
-              value={adapter}
-              aria-label={t("conversation.pickers.adapter")}
-              onChange={(event) => {
-                setChosenFor(task.project_id ?? null);
-                setAdapter(event.target.value as ExecutionAdapter);
-              }}
-            >
-              {(adapters ?? [{ name: adapter } as AdapterCapability]).map((item) => (
-                <option key={item.name} value={item.name}>{item.name}</option>
-              ))}
-            </select>
-            <button
-              className="flex items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground disabled:opacity-50"
-              onClick={() => void send()}
-              disabled={sending || refuseSend || seeding || !draft.trim()}
-            >
-              {sending ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
-              {sending ? t("conversation.sending") : t("conversation.send")}
-            </button>
+            {/* Executor and environment are chosen here, at the moment of dispatch —
+                not in the navigation and not on Today (the mockup's recorded rule).
+                The environment is a label, not a picker: runs execute on this machine
+                until W3-a lands, and a dropdown with one honest option is a promise. */}
+            <div className="flex items-center gap-1.5">
+              <select
+                className="rounded-md border bg-background px-2 py-1 text-xs"
+                value={adapter}
+                aria-label={t("conversation.pickers.adapter")}
+                onChange={(event) => {
+                  setChosenFor(task.project_id ?? null);
+                  setAdapter(event.target.value as ExecutionAdapter);
+                }}
+              >
+                {(adapters ?? [{ name: adapter } as AdapterCapability]).map((item) => (
+                  <option key={item.name} value={item.name}>{item.name}</option>
+                ))}
+              </select>
+              <span
+                className="rounded-md border border-dashed px-2 py-1 text-xs text-muted-foreground"
+                title={t("conversation.pickers.environmentTitle")}
+              >
+                {t("conversation.pickers.environment")} · {t("conversation.pickers.environmentLocal")}
+              </span>
+            </div>
+            <div className="flex items-stretch gap-2">
+              <button
+                className="flex items-center justify-center gap-1.5 rounded-md border px-3 py-2 text-sm text-muted-foreground hover:text-foreground disabled:opacity-50"
+                onClick={() => void note()}
+                disabled={sending || noting || !draft.trim()}
+                title={t("conversation.stream.noteTitle")}
+              >
+                {noting ? <Loader2 className="size-4 animate-spin" /> : <PenLine className="size-4" />}
+                {t("conversation.stream.note")}
+              </button>
+              <button
+                className="flex flex-1 items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground disabled:opacity-50"
+                onClick={() => void send()}
+                disabled={sending || noting || refuseSend || seeding || !draft.trim()}
+              >
+                {sending ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
+                {sending ? t("conversation.sending") : t("conversation.send")}
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -701,20 +930,36 @@ function SessionBadge({
   );
 }
 
-function TurnCard({
-  unit,
-  transcript,
-  onLoad,
-  onStop,
-}: {
-  unit: RunUnit<RunSummary>;
-  transcript: Transcript | null;
-  onLoad: () => void;
-  onStop: () => void;
-}) {
+interface CardProps {
+  transcriptOf: (runId: string) => Transcript | null;
+  deliverablesOf: (runId: string) => DeliverablesRead | null;
+  onLoadTranscript: (runId: string) => void;
+  onLoadFiles: (runId: string) => void;
+  onStop: (runId: string) => void;
+}
+
+/**
+ * One work unit: the worker turn as the mockup's card, with the runs recorded against
+ * it indented underneath.
+ *
+ * Header: executor · run id · state (with exit code) · when · how long. The duration is
+ * printed only for a settled turn with both stamps (`turnDurationMs`); a live turn
+ * shows its state instead of a number ticking off a clock this component does not own.
+ * Body: the prompt and the terminal. Then the files the turn delivered, through the
+ * same block the right column uses. Footnote: the worktree the run ran in (from the
+ * files record, which names it) and how many runs are nested here — reviews by role,
+ * and "other" for anything else, because nothing in the records says "retry".
+ */
+function TurnCard({ unit, transcriptOf, deliverablesOf, onLoadTranscript, onLoadFiles, onStop }: { unit: RunUnit<RunSummary> } & CardProps) {
   const { t } = useI18n();
   const run = unit.run;
   const live = turnIsActive(run);
+  const transcript = transcriptOf(run.run_id);
+  const delivered = deliverablesOf(run.run_id);
+  const nested = nestedSummaryOf(unit.nested);
+  const worktree = delivered !== null && delivered !== "loading" && delivered !== "failed" && delivered.workspace
+    ? delivered.workspace.split(/[\\/]/).filter(Boolean).slice(-2).join("/")
+    : null;
 
   return (
     <article className="overflow-hidden rounded-lg border bg-card">
@@ -722,30 +967,121 @@ function TurnCard({
         <span className="font-semibold">{run.adapter}</span>
         <span className="font-mono text-muted-foreground">{run.run_id.slice(0, 8)}</span>
         <StatePill state={run.state} exitCode={run.exit_code} />
-        <span className="ml-auto font-mono text-muted-foreground">{run.queued_at.slice(0, 19).replace("T", " ")}</span>
+        <TurnClock run={run} />
         {live && (
-          <button className="flex items-center gap-1 rounded border px-2 py-0.5 text-muted-foreground hover:text-foreground" onClick={onStop}>
+          <button className="flex items-center gap-1 rounded border px-2 py-0.5 text-muted-foreground hover:text-foreground" onClick={() => onStop(run.run_id)}>
             <Square className="size-3" /> {t("conversation.stop")}
           </button>
         )}
       </header>
 
-      <TranscriptBody transcript={transcript} live={live} onLoad={onLoad} />
+      <TranscriptBody transcript={transcript} live={live} onLoad={() => onLoadTranscript(run.run_id)} />
+
+      {/* The files this turn delivered. Not asked for while the turn is live — that
+          list would be the moving worktree — and never guessed: "none" is its own
+          sentence in the block. */}
+      {!live && (
+        <div className="border-t px-3 py-2">
+          <p className="mb-1 text-[11px] font-medium text-muted-foreground">{t("conversation.turn.files")}</p>
+          <DeliverablesBlock runId={run.run_id} delivered={delivered} onLoad={() => onLoadFiles(run.run_id)} t={t} compact />
+        </div>
+      )}
 
       {unit.nested.length > 0 && (
-        <div className="space-y-2 px-3 pb-3">
+        <div className="space-y-2 border-t px-3 py-3">
           {unit.nested.map((child) => (
-            <div key={child.run_id} className="rounded border-l-2 border-l-primary/50 bg-muted/30 px-3 py-2 text-xs">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="font-semibold">{child.adapter}</span>
-                <span className="text-muted-foreground">{t("conversation.turn.review")}</span>
-                <StatePill state={child.state} exitCode={child.exit_code} />
-              </div>
-            </div>
+            <NestedTurn
+              key={child.run_id}
+              run={child}
+              transcript={transcriptOf(child.run_id)}
+              delivered={deliverablesOf(child.run_id)}
+              onLoad={() => onLoadTranscript(child.run_id)}
+              onLoadFiles={() => onLoadFiles(child.run_id)}
+              onStop={() => onStop(child.run_id)}
+            />
           ))}
         </div>
       )}
+
+      {(worktree !== null || nested.total > 0) && (
+        <footer className="flex flex-wrap gap-x-3 gap-y-1 border-t bg-muted/20 px-3 py-1.5 text-[11px] text-muted-foreground">
+          {worktree !== null && <span className="font-mono">{t("conversation.turn.worktree", { name: worktree })}</span>}
+          {nested.total > 0 && (
+            <span>{t("conversation.turn.nested", { count: nested.total, reviews: nested.reviews, others: nested.others })}</span>
+          )}
+        </footer>
+      )}
     </article>
+  );
+}
+
+/** When the turn happened and, once settled, how long it took. */
+function TurnClock({ run }: { run: RunSummary }) {
+  const { t } = useI18n();
+  const duration = turnDurationMs(run);
+  return (
+    <span className="ml-auto font-mono text-muted-foreground">
+      {relTime(run.started_at ?? run.queued_at, t)}
+      {duration !== null && <> · {formatDuration(duration)}</>}
+      {duration === null && turnIsActive(run) && <> · {t("conversation.turn.liveNoDuration")}</>}
+    </span>
+  );
+}
+
+/**
+ * A run recorded against the worker turn — a review, today — indented under it, with
+ * its own state, its own transcript and its own files on demand. Indentation
+ * de-emphasises, so the state pill stays: a failed review under a succeeded turn is the
+ * case a person most needs to see. Its files are offered too: a reviewer that wrote a
+ * report, or touched source by mistake, delivered something, and a card that hid it
+ * would let that be approved unseen.
+ */
+function NestedTurn({ run, transcript, delivered, onLoad, onLoadFiles, onStop }: {
+  run: RunSummary;
+  transcript: Transcript | null;
+  delivered: DeliverablesRead | null;
+  onLoad: () => void;
+  onLoadFiles: () => void;
+  onStop: () => void;
+}) {
+  const { t } = useI18n();
+  const live = turnIsActive(run);
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="rounded border-l-2 border-l-primary/50 bg-muted/30 text-xs">
+      <div className="flex flex-wrap items-center gap-2 px-3 py-2">
+        <span className="font-semibold">{run.adapter}</span>
+        {/* Its own id first, then the run it reviews: two reviews of one turn by the
+            same executor are told apart by nothing else on the card. */}
+        <span className="font-mono text-muted-foreground">{run.run_id.slice(0, 8)}</span>
+        <span className="text-muted-foreground">
+          {run.role === REVIEW_ROLE ? t("conversation.turn.review") : run.role}
+        </span>
+        {run.reviews_run_id && (
+          <span className="font-mono text-muted-foreground">{t("conversation.turn.reviews", { id: run.reviews_run_id.slice(0, 8) })}</span>
+        )}
+        <StatePill state={run.state} exitCode={run.exit_code} />
+        <TurnClock run={run} />
+        {live && (
+          <button className="flex items-center gap-1 rounded border px-2 py-0.5 text-muted-foreground hover:text-foreground" onClick={onStop}>
+            <Square className="size-3" /> {t("conversation.stop")}
+          </button>
+        )}
+        <button
+          className="text-primary hover:underline"
+          onClick={() => { setOpen((value) => !value); if (!open && transcript === null) onLoad(); }}
+        >
+          {open ? t("workspace.timeline.run.collapse") : t("workspace.timeline.run.output")}
+        </button>
+      </div>
+      {open && <TranscriptBody transcript={transcript} live={live} onLoad={onLoad} />}
+      {open && !live && (
+        <div className="border-t border-border/50 px-3 py-2">
+          <p className="mb-1 text-[11px] font-medium text-muted-foreground">{t("conversation.turn.files")}</p>
+          <DeliverablesBlock runId={run.run_id} delivered={delivered} onLoad={onLoadFiles} t={t} compact />
+        </div>
+      )}
+    </div>
   );
 }
 

@@ -390,3 +390,98 @@ export function conversationOrder<T extends TurnLike>(turns: readonly T[]): T[] 
     return left.run_id < right.run_id ? -1 : 1;
   });
 }
+
+// --- the stream (W9: the middle column is one stream, not two tabs) -------------------
+
+/**
+ * How long a turn ran, in milliseconds. `null` until it has both a start and an end,
+ * when either stamp cannot be parsed, and when the end precedes the start: a duration
+ * is a claim about two instants, one instant is not half of it, and two instants in
+ * the wrong order (a clock set back, records from two hosts) do not measure anything —
+ * "0s" would say the turn was instantaneous. A live turn therefore shows its state,
+ * not a number re-derived every second from a clock this module does not own.
+ */
+export function turnDurationMs(turn: Pick<TurnLike, "started_at" | "finished_at">): number | null {
+  if (turn.started_at === null || turn.finished_at === null) return null;
+  const started = Date.parse(turn.started_at);
+  const finished = Date.parse(turn.finished_at);
+  if (Number.isNaN(started) || Number.isNaN(finished)) return null;
+  if (finished < started) return null;
+  return finished - started;
+}
+
+/** "42s" · "3m 12s" · "1h 05m" — the mockup's own shapes, and nothing finer than a second. */
+export function formatDuration(ms: number): string {
+  const totalSeconds = Math.floor(ms / 1000);
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  if (minutes < 60) return `${minutes}m ${String(totalSeconds % 60).padStart(2, "0")}s`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${String(minutes % 60).padStart(2, "0")}m`;
+}
+
+/** The fields the stream needs from a task event; a structural subset. */
+export interface StreamEventLike {
+  event_id: string;
+  event_type: string;
+  created_at: string;
+}
+
+/**
+ * The events that belong between the turns on screen.
+ *
+ * `run.*` lifecycle events are dropped: the cards *are* the runs, and a "run queued"
+ * line above its own card says the same thing twice. When older turns exist beyond the
+ * page being shown, events older than the oldest shown turn are held back as well — a
+ * note that sits above the first visible card, with the turns it was written between
+ * folded away, reads as the beginning of the history, and it is not. The count held
+ * back is returned so the notice about earlier turns can say that their entries went
+ * with them.
+ *
+ * On a complete page (no older turns) nothing is held back: with no turn to be older
+ * than, an early note is simply the beginning.
+ */
+export function streamEventsOf<E extends StreamEventLike>(
+  events: readonly E[],
+  turns: readonly TurnLike[],
+  olderExist: boolean,
+): { events: E[]; heldBack: number } {
+  const kept: E[] = [];
+  let heldBack = 0;
+  const oldest = olderExist && turns.length > 0
+    ? conversationOrder(turns)[0].queued_at
+    : null;
+  for (const event of events) {
+    if (event.event_type.startsWith("run.")) continue;
+    if (oldest !== null && event.created_at < oldest) {
+      heldBack += 1;
+      continue;
+    }
+    kept.push(event);
+  }
+  return { events: kept, heldBack };
+}
+
+/** The fields the footnote needs from a nested run; a structural subset. */
+export interface NestedRunLike {
+  role: string;
+}
+
+/**
+ * What a card's footnote may say about the runs nested under it — the mockup's
+ * "子 Run 2 个（1 复核 · 1 重试）". Only what the records carry: a review is a run whose
+ * role says so; everything else nested under a turn is counted as "other", because
+ * nothing in the data says "retry" (lib/run-tree.ts: retries carry no relation), and
+ * naming one would be a relation the control plane never asserted.
+ */
+export interface NestedSummary {
+  total: number;
+  reviews: number;
+  others: number;
+}
+
+export function nestedSummaryOf(nested: readonly NestedRunLike[]): NestedSummary {
+  let reviews = 0;
+  for (const run of nested) if (run.role === REVIEW_ROLE) reviews += 1;
+  return { total: nested.length, reviews, others: nested.length - reviews };
+}

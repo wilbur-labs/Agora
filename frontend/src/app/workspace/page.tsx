@@ -14,7 +14,6 @@ import {
   Moon,
   Network,
   RefreshCw,
-  Send,
   Settings,
   Sun,
   Target,
@@ -23,7 +22,6 @@ import {
 import { Button } from "@/components/ui/button";
 import {
   ApiError,
-  appendTaskEvent,
   createTask,
   fetchDelivery,
   fetchProjectDashboard,
@@ -49,15 +47,11 @@ import {
 } from "@/lib/control-plane";
 import {
   asRunSummary,
-  canOpenDeliverable,
-  deliverableRawUrl,
-  getDeliverableContent,
   getRun,
   getRunDeliverables,
   listActiveRuns,
   listRuns,
   TERMINAL_RUN_STATES,
-  type Deliverable,
   type RunDeliverables,
   type ExecutionRun,
   type RunState,
@@ -115,20 +109,10 @@ import {
   type ReviewStanding,
   type RunColumn,
 } from "@/lib/run-column";
-import {
-  FAILED_RUN_STATES,
-  nestedFailureCount,
-  type RunUnit,
-  type UnplacedRun,
-} from "@/lib/run-tree";
 import { MAX_PAGE, readPage } from "@/lib/paged";
 import {
-  ATTENTION_TIMELINE_EVENT_KEY,
   eventsLackKnown,
   runsLackKnown,
-  timelineReadOf,
-  timelineVerdictOf,
-  type TimelineVerdict,
 } from "@/lib/timeline";
 import { progressBarOf, type ProgressBar } from "@/lib/progress-snapshot";
 // The same two decisions the portfolio cockpit takes, imported rather than
@@ -158,6 +142,8 @@ import {
 import { useI18n, type Translate, type TranslateEnum } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import { Conversation } from "@/components/conversation";
+import { DeliverablesBlock } from "@/components/run-deliverables";
+import { relTime } from "@/components/timeline-entry";
 
 // The ball is in the human's court whenever a task awaits a decision; a running
 // task is the agent's; review is its own stage; terminal/verified is done. The
@@ -173,18 +159,6 @@ const RUN_TONE: Record<RunState, string> = {
   cancelled: "bg-zinc-400",
   abandoned: "bg-red-500",
 };
-
-function relTime(iso: string | null, t: Translate): string {
-  if (!iso) return "";
-  const then = new Date(iso).getTime();
-  if (Number.isNaN(then)) return "";
-  const mins = Math.max(0, Math.floor((Date.now() - then) / 60000));
-  if (mins < 1) return t("workspace.rail.relative.justNow");
-  if (mins < 60) return t("workspace.rail.relative.minAgo", { n: mins });
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return t("workspace.rail.relative.hourAgo", { n: hours });
-  return t("workspace.rail.relative.dayAgo", { n: Math.floor(hours / 24) });
-}
 
 export default function WorkspacePage() {
   const { t } = useI18n();
@@ -1294,12 +1268,9 @@ function TaskWorkspace({ task, refreshNonce, railAttention, railRuns, onTaskMayH
     return () => document.removeEventListener("visibilitychange", onVisible);
   }, [loadRecap]);
 
-  // What the timeline may say, decided here because this is where the read facts
-  // live, and handed down as one value. `TimelineColumn` gets the verdict and not the
-  // events, the runs or the error bits: the first fix for this passed the raw facts
-  // and two helpers, and the column then said "no activity yet" while a read was
-  // still in flight, ignored the run cap, and rendered "some of this could not be
-  // read" beside "could not be read". Nothing it cannot see can it get wrong again.
+  // The events read is handed to the conversation as facts (the list, whether the read
+  // failed, whether the page knows of an entry it lacks); the stream's verdict is decided
+  // there, through the same `timelineVerdictOf` this page used to call.
   //
   // `capped: false` for events is measured, not assumed: `GET /tasks/{id}/events`
   // takes no limit and `TaskStore.events` (backend/agora/tasks/store.py:368) selects
@@ -1327,13 +1298,6 @@ function TaskWorkspace({ task, refreshNonce, railAttention, railRuns, onTaskMayH
   useEffect(() => { if (eventsGap) loadEvents(); }, [eventsGap, loadEvents]);
   useEffect(() => { if (runsGap) void loadRuns(); }, [runsGap, loadRuns]);
 
-  const timeline = useMemo<TimelineVerdict<TaskEvent, ExecutionRun>>(
-    () => timelineVerdictOf(
-      timelineReadOf(events, { failed: eventsError, capped: false, behind: eventsGap }),
-      timelineReadOf(runs, { failed: runsError, capped: runsTruncated, behind: runsGap }),
-    ),
-    [events, eventsError, eventsGap, runs, runsError, runsGap, runsTruncated],
-  );
 
   // The latest successful *worker* run is what "produced" the current result — or
   // the reason no such answer exists. In the auto-review flow the review run
@@ -1674,16 +1638,20 @@ function TaskWorkspace({ task, refreshNonce, railAttention, railRuns, onTaskMayH
           plus the deep link to the Requirements page. */}
       <RequirementsStrip task={task} specs={specs} error={specsError} />
       <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
-        {/* Center: the conversation, with the task timeline still one click away.
-            The conversation is the primitive the user handles (adr/0007) so it
-            leads; the timeline is the task's whole process — notes, spec
-            approvals, stage changes — and its completeness judgement (CR-26) is
-            not something to drop for a redesign, so it keeps its column rather
-            than being merged into a stream that cannot make the same claim. */}
+        {/* Center: the conversation, which is the task's whole stream (W9). The
+            conversation is the primitive the user handles (adr/0007); the task's other
+            history — notes, spec approvals, stage changes, gates — is interleaved with
+            its turns by time, and the completeness judgement (CR-26) travels with it:
+            the events read goes down as facts and the stream decides what it may claim
+            through the same `timelineVerdictOf` the old timeline tab used. */}
         <CenterColumn
           task={task}
-          timeline={timeline}
+          events={events}
+          eventsReadFailed={eventsError}
+          eventsBehind={eventsGap}
           specs={specs}
+          knownActiveRuns={activeRuns}
+          onHistoryMayHaveChanged={() => loadEvents()}
           onPosted={(eventId) => { setPostedEventId(eventId); loadEvents(); loadRecap(); }}
           onTurnSettled={() => { void loadRuns(); void loadActiveRuns(); loadEvents(); loadRecap(); }}
           onTaskMayHaveChanged={onTaskMayHaveChanged}
@@ -1706,270 +1674,52 @@ function TaskWorkspace({ task, refreshNonce, railAttention, railRuns, onTaskMayH
   );
 }
 
-// The centre column: the conversation, or the task timeline.
+// The centre column: the conversation, which since W9 is the task's whole stream.
 //
-// Two views of the same task that answer different questions, so neither can
-// stand in for the other. The conversation is "what am I saying to the agent, and
-// what is it doing right now" — one continuing session per task, streamed as it
-// happens. The timeline is "what has happened to this task at all", including
-// everything no agent turn produced (a spec approved, a stage moved, a note
-// written) and its own account of what it could not read.
-//
-// The conversation leads because it is the primitive the user handles.
+// It used to be two tabs — the conversation and a separate timeline — on the
+// reasoning that the timeline's completeness judgement (CR-26) could not be made by a
+// stream of turns. It can: the conversation now takes the same events read this page
+// makes, interleaves it with its turns through the same `timelineVerdictOf`, and
+// carries the same caveats. What the mockup draws (screen 2) is one column of run
+// cards with the rest of the history between them, and one message box that either
+// notes or dispatches. The two-tab layout put notes where nobody looked.
 function CenterColumn({
   task,
-  timeline,
+  events,
+  eventsReadFailed,
+  eventsBehind,
   specs,
+  knownActiveRuns,
+  onHistoryMayHaveChanged,
   onPosted,
   onTurnSettled,
   onTaskMayHaveChanged,
 }: {
   task: TaskManifest;
-  timeline: TimelineVerdict<TaskEvent, ExecutionRun>;
+  events: TaskEvent[] | null;
+  eventsReadFailed: boolean;
+  eventsBehind: boolean;
   specs: RequirementSpec[] | null;
+  knownActiveRuns: readonly RunSummary[] | null;
+  onHistoryMayHaveChanged: () => void;
   onPosted: (eventId: string) => void;
   onTurnSettled: () => void;
   onTaskMayHaveChanged: () => void;
 }) {
-  const { t } = useI18n();
-  const [view, setView] = useState<"conversation" | "timeline">("conversation");
   return (
     <div className="flex min-h-0 flex-1 flex-col border-r">
-      <div className="flex gap-1 border-b bg-muted/20 px-4 pt-2">
-        {(["conversation", "timeline"] as const).map((key) => (
-          <button
-            key={key}
-            role="tab"
-            aria-selected={view === key}
-            onClick={() => setView(key)}
-            className={cn(
-              "-mb-px border-b-2 px-3 pb-2 pt-1 text-sm",
-              view === key
-                ? "border-b-primary font-semibold text-foreground"
-                : "border-b-transparent text-muted-foreground hover:text-foreground",
-            )}
-          >
-            {key === "conversation" ? t("conversation.title") : t("workspace.timeline.title")}
-          </button>
-        ))}
-      </div>
-      {view === "conversation" ? (
-        <Conversation task={task} onTurnSettled={onTurnSettled} onTaskMayHaveChanged={onTaskMayHaveChanged} />
-      ) : (
-        <TimelineColumn
-          taskId={task.task_id}
-          verdict={timeline}
-          specs={specs}
-          runHistoryLimit={RUN_HISTORY_LIMIT}
-          onPosted={onPosted}
-        />
-      )}
-    </div>
-  );
-}
-
-// The unified task timeline: the whole task process as one readable, chat-like
-// stream (requirement drafting/approval, stage changes, runs, review, handoff,
-// and the human's own notes), with a message box to continue or correct course.
-//
-// S2: runs appear as work units, not as process launches — the interleave, the
-// ordering and the run tie-break are `timelineItemsOf` in lib/timeline.ts, together
-// with the decision of what this column may say about completeness. What arrives here
-// is a `TimelineVerdict`: entries to render, or one sentence and the reason for it.
-function TimelineColumn({ taskId, verdict, specs, runHistoryLimit, onPosted }: { taskId: string; verdict: TimelineVerdict<TaskEvent, ExecutionRun>; specs: RequirementSpec[] | null; runHistoryLimit: number; onPosted: (eventId: string) => void }) {
-  const { t, te } = useI18n();
-  const [draft, setDraft] = useState("");
-  const [sending, setSending] = useState(false);
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const specsById = useMemo(() => {
-    const map = new Map<string, RequirementSpec>();
-    for (const spec of specs ?? []) map.set(spec.spec_id, spec);
-    return map;
-  }, [specs]);
-
-  // Keep the newest entry in view as the stream grows. There are no entries to grow
-  // on any other branch of the verdict, so the count is zero there.
-  const entryCount = verdict.show === "entries" ? verdict.items.length : 0;
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [entryCount]);
-
-  const send = async () => {
-    const text = draft.trim();
-    if (!text || sending) return;
-    setSending(true);
-    try {
-      // The written record, not just an acknowledgement: its id is what lets the
-      // timeline say it is missing an entry until the read that fetches it lands.
-      const written = await appendTaskEvent(taskId, "user_message", { text });
-      setDraft("");
-      onPosted(written.event_id);
-    } catch {
-      // Surfaced by leaving the draft in place; a full error toast is later work.
-    } finally {
-      setSending(false);
-    }
-  };
-
-  return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <div ref={scrollRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto p-5">
-        {/* One branch per thing the timeline may say, and the "may not be the whole
-            history" notice is inside the branch that has entries — the only branch it
-            can apply to. Rendered above them, because a caveat under a list nobody
-            scrolls is a caveat nobody reads. */}
-        {verdict.show !== "entries" ? (
-          <p className="py-8 text-center text-sm text-muted-foreground">
-            {verdict.show === "loading" ? "…"
-              : verdict.show === "unknown" ? t("workspace.timeline.unknown")
-              : verdict.show === "missing" ? t("workspace.timeline.notShownYet")
-              : t("workspace.timeline.empty")}
-          </p>
-        ) : (
-          <>
-            {verdict.partial !== null && (
-              <p className="pb-2 text-center text-xs text-muted-foreground">
-                {t(verdict.partial === "loading" ? "workspace.timeline.stillChecking"
-                  : verdict.partial === "missing" ? "workspace.timeline.notShownYet"
-                  : "workspace.timeline.partial")}
-              </p>
-            )}
-            {verdict.items.map((item) => item.kind === "event"
-              ? <TimelineEntry key={item.key} event={item.event} spec={specForEvent(item.event, specsById)} t={t} te={te} />
-              : item.kind === "unit"
-                ? <RunWorkUnit key={item.key} unit={item.unit} t={t} te={te} />
-                : <UnplacedRunEntry key={item.key} unplaced={item.unplaced} runHistoryLimit={runHistoryLimit} t={t} te={te} />)}
-          </>
-        )}
-      </div>
-      <div className="border-t bg-background p-3">
-        <div className="flex items-end gap-2">
-          <textarea
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void send(); } }}
-            rows={1}
-            placeholder={t("workspace.timeline.inputPlaceholder")}
-            className="max-h-40 min-h-[38px] flex-1 resize-y rounded-lg border bg-background px-3 py-2 text-sm outline-none focus:border-ring"
-          />
-          <Button size="icon" onClick={() => void send()} disabled={sending || !draft.trim()} aria-label={t("workspace.timeline.send")}>
-            {sending ? <RefreshCw className="size-4 animate-spin" /> : <Send className="size-4" />}
-          </Button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-const MILESTONE_STATES = new Set([
-  "backlog", "requirements", "design", "planned", "running", "review", "verified", "done", "blocked", "failed", "cancelled",
-]);
-
-function lookupMilestone(state: string, t: Translate): string | null {
-  return MILESTONE_STATES.has(state) ? t(`workspace.timeline.milestone.${state}`) : null;
-}
-
-function timelineView(event: TaskEvent, t: Translate, te: TranslateEnum): { who: "you" | "agent" | "system"; title: string; detail: string | null } {
-  const p = event.payload as Record<string, unknown>;
-  const adapter = String(p.adapter ?? "");
-  const type = event.event_type;
-  if (type === "user_message") return { who: "you", title: t("workspace.timeline.you"), detail: String(p.text ?? "") };
-  if (type === "task_created") return { who: "system", title: t("workspace.timeline.events.taskCreated"), detail: null };
-  if (type === "state_changed") {
-    const to = String(p.to ?? "");
-    // Plain-language milestone by the state reached; fall back to the localized
-    // state name for anything unmapped. A human actor reads as "you".
-    const milestone = lookupMilestone(to, t) ?? te("taskState", to);
-    return { who: event.actor === "user" ? "you" : "system", title: milestone, detail: p.reason ? String(p.reason) : null };
-  }
-  if (type === "spec.created") return { who: "system", title: t("workspace.timeline.events.specCreated"), detail: null };
-  if (type === "spec.approved") return { who: "you", title: t("workspace.timeline.events.specApproved"), detail: p.reason ? String(p.reason) : null };
-  if (type === "spec.rejected") return { who: "you", title: t("workspace.timeline.events.specRejected"), detail: p.reason ? String(p.reason) : null };
-  if (type === "run.queued") return { who: "agent", title: t("workspace.timeline.events.runQueued", { adapter }), detail: null };
-  if (type === "run.started") return { who: "agent", title: t("workspace.timeline.events.runStarted", { adapter }), detail: null };
-  if (type === "run.succeeded") return { who: "agent", title: t("workspace.timeline.events.runSucceeded", { adapter }), detail: null };
-  if (type === "run.failed") return { who: "agent", title: t("workspace.timeline.events.runFailed", { adapter }), detail: p.error_message ? String(p.error_message) : null };
-  if (type.startsWith("attention.")) {
-    // One sentence per event (CR-27). An unmapped `attention.*` name falls through to
-    // the humanised-type fallback below rather than borrowing "Needs you" — a name this
-    // build does not know is a fact about this build, not a thing the user must do.
-    const key = ATTENTION_TIMELINE_EVENT_KEY[type];
-    if (key !== undefined) return { who: "system", title: t(key), detail: p.title ? String(p.title) : null };
-  }
-  if (type.startsWith("handoff.")) return { who: "system", title: t("workspace.timeline.events.handoff"), detail: p.commit ? String(p.commit).slice(0, 8) : null };
-  // Fallback: humanized type.
-  return { who: "system", title: type.replaceAll(".", " ").replaceAll("_", " "), detail: null };
-}
-
-const WHO_DOT: Record<"you" | "agent" | "system", string> = { you: "bg-primary", agent: "bg-blue-500", system: "bg-zinc-400" };
-
-// The spec a spec.created/spec.approved event refers to (by spec_id), so the
-// requirements step can show what was actually specified — not just a label.
-function specForEvent(event: TaskEvent, specsById: Map<string, RequirementSpec>): RequirementSpec | null {
-  if (!event.event_type.startsWith("spec.")) return null;
-  const id = String((event.payload as Record<string, unknown>).spec_id ?? "");
-  return specsById.get(id) ?? null;
-}
-
-function TimelineEntry({ event, spec, t, te }: { event: TaskEvent; spec: RequirementSpec | null; t: Translate; te: TranslateEnum }) {
-  const view = timelineView(event, t, te);
-  const isYou = view.who === "you";
-  return (
-    <div className={cn("flex gap-2.5", isYou && "flex-row-reverse")}>
-      <span className={cn("mt-1.5 size-2 shrink-0 rounded-full", WHO_DOT[view.who])} />
-      <div className={cn("max-w-[85%] rounded-xl border px-3 py-2", isYou ? "bg-primary/5" : "bg-card")}>
-        <div className={cn("flex items-baseline gap-2", isYou && "flex-row-reverse")}>
-          <span className="text-xs font-semibold">{view.title}</span>
-          <span className="text-[10px] text-muted-foreground">{relTime(event.created_at, t)}</span>
-        </div>
-        {view.detail && <p className={cn("mt-0.5 whitespace-pre-wrap text-sm leading-relaxed", isYou && "text-right")}>{view.detail}</p>}
-        {spec && <SpecBlock spec={spec} t={t} />}
-      </div>
-    </div>
-  );
-}
-
-// What the requirements step actually produced: summary, requirements, and the
-// given/when/then acceptance scenarios — collapsed by default.
-function SpecBlock({ spec, t }: { spec: RequirementSpec; t: Translate }) {
-  const [open, setOpen] = useState(false);
-  const reqs = [...spec.functional, ...spec.non_functional];
-  return (
-    <div className="mt-1.5">
-      <button onClick={() => setOpen((v) => !v)} className="flex items-center gap-1 text-[11px] font-medium text-primary hover:underline">
-        <ChevronDown className={cn("size-3 transition-transform", open && "rotate-180")} /> {open ? t("workspace.timeline.spec.hide") : t("workspace.timeline.spec.view")}
-      </button>
-      {open && (
-        <div className="mt-1.5 space-y-2 rounded-lg bg-muted/40 p-2 text-xs leading-relaxed">
-          {spec.summary && (
-            <div>
-              <p className="font-medium text-muted-foreground">{t("workspace.timeline.spec.summary")}</p>
-              <p className="mt-0.5">{spec.summary}</p>
-            </div>
-          )}
-          {reqs.length > 0 && (
-            <div>
-              <p className="font-medium text-muted-foreground">{t("workspace.timeline.spec.requirements")} ({reqs.length})</p>
-              <ul className="mt-0.5 list-disc space-y-0.5 pl-4">
-                {reqs.map((r) => <li key={r.requirement_id}>{r.statement}</li>)}
-              </ul>
-            </div>
-          )}
-          {spec.acceptance_scenarios.length > 0 && (
-            <div>
-              <p className="font-medium text-muted-foreground">{t("workspace.timeline.spec.scenarios")} ({spec.acceptance_scenarios.length})</p>
-              <ul className="mt-0.5 space-y-0.5">
-                {spec.acceptance_scenarios.map((s) => (
-                  <li key={s.scenario_id} className="rounded bg-background/60 px-2 py-1">
-                    <span className="font-medium">{s.given}</span> → {s.when} → <span className="font-medium">{s.then}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-        </div>
-      )}
+      <Conversation
+        task={task}
+        events={events}
+        eventsReadFailed={eventsReadFailed}
+        eventsBehind={eventsBehind}
+        specs={specs}
+        knownActiveRuns={knownActiveRuns}
+        onHistoryMayHaveChanged={onHistoryMayHaveChanged}
+        onPosted={onPosted}
+        onTurnSettled={onTurnSettled}
+        onTaskMayHaveChanged={onTaskMayHaveChanged}
+      />
     </div>
   );
 }
@@ -2325,221 +2075,6 @@ function firstMeaningfulLine(text: string): string {
 // summarized away. And a failure among them is stated on the unit itself, because a
 // failed review under a succeeded worker run is exactly the pairing a person has to
 // notice and exactly the one indentation would bury.
-function RunWorkUnit({ unit, t, te }: { unit: RunUnit<ExecutionRun>; t: Translate; te: TranslateEnum }) {
-  const failedNested = nestedFailureCount(unit);
-  return (
-    <div className="space-y-2">
-      <RunCard run={unit.run} t={t} te={te} />
-      {unit.nested.length > 0 && (
-        <div className="ml-4 space-y-2 border-l-2 pl-3">
-          <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-            {t("workspace.timeline.nested.label")}
-          </p>
-          {failedNested > 0 && (
-            <p className="text-[11px] font-medium text-red-600 dark:text-red-400">
-              {t("workspace.timeline.nested.failed", { count: failedNested })}
-            </p>
-          )}
-          {unit.nested.map((run) => <RunCard key={run.run_id} run={run} t={t} te={te} />)}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/** The sentence for each reason a run could not be nested; one per reason, no sharing. */
-const UNPLACED_RUN_KEY: Record<UnplacedRun<ExecutionRun>["because"], string> = {
-  parentNotLoaded: "workspace.timeline.nested.unplacedParentNotLoaded",
-  namesNoRun: "workspace.timeline.nested.unplacedNamesNoRun",
-  namesItself: "workspace.timeline.nested.unplacedNamesItself",
-  chainNotRooted: "workspace.timeline.nested.unplacedChainNotRooted",
-};
-
-// A run the tree could not place, shown in full with the reason it stands alone.
-// This is the whole point of `unplaceable`: the run page is capped and partially
-// readable, so "the run this reviews is not here" is ordinary — and it means the
-// placement is unknown, not that the run does not exist. Rendering it at the top
-// level *without* the reason would be the other error, quietly promoting a review to
-// a work unit of its own.
-function UnplacedRunEntry(
-  { unplaced, runHistoryLimit, t, te }:
-  { unplaced: UnplacedRun<ExecutionRun>; runHistoryLimit: number; t: Translate; te: TranslateEnum },
-) {
-  return (
-    <div className="space-y-1 rounded-xl border border-dashed p-2">
-      <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-        {t("workspace.timeline.nested.unplacedTitle")}
-      </p>
-      <p className="text-[11px] leading-snug text-muted-foreground">
-        {t(UNPLACED_RUN_KEY[unplaced.because], { limit: runHistoryLimit })}
-      </p>
-      <RunCard run={unplaced.run} t={t} te={te} />
-    </div>
-  );
-}
-
-// A run rendered as the substance it is: the prompt the agent got, its actual
-// terminal output, the failure (if any), and the files it changed.
-function RunCard({ run, t, te }: { run: ExecutionRun; t: Translate; te: TranslateEnum }) {
-  const [showPrompt, setShowPrompt] = useState(false);
-  const [expanded, setExpanded] = useState(false);
-  // Keep the whole response, not just `files`: whether the list is this run's
-  // frozen snapshot, the still-moving worktree, or unknown changes what we may
-  // honestly claim about it.
-  const [delivered, setDelivered] = useState<RunDeliverables | "loading" | null>(null);
-  // One definition of "failed", shared with the work-unit header that reports a
-  // nested failure — two lists would let a card and its parent disagree about
-  // whether the run under it failed.
-  const failed = FAILED_RUN_STATES.has(run.state);
-  const isReview = String((run.result_metadata as Record<string, unknown>)?.agora_role ?? "") === "review";
-  const out = (run.stdout_tail || "").trimEnd();
-  const err = (run.stderr_tail || "").trimEnd();
-  const longOutput = out.length > 600;
-  const files = delivered && delivered !== "loading" ? delivered.files : [];
-
-  const loadFiles = async () => {
-    setDelivered("loading");
-    try { setDelivered(await getRunDeliverables(run.run_id)); }
-    catch { setDelivered({ run_id: run.run_id, workspace: "", files: [], source: "none" }); }
-  };
-
-  return (
-    <div className="rounded-xl border bg-card">
-      <div className="flex flex-wrap items-center gap-2 border-b px-3 py-2">
-        <span className={cn("size-2 shrink-0 rounded-full", RUN_TONE[run.state])} />
-        <span className="text-sm font-semibold">{t(isReview ? "workspace.timeline.run.titleReview" : "workspace.timeline.run.title", { adapter: run.adapter })}</span>
-        <span className={cn("rounded px-1.5 py-0.5 text-[11px] font-medium", failed ? "bg-red-500/10 text-red-600 dark:text-red-400" : "bg-muted text-muted-foreground")}>{te("runState", run.state)}</span>
-        {run.exit_code !== null && <span className="text-[11px] text-muted-foreground">{t("workspace.timeline.run.exit", { code: run.exit_code })}</span>}
-        <span className="ml-auto text-[11px] text-muted-foreground">{relTime(run.finished_at ?? run.started_at ?? run.queued_at, t)}</span>
-      </div>
-
-      <div className="space-y-2 p-3">
-        {/* What the agent was asked to do. */}
-        {run.prompt && (
-          <div>
-            <button onClick={() => setShowPrompt((v) => !v)} className="flex items-center gap-1 text-[11px] font-medium text-muted-foreground hover:text-foreground">
-              <ChevronDown className={cn("size-3 transition-transform", showPrompt && "rotate-180")} /> {t("workspace.timeline.run.prompt")}
-            </button>
-            {showPrompt && <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted/50 p-2 text-xs leading-relaxed">{run.prompt}</pre>}
-          </div>
-        )}
-
-        {/* The actual terminal output. */}
-        <div>
-          <p className="mb-1 text-[11px] font-medium text-muted-foreground">{t("workspace.timeline.run.output")}</p>
-          {out ? (
-            <>
-              <pre className={cn("overflow-auto whitespace-pre rounded-lg bg-zinc-950 p-3 text-xs leading-relaxed text-zinc-100", expanded ? "max-h-none" : "max-h-64")}>{out}</pre>
-              {longOutput && (
-                <button onClick={() => setExpanded((v) => !v)} className="mt-1 text-[11px] font-medium text-primary hover:underline">
-                  {expanded ? t("workspace.timeline.run.collapse") : t("workspace.timeline.run.expand")}
-                </button>
-              )}
-            </>
-          ) : (
-            <p className="text-xs text-muted-foreground">{t("workspace.timeline.run.noOutput")}</p>
-          )}
-        </div>
-
-        {/* Failure detail. */}
-        {failed && (run.error_message || err) && (
-          <div>
-            <p className="mb-1 text-[11px] font-medium text-red-600 dark:text-red-400">{run.error_message ? t("workspace.timeline.run.errorMessage") : t("workspace.timeline.run.stderr")}</p>
-            <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-red-500/5 p-2 text-xs leading-relaxed text-red-700 dark:text-red-300">{run.error_message || err}</pre>
-          </div>
-        )}
-
-        {/* Files the run delivered (lazy). "none" means the list was never
-            recorded — say so rather than showing the current worktree. */}
-        {delivered === null ? (
-          <button onClick={() => void loadFiles()} className="text-[11px] font-medium text-primary hover:underline">{t("workspace.timeline.run.showFiles")}</button>
-        ) : delivered === "loading" ? (
-          <p className="text-[11px] text-muted-foreground">{t("workspace.timeline.run.loadingFiles")}</p>
-        ) : delivered.source === "none" ? (
-          <p className="text-[11px] text-muted-foreground">{t("workspace.timeline.run.noSnapshot")}</p>
-        ) : files.length === 0 ? (
-          <p className="text-[11px] text-muted-foreground">{t("workspace.timeline.run.noFiles")}</p>
-        ) : (
-          <div>
-            <p className="mb-1 text-[11px] font-medium text-muted-foreground">
-              {t("workspace.timeline.run.files", { count: files.length })}
-              {delivered.source === "live" && (
-                <span className="ml-2 font-normal">{t("workspace.timeline.run.liveFiles")}</span>
-              )}
-            </p>
-            <ul className="space-y-0.5 text-xs">
-              {files.map((f) => (
-                <FileRow
-                  key={f.path}
-                  runId={run.run_id}
-                  file={f}
-                  openable={canOpenDeliverable(delivered, f)}
-                  t={t}
-                />
-              ))}
-            </ul>
-            {delivered.content_available === false && (
-              <p className="mt-1 text-[11px] text-muted-foreground">{t("workspace.timeline.run.gone")}</p>
-            )}
-            {delivered.truncated && (
-              <p className="mt-1 text-[11px] text-muted-foreground">{t("workspace.timeline.run.partial")}</p>
-            )}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// A changed file you can actually open: view its content inline, or open the
-// rendered artifact in a new tab (e.g. see the mockup page as it looks now).
-function FileRow(
-  { runId, file, openable = true, t }:
-  { runId: string; file: Deliverable; openable?: boolean; t: Translate },
-) {
-  const [content, setContent] = useState<string | null | "loading">(null);
-  const [failed, setFailed] = useState(false);
-  const [open, setOpen] = useState(false);
-
-  const toggle = async () => {
-    if (open) { setOpen(false); return; }
-    setOpen(true);
-    if (content === null) {
-      setContent("loading");
-      // A 409 here means the file no longer holds what this run delivered (a
-      // later run rewrote it). Say that instead of rendering an empty box.
-      try { setContent((await getDeliverableContent(runId, file.path)).content); }
-      catch { setFailed(true); setContent(""); }
-    }
-  };
-
-  return (
-    <li className="rounded bg-muted/40">
-      <div className="flex items-center gap-2 px-2 py-0.5 font-mono">
-        <span className="shrink-0 text-[10px] uppercase text-muted-foreground">{file.status}</span>
-        {openable ? (
-          <>
-            <button onClick={() => void toggle()} className="min-w-0 flex-1 truncate text-left hover:underline">{file.path}</button>
-            <button onClick={() => void toggle()} className="shrink-0 font-sans text-[11px] font-medium text-primary hover:underline">{open ? t("workspace.timeline.run.hideFile") : t("workspace.timeline.run.viewFile")}</button>
-            <a href={deliverableRawUrl(runId, file.path)} target="_blank" rel="noopener noreferrer" className="shrink-0 font-sans text-[11px] font-medium text-primary hover:underline">{t("workspace.timeline.run.openRaw")}</a>
-          </>
-        ) : (
-          // The worktree is gone: the path is still what the run delivered, but
-          // offering a link that can only 404 would be a lie.
-          <span className="min-w-0 flex-1 truncate text-muted-foreground">{file.path}</span>
-        )}
-      </div>
-      {open && (
-        content === "loading"
-          ? <p className="px-2 py-1 text-[11px] text-muted-foreground">{t("workspace.timeline.run.loadingFile")}</p>
-          : failed
-            ? <p className="px-2 py-1 text-[11px] text-muted-foreground">{t("workspace.timeline.run.changedSince")}</p>
-            : <pre className="max-h-72 overflow-auto whitespace-pre rounded-b bg-zinc-950 p-3 text-[11px] leading-relaxed text-zinc-100">{content}</pre>
-      )}
-    </li>
-  );
-}
-
 // ---------------------------------------------------------------------------
 // Requirements — moved OFF the right column.
 //
@@ -2831,17 +2366,18 @@ function SettledRunChanges({ run }: { run: ExecutionRun }) {
   // has moved to a different run cannot be shown as that run's files — and so the
   // reset to "loading" is a derivation rather than a write inside the effect.
   const [loaded, setLoaded] = useState<{ runId: string; value: RunDeliverables | "failed" } | null>(null);
+  // Bumped by the block's retry after a failed read; the effect re-asks for the same run.
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     const ctrl = new AbortController();
     getRunDeliverables(run.run_id, ctrl.signal)
       .then((value) => { if (!ctrl.signal.aborted) setLoaded({ runId: run.run_id, value }); })
       .catch(() => { if (!ctrl.signal.aborted) setLoaded({ runId: run.run_id, value: "failed" }); });
     return () => ctrl.abort();
-  }, [run.run_id]);
+  }, [run.run_id, attempt]);
   const delivered: RunDeliverables | "loading" | "failed" =
     loaded !== null && loaded.runId === run.run_id ? loaded.value : "loading";
   const failed = run.state === "failed" || run.state === "timed_out" || run.state === "abandoned";
-  const files = delivered !== "loading" && delivered !== "failed" ? delivered.files : [];
 
   return (
     <section className="space-y-2">
@@ -2854,30 +2390,12 @@ function SettledRunChanges({ run }: { run: ExecutionRun }) {
       {failed && (run.error_message || run.stderr_tail) && (
         <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-red-500/5 p-2 text-xs leading-relaxed text-red-700 dark:text-red-300">{run.error_message || run.stderr_tail.trimEnd()}</pre>
       )}
-      {delivered === "loading" ? (
-        <p className="text-xs text-muted-foreground">{t("workspace.timeline.run.loadingFiles")}</p>
-      ) : delivered === "failed" ? (
-        <p className="text-xs text-muted-foreground">{t("workspace.panels.unavailable")}</p>
-      ) : delivered.source === "none" ? (
-        <p className="text-xs text-muted-foreground">{t("workspace.timeline.run.noSnapshot")}</p>
-      ) : files.length === 0 ? (
-        <p className="text-xs text-muted-foreground">{t("workspace.timeline.run.noFiles")}</p>
-      ) : (
-        <div>
-          <p className="mb-1 text-[11px] font-medium text-muted-foreground">{t("workspace.timeline.run.files", { count: files.length })}</p>
-          <ul className="space-y-0.5 text-xs">
-            {files.map((f) => (
-              <FileRow key={f.path} runId={run.run_id} file={f} openable={canOpenDeliverable(delivered, f)} t={t} />
-            ))}
-          </ul>
-          {delivered.content_available === false && (
-            <p className="mt-1 text-[11px] text-muted-foreground">{t("workspace.timeline.run.gone")}</p>
-          )}
-          {delivered.truncated && (
-            <p className="mt-1 text-[11px] text-muted-foreground">{t("workspace.timeline.run.partial")}</p>
-          )}
-        </div>
-      )}
+      <DeliverablesBlock
+        runId={run.run_id}
+        delivered={delivered}
+        onLoad={() => { setLoaded(null); setAttempt((value) => value + 1); }}
+        t={t}
+      />
     </section>
   );
 }

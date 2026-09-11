@@ -80,11 +80,30 @@ export const conversation = {
       filesUnknown: "Which files this turn changed was not recorded.",
       duration: "{seconds}s",
       refused: "Refused before it started",
+      reviews: "reviews {id}",
+      // The footnote's count. "other", not "retry": no record says a run retries another.
+      nested: "{count} nested · {reviews} review · {others} other",
+      worktree: "worktree {name}",
+      liveNoDuration: "in progress",
     },
     pickers: {
       adapter: "Agent",
       environment: "Environment",
       environmentLocal: "Local",
+      // Runs execute on this machine today. The picker the mockup draws comes with the
+      // remote-execution work (W3-a); until then the label states the one fact there is.
+      environmentTitle: "Runs execute on this machine. Choosing an environment comes with remote execution (W3-a).",
+    },
+    stream: {
+      note: "Note it",
+      noteTitle: "Record this in the task's history without dispatching anything.",
+      // Not "was not recorded": the answer was lost, and the note may be on record. A
+      // second click would record it twice, so the sentence sends the reader to look.
+      noteFailed: "No answer to recording the note ({reason}). It may have been recorded — check the stream before trying again.",
+      // The entries written between turns that are not on the page went with them.
+      heldBack: "{count} earlier entries are folded with the earlier turns.",
+      eventsUnreadable: "The task's history could not be read, so only the turns are shown here — notes, stage changes and gates may be missing.",
+      eventsStale: "The task's history could not be refreshed. The notes, stage changes and gates between the cards are from the last read that landed, and anything since is not shown.",
     },
     errors: {
       projectUnread:
@@ -173,11 +192,24 @@ export const conversation = {
       filesUnknown: "这一轮改了哪些文件没有被记录下来。",
       duration: "{seconds} 秒",
       refused: "还没开始就被拒绝",
+      reviews: "复核 {id}",
+      nested: "子 Run {count} 个 · {reviews} 复核 · {others} 其他",
+      worktree: "worktree {name}",
+      liveNoDuration: "进行中",
     },
     pickers: {
       adapter: "执行者",
       environment: "环境",
       environmentLocal: "本机",
+      environmentTitle: "Run 现在都在本机执行。选环境这一项随远端执行（W3-a）一起来。",
+    },
+    stream: {
+      note: "记一笔",
+      noteTitle: "只记进这个任务的时间线，不派活。",
+      noteFailed: "记笔记没收到回应（{reason}）。它可能已经记上了 —— 再点一次前先看看流里有没有。",
+      heldBack: "更早的 {count} 条记录随更早的轮次一起折叠了。",
+      eventsUnreadable: "任务历史读不到，这里只剩 Run —— 笔记、阶段变化和门禁可能缺失。",
+      eventsStale: "任务历史刷新失败。卡片之间的笔记、阶段变化和门禁是上次读到的，之后发生的这里没有。",
     },
     errors: {
       projectUnread:
