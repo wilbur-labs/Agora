@@ -1,0 +1,1045 @@
+<!DOCTYPE html>
+<!-- saved from url=(0092)https://e8babf4a-084f-48b8-bf8b-10bcbf91023a.frame.claudeusercontent.com/_f/1787810861-c88d/ -->
+<html><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8"><!-- frame-runtime --><script>window.__FRAME_PREAMBLE={"v":1,"capabilities":{"artifact":"artifact.BoUB4pxl.js","assets":"assets.B6H5Rue4.js","comments":"comments.CJGulO07.js","db":"db.D373BnLH.js","downloads":"downloads.CKk-Yshd.js","embed":"embed.Hf7Acqy1.js","endpoints":"endpoints.BGpYVATw.js","mcp":"mcp.GIBQRXCC.js","network":"network.B5UA9Su4.js","permissions":"permissions.DAF5cUfF.js","room":"room.Dptr10ye.js","sample":"sample.BTkq5Oaj.js","self":"artifact.BoUB4pxl.js","user":"user.DV7k6YjV.js"},"transforms":"_transforms.C6t_n-gA.js","comments":"_comments.Daca5pvt.js","translate":"_translate.B2LIOQT7.js","ldx":"_ldx.CMCg6PeI.js"}                                                                                                                                                                                                                    </script><script>(function(){"use strict";var St=["light","dark","system"],At=/^[A-Za-z0-9_-]{1,64}$/,Xe=/^[a-zA-Z_:][a-zA-Z0-9_:.-]{0,127}$/,kt=new Set(["class","hidden","value","checked","style","title","alt","placeholder","lang","dir","role","tabindex","disabled","readonly","contenteditable","open","colspan","rowspan"]);function Tt(t){const e=t.toLowerCase();return e.startsWith("data-")||e.startsWith("aria-")||kt.has(e)}var Ye="data-ldx-props";function Rt(t,e){if(e.toLowerCase()===Ye)return!0;const n=t.getAttribute(Ye);if(n===null)return!1;try{const o=JSON.parse(n);if(o===null||typeof o!="object"||Array.isArray(o))return!0;const s=e.toLowerCase();return Object.keys(o).some(a=>a.toLowerCase()===s)}catch{return!0}}var qr="http://www.w3.org/1999/xhtml",Ot="http://www.w3.org/2000/svg",Lt=new Set(["script","style","iframe","noscript","noframes","noembed","xmp","plaintext","template","title","textarea","object","embed"]),Pt=new Set(["script","style"]);function Mt(t){const e=t.localName.toLowerCase();return t.namespaceURI==="http://www.w3.org/1999/xhtml"?!Lt.has(e):t.namespaceURI===Ot?!Pt.has(e):!1}function Te(t,e){return t===e||(t===160||t===32)&&(e===160||e===32)}function Nt(t,e){const n=t.length,o=e.length;let s=0;for(;s<n&&s<o&&Te(t.charCodeAt(s),e.charCodeAt(s));)s++;let a=0;for(;a<n-s&&a<o-s&&Te(t.charCodeAt(n-1-a),e.charCodeAt(o-1-a));)a++;return{p:s,s:a}}function Ct(t,e){const n=t.firstChild;if(t.childNodes.length!==1||n===null||n.nodeType!==Node.TEXT_NODE){t.textContent=e;return}const o=n.data,s=o.length,a=e.length,{p:i,s:f}=Nt(o,e);i===s&&f===0&&s===a||n.replaceData(i,s-i-f,e.slice(i,a-f));const S=n.data,w=t.ownerDocument.getSelection?.()??null,y=w!==null&&w.rangeCount>0&&(w.anchorNode===n||w.focusNode===n)?{anchor:w.anchorNode,anchorOffset:w.anchorOffset,focus:w.focusNode,focusOffset:w.focusOffset}:null;let A=-1,p=-1;for(let b=0;b<S.length&&b<e.length;b++){const L=S.charCodeAt(b),P=e.charCodeAt(b);L!==P&&Te(L,P)&&(A<0&&(A=b),p=b)}const v=A>=0;if(v&&n.replaceData(A,p-A+1,e.slice(A,p+1)),v&&y!==null&&y.anchor!==null&&y.focus!==null)try{w.setBaseAndExtent(y.anchor,y.anchorOffset,y.focus,y.focusOffset)}catch{}}var jt=new Set(["html","head","body","frameset"]);function It(t){return t.namespaceURI==="http://www.w3.org/1999/xhtml"&&jt.has(t.localName)}function xt(t){if(t===null||typeof t!="object")return!1;const e=t;if(typeof e.target!="string"||!At.test(e.target)||e.text!==void 0&&typeof e.text!="string")return!1;if(e.attrsSet!==void 0){if(e.attrsSet===null||typeof e.attrsSet!="object")return!1;for(const[n,o]of Object.entries(e.attrsSet))if(!Xe.test(n)||typeof o!="string")return!1}if(e.attrsRemoved!==void 0){if(!Array.isArray(e.attrsRemoved))return!1;for(const n of e.attrsRemoved)if(typeof n!="string"||!Xe.test(n))return!1}return!0}function Ft(t,e){if(t===null||typeof t!="object")return!1;const{seq:n,elements:o}=t;if(typeof n!="number"||!Number.isSafeInteger(n)||!Array.isArray(o)||o.length===0||o.length>64)return!1;for(let s=0;s<o.length;s++)if(!e(o[s]))return!1;return!0}function Dt(t){return t===null||typeof t!="object"?!1:Ft(t.__frame_patch,xt)}function Ht(t){if(t===null||typeof t!="object")return!1;const e=t.__frame_init;return e!==null&&typeof e=="object"}function qt(t){return t!==null&&typeof t=="object"&&t.__frame_size_poke===!0}function Bt(t){if(t===null||typeof t!="object")return!1;const e=t.__frame_host_visible;return e!==null&&typeof e=="object"&&typeof e.visible=="boolean"}function Ut(t){if(t===null||typeof t!="object")return!1;const e=t.__frame_theme;if(e===null||typeof e!="object")return!1;const n=e.theme;return typeof n=="string"&&St.includes(n)}var zt=["ok","empty","snapshot_error","snapshot_timeout","unclonable","oversize","unavailable","restore_error","withheld"],Kt=["TypeError","RangeError","ReferenceError","SyntaxError","DataCloneError","QuotaExceededError","AbortError","TimeoutError","SecurityError","Error","other"];function Wt(t){return typeof t=="string"&&Kt.includes(t)?t:"other"}var $t=Object.freeze({until:null,now:!1}),Xt="__claude_hot",Yt="__claude_hot_in",Gt=/^__claude_hot(?:_in)?(?::|$)/,Ge=/^[0-9a-z]{1,32}$/,Re=t=>t===void 0?Xt:"__claude_hot:"+t,se=t=>t===void 0?Yt:"__claude_hot_in:"+t;function Vt(t,e){const n=[];for(let o=0;o<t.length;o++){const s=t.key(o);s!==null&&s!==e&&Gt.test(s)&&n.push(s)}for(const o of n)t.removeItem(o)}function Jt(t){let e=null;try{e=q(JSON.parse(t)?.hot)}catch{return null}return e===null||typeof e.k!="string"||!Ge.test(e.k)?null:le(e.g)?{k:e.k,g:e.g}:{k:e.k}}var Br=262144,Zt=3e3,Ve=/^[a-z0-9._:-]{1,64}$/,Qt=["none","hot-restart","hard-reload"],er=["asset","doc","added","removed"],tr=1500,rr=/^[0-9a-f]{64}$/;function q(t){return t!==null&&typeof t=="object"?t:null}function le(t){return typeof t=="number"&&Number.isInteger(t)&&t>=0&&t<2**31}function Je(t){return t===void 0||typeof t=="number"&&Number.isFinite(t)}function nr(t){return t===void 0||typeof t=="string"&&Ve.test(t)}function Ze(t){const e=q(t);return e!==null&&(e.until===null||typeof e.until=="number"&&Number.isFinite(e.until))&&typeof e.now=="boolean"}function Oe(t){const e=q(t);return e!==null&&typeof e.ver=="string"&&e.ver.length<=128&&Je(e.seq)&&typeof e.handoff=="string"&&zt.includes(e.handoff)&&nr(e.note)}function or(t){const e=q(t);return e!==null&&le(e.gen)&&(e.phase==="final"||e.phase==="pending")&&(e.from===null||Oe(e.from))}function ar(t){const e=q(t);return e!==null&&e.kv===1&&le(e.gen)&&Oe(e.from)&&Object.hasOwn(e,"data")}function sr(t){const e=q(t);return e!==null&&e.__frame_hot_snapshot===!0&&le(e.gen)&&typeof e.timeoutMs=="number"&&e.timeoutMs>=0&&e.timeoutMs<=6e4&&(e.handoff===void 0||typeof e.handoff=="boolean")&&(e.deadline===void 0||Ze(e.deadline))&&Je(e.seq)&&(e.note===void 0||typeof e.note=="string")&&(e.key===void 0||typeof e.key=="string")}function lr(t){const e=q(t);return e!==null&&e.__frame_hot_start===!0&&le(e.gen)&&Oe(e.from)}function Qe(t){const e=q(t);return e!==null&&typeof e.ver=="string"&&e.ver.length<=128&&Number.isFinite(e.seq)}function et(t){if(t==null||typeof t=="string")return!0;const e=q(t);return e!==null&&typeof e.doc=="string"&&typeof e.profile=="string"}function ir(t){const e=q(t);return e!==null&&typeof e.path=="string"&&er.includes(e.kind)&&et(e.from)&&et(e.to)}function cr(t){return t===null?null:Object.freeze(t.filter(ir))}function ur(t){const e=q(t);return e!==null&&e.__frame_hot_update===!0&&Number.isFinite(e.id)&&Qe(e.from)&&Qe(e.to)&&(e.changed===null||Array.isArray(e.changed))&&Qt.includes(e.required)&&Ze(e.deadline)&&typeof e.verdictTimeoutMs=="number"&&e.verdictTimeoutMs>=0&&e.verdictTimeoutMs<=6e4&&(e.preflight===void 0||typeof e.preflight=="string"&&rr.test(e.preflight))}var Z=/^[\w.-]+\.js$/;function fr(t,e,n){return n?"inert":typeof e=="string"&&Z.test(e)?t?[e]:"inert":t?"inert":"framed"}var tt=Object.freeze({[Symbol("claude.hot.restart")]:!0});function rt(t,e){let n;try{n=t??sessionStorage}catch{return null}const o=Re(e?.k),s=se(e?.k);let a=null;try{a=n.getItem(o)}catch{}try{n.removeItem(o)}catch{}try{Vt(n,s)}catch{}let i=null;if(a!==null&&!(e!==null&&e.g===void 0))try{const f=JSON.parse(a);ar(f)&&(e===null||f.gen===e.g)&&(i=f)}catch{}if(i===null)try{n.removeItem(s)}catch{}return i}function dr(){const t=/^\/_f\/([^/]{1,128})\//.exec(location.pathname);return t?t[1]:""}var he="{}";function ie(t){if(!t)return null;const e={ver:t.ver,handoff:t.handoff};return t.seq!==void 0&&(e.seq=t.seq),t.note!==void 0&&(e.note=t.note),e}function nt(t,e){return t!==null&&t.note===void 0&&e?.note!==void 0?{...t,note:e.note}:t}function ot(t){const e=t?.k;return e!==null&&typeof e=="object"?e:void 0}function hr(t,e,n,o=null){const s=setTimeout,a=clearTimeout,i=queueMicrotask,f=performance.now.bind(performance),S=new TextEncoder,w=dr();let y=null;try{y=sessionStorage}catch{}const A={storage:y,fetch:typeof fetch=="function"?fetch.bind(globalThis):null,entry:location.origin+location.pathname+location.search,ver:w,key:o?.k};let p=o?.k;const v=typeof requestAnimationFrame=="function"?requestAnimationFrame:r=>s(()=>r(f()),16);let b=e?.data??{},L=ie(e?.from),P=e?.gen??0,h=e!==null,k=!1,E=!1,j=null,ce=!1;const ue=new AbortController;let fe=null,I=null,ee=null,we=!1,$=()=>{};const l=new Promise(r=>{$=r});let m=!1,g=!1,C=!1,M,R=null,D=!1,B=!1;const te=r=>{for(const c of[Re(r),se(r)])try{y?.removeItem(c)}catch{}},x=(r,c)=>{try{c!==null&&n.post(r,c)}catch{}},K=()=>{const r={__frame_hot:!0,ready:I!==null,accept:ee!==null};m&&(r.readData=!0),C&&(r.threw=!0),R?.assess&&(r.preflight=!0),x(r,j)};let d=!1,re=!1,z=!1,ne=!1;const oe=()=>{d||!ce||z||(d=!0,x({__frame_reveal_hold:!0},"*"))},W=()=>new Promise(r=>{let c,u=0;const _=O=>{if(c===void 0)c=O;else if(O!==c||++u>=8){r();return}try{v(_)}catch{r()}};try{v(_)}catch{r()}}),be=()=>{z=!0,x({__frame_reveal_ready:!0},"*")},qe=r=>{re||(re=!0,r.then(c=>{if(c===!1)return;let u=null;try{u=R?.settle?.()??null}catch{}return(u===null?W():new Promise(_=>{s(_,50),Promise.resolve(u).then(_,_)}).then(W)).then(be)}))},Cr=()=>{if(ne||!z)return;ne=!0;const r=()=>{try{R?.afterReveal?.()}catch{}};r(),W().then(()=>{r(),be()})},Ee=(r=!1)=>{if(we||I===null||!h||!E)return;we=!0;const c=I,u=b;i(()=>{let _;try{_=c(u)}catch(H){throw $(!1),H}let O=!1;try{O=typeof _?.then=="function"}catch{}if(!O){$(!0);return}Promise.resolve(_).then(()=>$(!0),H=>{$(!1),i(()=>{throw H})})}),qe(r?l:n.dcl.then(()=>l))},Se=r=>typeof r=="string"&&Ve.test(r)?r:void 0,mt=r=>{const c={__frame_hot_restart:!0},u=Se(r?.note);u!==void 0&&(c.note=u),r?.required==="hard-reload"&&(c.required="hard-reload"),x(c,j)},_t=Object.freeze({get data(){return E||(g=!0),!h&&!m&&(m=!0,E&&K()),b},get from(){return L},get gen(){return P},signal:ue.signal,snapshot(r){typeof r=="function"&&(fe=r)},ready(r){typeof r!="function"||I!==null||(I=r,oe(),K(),k&&x({__frame_hot_ready:!0,gen:P},j),Ee())},accept(r){typeof r=="function"&&(ee=r,K())},restart(r){const c={note:r?.note,required:r?.required};if(E){mt(c);return}const u=M;M={note:Se(u?.note)??c.note,required:u?.required==="hard-reload"||c.required==="hard-reload"?"hard-reload":void 0}}});let Ae=null,yt=()=>{};const jr=new Promise(r=>{yt=r});let Ir=null;const vt=()=>Ir??=n.dcl.then(()=>{let r=!1;try{r=Ae!==null&&Ae.expect()}catch{}if(!r)return;const c=Ae.maxMs;return new Promise(u=>{jr.then(u),s(u,c)})}),gt=()=>{if(!D||B||R===null)return;B=!0;const r=R;vt().then(()=>{try{z||r.afterStart(ot(e),!1)}catch{}})},wt=r=>{e!==null&&g&&(m=!0),b={},L=null,P=0;try{y?.removeItem(se(o?.k))}catch{}e!==null&&!r&&qe(n.dcl.then(()=>I!==null?l:void 0))},xr=()=>{D=!0,qe(vt().then(()=>I!==null?l:void 0)),gt()};try{addEventListener("error",()=>{C||I!==null||(C=!0,K())})}catch{}let X=-1,Be,Ue,de=!0,ze=!1,Ke,ke=null;const We=r=>{const c=ke===null;ke=de&&r[0]!=="withheld"?r:["withheld",r[1],he];let u=r[0];if(de&&u!=="withheld"){const O={ver:w,handoff:u};Be!==void 0&&(O.seq=Be),Ue!==void 0&&(O.note=Ue);try{if(y===null)throw new Error("no storage");y.setItem(Re(p),'{"kv":1,"gen":'+X+',"from":'+JSON.stringify(O)+(Ke!==void 0?',"k":'+JSON.stringify(Ke):"")+',"data":'+(u==="ok"?r[2]:he)+"}")}catch{u="unavailable"}}else{u="withheld",te(p);try{R?.release?.()}catch{}}const _={__frame_hot_snapshotted:!0,gen:X,handoff:u,bytes:r[1]};if(r[3]!==void 0&&(_.errName=r[3]),x(_,j),c&&(u==="snapshot_error"||u==="unclonable"||u==="oversize"))try{console.warn("claude.hot: snapshot",u,r[3])}catch{}},bt=r=>{try{return Wt(r?.name)}catch{return"other"}},ae=(r,c,u=0)=>We(c===void 0?[r,u,he]:[r,u,he,bt(c)]),Fr=r=>{if(r.gen<=X)return;const c=X>=0;if(X=r.gen,Be=r.seq,Ue=Se(r.note),typeof r.key=="string"&&Ge.test(r.key)&&r.key!==p&&(te(p),p=r.key),de&&=r.handoff!==!1,c){ke!==null?We(ke):ze&&x({__frame_hot_held:!0,gen:X},j);return}ue.abort();const u=Object.freeze({handoff:de,timeoutMs:r.timeoutMs,deadline:r.deadline??$t}),_=fe,O=()=>{if(de)try{Ke=R?.capture()}catch{}if(_===null){ae("empty");return}let F=!1;const Y=s(()=>{F||(F=!0,ae("snapshot_timeout"))},Math.max(0,u.timeoutMs));Promise.resolve().then(()=>_(u)).then(G=>{if(F)return;F=!0,a(Y);let V;try{V=JSON.stringify(G)}catch(J){ae("unclonable",J);return}if(typeof V!="string"){ae("unclonable");return}let N=V.length;try{N=S.encode(V).length}catch{}if(N>262144){ae("oversize",void 0,N);return}We(["ok",N,V])},G=>{F||(F=!0,a(Y),ae("snapshot_error",G))})};let H=null;try{H=R?.holdForIme()??null}catch{}if(H===null)O();else{ze=!0,x({__frame_hot_held:!0,gen:X},j);const F=()=>{ze=!1,O()};H.then(F,F)}},Dr=r=>{if(!k||h||I===null||r.gen!==P)return;let c=null;try{c=rt(y,o&&{k:o.k,g:r.gen})}catch{}if(c!==null&&c.gen!==r.gen){c=null;try{y?.removeItem(se(o?.k))}catch{}}b=c?.data??{},L=nt(ie(c?.from??r.from),ie(r.from)),c!==null&&(P=c.gen),h=!0,k=!1;const u=ot(c);l.then(_=>{try{_&&R?.afterStart(u,!0)}catch{}}),Ee(!0)};let $e=0;const Hr=r=>{const c=ee;if(c===null||r.id<=$e)return;$e=r.id;const u=R?.assess;if(r.preflight===void 0||u===void 0){Et(r,c);return}let _=!1;const O=Y=>{_||(_=!0,a(F),r.id===$e&&Et(r,c,Y))},H=()=>O(u.timeout(r)),F=s(H,tr+100);u.run(r,window).then(O,H)},Et=(r,c,u)=>{let _,O=!1;const H=Object.freeze({from:{ver:r.from.ver,seq:r.from.seq},to:{ver:r.to.ver,seq:r.to.seq},changed:cr(r.changed),required:r.required,deadline:r.deadline,restart(N){return _??=Se(N?.note),O||=N?.required==="hard-reload",tt},...u?.update}),F=N=>{const J={__frame_hot_verdict:!0,id:r.id};N==="applied"||N==="deferred"?J.verdict=N:N===tt&&(J.verdict="restart",O&&(J.required="hard-reload"),_!==void 0&&(J.note=_)),x(Object.assign(J,u?.verdict),j)};let Y=!1;const G=N=>Y?!1:(Y=!0,a(V),F(N),!0),V=s(G,r.verdictTimeoutMs);Promise.resolve().then(()=>c(H)).then(G,N=>{if(G(void 0))try{console.warn("claude.hot: accept",bt(N))}catch{}})};try{t.hot===void 0&&Object.defineProperty(t,"hot",{value:_t,writable:!1,configurable:!1,enumerable:!1})}catch{}return{hot:_t,boot:A,afterConnect(){ce=!0,(e!==null||I!==null)&&oe()},onInit(r,c){j=c,E=!0;const u=or(r)?r:null;u?.phase==="final"&&e!==null&&e.gen===u.gen?(h=!0,L=nt(L,ie(u.from)),xr()):(k=u?.phase==="pending",wt(k),h=!k,P=u?.gen??0,L=ie(u?.from)),K(),k&&I!==null&&x({__frame_hot_ready:!0,gen:P},c),M!==void 0&&(mt(M),M=void 0),Ee()},onNoInit(){E=!0,wt(!1),h=!0,Ee()},onShell(r){return r?.__frame_revealed===!0?(Cr(),!1):sr(r)?(Fr(r),!0):lr(r)?(Dr(r),!0):ur(r)?(Hr(r),!0):!1},attachExtras(r){R=r,gt(),r.assess&&K()},inSlot:()=>se(p),hydration(r,c){Ae??={expect:r,maxMs:c}},hydrated(){yt()},carried(){return h?b:{}},presented:()=>z}}var Ur="frame_ldx_runtime",pr="frame_ldx_build",zr="script#an-form",mr=256;function at(t,e,n){for(const o of t)n(o)&&t.delete(o);t.size>=mr&&!t.has(e)&&t.delete(t.values().next().value),t.add(e)}function Le(t,e,n){try{const o=t[e];if(typeof o!="function")return;t[e]=function(...s){const a=o.apply(this,s);try{n(this)}catch{}return a}}catch{}}var Pe;function _r(){if(Pe)return Pe;const t={media:new Set,contexts:new Set,onStart:null,onPause:null};Pe=t;const e=window.HTMLMediaElement?.prototype;e&&(Le(e,"play",s=>{at(t.media,s,a=>a.paused),t.onStart?.(s)}),Le(e,"pause",s=>t.onPause?.(s)));const n=window.AudioContext,o=window.AudioNode?.prototype;return n&&o&&Le(o,"connect",s=>{const a=s.context;a instanceof n&&(at(t.contexts,a,i=>i.state==="closed"),t.onStart?.(a))}),t}function yr(t){let e=window;for(let n=0;e.parent&&e.parent!==e&&n<8;n++)if(e=e.parent,t(e))return!0;return!1}function vr(){let t=null;const e=()=>t??parent,n=o=>t?o===t:yr(s=>s===o);return{post(o,s){if(t){e().postMessage(o,s);return}let a=parent;for(let i=0;i<8&&(a.postMessage(o,s),!(!a.parent||a.parent===a));i++)a=a.parent},on(o){const s=a=>{const i=a.source;n(i)&&o(a.data,a.origin,a.isTrusted,()=>{t??=i})};return addEventListener("message",s),()=>removeEventListener("message",s)},port:o=>({post(s,a){if(a?.activation){e().postMessage(s,{targetOrigin:o,includeUserActivation:!0});return}if(a?.transfer){e().postMessage(s,o,a.transfer);return}e().postMessage(s,o)},on(s,a){const i=f=>{n(f.source)&&f.origin===o&&s(f.data,f)};return addEventListener("message",i,a),()=>removeEventListener("message",i,a)}})}}function gr(){const t={post:()=>{},on:()=>()=>{}};return{...t,port:()=>t}}var Me="__frame_scroll",wr=150,br=310,Er=160,Sr=3e4;function Ar(){let t=0,e=!1,n=!1,o=!1,s=0,a=null;const i=h=>{try{sessionStorage.setItem(Me,JSON.stringify({y:h}))}catch{}},f=()=>{if(clearTimeout(t),a===null)return;const h=a;a=null,i(h)},S=()=>{if(e){e=!1;return}n=!0,a=scrollY,clearTimeout(t),t=setTimeout(f,wr)};try{addEventListener("scroll",S,{passive:!0}),addEventListener("pagehide",f)}catch{}const w=()=>{let h;try{h=sessionStorage.getItem(Me)}catch{return null}if(h===null)return null;let k;try{k=JSON.parse(h)}catch{k=null}const E=k?.y;if(!(typeof E=="number"&&Number.isFinite(E)&&E>=0)){try{sessionStorage.removeItem(Me)}catch{}return null}return E};let y=!1;const A=h=>{try{const k=scrollY;scrollTo({top:h,left:0,behavior:"instant"}),s=h,o=!0,clearTimeout(t),a=null,i(h);const E=scrollY;E!==k&&(e=!0),E!==h&&!y&&(y=!0,addEventListener("load",()=>{try{if(scrollY===E){const j=w();A(j!==null?j:s)}}catch{}},{once:!0}))}catch{}},p=()=>{try{return!!location.hash}catch{return!0}};let v=!1;const b=()=>{try{if(v||innerWidth>br||innerHeight>Er)return;v=!0;const h=Date.now(),k=()=>{try{removeEventListener("resize",k)}catch{}if(Date.now()-h>Sr||n||p())return;const E=w();A(E!==null?E:s)};addEventListener("resize",k)}catch{}};let L=!1,P=!1;return{restore(){if(L||(L=!0,p()))return;const h=w();h!==null&&(A(h),b())},promoted(){if(P||(P=!0,p()))return;const h=w();h!==null?(A(h),b()):o&&A(s)}}}function kr(t,e,n,o){let s=null;try{s=window.trustedTypes?.createPolicy("frame-runtime",{createScriptURL:S=>S})??null}catch{}const a=window.Worker,i=a?.prototype,f=Object.freeze({Worker:a,workerOn:i?.addEventListener,workerPost:i?.postMessage,workerTerminate:i?.terminate,fetch:window.fetch.bind(window),preventDefault:Event.prototype.preventDefault,now:Date.now,policy:s,origins:e});n(t).then(S=>S?.bootTopLevel?S.bootTopLevel(f,o):o.settle()).catch(()=>o.settle())}var Kr="modulepreload",Wr=function(t){return"/"+t},$r={},Tr=function(e,n,o){let s=Promise.resolve();function a(i){const f=new Event("vite:preloadError",{cancelable:!0});if(f.payload=i,window.dispatchEvent(f),!f.defaultPrevented)throw i}return s.then(i=>{for(const f of i||[])f.status==="rejected"&&a(f.reason);return e().catch(a)})},Rr=window===top,st=Object.getOwnPropertyDescriptor(window,"claude"),pe=fr(Rr,window.__FRAME_PREAMBLE?.topLevel,st?.writable===!1),Ne=typeof pe=="object"&&pe[0],T=Ne?gr():vr();(function(){const t=Object.defineProperty,e=globalThis,n=["RTCPeerConnection","webkitRTCPeerConnection","RTCDataChannel","RTCIceCandidate","RTCSessionDescription","RTCRtpSender","RTCRtpReceiver"];let o=0;for(let s=0;s<n.length;s++){const a=n[s];try{t(e,a,{value:void 0,writable:!1,configurable:!1})}catch{try{delete e[a]}catch{}try{t(e,a,{value:void 0,writable:!1,configurable:!0})}catch{}}typeof e[a]=="function"&&o++}if(o&&pe==="framed")try{T.post({__frame_rtc_lockdown_failed:o},"*")}catch{}})();var Or=1e4,Lr=2e3,Ce=2e3,lt=Object.freeze([...window.__FRAME_PREAMBLE?.origins??["https://claude.ai","https://preview.claude.ai"]]);function it(t){for(const e of lt)if(e.endsWith(":*"))try{const n=new URL(t);if(`${n.protocol}//${n.hostname}:*`===e)return!0}catch{}else if(t===e)return!0;return!1}var me=Object.freeze({...window.__FRAME_PREAMBLE?.capabilities}),je=window.__FRAME_PREAMBLE?.transforms,Ie=window.__FRAME_PREAMBLE?.comments,xe=window.__FRAME_PREAMBLE?.translate,_e=window.__FRAME_PREAMBLE?.ldx;function Q(t){return Tr(()=>import("/_runtime/"+t),void 0)}function ct(t,e,n){return{contract:t.contract,changes:new Set(t.changes??[]),flags:new Set(t.flags??[]),capabilities:t.capabilities??{},capBudgets:t.capBudgets??{},transforms:new Map,shellOrigin:e,shell:n,mount:He,hooks:ve,pipe:()=>({wrap:(o,s)=>(...a)=>{try{return s(...a)}catch(i){return Promise.reject(i)}}})}}var ye=null,U=null;function ut(t,e,n){try{Object.defineProperty(t,e,{value:n,writable:!1,configurable:!1,enumerable:!0})}catch{try{Object.defineProperty(t,e,{value:n,writable:!1,configurable:!0,enumerable:!0})}catch{}}}var Fe=!1,ve={editBefore:null,edit:null};function Pr(t,e,n=!1){const o=[];let s;if(n)try{ve.editBefore?.(t)}catch{}for(const a of t.elements){const i=document.querySelector(`[data-id="${a.target}"]`);if(!i){s=a.target;break}if([...Object.keys(a.attrsSet??{}),...a.attrsRemoved??[]].some(f=>!Tt(f)||Rt(i,f))){s=a.target;break}if(a.text!==void 0&&(!Mt(i)||It(i))){s=a.target;break}for(const[f,S]of Object.entries(a.attrsSet??{}))if(!dt(i,f)){try{i.setAttribute(f,S)}catch{}ft(i,f,S)}for(const f of a.attrsRemoved??[])dt(i,f)||(i.removeAttribute(f),ft(i,f,null));typeof a.text=="string"&&Ct(i,a.text),o.push(a.target)}if(n)try{ve.edit?.(t.seq,o,s)}catch{}if(s!==void 0){T.post({__frame_patch_miss:{seq:t.seq}},e);return}try{document.dispatchEvent(new CustomEvent("claude:edit",{detail:{seq:t.seq,targets:o}}))}catch{}}function ft(t,e,n){if(!(t instanceof HTMLInputElement))return;const o=e.toLowerCase();o==="checked"?t.checked=n!==null:o==="value"&&t.type!=="file"&&(t.value=n??"")}function dt(t,e){const n=e.toLowerCase(),o=t;return n==="data-id"||(n==="value"||n==="checked")&&(o.__artifactSecret===!0||/^(password|hidden|file)$/.test(o.type??"")||/(^|\s)(cc-|one-time-code|current-password|new-password)/i.test(`${t.getAttribute("autocomplete")??""} ${o.autocomplete??""}`))}function ht(t){const e=document.documentElement;t==="light"||t==="dark"?(e.dataset.theme=t,e.style.colorScheme=t,Fe=!0):Fe&&(delete e.dataset.theme,e.style.colorScheme="",Fe=!1)}var ge=new Map;function Mr(){let t;const e={u:new Promise(n=>{t=n}),r:n=>{e.done=!0,t(n)},done:!1,nulled:!1};return e}function De(){for(const t of ge.values())t.done||(t.nulled=!0,t.r(null))}var Nr=Object.freeze(Object.assign(Object.create(null),{call:Function.prototype.call,apply:Function.prototype.apply,bind:Function.prototype.bind})),He=(t,e)=>{const n=ge.get(t);if(!n||n.done){n?.nulled&&U&&T.post({__frame_cap_telemetry:{kind:"cap-load-error",cap:t}},U);return}const o=typeof e=="function"?Object.setPrototypeOf(e,Nr):Object.assign(Object.create(null),e);typeof o.then=="function"&&delete o.then,n.r(Object.freeze(o))};function pt(){const t=st?.value??{};ut(window,"claude",t);for(const e of Object.keys(me)){if(t[e]!==void 0){ut(t,e,t[e]);continue}ge.set(e,Mr())}if(t.use===void 0){const e=n=>{if(typeof n!="string"||!Object.hasOwn(me,n))return Promise.resolve(null);const o=ge.get(n);return o?o.u:Promise.resolve(t[n]??null)};try{Object.defineProperty(t,"use",{value:e,writable:!0,configurable:!0,enumerable:!1})}catch{}}return t}if(pe==="framed"){const t=je&&Z.test(je)?Q(je).catch(()=>{}):Promise.resolve(void 0),e=l=>{if(l.type==="auxclick"&&l.button!==1)return;const m=l.target,g=m&&m.closest?m.closest("a[href],area[href]"):null;if(!g)return;const C=g.getAttribute("href");if(!C)return;let M;try{M=new URL(C,document.baseURI)}catch{return}if((M.protocol==="http:"||M.protocol==="https:")&&M.origin!==location.origin){l.preventDefault();const R=(g.getAttribute("target")??"").toLowerCase(),D=l.type==="auxclick"||l.metaKey||l.ctrlKey||l.shiftKey||l.altKey||!["","_self","_top","_parent"].includes(R);T.post({__frame_nav:!0,url:M.href,newTab:D},"*")}};addEventListener("click",e,!0),addEventListener("auxclick",e,!0);const n={},o=l=>{l.isTrusted&&(n.pointer=!0)},s=l=>{l.isTrusted&&(n.click=!0)};addEventListener("pointermove",o,{capture:!0,passive:!0}),addEventListener("click",s,{capture:!0,passive:!0});const a={cb:null};addEventListener("keydown",l=>a.cb?.(l),!0);const i=_r();t.then(l=>l?.installEscapeForward?.(a,m=>{U&&T.post(m,U)})),t.then(l=>{try{l?.installFocusKeep?.()}catch{}}),t.then(l=>{if(!l?.wireNav)return;const m=T.port("*");l.wireNav(m),removeEventListener("click",e,!0),removeEventListener("auxclick",e,!0),removeEventListener("pointermove",o,!0),removeEventListener("click",s,!0),l.wireEngagement?.(n,m)});let f=null;try{f=Ar()}catch{}const S=document.readyState==="loading"?new Promise(l=>document.addEventListener("DOMContentLoaded",()=>l(),{once:!0})):Promise.resolve();let w=null,y=null;try{y=Jt(window.name),w=rt(null,y)}catch{}const A=pt();let p=null;try{p=hr(A,w,{post:(l,m)=>T.post(l,m),dcl:S},y)}catch{}t.then(l=>{try{p&&l?.installHotExtras?.(p)}catch{}});let v=null;const b=()=>Array.isArray(v?.flags)&&v.flags.includes("frame_ldx_runtime")&&!!_e&&Z.test(_e)&&document.querySelector("script#an-form")!==null;try{p?.hydration(b,Zt)}catch{}let L=null,P=0;const h=T.on((l,m,g,C)=>{it(m)&&Ht(l)&&(C(),v=l.__frame_init,U=m,h(),clearTimeout(P),L?.())});T.post({__frame_connect:!0},"*");try{p?.afterConnect()}catch{}const k=setTimeout,E=clearTimeout;let j=()=>NaN;try{j=performance.now.bind(performance)}catch{}let ce=0;const ue=()=>{try{T.post({__frame_alive:!0},"*")}catch{}ce=k(ue,Lr)},fe=()=>E(ce);ue(),addEventListener("load",fe,{once:!0});const I=new Promise(l=>{L=l,P=setTimeout(()=>{h(),l()},Or)}),ee=new WeakSet;addEventListener("error",l=>{l.target&&ee.add(l.target)},!0);const we=()=>{let l=[];try{l=[...document.querySelectorAll("link[rel~=stylesheet]:not([rel~=alternate])")].filter(g=>!g.sheet&&!g.disabled&&!ee.has(g)&&g.getAttribute("href")&&URL.canParse(g.href)&&(!g.media||matchMedia(g.media).matches))}catch{}let m=l.length;return m===0?Promise.resolve():new Promise(g=>{try{const C=Ce-j(),M=k(g,C>0?C<Ce?C:Ce:0),R=()=>{--m===0&&(E(M),g())};for(const D of l)D.addEventListener("load",R,{once:!0}),D.addEventListener("error",R,{once:!0})}catch{g()}})};S.then(()=>{try{f?.restore()}catch{}});const $={cb:null};T.on((l,m)=>{if(it(m)&&qt(l)){try{f?.promoted()}catch{}$.cb?.()}}),I.then(async()=>{if(!v||!U){De();try{p?.onNoInit()}catch{}return}ht(v.theme),v.hostVisible===!1&&t.then(d=>d?.applyHostVisible?.(!1,i));try{p?.onInit(v.hot,U)}catch{}const l=U,m=T.port(l);let g=!1,C=!1;T.on((d,re,z)=>{if(re!==l)return;try{if(p?.onShell(d))return}catch{}if(Ut(d)&&ht(d.__frame_theme.theme),Bt(d)){const W=d.__frame_host_visible.visible;t.then(be=>be?.applyHostVisible?.(W,i))}Dt(d)&&Pr(d.__frame_patch,l,z);const ne=d?.__fc_mode;ne&&typeof ne=="object"&&!g&&Ie&&Z.test(Ie)&&(g=!0,Q(Ie).then(W=>W.install?.(l,ne.on===!0,m)).catch(()=>{}));const oe=d?.__ft_cmd;oe&&typeof oe=="object"&&!C&&xe&&Z.test(xe)&&(C=!0,Q(xe).then(W=>W.install?.(l,oe,m)).catch(()=>{}))});const M=Object.keys(v.capabilities??{}).filter(d=>Object.hasOwn(me,d)).map(d=>[d,me[d]]).filter(d=>typeof d[1]=="string"&&Z.test(d[1])),R=await Promise.allSettled(M.map(([,d])=>Q(d))),D=await t,B=U;if(D?.buildBoot||T.post({__frame_cap_telemetry:{kind:"cap-load-error",cap:"_transforms"}},B),D?.buildBoot)try{ye=D.buildBoot(v,D.TRANSFORMS??{},{shellOrigin:B,mount:He,hooks:ve,shell:m},d=>T.post({__frame_cap_telemetry:d},B))}catch{T.post({__frame_cap_telemetry:{kind:"cap-load-error",cap:"_transforms"}},B),ye=ct(v,B,m)}else ye=ct(v,B,m);const te=d=>T.post({__frame_cap_telemetry:{kind:"cap-load-error",cap:d}},B),x=ye;R.forEach((d,re)=>{const z=M[re][0];if(d.status!=="fulfilled"){te(z);return}try{d.value?.install?.(x)}catch{te(z)}}),De(),await S,await we(),fe(),T.post({__frame_ready:!0},U),t.then(d=>d?.installSizeReporter?.(B,$,m));let K=!1;try{K=b()}catch{}_e&&K?Q(_e).then(d=>d?.boot?.({shellOrigin:l,build:x.flags.has(pr),hot:p?.hot??null,carried:p?.carried(),presented:()=>p?.presented()??!0})).catch(()=>!1).then(d=>{p?.hydrated(),d!==!0&&te("_ldx")}):p?.hydrated()})}else Ne&&(pt(),kr(Ne,lt,Q,{settle:De,mount:He}))})();</script><!-- /frame-runtime --><meta name="viewport" content="width=device-width,initial-scale=1"><style>:root{color-scheme:light}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#faf9f5;color:#141413}img{max-width:100%}</style></head><body>
+<title>Agora 控制台</title>
+<link rel="preconnect" href="https://fonts.googleapis.com/">
+<link rel="preconnect" href="https://fonts.gstatic.com/" crossorigin="">
+<link rel="stylesheet" href="./css2">
+
+<style>
+:root{
+  --ground:#EBEEF2; --surface:#FFFFFF; --surface-2:#F5F7F9; --surface-3:#EDF0F4;
+  --line:#D6DCE3; --line-soft:#E4E9EE;
+  --text:#141D27; --dim:#59636F; --faint:#8B95A1;
+  --accent:#0F6B70; --accent-wash:#DCECEC; --btn-ink:#FFFFFF;
+  --verified:#2F7D4F; --verified-wash:#DFEEE5;
+  --running:#2E62B8; --running-wash:#DEE8F8;
+  --attention:#A76F0E; --attention-wash:#F5E9D2;
+  --failed:#A63A3A; --failed-wash:#F5DEDE;
+  --claude:#B85835; --codex:#414A57; --kiro:#63499E;
+  --term-bg:#161C24; --term-fg:#D5DCE4; --term-dim:#7E8896;
+  --shadow:0 1px 2px rgba(20,29,39,.06), 0 8px 24px -12px rgba(20,29,39,.18);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --ground:#0C1116; --surface:#141A21; --surface-2:#1A222B; --surface-3:#212B35;
+    --line:#293441; --line-soft:#212B35;
+    --text:#E3E9EF; --dim:#98A3B1; --faint:#6A7481;
+    --accent:#43A9AE; --accent-wash:#123033; --btn-ink:#06171A;
+    --verified:#54B682; --verified-wash:#13291F;
+    --running:#5F9BF5; --running-wash:#122139;
+    --attention:#DCA33F; --attention-wash:#2E2312;
+    --failed:#E0736F; --failed-wash:#2E1616;
+    --claude:#DE8A62; --codex:#A5AFBD; --kiro:#A48BDC;
+    --term-bg:#0A0E13; --term-fg:#CBD4DD; --term-dim:#6A7481;
+    --shadow:0 1px 2px rgba(0,0,0,.5), 0 10px 30px -14px rgba(0,0,0,.7);
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#0C1116; --surface:#141A21; --surface-2:#1A222B; --surface-3:#212B35;
+  --line:#293441; --line-soft:#212B35;
+  --text:#E3E9EF; --dim:#98A3B1; --faint:#6A7481;
+  --accent:#43A9AE; --accent-wash:#123033; --btn-ink:#06171A;
+  --verified:#54B682; --verified-wash:#13291F;
+  --running:#5F9BF5; --running-wash:#122139;
+  --attention:#DCA33F; --attention-wash:#2E2312;
+  --failed:#E0736F; --failed-wash:#2E1616;
+  --claude:#DE8A62; --codex:#A5AFBD; --kiro:#A48BDC;
+  --term-bg:#0A0E13; --term-fg:#CBD4DD; --term-dim:#6A7481;
+  --shadow:0 1px 2px rgba(0,0,0,.5), 0 10px 30px -14px rgba(0,0,0,.7);
+}
+
+*{box-sizing:border-box;}
+body{
+  margin:0; background:var(--ground); color:var(--text);
+  font-family:"IBM Plex Sans", ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+  font-size:14px; line-height:1.55; -webkit-font-smoothing:antialiased;
+}
+.mono{font-family:"IBM Plex Mono", ui-monospace, Consolas, monospace;}
+h1,h2,h3,h4{margin:0; text-wrap:balance; font-weight:600; letter-spacing:-.01em;}
+p{margin:0;}
+button{font:inherit; color:inherit; background:none; border:none; cursor:pointer;}
+summary{cursor:pointer;}
+:focus-visible{outline:2px solid var(--accent); outline-offset:2px; border-radius:3px;}
+@media (prefers-reduced-motion: reduce){*{transition:none !important;}}
+
+.page{max-width:1240px; margin:0 auto; padding:32px 24px 72px;}
+.masthead{display:flex; flex-wrap:wrap; align-items:flex-end; gap:16px 28px;}
+.masthead h1{font-size:26px; letter-spacing:-.02em;}
+.masthead .sub{color:var(--dim); font-size:13.5px; max-width:64ch; margin-top:5px;}
+.stamp{display:inline-flex; align-items:center; gap:7px; padding:4px 11px;
+  border:1px solid var(--line); border-radius:100px; background:var(--surface);
+  font-size:11.5px; letter-spacing:.06em; text-transform:uppercase; color:var(--dim); font-weight:500;}
+.stamp b{color:var(--accent); font-weight:600;}
+.rev{margin-top:14px; padding:11px 14px; border:1px solid var(--line); border-left:3px solid var(--accent);
+  border-radius:0 7px 7px 0; background:var(--surface); font-size:13px; color:var(--dim); display:grid; gap:5px;}
+.rev b{color:var(--text);}
+
+.tabs{display:flex; flex-wrap:wrap; gap:2px; margin:24px 0 0; border-bottom:1px solid var(--line);}
+.tab{padding:9px 15px 10px; font-size:13.5px; font-weight:500; color:var(--dim);
+  border-bottom:2px solid transparent; margin-bottom:-1px; transition:color .12s, border-color .12s;
+  display:flex; align-items:center; gap:8px;}
+.tab:hover{color:var(--text);}
+.tab[aria-selected="true"]{color:var(--accent); border-bottom-color:var(--accent); font-weight:600;}
+.tab .n{font-size:10.5px; font-weight:600; width:17px; height:17px; border-radius:4px;
+  display:grid; place-items:center; background:var(--surface-3); color:var(--faint);
+  font-family:"IBM Plex Mono", monospace;}
+.tab[aria-selected="true"] .n{background:var(--accent-wash); color:var(--accent);}
+.screen[hidden]{display:none;}
+
+.win{margin-top:20px; background:var(--surface); border:1px solid var(--line);
+  border-radius:10px; box-shadow:var(--shadow); overflow:hidden;}
+.winbar{display:flex; align-items:center; gap:12px; padding:9px 14px; flex-wrap:wrap;
+  background:var(--surface-2); border-bottom:1px solid var(--line);}
+.dots{display:flex; gap:6px;}
+.dots i{width:10px; height:10px; border-radius:50%; background:var(--line); display:block;}
+.winbar .title{font-size:12.5px; font-weight:600;}
+.winbar .path{font-size:11.5px; color:var(--faint);}
+.winbar .right{margin-left:auto; display:flex; align-items:center; gap:14px; font-size:11.5px; color:var(--dim); flex-wrap:wrap;}
+
+.pill{display:inline-flex; align-items:center; gap:5px; padding:2px 8px; border-radius:100px;
+  font-size:11px; font-weight:600; white-space:nowrap;}
+.pill.verified{background:var(--verified-wash); color:var(--verified);}
+.pill.running{background:var(--running-wash); color:var(--running);}
+.pill.attention{background:var(--attention-wash); color:var(--attention);}
+.pill.failed{background:var(--failed-wash); color:var(--failed);}
+.pill.idle{background:var(--surface-3); color:var(--faint);}
+.pill.accent{background:var(--accent-wash); color:var(--accent);}
+.dot{width:7px; height:7px; border-radius:50%; flex:none; display:inline-block;}
+.dot.verified{background:var(--verified);} .dot.running{background:var(--running);}
+.dot.attention{background:var(--attention);} .dot.idle{background:var(--faint);}
+.dot.failed{background:var(--failed);}
+.lbl{font-size:10.5px; letter-spacing:.1em; text-transform:uppercase; color:var(--faint); font-weight:600;}
+.hr{height:1px; background:var(--line-soft); border:0; margin:0;}
+.agent-chip{display:inline-flex; align-items:center; gap:6px; font-size:12px; font-weight:600;}
+.sq{width:8px; height:8px; border-radius:2px; flex:none; display:inline-block;}
+.sq.claude{background:var(--claude);} .sq.codex{background:var(--codex);} .sq.kiro{background:var(--kiro);}
+.mk{width:15px; height:15px; border-radius:3px; display:grid; place-items:center;
+   font-size:9.5px; font-weight:700; flex:none; font-family:"IBM Plex Mono",monospace;}
+.mk.mod{background:var(--attention-wash); color:var(--attention);}
+.mk.add{background:var(--verified-wash); color:var(--verified);}
+
+/* progress meter: solid = done, hatched = in progress */
+.meter{height:5px; border-radius:3px; background:var(--surface-3); overflow:hidden; display:flex;}
+.meter i{display:block; height:100%; background:var(--verified);}
+.meter i.wip{background:var(--running); opacity:.42;}
+.snap{font-size:11px; color:var(--faint); font-variant-numeric:tabular-nums; display:flex; gap:9px; flex-wrap:wrap;}
+.snap b{color:var(--text); font-weight:600;}
+
+/* ── screen 1 ── */
+.today{padding:24px 26px 28px; display:grid; gap:22px;}
+.greet{display:flex; align-items:baseline; gap:14px; flex-wrap:wrap;}
+.greet h2{font-size:20px;}
+.greet .when{color:var(--faint); font-size:12.5px;}
+
+.focus-bar{border:1px dashed var(--line); border-radius:8px; padding:13px 15px;
+  display:flex; align-items:center; gap:14px; flex-wrap:wrap; background:var(--surface-2);}
+.choices{display:flex; gap:7px; flex-wrap:wrap;}
+.choice{border:1px solid var(--line); background:var(--surface); border-radius:100px;
+  padding:5px 12px; font-size:12.5px; color:var(--dim);}
+.choice[aria-pressed="true"]{border-color:var(--accent); background:var(--accent-wash); color:var(--accent); font-weight:600;}
+.cap{margin-left:auto; font-size:11.5px; color:var(--faint);}
+
+.sec-head{display:flex; align-items:baseline; gap:11px; flex-wrap:wrap;}
+.sec-head .note{font-size:11.5px; color:var(--faint);}
+
+.cards{display:grid; gap:14px;}
+.rcard{border:1px solid var(--line); border-radius:9px; overflow:hidden; background:var(--surface);}
+.rcard.lead{border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-wash);}
+.rcard > header{display:flex; align-items:center; gap:10px; padding:11px 16px;
+  border-bottom:1px solid var(--line-soft); background:var(--surface-2); flex-wrap:wrap;}
+.rcard.lead > header{background:var(--accent-wash);}
+.rcard > header h3{font-size:15px;}
+.rcard > header .env{font-size:11.5px; color:var(--dim);}
+.rcard > header .loc{margin-left:auto; font-size:11.5px; color:var(--faint);}
+.rbody{padding:15px 16px 17px; display:grid; grid-template-columns:minmax(0,1fr) 228px; gap:22px;}
+@media (max-width:840px){.rbody{grid-template-columns:1fr;}}
+.brief{display:grid; gap:11px;}
+.brief-row{display:grid; grid-template-columns:58px minmax(0,1fr); gap:12px; align-items:start;}
+.brief-row .lbl{padding-top:3px;}
+.brief-row ul{margin:0; padding:0; list-style:none; display:grid; gap:5px;}
+.brief-row li{display:grid; grid-template-columns:auto minmax(0,1fr); gap:8px; align-items:start; font-size:13px;}
+.brief-row li .dot{margin-top:7px;}
+.brief-row p{font-size:13px;}
+.goal-quote{font-size:12.5px; color:var(--dim); border-left:2px solid var(--line); padding-left:11px;}
+.side-col{display:flex; flex-direction:column; gap:9px; justify-content:center;}
+.btn{display:flex; align-items:center; justify-content:center; gap:8px; background:var(--accent);
+  color:var(--btn-ink); padding:10px 15px; border-radius:6px; font-weight:600; font-size:13.5px; transition:filter .12s;}
+.btn:hover{filter:brightness(1.08);}
+.btn-ghost{border:1px solid var(--line); background:var(--surface); color:var(--dim);
+  padding:8px 13px; border-radius:6px; font-size:12.5px; font-weight:500;
+  display:flex; align-items:center; justify-content:center; gap:6px;}
+.btn-ghost:hover{border-color:var(--dim); color:var(--text);}
+.restore-note{font-size:11px; color:var(--faint); text-align:center; line-height:1.55;}
+
+/* compact rows for "in progress, not today's focus" */
+.rows{border:1px solid var(--line); border-radius:8px; overflow:hidden; background:var(--surface);}
+.row{display:grid; grid-template-columns:minmax(0,1.5fr) minmax(0,2fr) 120px auto;
+  gap:14px; align-items:center; padding:11px 15px; border-bottom:1px solid var(--line-soft);}
+.row:last-child{border-bottom:0;}
+@media (max-width:840px){.row{grid-template-columns:1fr; gap:7px;}}
+.row .who{display:flex; align-items:center; gap:8px; min-width:0;}
+.row .who b{font-size:13.5px; font-weight:600;}
+.row .who .envtag{font-size:10.5px; color:var(--faint); padding:1px 6px; border:1px solid var(--line); border-radius:100px;}
+.row .nx{font-size:12.5px; color:var(--dim); min-width:0;}
+.row .pr{display:grid; gap:4px;}
+.row .act{font-size:12px; color:var(--accent); font-weight:500; white-space:nowrap; text-align:right;}
+.row .act.off{color:var(--faint); font-weight:400;}
+
+details.dorm{border:1px solid var(--line); border-radius:8px; background:var(--surface);}
+details.dorm > summary{padding:11px 15px; font-size:13px; color:var(--dim); display:flex; align-items:center; gap:10px;}
+details.dorm > summary b{color:var(--text); font-weight:600;}
+details.dorm > summary .tail{margin-left:auto; font-size:11.5px; color:var(--faint);}
+details.dorm[open] > summary{border-bottom:1px solid var(--line-soft);}
+
+.panel{border:1px solid var(--line); border-radius:8px; background:var(--surface); overflow:hidden;}
+.panel > header{padding:10px 15px; border-bottom:1px solid var(--line-soft); background:var(--surface-2);
+  display:flex; align-items:center; gap:10px;}
+.panel > header .count{margin-left:auto; font-size:11.5px; color:var(--faint);}
+.blocked{padding:11px 15px; border-bottom:1px solid var(--line-soft);
+  display:grid; grid-template-columns:auto minmax(0,1fr) auto; gap:11px; align-items:start;}
+.blocked:last-child{border-bottom:0;}
+.blocked .dot{margin-top:6px;}
+.blocked .txt{font-size:13px;}
+.blocked .txt em{font-style:normal; color:var(--faint); font-size:11.5px; display:block; margin-top:2px;}
+.blocked .proj{font-size:11px; color:var(--faint); white-space:nowrap; padding-top:2px;}
+
+/* ── screen 2 ── */
+.ws{display:grid; grid-template-columns:206px minmax(0,1fr) 262px; min-height:600px;}
+@media (max-width:1040px){.ws{grid-template-columns:1fr;}}
+.rail{border-right:1px solid var(--line); background:var(--surface-2); padding:14px 0; display:grid; align-content:start; gap:16px;}
+.rail section{display:grid; gap:1px;}
+.rail .lbl{padding:0 15px 5px;}
+.navitem{display:flex; align-items:center; gap:9px; padding:6px 15px; font-size:13px;
+  color:var(--dim); border-left:2px solid transparent;}
+.navitem .tail{margin-left:auto; font-size:11px; color:var(--faint); font-weight:500;}
+.navitem.on{color:var(--accent); border-left-color:var(--accent); background:var(--accent-wash); font-weight:600;}
+.navitem.on .tail{color:var(--accent);}
+.sysrow{display:flex; align-items:center; gap:9px; padding:5px 15px; font-size:12.5px; color:var(--dim);}
+.sysrow .tail{margin-left:auto; font-size:10.5px; color:var(--faint);}
+
+.center{min-width:0; display:grid; align-content:start;}
+.taskhead{padding:15px 19px 14px; border-bottom:1px solid var(--line);}
+.taskhead .crumb{font-size:11.5px; color:var(--faint); margin-bottom:5px;}
+.taskhead h3{font-size:17px; margin-bottom:8px;}
+.factgrid{display:grid; grid-template-columns:repeat(auto-fit,minmax(148px,1fr)); gap:13px 20px; margin-top:12px;}
+.fact{display:grid; gap:3px;}
+.fact .v{font-size:13px; font-weight:500;}
+.fact .v.small{font-size:12px; font-weight:400; color:var(--dim);}
+
+.stream{padding:15px 19px 12px; display:grid; gap:13px;}
+.runcard{border:1px solid var(--line); border-radius:8px; overflow:hidden; background:var(--surface);}
+.runcard > header{display:flex; align-items:center; gap:10px; padding:9px 13px;
+  border-bottom:1px solid var(--line-soft); background:var(--surface-2); flex-wrap:wrap;}
+.runcard > header .rid{font-size:11.5px; color:var(--faint);}
+.runcard > header .time{margin-left:auto; font-size:11.5px; color:var(--faint); font-variant-numeric:tabular-nums;}
+.prompt{padding:10px 13px; font-size:13px; border-bottom:1px solid var(--line-soft);
+  display:grid; grid-template-columns:auto minmax(0,1fr); gap:9px;}
+.prompt .caret{color:var(--accent); font-weight:600;}
+.term{background:var(--term-bg); color:var(--term-fg); padding:11px 13px;
+  font-family:"IBM Plex Mono", monospace; font-size:11.5px; line-height:1.65;
+  overflow-x:auto; white-space:pre;}
+.term.b{border-bottom:1px solid var(--line-soft);}
+.term .d{color:var(--term-dim);}
+.term .ok{color:#5FBE8C;} .term .warn{color:#DCA33F;} .term .cy{color:#5CBFC4;} .term .rd{color:#E0736F;}
+.files{padding:10px 13px; display:grid; gap:6px;}
+.frow{display:flex; align-items:center; gap:9px; font-size:12.5px;}
+.frow .open{margin-left:auto; font-size:11.5px; color:var(--accent); font-weight:500;}
+.runfoot{padding:8px 13px; background:var(--surface-2); font-size:11.5px; color:var(--dim); display:flex; gap:14px; flex-wrap:wrap;}
+
+/* nested child runs (review / retry) */
+.kids{padding:0 13px 12px 13px; display:grid; gap:9px;}
+.kid{border:1px solid var(--line-soft); border-left:3px solid var(--line); border-radius:0 7px 7px 0;
+  background:var(--surface-2); overflow:hidden;}
+.kid.rev{border-left-color:var(--claude);}
+.kid.retry{border-left-color:var(--attention);}
+.kid > header{display:flex; align-items:center; gap:9px; padding:7px 11px; flex-wrap:wrap; font-size:12px;}
+.kid > header .why{color:var(--faint); font-size:11px;}
+.kid > header .time{margin-left:auto; font-size:11px; color:var(--faint); font-variant-numeric:tabular-nums;}
+.kid .body{padding:0 11px 10px; font-size:12.5px; color:var(--dim); display:grid; gap:6px;}
+.kid .term{border-radius:5px; font-size:11px;}
+
+.msgbox{margin:0 19px 18px; border:1px solid var(--line); border-radius:8px;
+  background:var(--surface-2); padding:10px 13px; display:flex; align-items:center; gap:11px; flex-wrap:wrap;}
+.msgbox .ph{color:var(--faint); font-size:13px; flex:1; min-width:130px;}
+.msgbox .pickers{display:flex; gap:7px; align-items:center; flex-wrap:wrap;}
+.picker{border:1px solid var(--line); background:var(--surface); border-radius:5px; padding:3px 9px; font-size:11.5px; color:var(--dim);
+  display:inline-flex; align-items:center; gap:6px;}
+.msgbox .send{background:var(--accent); color:var(--btn-ink); padding:5px 12px; border-radius:5px; font-size:12.5px; font-weight:600;}
+
+.side{border-left:1px solid var(--line); background:var(--surface-2); display:grid; align-content:start;}
+@media (max-width:1040px){.side{border-left:0; border-top:1px solid var(--line);}}
+.seg{display:flex; padding:10px 12px 0; gap:4px;}
+.segbtn{flex:1; padding:6px 8px; font-size:11.5px; font-weight:600; color:var(--faint);
+  border:1px solid var(--line); border-radius:6px; background:var(--surface);}
+.segbtn[aria-pressed="true"]{color:var(--accent); border-color:var(--accent); background:var(--accent-wash);}
+.segnote{padding:7px 15px 0; font-size:11px; color:var(--faint); line-height:1.5;}
+.sidepane{padding:12px 0 16px; display:grid; align-content:start; gap:15px;}
+.sidepane[hidden]{display:none;}
+.side section{display:grid; gap:6px;}
+.side .lbl{padding:0 15px;}
+.srow{display:flex; align-items:center; gap:8px; padding:3px 15px; font-size:12.5px; color:var(--dim);}
+.srow .nm{overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.srow .tail{margin-left:auto; font-size:11px; color:var(--faint); font-variant-numeric:tabular-nums;}
+.livewrap{padding:0 12px;}
+.livehead{display:flex; align-items:center; gap:8px; font-size:11.5px; color:var(--dim); padding:0 3px 7px;}
+.livehead .tail{margin-left:auto; font-variant-numeric:tabular-nums; color:var(--faint);}
+.blink{width:7px; height:7px; border-radius:50%; background:var(--running); flex:none;}
+@media (prefers-reduced-motion: no-preference){
+  .blink{animation:pulse 1.6s ease-in-out infinite;}
+  @keyframes pulse{0%,100%{opacity:1;} 50%{opacity:.32;}}
+}
+
+/* ── screen 3 ── */
+.envwrap{padding:20px 22px 24px; display:grid; gap:15px;}
+.envcard{border:1px solid var(--line); border-radius:9px; overflow:hidden; background:var(--surface);}
+.envcard > header{display:flex; align-items:center; gap:12px; padding:12px 15px;
+  background:var(--surface-2); border-bottom:1px solid var(--line-soft); flex-wrap:wrap;}
+.envcard > header h4{font-size:14.5px;}
+.envcard > header .addr{font-size:12px; color:var(--faint);}
+.envcard > header .st{margin-left:auto;}
+.envbody{display:grid; grid-template-columns:296px minmax(0,1fr);}
+@media (max-width:820px){.envbody{grid-template-columns:1fr;}}
+.envstats{padding:12px 15px; border-right:1px solid var(--line-soft); display:grid; gap:8px; align-content:start;}
+@media (max-width:820px){.envstats{border-right:0; border-bottom:1px solid var(--line-soft);}}
+.statrow{display:grid; grid-template-columns:70px minmax(0,1fr); gap:10px; font-size:12.5px; align-items:baseline;}
+.statrow .k{color:var(--faint); font-size:11.5px;}
+.statrow .val{font-variant-numeric:tabular-nums; overflow-wrap:anywhere;}
+.envruns{padding:12px 15px; display:grid; gap:9px; align-content:start;}
+.envproj{display:flex; align-items:center; gap:10px; font-size:12.5px; flex-wrap:wrap;}
+.envproj .proj{font-weight:600;}
+.envproj .what{color:var(--dim);}
+.envproj .st{margin-left:auto;}
+.envempty{font-size:12.5px; color:var(--faint); font-style:italic;}
+.backlog{padding:9px 15px; background:var(--surface-2); border-top:1px solid var(--line-soft);
+  font-size:11.5px; color:var(--faint);}
+
+/* ── screen 4 ── */
+.skwrap{padding:20px 22px 24px; display:grid; gap:17px;}
+.tiers{display:grid; grid-template-columns:repeat(3,1fr); border:1px solid var(--line); border-radius:8px; overflow:hidden;}
+@media (max-width:760px){.tiers{grid-template-columns:1fr;}}
+.tier{padding:12px 15px; border-right:1px solid var(--line-soft); display:grid; gap:4px; background:var(--surface);}
+.tier:last-child{border-right:0;}
+.tier.cur{background:var(--accent-wash);}
+.tier .t{font-size:13.5px; font-weight:600; display:flex; align-items:center; gap:8px;}
+.tier .n{font-size:19px; font-weight:600; font-variant-numeric:tabular-nums;}
+.tier .c{font-size:12px; color:var(--dim);}
+.gate{display:grid; gap:9px; padding:13px 15px; border:1px dashed var(--line); border-radius:8px; background:var(--surface-2);}
+.gate .steps{display:flex; align-items:center; gap:9px; flex-wrap:wrap; font-size:12.5px; color:var(--dim);}
+.gate .steps b{color:var(--text); font-weight:600;}
+.gate .steps .arr{color:var(--faint);}
+.gate .test{font-size:12.5px; color:var(--text); border-left:2px solid var(--accent); padding-left:11px;}
+.sktable{border:1px solid var(--line); border-radius:8px; overflow:hidden; background:var(--surface);}
+.skgroup{padding:8px 15px; background:var(--surface-2); border-bottom:1px solid var(--line-soft);
+  display:flex; align-items:center; gap:10px; font-size:12px; font-weight:600;}
+.skgroup .tail{margin-left:auto; font-size:11px; color:var(--faint); font-weight:400;}
+.skhead, .skrow{display:grid; grid-template-columns:minmax(0,1fr) 58px 86px 92px 128px 56px; gap:12px; align-items:center; padding:9px 15px;}
+@media (max-width:900px){.skhead{display:none;} .skrow{grid-template-columns:1fr; gap:7px;}}
+.skhead{background:var(--surface-3); border-bottom:1px solid var(--line-soft);}
+.skrow{border-bottom:1px solid var(--line-soft); font-size:13px;}
+.skrow:last-child{border-bottom:0;}
+.skrow .name{display:grid; gap:2px; min-width:0;}
+.skrow .name b{font-weight:600; font-size:13px; overflow-wrap:anywhere;}
+.skrow .name span{font-size:11.5px; color:var(--faint);}
+.skrow .ver, .skrow .inst, .skrow .upd{font-size:12px; color:var(--dim); font-variant-numeric:tabular-nums;}
+.adapters{display:flex; gap:5px; flex-wrap:wrap;}
+.ad{display:inline-flex; align-items:center; font-size:10.5px; font-weight:600;
+  padding:2px 6px; border-radius:4px; background:var(--surface-3); color:var(--faint);}
+.ad.ok{background:var(--verified-wash); color:var(--verified);}
+.ad.pend{background:var(--attention-wash); color:var(--attention);}
+.skrow .act{font-size:12px; color:var(--accent); font-weight:500;}
+.skrow .act.off{color:var(--faint); font-weight:400;}
+
+/* notes */
+.notes{margin-top:18px; display:grid; gap:9px;}
+.notes h4{font-size:11.5px; letter-spacing:.09em; text-transform:uppercase; color:var(--faint);}
+.notes ul{margin:0; padding:0; list-style:none; display:grid; gap:9px;}
+.notes li{display:grid; grid-template-columns:auto minmax(0,1fr); gap:11px; align-items:start;
+  font-size:13px; color:var(--dim); line-height:1.55;}
+.notes li .k{font-size:10.5px; font-weight:700; letter-spacing:.04em; padding:2px 7px; border-radius:4px;
+  white-space:nowrap; margin-top:1px;}
+.k.you{background:var(--accent-wash); color:var(--accent);}
+.k.me{background:var(--verified-wash); color:var(--verified);}
+.k.cut{background:var(--failed-wash); color:var(--failed);}
+.k.open{background:var(--attention-wash); color:var(--attention);}
+.notes li b{color:var(--text); font-weight:600;}
+
+footer.pf{margin-top:44px; padding-top:18px; border-top:1px solid var(--line);
+  font-size:12px; color:var(--faint); display:grid; gap:5px;}
+footer.pf b{color:var(--dim);}
+</style>
+
+<div class="page">
+
+  <div class="masthead">
+    <div>
+      <h1>Agora 控制台</h1>
+      <p class="sub">第二版。上一轮你定的九件事全部落进设计，两件你交给我定的我也定了。数据仍是本机真实状态——九个真实项目，其中四个在推进。</p>
+    </div>
+    <span class="stamp">Mockup · <b>v2</b></span>
+  </div>
+
+  <div class="rev">
+    <p><b>这一版改了什么</b>　① Today 拆成主推 / 在推进 / 休眠三档，撑住 9 个项目　② 砍掉「换个 agent」——它跟「Agent 在 Run 层选」自相矛盾　③ 进度条改成进度快照驱动，实心 ✅ + 半透明 🔵，百分比只报 ✅　④ 右栏改成两态可切（跑着=实时终端 / 不跑=改动+门禁），CR·ADR 移回左栏　⑤ review 与重试 Run 缩进挂在 worker Run 下，顶层只排 worker　⑥ 远端项目不下载到本地　⑦ GPU/内存降级为 backlog　⑧ 技能列去掉「被用 N 个项目」，换成「安装在 / 最后更新」　⑨ 技能公开改成「先分类，不上传需要脱敏的」</p>
+  </div>
+
+  <div class="tabs" role="tablist">
+    <button class="tab" role="tab" aria-selected="true" data-t="s1"><span class="n">1</span>Today</button>
+    <button class="tab" role="tab" aria-selected="false" data-t="s2"><span class="n">2</span>项目工作台</button>
+    <button class="tab" role="tab" aria-selected="false" data-t="s3"><span class="n">3</span>环境</button>
+    <button class="tab" role="tab" aria-selected="false" data-t="s4"><span class="n">4</span>技能库</button>
+  </div>
+
+  <!-- ══ SCREEN 1 ══ -->
+  <section class="screen" id="s1">
+    <div class="win">
+      <div class="winbar">
+        <span class="dots"><i></i><i></i><i></i></span>
+        <span class="title">Agora</span>
+        <span class="right">
+          <span><span class="dot verified"></span> Local Windows</span>
+          <span class="mono">codex 0.149.1 · claude 2.1.246 · kiro 2.19.1</span>
+        </span>
+      </div>
+
+      <div class="today">
+        <div class="greet">
+          <h2>接着昨天</h2>
+          <span class="when">2026-08-27 周四 · 9 个项目，4 个在推进</span>
+        </div>
+
+        <div class="focus-bar">
+          <span class="lbl">今天主推</span>
+          <div class="choices">
+            <button class="choice" aria-pressed="true">Agora</button>
+            <button class="choice" aria-pressed="true">kimono</button>
+            <button class="choice" aria-pressed="true">mind_child_app</button>
+            <button class="choice" aria-pressed="false">pleasanter-workflow</button>
+          </div>
+          <span class="cap">3 / 3 已满 —— 第 4 个要上来，得先放下一个</span>
+        </div>
+
+        <div class="cards">
+          <!-- lead card -->
+          <article class="rcard lead">
+            <header>
+              <span class="dot running"></span>
+              <h3>Agora</h3>
+              <span class="pill accent">W0 证伪切片</span>
+              <span class="env">Local Windows</span>
+              <span class="loc mono">main 8be8922 · 已推 origin</span>
+            </header>
+            <div class="rbody">
+              <div class="brief">
+                <div class="brief-row">
+                  <span class="lbl">昨天</span>
+                  <ul>
+                    <li><span class="dot verified"></span><span><b>W0(a) 完成</b>：三家 CLI 全部支持按 id 续接会话，产品前提成立</span></li>
+                    <li><span class="dot verified"></span><span><b>control-plane 1.2 已合 main 并推送</b>——18 个 commit，792 测试通过，两轮 codex review 全部 triage</span></li>
+                  </ul>
+                </div>
+                <div class="brief-row">
+                  <span class="lbl">现在</span>
+                  <ul>
+                    <li><span class="dot running"></span><span><b>W0(b) 第一项：给 Run 持久化交付物快照</b>（修 D-1）——不做这步，下面那些「改了哪些文件」就是假的</span></li>
+                  </ul>
+                </div>
+                <div class="brief-row">
+                  <span class="lbl">在册</span>
+                  <p style="font-size:12.5px;color:var(--dim);">5 条已知缺陷 D-1~D-5，全在已冻结的 AI-DLC 指标层，留给 W4</p>
+                </div>
+                <div class="brief-row">
+                  <span class="lbl">目标</span>
+                  <p class="goal-quote">把已验证半年的 claude-workspace 工作模型，产品化成多 Agent × 多项目 × 多环境的开发工作台。<br><span style="color:var(--faint);">验收只有一条：我自己每天愿意用它干活。</span></p>
+                </div>
+              </div>
+              <div class="side-col">
+                <button class="btn">继续工作 →</button>
+                <button class="btn-ghost">先看看这个项目</button>
+                <p class="restore-note">恢复 worktree <span class="mono">agora/codex</span><br>会话 <span class="mono">a3f0…c41d</span> · Codex<br>执行者到那时再选</p>
+                <div class="pr" style="display:grid;gap:4px;">
+                  <div class="meter"><i style="width:12%"></i><i class="wip" style="width:12%"></i></div>
+                  <p class="snap"><span><b>1</b> ✅</span><span><b>1</b> 🔵</span><span><b>6</b> ⬜</span><span>= <b>12%</b></span></p>
+                </div>
+              </div>
+            </div>
+          </article>
+
+          <!-- second -->
+          <article class="rcard">
+            <header>
+              <span class="dot attention"></span>
+              <h3>kimono</h3>
+              <span class="pill verified">已上线</span>
+              <span class="env">Local Windows + kimono VPS</span>
+              <span class="loc mono">master f9cd733 · 08-25</span>
+            </header>
+            <div class="rbody">
+              <div class="brief">
+                <div class="brief-row">
+                  <span class="lbl">上次</span>
+                  <ul><li><span class="dot verified"></span><span>M8 融合重构已合 master 并部署，三语实测 200</span></li></ul>
+                </div>
+                <div class="brief-row">
+                  <span class="lbl">现在</span>
+                  <ul><li><span class="dot attention"></span><span><b>等域名</b>——域名一到手，三件事一起做：Caddy 自动签 TLS + 改 <span class="mono">NEXT_PUBLIC_SERVER_URL</span> + 换强口令</span></li></ul>
+                </div>
+                <div class="brief-row">
+                  <span class="lbl">拦路</span>
+                  <ul><li><span class="dot failed"></span><span>裸 IP 无 HTTPS，后台明文弱口令 —— 在此之前别在公共网络登录后台</span></li></ul>
+                </div>
+              </div>
+              <div class="side-col">
+                <button class="btn">继续工作 →</button>
+                <button class="btn-ghost">先看看这个项目</button>
+                <p class="restore-note">环境 <span class="mono">kimono VPS</span><br>ubuntu@133.18.145.18</p>
+                <div class="pr" style="display:grid;gap:4px;">
+                  <div class="meter"><i style="width:75%"></i><i class="wip" style="width:12.5%"></i></div>
+                  <p class="snap"><span><b>6</b> ✅</span><span><b>1</b> 🔵</span><span><b>1</b> ⬜</span><span>= <b>75%</b></span></p>
+                </div>
+              </div>
+            </div>
+          </article>
+
+          <!-- third -->
+          <article class="rcard">
+            <header>
+              <span class="dot failed"></span>
+              <h3>mind_child_app</h3>
+              <span class="pill failed">有未落地的工作</span>
+              <span class="env">Local Windows</span>
+              <span class="loc mono">main 8dcf7a4 · 2026-03-09</span>
+            </header>
+            <div class="rbody">
+              <div class="brief">
+                <div class="brief-row">
+                  <span class="lbl">发现</span>
+                  <ul>
+                    <li><span class="dot failed"></span><span><b>32 个文件未提交，最后一次提交在 5 个月前</b>——工作树里躺着没落地的改动，且没有任何记录说明它们是什么</span></li>
+                  </ul>
+                </div>
+                <div class="brief-row">
+                  <span class="lbl">现在</span>
+                  <ul><li><span class="dot running"></span><span>先决定这 32 个改动的去向：提交、丢弃，还是先让 agent 读一遍讲清楚它们干了什么</span></li></ul>
+                </div>
+                <div class="brief-row">
+                  <span class="lbl">没有</span>
+                  <p style="font-size:12.5px;color:var(--faint);">这个项目还没有目标记录。接入 Agora 时会跑一次项目初始化，读 README + 目录 + git 历史，生成一份初稿给你确认。</p>
+                </div>
+              </div>
+              <div class="side-col">
+                <button class="btn">让 agent 读一遍 →</button>
+                <button class="btn-ghost">先看看这个项目</button>
+                <p class="restore-note">尚无目标 / 无进度快照<br>百分比留空，不编数字</p>
+                <div class="pr" style="display:grid;gap:4px;">
+                  <div class="meter"></div>
+                  <p class="snap"><span style="color:var(--faint);">无进度快照 — 初始化后才有</span></p>
+                </div>
+              </div>
+            </div>
+          </article>
+        </div>
+
+        <div>
+          <div class="sec-head" style="margin-bottom:9px;">
+            <span class="lbl">在推进，但不是今天的重点</span>
+            <span class="note">有未完成任务、近 14 天有活动</span>
+          </div>
+          <div class="rows">
+            <div class="row">
+              <span class="who"><span class="dot idle"></span><b>pleasanter-workflow</b><span class="envtag">另一台机器</span></span>
+              <span class="nx">下一步：发布更新包到自动更新服务器（`/release`）</span>
+              <span class="pr"><span class="meter"><i style="width:80%"></i></span><span class="snap"><b>80%</b></span></span>
+              <span class="act off">环境未连接</span>
+            </div>
+            <div class="row">
+              <span class="who"><span class="dot verified"></span><b>claude-workspace</b><span class="envtag">Local Windows</span></span>
+              <span class="nx">今天有提交（Codex overlay 移植已推送），无待办</span>
+              <span class="pr"><span class="meter"><i style="width:100%"></i></span><span class="snap"><b>100%</b></span></span>
+              <span class="act">提升为主推</span>
+            </div>
+          </div>
+        </div>
+
+        <details class="dorm">
+          <summary><span class="dot idle"></span><b>4 个休眠项目</b><span>无近期活动</span><span class="tail">点开查看</span></summary>
+          <div class="rows" style="border:0;border-radius:0;">
+            <div class="row">
+              <span class="who"><span class="dot idle"></span><b>opportunity_agent</b><span class="envtag">Local Windows</span></span>
+              <span class="nx" style="color:var(--attention);">不是 git 仓库 —— worktree 隔离不可用，接入前需先 <span class="mono">git init</span></span>
+              <span class="pr"><span class="snap" style="color:var(--faint);">—</span></span>
+              <span class="act">接入</span>
+            </div>
+            <div class="row">
+              <span class="who"><span class="dot idle"></span><b>xinya-backend</b><span class="envtag">Local Windows</span></span>
+              <span class="nx" style="color:var(--attention);">不是 git 仓库 —— 同上</span>
+              <span class="pr"><span class="snap" style="color:var(--faint);">—</span></span>
+              <span class="act">接入</span>
+            </div>
+            <div class="row">
+              <span class="who"><span class="dot idle"></span><b>dual-lan-network</b><span class="envtag">另一台机器</span></span>
+              <span class="nx">已完结，留档</span>
+              <span class="pr"><span class="snap" style="color:var(--faint);">—</span></span>
+              <span class="act off">环境未连接</span>
+            </div>
+            <div class="row">
+              <span class="who"><span class="dot idle"></span><b>malion-ddrive-loss</b><span class="envtag">另一台机器</span></span>
+              <span class="nx">已完结，留档</span>
+              <span class="pr"><span class="snap" style="color:var(--faint);">—</span></span>
+              <span class="act off">环境未连接</span>
+            </div>
+          </div>
+        </details>
+
+        <div class="panel">
+          <header><span class="lbl">卡住 / 需要你</span><span class="count">跨全部项目 · 6 项</span></header>
+          <div>
+            <div class="blocked"><span class="dot failed"></span><p class="txt">32 个未提交改动躺了 5 个月，没有记录说明它们是什么<em>最危险的那种：既不能提交也不敢删</em></p><span class="proj">mind_child_app</span></div>
+            <div class="blocked"><span class="dot attention"></span><p class="txt">3 个 issue 都是「别人 clone 下来跑不起来」<em>#3 Node 20 装不上 · #4 pnpm 10 构建配置冲突 · #5 dev-ui 硬编码 8000 端口</em></p><span class="proj">Agora</span></div>
+            <div class="blocked"><span class="dot attention"></span><p class="txt">PR #2 «ci: add GitHub Actions» 开着没动<em>已 3 个月 21 天</em></p><span class="proj">Agora</span></div>
+            <div class="blocked"><span class="dot attention"></span><p class="txt">无域名 → 无 HTTPS，后台明文弱口令<em>三件事绑在一起，等域名</em></p><span class="proj">kimono</span></div>
+            <div class="blocked"><span class="dot idle"></span><p class="txt">两个项目不是 git 仓库，worktree 隔离用不了<em>接入前需 git init</em></p><span class="proj">opportunity_agent · xinya-backend</span></div>
+            <div class="blocked"><span class="dot idle"></span><p class="txt">3 个项目在另一台机器上，此环境未连接<em>连上后才能读它们的状态</em></p><span class="proj">另一台机器</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="notes">
+      <h4>这一屏</h4>
+      <ul>
+        <li><span class="k you">你定的</span><span><b>10+ 项目怎么表现 → 三档。</b>主推最多 3 张大卡（第 4 个在下面一行，一键换上来）；在推进中是紧凑行；休眠折叠成一行。<b>上限 3 是故意的</b>——4 张大卡等于没有重点，那正是这一屏要消灭的状态。全部项目的库存视图另开「项目」页：Today 回答「今天推什么」，项目页回答「我都有什么」。</span></li>
+        <li><span class="k you">你定的</span><span><b>进度 = 进度快照 + 百分比。</b>数据源就是 RESUME 进度快照的 ✅/🔵/⬜ 计数。条子两段：实心 ✅、半透明 🔵。<b>百分比只报 ✅</b>——🔵 不折算成半分，「做了一半」不可度量，一折算就开始骗自己。没有快照的项目（mind_child_app）<b>留空不编数字</b>。</span></li>
+        <li><span class="k cut">砍掉</span><span><b>「换个 agent」按钮。</b>你这一问点出我自己的矛盾：设计原则写着「Agent 在 Run 层选」，却在 Today 放了选 agent 的按钮——而这时你还不知道下一步要干什么。换成「先看看这个项目」（进工作台但不起 Run），执行者留到派活那一刻再选。</span></li>
+        <li><span class="k me">我定的</span><span><b>「卡住 / 需要你」不按项目分组。</b>阻塞要一次扫完，按项目切开就看不全了。所以它是跨项目的一张单子，右侧标注来源。</span></li>
+        <li><span class="k open">新发现</span><span><b>mind_child_app 那 32 个未提交改动是真的</b>（最后提交 2026-03-09）。这类「工作树里躺着没落地的东西、且无记录」是 Agora 最该抓的信号之一——比任何百分比都有用。</span></li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ══ SCREEN 2 ══ -->
+  <section class="screen" id="s2" hidden="">
+    <div class="win">
+      <div class="winbar">
+        <span class="dots"><i></i><i></i><i></i></span>
+        <span class="title">Agora</span>
+        <span class="path mono">D:\Projects\Agora</span>
+        <span class="right">
+          <span><span class="dot verified"></span> Local Windows</span>
+          <span class="mono">main 8be8922</span>
+        </span>
+      </div>
+
+      <div class="ws">
+        <nav class="rail">
+          <section>
+            <span class="lbl">项目 · Agora</span>
+            <span class="navitem">概览</span>
+            <span class="navitem on">运行 <span class="tail">2</span></span>
+            <span class="navitem">目标与需求</span>
+            <span class="navitem">变更 CR <span class="tail">4</span></span>
+            <span class="navitem">决策 ADR <span class="tail">1</span></span>
+            <span class="navitem">已知缺陷 <span class="tail">5</span></span>
+            <span class="navitem">技能 <span class="tail">3</span></span>
+            <span class="navitem">文件</span>
+          </section>
+          <hr class="hr">
+          <section>
+            <span class="lbl">执行者</span>
+            <div class="sysrow"><span class="sq codex"></span>Codex<span class="tail">默认</span></div>
+            <div class="sysrow"><span class="sq claude"></span>Claude Code<span class="tail">备选</span></div>
+            <div class="sysrow"><span class="sq kiro"></span>Kiro CLI<span class="tail">备选</span></div>
+          </section>
+          <hr class="hr">
+          <section>
+            <span class="lbl">环境</span>
+            <div class="sysrow"><span class="dot verified"></span>Local Windows<span class="tail">当前</span></div>
+            <div class="sysrow"><span class="dot verified"></span>kimono VPS<span class="tail">在线</span></div>
+            <div class="sysrow"><span class="dot idle"></span>另一台机器<span class="tail">未连接</span></div>
+          </section>
+        </nav>
+
+        <div class="center">
+          <div class="taskhead">
+            <p class="crumb">Agora / W0 证伪切片 /</p>
+            <h3>W0(b) 单项目续接闭环</h3>
+            <p style="font-size:13px;color:var(--dim);">读某任务的 RESUME → 起一个 Run → 看到真实输出与改动文件 → 写回进度快照 → 次日打开显示昨天那一步。</p>
+            <div class="factgrid">
+              <div class="fact"><span class="lbl">状态</span><span class="v"><span class="pill running">进行中</span></span></div>
+              <div class="fact"><span class="lbl">完成的定义</span><span class="v small">次日打开，Resume Brief 显示的就是昨天最后那一步</span></div>
+              <div class="fact"><span class="lbl">不能做</span><span class="v small">不碰 orchestration/（45k 行冻结区）</span></div>
+              <div class="fact"><span class="lbl">依据</span><span class="v small mono">adr/0001 · D-1</span></div>
+            </div>
+          </div>
+
+          <div class="stream">
+            <!-- worker run with nested children -->
+            <article class="runcard">
+              <header>
+                <span class="agent-chip"><span class="sq codex"></span>Codex</span>
+                <span class="rid mono">run 4c1a · exec resume a3f0…c41d</span>
+                <span class="pill verified">exit 0</span>
+                <span class="time">今天 09:41 · 3m 12s</span>
+              </header>
+              <p class="prompt"><span class="caret">›</span><span>给 ExecutionRun 加不可变交付物快照：Run 结束时记录文件清单 + 哈希，读取时不再现算 git diff（修 D-1）。</span></p>
+              <div class="term b"><span class="d">$ codex exec resume a3f0c41d --sandbox workspace-write</span>
+<span class="cy">›</span> 读取 backend/agora/execution/deliverables.py
+<span class="cy">›</span> 确认 list_changes() 每次请求都跑 git status，无持久化
+<span class="cy">›</span> 在 finish() 时快照文件清单与 blob 哈希，写入 run 记录
+<span class="cy">›</span> get_run_deliverables 改读快照，worktree 只在快照缺失时兜底
+<span class="cy">›</span> 写入 backend/tests/test_deliverable_snapshot.py（6 个用例）
+
+<span class="d">$ pytest tests/test_deliverable_snapshot.py -q</span>
+......                                                   [100%]
+<span class="ok">6 passed in 0.94s</span></div>
+              <div class="files">
+                <div class="frow"><span class="mk mod">M</span><span class="mono">backend/agora/execution/deliverables.py</span><span class="open">查看</span></div>
+                <div class="frow"><span class="mk mod">M</span><span class="mono">backend/agora/execution/store.py</span><span class="open">查看</span></div>
+                <div class="frow"><span class="mk add">A</span><span class="mono">backend/tests/test_deliverable_snapshot.py</span><span class="open">查看</span></div>
+              </div>
+
+              <!-- nested: review + retry -->
+              <div class="kids">
+                <div class="kid rev">
+                  <header>
+                    <span class="agent-chip"><span class="sq claude"></span>Claude Code</span>
+                    <span>复核</span>
+                    <span class="why mono">reviews run 4c1a</span>
+                    <span class="pill attention">1 条待办</span>
+                    <span class="time">09:47 · 1m 48s</span>
+                  </header>
+                  <div class="body">
+                    <div class="term"><span class="warn">›</span> 快照缺失时回退现算 git diff —— 旧 Run 仍会显示错误的文件列表，需要显式标注「无快照」而不是静默兜底</div>
+                  </div>
+                </div>
+                <div class="kid retry">
+                  <header>
+                    <span class="agent-chip"><span class="sq codex"></span>Codex</span>
+                    <span>重试 1</span>
+                    <span class="why mono">retries run 4c18 · 首次超时</span>
+                    <span class="pill verified">exit 0</span>
+                    <span class="time">09:38 · 42s</span>
+                  </header>
+                  <div class="body"><p>首次调用 600s 超时被结算为 timed_out；本次成功。原 Run 保留在记录里，不覆盖。</p></div>
+                </div>
+              </div>
+
+              <div class="runfoot">
+                <span>worktree <span class="mono">agora/codex</span></span>
+                <span>分支 <span class="mono">main</span></span>
+                <span>未提交</span>
+                <span>子 Run 2 个（1 复核 · 1 重试）</span>
+              </div>
+            </article>
+
+            <article class="runcard">
+              <header>
+                <span class="agent-chip"><span class="sq codex"></span>Codex</span>
+                <span class="rid mono">run 4c15</span>
+                <span class="pill verified">exit 0</span>
+                <span class="time">昨天 23:12 · 5m 04s</span>
+              </header>
+              <p class="prompt"><span class="caret">›</span><span>探测三家 agent CLI 的 resume 能力，输出可重跑的能力矩阵脚本。</span></p>
+              <div class="runfoot"><span>产出 <span class="mono">scripts/probe-agent-caps.sh</span></span><span>无子 Run</span></div>
+            </article>
+          </div>
+
+          <div class="msgbox">
+            <span class="ph">写点什么记进时间线，或者派给某个 agent…</span>
+            <span class="pickers">
+              <span class="picker"><span class="sq codex"></span>Codex ▾</span>
+              <span class="picker"><span class="dot verified"></span>Local ▾</span>
+            </span>
+            <span class="send">派活</span>
+          </div>
+        </div>
+
+        <aside class="side">
+          <div class="seg">
+            <button class="segbtn" aria-pressed="false" data-p="live">Run 跑着</button>
+            <button class="segbtn" aria-pressed="true" data-p="rest">Run 结束</button>
+          </div>
+          <p class="segnote">右栏跟着 Run 状态走：跑的时候你要看它在干什么，不跑的时候你要看结论和能不能提交。点上面两个按钮切换看看。</p>
+
+          <div class="sidepane" id="p-rest">
+            <section>
+              <span class="lbl">本次改动</span>
+              <div class="srow"><span class="mk mod">M</span><span class="nm mono">deliverables.py</span><span class="tail">+58 −11</span></div>
+              <div class="srow"><span class="mk mod">M</span><span class="nm mono">store.py</span><span class="tail">+24 −2</span></div>
+              <div class="srow"><span class="mk add">A</span><span class="nm mono">test_deliverable…</span><span class="tail">+112</span></div>
+            </section>
+            <hr class="hr">
+            <section>
+              <span class="lbl">提交门禁</span>
+              <div class="srow"><span class="dot verified"></span>后端测试<span class="tail">798 / 798</span></div>
+              <div class="srow"><span class="dot verified"></span>tsc + build<span class="tail">通过</span></div>
+              <div class="srow"><span class="dot attention"></span>codex review<span class="tail">1 条未 triage</span></div>
+              <div class="srow"><span class="dot idle"></span>可以提交<span class="tail">否</span></div>
+            </section>
+            <hr class="hr">
+            <section>
+              <span class="lbl">这一步在改的缺陷</span>
+              <div class="srow" style="align-items:flex-start;"><span class="dot running" style="margin-top:6px;"></span><span class="nm" style="white-space:normal;">D-1 历史 Run 的交付物是现算的</span></div>
+            </section>
+          </div>
+
+          <div class="sidepane" id="p-live" hidden="">
+            <div class="livewrap">
+              <div class="livehead"><span class="blink"></span><span>run 4c1c 运行中</span><span class="tail">2m 07s</span></div>
+              <div class="term" style="border-radius:6px; max-height:340px;"><span class="d">$ codex exec --sandbox workspace-write</span>
+<span class="cy">›</span> 读取 store.py schema
+<span class="cy">›</span> 迁移：execution_runs 增列
+<span class="d">    deliverable_snapshot TEXT</span>
+<span class="cy">›</span> 回填现有行为 NULL
+<span class="cy">›</span> 改 finish() 落快照
+<span class="cy">›</span> 跑 pytest tests/test_execution.py
+<span class="d">    ........................</span>
+<span class="ok">    24 passed</span>
+<span class="cy">›</span> 跑 pytest tests/test_workspaces.py
+<span class="d">    ..............</span>
+<span class="cy">▌</span></div>
+              <div class="livehead" style="padding-top:9px;"><span>只读 · Codex 支持双向审批</span><span class="tail">停止</span></div>
+            </div>
+          </div>
+        </aside>
+      </div>
+    </div>
+
+    <div class="notes">
+      <h4>这一屏</h4>
+      <ul>
+        <li><span class="k me">我定的</span><span><b>右栏两态，不是固定内容。</b>Run 跑着 → 整块换成实时终端（live-terminal 提案的 P1/P2）；Run 结束 → 改动 + 提交门禁。这两组信息天然互斥地被需要，所以不用在「挤」和「砍」之间选。<b>CR / ADR 移回左栏</b>——它们是项目级信息，不该常驻在任务级的右栏，而且左栏本来就有入口，是重复。</span></li>
+        <li><span class="k me">我定的</span><span><b>Run 之间不画连线，用嵌套。</b>连线会很快变成面条图（一个 worker 可能被复核、失败重试、再复核）。而关系数据本来就有：<span class="mono">reviews_run_id</span> 明确指向被复核的 Run。所以复核和重试<b>缩进挂在它们所属的 worker Run 下面</b>，顶层时间线只排 worker。这样读起来是「今天做了 2 件事」，不是「发生了 5 个事件」——跟「原语是 Run 不是聊天」同一个道理：<b>按工作单元排，不按进程启动次数排</b>。</span></li>
+        <li><span class="k me">我定的</span><span><b>执行者和环境在派活那一刻选</b>（底部消息框旁的两个下拉），不在导航里，也不在 Today 里。</span></li>
+        <li><span class="k open">留意</span><span>左栏多了一项<b>「已知缺陷 5」</b>。D-1~D-5 不该只活在 RESUME 的文字里——它们是这个项目的真实负债，值得在界面上一直可见。</span></li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ══ SCREEN 3 ══ -->
+  <section class="screen" id="s3" hidden="">
+    <div class="win">
+      <div class="winbar">
+        <span class="dots"><i></i><i></i><i></i></span>
+        <span class="title">Agora</span>
+        <span class="path">环境</span>
+        <span class="right"><span>3 个环境 · 1 个在跑 · 1 个未连接</span></span>
+      </div>
+
+      <div class="envwrap">
+        <div class="envcard">
+          <header>
+            <span class="dot verified"></span>
+            <h4>Local Windows</h4>
+            <span class="addr mono">D:\ · 本机</span>
+            <span class="st"><span class="pill verified">当前</span></span>
+          </header>
+          <div class="envbody">
+            <div class="envstats">
+              <div class="statrow"><span class="k">项目</span><span class="val">5（2 个非 git）</span></div>
+              <div class="statrow"><span class="k">Agent</span><span class="val mono">codex 0.149.1<br>claude 2.1.246<br>kiro 2.19.1</span></div>
+              <div class="statrow"><span class="k">worktree</span><span class="val">2 个已开</span></div>
+              <div class="statrow"><span class="k">能力矩阵</span><span class="val">探测于 08-27 09:2x</span></div>
+            </div>
+            <div class="envruns">
+              <div class="envproj"><span class="proj">Agora</span><span class="what">W0(b) 交付物快照</span><span class="agent-chip"><span class="sq codex"></span>Codex</span><span class="st"><span class="pill running">运行中</span></span></div>
+              <div class="envproj"><span class="proj">kimono</span><span class="what">工作树干净</span><span class="st"><span class="pill idle">空闲</span></span></div>
+              <div class="envproj"><span class="proj">mind_child_app</span><span class="what">32 个未提交改动</span><span class="st"><span class="pill failed">需处理</span></span></div>
+              <div class="envproj"><span class="proj">claude-workspace</span><span class="what">已同步</span><span class="st"><span class="pill idle">空闲</span></span></div>
+              <div class="envproj"><span class="what" style="color:var(--attention);">opportunity_agent · xinya-backend 不是 git 仓库 → worktree 隔离不可用</span></div>
+            </div>
+          </div>
+          <p class="backlog">Backlog：GPU / 内存实时占用暂不显示（需常驻探针）。等真出现「哪台机器现在空」的判断需求再做。</p>
+        </div>
+
+        <div class="envcard">
+          <header>
+            <span class="dot verified"></span>
+            <h4>kimono VPS</h4>
+            <span class="addr mono">ubuntu@133.18.145.18 · 日本</span>
+            <span class="st"><span class="pill verified">在线</span></span>
+          </header>
+          <div class="envbody">
+            <div class="envstats">
+              <div class="statrow"><span class="k">连接</span><span class="val mono">ssh -i ~/.ssh/kimono-server.key</span></div>
+              <div class="statrow"><span class="k">规格</span><span class="val">2 vCPU · 1.9 GB + 8.8 GB swap</span></div>
+              <div class="statrow"><span class="k">磁盘</span><span class="val">194 GB · 已用 8%</span></div>
+              <div class="statrow"><span class="k">服务</span><span class="val mono">pm2 kimono · Caddy :80 → :3000</span></div>
+              <div class="statrow"><span class="k">Agent</span><span class="val" style="color:var(--attention);">未安装 —— 派活前需先装 CLI</span></div>
+            </div>
+            <div class="envruns">
+              <p class="lbl" style="padding:0;">注册在此环境的远端项目</p>
+              <div class="envproj"><span class="proj">kimono</span><span class="what mono">/home/ubuntu/kimono</span><span class="st"><span class="pill verified">不下载到本地</span></span></div>
+              <p class="envempty">代码留在服务器上，Run 也在服务器上跑，输出流回本机。worktree 隔离由 Agora 在远端执行（`ssh git worktree add`）。</p>
+              <div class="envproj"><span class="what" style="color:var(--attention);">⚠ 无 HTTPS · 后台弱口令 · 等域名</span></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="envcard">
+          <header>
+            <span class="dot idle"></span>
+            <h4>另一台机器</h4>
+            <span class="addr">pleasanter-workflow · dual-lan-network · malion-ddrive-loss 所在</span>
+            <span class="st"><span class="pill idle">未连接</span></span>
+          </header>
+          <div class="envbody">
+            <div class="envstats">
+              <div class="statrow"><span class="k">已知</span><span class="val">3 个项目（来自 MEMORY 记录）</span></div>
+              <div class="statrow"><span class="k">状态</span><span class="val">无法读取 —— 未配置连接</span></div>
+            </div>
+            <div class="envruns">
+              <p class="envempty">Agora 知道这些项目存在（工作区记忆里有），但读不到它们的真实状态。连上之后它们才会出现在 Today 的推进列表里。<b style="color:var(--text);font-weight:600;">「知道存在但读不到」和「不存在」必须显示成两回事</b>——否则你会以为它们不见了。</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="notes">
+      <h4>这一屏</h4>
+      <ul>
+        <li><span class="k you">你定的</span><span><b>远端项目不下载到本地。</b>代码留在服务器，Run 在服务器跑，输出流回来。<b>有个架构后果要提前认领</b>：worktree 隔离必须能在远端执行。<span class="mono">workspaces/provisioner.py</span> 现在是本地 subprocess 调 git；要支持远端，得把「执行 git 命令」抽象成 Environment 的能力（本地 = subprocess，远端 = ssh exec）。这已写进 <b>W2「Environment 抽象」的验收标准</b>，不留到 W3 才发现。另外：agent CLI 必须装在远端那台机器上——kimono VPS 现在还没装。</span></li>
+        <li><span class="k you">你定的</span><span><b>GPU / 内存暂不显示</b>，降级为 backlog（卡片底部那一行）。理由记下来了：需要常驻探针，而目前没有「哪台机器现在空」这个真实判断需求。</span></li>
+        <li><span class="k me">我定的</span><span><b>「知道存在但读不到」要和「不存在」显示成两回事。</b>另一台机器上那 3 个项目在 MEMORY 里有记录，但此环境读不到状态。做成灰色未连接卡片，而不是干脆不显示——否则某天你会以为它们丢了。</span></li>
+        <li><span class="k open">新发现</span><span><b>能力矩阵带探测时间戳。</b>W0(a) 的教训：写死的能力矩阵 7 个月就会反转。所以这里显示「探测于 08-27」，且必须能一键重跑。</span></li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ══ SCREEN 4 ══ -->
+  <section class="screen" id="s4" hidden="">
+    <div class="win">
+      <div class="winbar">
+        <span class="dots"><i></i><i></i><i></i></span>
+        <span class="title">Agora</span>
+        <span class="path">技能库</span>
+        <span class="right"><span>18 条 · 源格式 Claude skill</span></span>
+      </div>
+
+      <div class="skwrap">
+        <div class="tiers">
+          <div class="tier"><span class="t"><span class="dot idle"></span>项目技能</span><span class="n">3</span><span class="c">只在本项目可见。多数会停在这一层，这是对的。</span></div>
+          <div class="tier cur"><span class="t"><span class="dot verified"></span>工作台技能</span><span class="n">18</span><span class="c">所有项目可用。晋升要过适用性测试，不自动提取。</span></div>
+          <div class="tier"><span class="t"><span class="dot idle"></span>GitHub Registry</span><span class="n">0</span><span class="c">默认一条都不上。上传是逐条的显式动作。</span></div>
+        </div>
+
+        <div class="gate">
+          <div class="steps">
+            <b>公开一条技能</b><span class="arr">→</span><span>它本来就不含内网信息？</span><span class="arr">→</span><span>机械闸（IP / 主机名 / 邮箱 / <span class="mono">.local</span>·<span class="mono">.corp</span> / 公司名 / 人名）</span><span class="arr">→</span><span>看 diff 预览</span><span class="arr">→</span><b>上传</b>
+          </div>
+          <p class="test">判据一句话：<b>能不能把这条给一个完全不知道你公司在做什么的人看，他读完仍然不知道你公司在做什么？</b></p>
+        </div>
+
+        <div class="sktable">
+          <div class="skhead">
+            <span class="lbl">技能</span><span class="lbl">版本</span><span class="lbl">安装在</span><span class="lbl">最后更新</span><span class="lbl">适配</span><span class="lbl"></span>
+          </div>
+
+          <div class="skgroup"><span class="dot verified"></span>本来就干净，可直接公开<span class="tail">10 条 · 这里列 5</span></div>
+          <div class="skrow">
+            <span class="name"><b>coding-agent-cli-headless-resume</b><span>程序驱动三家 CLI 并跨调用续接会话</span></span>
+            <span class="ver">1.0.0</span><span class="inst">1 个项目</span><span class="upd">08-27</span>
+            <span class="adapters"><span class="ad ok">Claude</span><span class="ad pend">Codex</span><span class="ad pend">Kiro</span></span>
+            <span class="act">公开</span>
+          </div>
+          <div class="skrow">
+            <span class="name"><b>japanese-pdf-rendering</b><span>reportlab CID 字体渲染日文 PDF，不嵌字体</span></span>
+            <span class="ver">1.0.0</span><span class="inst">2 个项目</span><span class="upd">06-16</span>
+            <span class="adapters"><span class="ad ok">Claude</span><span class="ad pend">Codex</span><span class="ad pend">Kiro</span></span>
+            <span class="act">公开</span>
+          </div>
+          <div class="skrow">
+            <span class="name"><b>excel-com-rpc-rejected-retry</b><span>Excel COM 概率性崩样式 = RPC_E_CALL_REJECTED</span></span>
+            <span class="ver">1.1.0</span><span class="inst">1 个项目</span><span class="upd">07-02</span>
+            <span class="adapters"><span class="ad ok">Claude</span><span class="ad pend">Codex</span><span class="ad pend">Kiro</span></span>
+            <span class="act">公开</span>
+          </div>
+          <div class="skrow">
+            <span class="name"><b>payload-cms</b><span>三语 seed 幂等 / SQLite dev-push 崩溃修法</span></span>
+            <span class="ver">1.2.0</span><span class="inst">1 个项目</span><span class="upd">08-24</span>
+            <span class="adapters"><span class="ad ok">Claude</span><span class="ad pend">Codex</span><span class="ad pend">Kiro</span></span>
+            <span class="act">公开</span>
+          </div>
+          <div class="skrow">
+            <span class="name"><b>nextjs-react19-server-action-forms</b><span>校验失败保值：select 必须受控 + 显式 UTC 落库</span></span>
+            <span class="ver">1.0.0</span><span class="inst">1 个项目</span><span class="upd">08-18</span>
+            <span class="adapters"><span class="ad ok">Claude</span><span class="ad pend">Codex</span><span class="ad pend">Kiro</span></span>
+            <span class="act">公开</span>
+          </div>
+
+          <div class="skgroup"><span class="dot attention"></span>含内网信息 —— 留在本地，不进公开流程<span class="tail">3 条</span></div>
+          <div class="skrow">
+            <span class="name"><b>pleasanter-api</b><span>社内 Pleasanter · KeyValues / 附件孤儿 / 履歴 web hack</span></span>
+            <span class="ver">2.0.0</span><span class="inst">2 个项目</span><span class="upd">06-16</span>
+            <span class="adapters"><span class="ad ok">Claude</span><span class="ad pend">Codex</span><span class="ad pend">Kiro</span></span>
+            <span class="act off">仅本地</span>
+          </div>
+          <div class="skrow">
+            <span class="name"><b>sharp-intranet-sso</b><span>企业内网 IP 认证 + TLS 老协议参数</span></span>
+            <span class="ver">1.0.0</span><span class="inst">2 个项目</span><span class="upd">05-30</span>
+            <span class="adapters"><span class="ad ok">Claude</span><span class="ad pend">Codex</span><span class="ad pend">Kiro</span></span>
+            <span class="act off">仅本地</span>
+          </div>
+          <div class="skrow">
+            <span class="name"><b>azure-openai-httpx-translate</b><span>社内禁外网时的翻译链路（部分内容含内网端点）</span></span>
+            <span class="ver">1.3.0</span><span class="inst">2 个项目</span><span class="upd">07-20</span>
+            <span class="adapters"><span class="ad ok">Claude</span><span class="ad pend">Codex</span><span class="ad pend">Kiro</span></span>
+            <span class="act off">仅本地</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="notes">
+      <h4>这一屏</h4>
+      <ul>
+        <li><span class="k me">我的建议</span><span><b>脱敏这件事，先分类，别指望脱敏。</b>机械扫描只能抓「长得像敏感信息」的东西——IP、主机名、邮箱、公司名。它<b>抓不到真正危险的那类：业务流程本身</b>。「回付文書選択 → 履歴ページに追記 → チケットに書き戻す」这段里一个 IP 都没有，泄露的却是内部流程。<br>更关键：<b>一条需要脱敏才能公开的技能，脱敏之后往往也没剩下什么价值。</b>你现在 18 条本来就天然分成两堆（上表已分组）——干净的 10 条直接可上，带内网信息的 3 条本来就该留本地。所以机制是：默认不上传 → 写的时候就分层 → 机械闸当最后一道 → 上传前必看 diff 预览。</span></li>
+        <li><span class="k me">我的建议</span><span><b>「被用 N 个项目」不做，换成「安装在 N 个」+「最后更新」。</b>两个理由：① <b>拿不到真信号</b>——Claude 的 skill 由模型自主决定是否加载（渐进披露），Agora 在进程外观测不到；你能记的只有「我装了哪些」，那是「可用」不是「被用」。② <b>假精度比没有更糟</b>——一个「被 5 个项目使用」的数字会让你以为它重要，而它可能一次都没真正加载过。<br>替代信号是 Agora 自己就有的事实、不会撒谎：「安装在 3 个项目」反映你的判断，「最后更新 08-27」反映它还活不活着。真需要使用率那天，可以从 Claude Code 的 <span class="mono">session.jsonl</span> 里挖——那是后话。</span></li>
+        <li><span class="k me">已定</span><span><b>Claude skill 格式是唯一真源，Codex / Kiro 是单向编译产物。</b>三家加载语义根本不同，最小公约数格式三边都不好用。改一次，重新编译两份。</span></li>
+        <li><span class="k cut">砍掉</span><span><b>不做「检测到重复解法 → 自动生成 skill」。</b>v0.1-0.4 的 <span class="mono">skills/extractor.py</span> 就是这个，已随议会一起删除。这是实证，不是猜测。</span></li>
+      </ul>
+    </div>
+  </section>
+
+  <footer class="pf">
+    <p>数据取自本机实际状态（2026-08-27）：9 个项目的路径 / 分支 / 最后提交 / 未提交改动数、agent CLI 实测版本、kimono 服务器规格与部署形态、lessons 清单与分组、CR·ADR·D 编号、GitHub issue 与 PR 状态。另一台机器上的 3 个项目来自工作区 MEMORY 记录。<b>Run 的终端输出、进度快照计数、技能版本号是编的</b>——用来展示形态。</p>
+    <p>相关记录 <span class="mono">tasks/agora/RESUME.md</span> · <span class="mono">tasks/agora/adr/0001</span> · <span class="mono">lessons/coding-agent-cli-headless-resume.md</span></p>
+  </footer>
+</div>
+
+<script>
+(function(){
+  var tabs = document.querySelectorAll('.tab');
+  tabs.forEach(function(t){
+    t.addEventListener('click', function(){
+      tabs.forEach(function(x){ x.setAttribute('aria-selected','false'); });
+      t.setAttribute('aria-selected','true');
+      document.querySelectorAll('.screen').forEach(function(s){ s.hidden = true; });
+      var target = document.getElementById(t.dataset.t);
+      if (target) { target.hidden = false; }
+      window.scrollTo(0, 0);
+    });
+  });
+  document.querySelectorAll('.choice').forEach(function(c){
+    c.addEventListener('click', function(){
+      var on = c.getAttribute('aria-pressed') === 'true';
+      c.setAttribute('aria-pressed', on ? 'false' : 'true');
+    });
+  });
+  var segs = document.querySelectorAll('.segbtn');
+  segs.forEach(function(b){
+    b.addEventListener('click', function(){
+      segs.forEach(function(x){ x.setAttribute('aria-pressed','false'); });
+      b.setAttribute('aria-pressed','true');
+      var live = document.getElementById('p-live');
+      var rest = document.getElementById('p-rest');
+      var showLive = b.dataset.p === 'live';
+      if (live) { live.hidden = !showLive; }
+      if (rest) { rest.hidden = showLive; }
+    });
+  });
+})();
+</script>
+
+</body></html>
