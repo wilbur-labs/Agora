@@ -16,6 +16,7 @@ from agora.config.settings import resolve_control_plane_db_path
 from agora.execution.models import CreateRunRequest
 from agora.execution.store import ExecutionStore
 from agora.projects import ProjectRegistry
+from agora.projects.registry import TodayFocusFullError
 from agora.projects import store as store_module
 from agora.projects.importer import (
     ProjectImportError,
@@ -23,6 +24,7 @@ from agora.projects.importer import (
     read_project_yaml,
 )
 from agora.projects.store import (
+    SETTING_TODAY_FOCUS,
     ORIGIN_AGORA,
     ORIGIN_YAML_IMPORT,
     ProjectStore,
@@ -722,3 +724,128 @@ def test_repairing_a_stored_pointer_that_names_nothing_says_so(tmp_path, capsys)
     assert repaired.store.exists(repaired.current_project_id())
     assert "vanished" in message
     assert repaired.current_project_id() in message
+
+# --- Today's top tier (W9, D-1) -------------------------------------------------
+
+
+def test_promoting_records_the_choice_and_keeps_its_order(tmp_path):
+    _write_yaml(tmp_path)
+    registry = _registry(tmp_path)
+
+    assert registry.today_focus().project_ids == []
+    registry.promote_to_focus("beta")
+    focus = registry.promote_to_focus("alpha")
+
+    # Promotion order, not registry order: the person chose b first, and the screen puts
+    # the cards in the order they were chosen.
+    assert focus.project_ids == ["beta", "alpha"]
+    assert focus.limit == 3
+    assert focus.is_full is False
+
+
+def test_promoting_twice_is_idempotent(tmp_path):
+    _write_yaml(tmp_path)
+    registry = _registry(tmp_path)
+
+    registry.promote_to_focus("alpha")
+    focus = registry.promote_to_focus("alpha")
+    assert focus.project_ids == ["alpha"]
+
+
+def test_a_full_tier_refuses_rather_than_evicting(tmp_path):
+    # The design's wording is a rule, not a hint: "3/3 已满 —— 第 4 个要上来得先放下一个".
+    # Evicting the oldest to make room would overwrite the very choice this setting
+    # exists to record, and do it without telling anyone.
+    _write_yaml(tmp_path)
+    registry = _registry(tmp_path)
+    registry.create_project("gamma")
+    registry.create_project("delta")
+    for pid in ("alpha", "beta", "gamma"):
+        registry.promote_to_focus(pid)
+
+    with pytest.raises(TodayFocusFullError) as excinfo:
+        registry.promote_to_focus("delta")
+
+    assert excinfo.value.limit == 3
+    # And nothing moved: the refusal is total, not partial.
+    assert registry.today_focus().project_ids == ["alpha", "beta", "gamma"]
+
+
+def test_promoting_an_unknown_project_is_refused(tmp_path):
+    # Otherwise the list would hold an id that today_focus immediately reports as
+    # unresolved — a write that creates its own inconsistency.
+    _write_yaml(tmp_path)
+    registry = _registry(tmp_path)
+    with pytest.raises(KeyError):
+        registry.promote_to_focus("no-such-project")
+    assert registry.today_focus().project_ids == []
+
+
+def test_an_id_that_no_longer_resolves_is_reported_not_silently_dropped(tmp_path):
+    # How this state arises: not through the promote path, which refuses unknown ids, and
+    # not through deletion, which this API does not offer. The setting holds ids with no
+    # foreign key to projects, so an import that changes the project set — or any write
+    # that does not go through promote — can leave one behind.
+    #
+    # Reporting it is what keeps "3/3 full" from becoming "2/3" with nothing to explain
+    # why: the person would be shown a different number and given no way to learn that
+    # the list had changed rather than the limit.
+    _write_yaml(tmp_path)
+    registry = _registry(tmp_path)
+    registry.promote_to_focus("alpha")
+    registry.store.edit_setting_lines(
+        SETTING_TODAY_FOCUS, lambda current: [*current, "ghost"]
+    )
+
+    focus = registry.today_focus()
+    assert focus.project_ids == ["alpha"]
+    assert focus.unresolved_ids == ["ghost"]
+
+
+def test_demoting_accepts_an_id_that_no_longer_resolves(tmp_path):
+    # That is how a deleted project's leftover entry gets cleared. Refusing would leave
+    # it unremovable.
+    _write_yaml(tmp_path)
+    registry = _registry(tmp_path)
+    registry.store.edit_setting_lines(
+        SETTING_TODAY_FOCUS, lambda current: [*current, "ghost"]
+    )
+
+    focus = registry.demote_from_focus("ghost")
+    assert focus.project_ids == []
+    assert focus.unresolved_ids == []
+
+
+def test_the_choice_survives_a_new_registry_on_the_same_database(tmp_path):
+    # It is control-plane state, so it must outlive the process that set it — and it must
+    # not have been written into the projects being read (adr/0003 withholds that).
+    _write_yaml(tmp_path)
+    _registry(tmp_path).promote_to_focus("alpha")
+
+    assert _registry(tmp_path).today_focus().project_ids == ["alpha"]
+
+def test_an_unresolved_entry_still_holds_its_place(tmp_path):
+    # Promotion is a human trade-off, so an entry nobody can currently resolve is still a
+    # choice that was made, and it keeps its slot.
+    #
+    # Counting only the resolvable ones made the API contradict itself: two resolvable plus
+    # one unresolved reported is_full=false and then refused the next promotion with 409, so
+    # the screen would have offered a slot it did not have.
+    _write_yaml(tmp_path)
+    registry = _registry(tmp_path)
+    registry.promote_to_focus("alpha")
+    registry.promote_to_focus("beta")
+    registry.store.edit_setting_lines(
+        SETTING_TODAY_FOCUS, lambda current: [*current, "ghost"]
+    )
+
+    focus = registry.today_focus()
+    assert focus.project_ids == ["alpha", "beta"]
+    assert focus.unresolved_ids == ["ghost"]
+    assert focus.is_full is True, "the unresolved entry holds the third slot"
+
+    # And what is_full says is what promotion does -- that agreement is the point.
+    registry.create_project("gamma")
+    with pytest.raises(TodayFocusFullError):
+        registry.promote_to_focus("gamma")
+

@@ -26,6 +26,7 @@ from .models import (
     DEFAULT_REVIEWER_AGENT,
     DEFAULT_WORKER_AGENT,
     KNOWN_AGENTS,
+    TodayFocus,
     Project,
     validate_agents,
     validate_project_id,
@@ -34,7 +35,9 @@ from .store import (
     ORIGIN_AGORA,
     SETTING_LAST_IMPORT_ERROR,
     SETTING_PROJECTS_BASE,
+    SETTING_TODAY_FOCUS,
     SETTING_WORKSPACE_SOURCES,
+    TODAY_FOCUS_LIMIT,
     ProjectExistsError,
     ProjectStore,
 )
@@ -48,6 +51,19 @@ __all__ = [
     "ProjectImportSourceMissing",
     "ProjectRegistry",
 ]
+
+
+class TodayFocusFullError(RuntimeError):
+    """Raised when promoting would exceed the top tier's limit.
+
+    Its own type rather than a bool return: the caller has to tell the person which of
+    the two happened ("already there" versus "full, give something up first"), and a
+    bool cannot carry that difference.
+    """
+
+    def __init__(self, limit: int):
+        super().__init__(f"Today's focus already holds {limit} projects")
+        self.limit = limit
 
 
 class ProjectRegistry:
@@ -328,6 +344,72 @@ class ProjectRegistry:
         return removed
 
     # ------------------------------------------------------------------ writes
+
+    def today_focus(self) -> TodayFocus:
+        """The projects being pushed today, in promotion order.
+
+        Returns the ids that still resolve **and, separately, the ones that no longer
+        do**. A project can be deleted while it is promoted, and silently dropping it
+        would turn "3/3 已满" into "2/3" overnight with nothing to explain why — the
+        person would be told a different number and given no way to find out that the
+        list, not the limit, had changed. Reporting both lets the UI say which happened.
+        """
+        raw = self.store.get_setting(SETTING_TODAY_FOCUS)
+        ids = [] if not raw else [line.strip() for line in raw.splitlines() if line.strip()]
+        known = self.list_projects()
+        return TodayFocus(
+            project_ids=[pid for pid in ids if pid in known],
+            unresolved_ids=[pid for pid in ids if pid not in known],
+            limit=TODAY_FOCUS_LIMIT,
+        )
+
+    def promote_to_focus(self, project_id: str) -> TodayFocus:
+        """Add a project to today's top tier. Idempotent.
+
+        **Refuses when the tier is full** rather than evicting the oldest. The design's
+        wording is a rule — "3/3 已满 —— 第 4 个要上来得先放下一个" — and the reason it is a
+        rule is that the promotion is a human trade-off: quietly dropping one to make
+        room would overwrite the choice this setting exists to record. The caller is told
+        it is full and decides what to give up.
+
+        Raises KeyError for an unknown project: promoting something that cannot be shown
+        would put an id in the list that `today_focus` then reports as unresolved.
+        """
+        if project_id not in self.list_projects():
+            raise KeyError(project_id)
+
+        full = False
+
+        # One transaction, not read-then-write — same reason as workspace sources: two
+        # promotions starting from the same list would each write their own and the later
+        # commit would drop the other with no error. Here it would also mean the limit
+        # was checked against a list that was already stale, so a fourth card could get
+        # in past a rule that reads as absolute.
+        def add(current: list[str]) -> list[str]:
+            nonlocal full
+            if project_id in current:
+                return current
+            if len(current) >= TODAY_FOCUS_LIMIT:
+                full = True
+                return current
+            return [*current, project_id]
+
+        self.store.edit_setting_lines(SETTING_TODAY_FOCUS, add)
+        if full:
+            raise TodayFocusFullError(TODAY_FOCUS_LIMIT)
+        return self.today_focus()
+
+    def demote_from_focus(self, project_id: str) -> TodayFocus:
+        """Take a project out of today's top tier. Idempotent, and touches nothing else.
+
+        Accepts an id that no longer resolves on purpose: that is exactly how a deleted
+        project's leftover entry gets cleared, and refusing would leave it unremovable.
+        """
+        def drop(current: list[str]) -> list[str]:
+            return [line for line in current if line != project_id]
+
+        self.store.edit_setting_lines(SETTING_TODAY_FOCUS, drop)
+        return self.today_focus()
 
     def create_project(
         self,

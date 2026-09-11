@@ -46,7 +46,27 @@ SETTING_PROJECTS_BASE = "projects_base"
 #: Machine-local, like the projects root above: a path on this laptop means nothing
 #: on the AI server, so it must not travel.
 SETTING_WORKSPACE_SOURCES = "workspace_sources"
+#: The projects the person is pushing today — Today's top tier. Newline-separated
+#: project ids, in the order they were promoted.
+#:
+#: Control-plane state and not a project attribute, which is why it lives here rather
+#: than in a column on `projects`: it records *this user's* choice about today, not
+#: anything true of the project. It is also deliberately not written into the projects
+#: being read — those may be other people's repositories, and the Environment
+#: abstraction has no write capability on purpose (adr/0003).
+SETTING_TODAY_FOCUS = "today_focus"
+#: Newline-separated, which is safe only because `validate_project_id` allows letters,
+#: numbers, dashes and underscores and nothing else. Relaxing that validation would need
+#: this representation revisited first.
 SETTING_LAST_IMPORT_ERROR = "last_import_error"
+
+#: How many projects may be in Today's top tier at once.
+#:
+#: Three is a product decision, not a technical limit: "4 张大卡等于没有重点，那正是这一屏
+#: 要消灭的状态" — four big cards is the absence of focus, which is the state that screen
+#: exists to eliminate. Enforced rather than advisory, because the design's own wording
+#: ("3/3 已满 —— 第 4 个要上来得先放下一个") is a rule, not a hint.
+TODAY_FOCUS_LIMIT = 3
 
 
 class ProjectExistsError(ValueError):

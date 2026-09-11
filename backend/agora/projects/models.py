@@ -64,3 +64,30 @@ def validate_agents(worker_agent: str, reviewer_agent: str) -> None:
     for role, value in (("worker_agent", worker_agent), ("reviewer_agent", reviewer_agent)):
         if value not in KNOWN_AGENTS:
             raise ValueError(f"{role} must be one of: {', '.join(KNOWN_AGENTS)}")
+
+@dataclass(frozen=True)
+class TodayFocus:
+    """Which projects are being pushed today, and what could not be resolved.
+
+    `project_ids` is in promotion order and holds only ids that still exist.
+    `unresolved_ids` holds promoted ids whose project is gone — kept separate rather
+    than filtered away so a shrinking count can be explained instead of just observed.
+    `limit` travels with them because the UI states it ("3/3 已满"), and a limit read
+    from one place and rendered from another is how the two drift apart.
+    """
+
+    project_ids: list[str]
+    unresolved_ids: list[str]
+    limit: int
+
+    @property
+    def is_full(self) -> bool:
+        """Whether another project can be promoted.
+
+        Counts the unresolved ids too, because they hold their places: promotion is a
+        human choice and an entry nobody can currently resolve is still a choice that was
+        made. Excluding them made the API contradict itself -- two resolvable plus one
+        unresolved reported `is_full=false` and then refused the next promotion with 409,
+        so the screen would offer a slot it did not have.
+        """
+        return len(self.project_ids) + len(self.unresolved_ids) >= self.limit

@@ -34,6 +34,8 @@ from agora.orchestration.runtime_capabilities import (
     collect_native_runtime_capabilities,
 )
 from agora.projects import ProjectRegistry
+from agora.projects.models import TodayFocus
+from agora.projects.registry import TodayFocusFullError
 from agora.projects.workspace_tasks import (
     PROJECTS_UNREADABLE,
     ProjectRoots,
@@ -376,10 +378,22 @@ def list_projects(
     registry: ProjectRegistry = Depends(get_project_registry),
 ) -> dict[str, Any]:
     """Registered projects (independent of whether they have tasks yet)."""
+    focus = registry.today_focus()
     return {
         "current": registry.current_project_id(),
         "projects_base": str(registry.projects_base()),
         "import_status": registry.import_status(),
+        # Today's top tier, travelling with the list it refers to. Two requests would let
+        # the cards and the count disagree on screen for a moment, and the count is the
+        # thing the design states out loud ("3/3 已满").
+        "today_focus": {
+            "project_ids": focus.project_ids,
+            # Promoted ids that no longer resolve. Reported rather than filtered away, so
+            # a smaller count can be explained instead of merely observed.
+            "unresolved_ids": focus.unresolved_ids,
+            "limit": focus.limit,
+            "is_full": focus.is_full,
+        },
         "items": [
             {
                 "project_id": pid,
@@ -418,6 +432,52 @@ async def create_project(
     summary = _project_summary(project)
     summary["provisioning"] = await _provision_project_workspaces(registry, project)
     return summary
+
+
+@router.put("/projects/{project_id}/focus")
+def promote_project_to_today(
+    project_id: str,
+    registry: ProjectRegistry = Depends(get_project_registry),
+) -> dict[str, Any]:
+    """Promote a project into today's top tier. Idempotent.
+
+    409 when the tier is full: the design's rule is that the fourth card cannot come up
+    until something goes down ("3/3 已满 —— 第 4 个要上来得先放下一个"), so the server
+    refuses rather than evicting — evicting would overwrite the choice this records, and
+    do it silently. The response says what the limit is, so the client can state it.
+    """
+    try:
+        focus = registry.promote_to_focus(project_id)
+    except KeyError:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Unknown project_id {project_id}")
+    except TodayFocusFullError as exc:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            {"error": "today_focus_full", "limit": exc.limit},
+        )
+    return _focus_view(focus)
+
+
+@router.delete("/projects/{project_id}/focus")
+def demote_project_from_today(
+    project_id: str,
+    registry: ProjectRegistry = Depends(get_project_registry),
+) -> dict[str, Any]:
+    """Take a project out of today's top tier. Idempotent.
+
+    Accepts an id that no longer resolves: that is how a leftover entry is cleared, and
+    refusing would leave it stuck in the list.
+    """
+    return _focus_view(registry.demote_from_focus(project_id))
+
+
+def _focus_view(focus: TodayFocus) -> dict[str, Any]:
+    return {
+        "project_ids": focus.project_ids,
+        "unresolved_ids": focus.unresolved_ids,
+        "limit": focus.limit,
+        "is_full": focus.is_full,
+    }
 
 
 @router.put("/projects/{project_id}/agents")
