@@ -13,9 +13,7 @@ import {
   Languages,
   Moon,
   Network,
-  Plus,
   RefreshCw,
-  Search,
   Send,
   Settings,
   Sun,
@@ -29,6 +27,7 @@ import {
   createTask,
   fetchDelivery,
   fetchProjectDashboard,
+  fetchProjectDecisions,
   fetchTaskRecap,
   listOpenAttention,
   listProjects,
@@ -38,10 +37,10 @@ import {
   listWorkspaceSources,
   OPEN_ATTENTION_PAGE_LIMIT,
   type AttentionItem,
-  type AttentionKind,
   type Delivery,
   type NextAction,
   type ProjectDashboard,
+  type ProjectDecisions,
   type RecapItem,
   type TaskRecap,
   type RequirementSpec,
@@ -69,18 +68,28 @@ import { listAttention } from "@/lib/attention";
 import { mergeRunUpdates, type ContinueSeedFacts } from "@/lib/continue-run";
 import {
   RAIL_ATTENTION_NOTICE_KEY,
-  RAIL_ORDER,
   RAIL_STALE_NOTICE_KEY,
   railRunIsCurrent,
-  attentionReadIsComplete,
-  railGroupOf,
   railReadReport,
-  railSubtitleOf,
   settleRead,
   type AttentionReach,
-  type RailGroup,
   type RailStaleOrigin,
 } from "@/lib/rail-group";
+// The left column is project-level navigation now (mockup v2). Its resource counts are
+// capabilities rather than numbers: three of the eight resources have no read behind them
+// yet, and each has to say which kind of nothing that is.
+import { ProjectNav, type ProjectNavTask } from "@/components/project-nav";
+import {
+  NAV_DEFECTS_NO_SOURCE,
+  NAV_FILES_NO_READER,
+  NAV_SKILLS_UNBUILT,
+  NAV_UNREPORTED,
+  navFromCRLog,
+  navFromDecisions,
+  navReadFailed,
+  type NavCapability,
+} from "@/lib/nav-capability";
+import { crLogViewOf } from "@/lib/cr-log";
 import {
   TASK_ATTENTION_NOTICE_KEY,
   openGateCount,
@@ -154,22 +163,6 @@ import { Conversation } from "@/components/conversation";
 // task is the agent's; review is its own stage; terminal/verified is done. The
 // grouping itself — including the `unknown` group a capped attention read forces —
 // lives in lib/rail-group.ts so it can be tested without a DOM.
-const GROUP_DOT: Record<RailGroup, string> = {
-  needsYou: "bg-red-500",
-  unknown: "bg-amber-500",
-  running: "bg-blue-500",
-  review: "bg-violet-500",
-  done: "bg-emerald-500",
-};
-
-const NO_KINDS: ReadonlySet<AttentionKind> = new Set<AttentionKind>();
-
-// Best-effort activity time for ordering: TaskManifest.updated_at does not move
-// when events/runs are written, so fold in the latest run's timestamps.
-function activityOf(task: TaskManifest, run: RunSummary | null): string {
-  const candidates = [task.updated_at, run?.finished_at, run?.started_at, run?.queued_at].filter(Boolean) as string[];
-  return candidates.sort().at(-1) ?? task.updated_at;
-}
 
 const RUN_TONE: Record<RunState, string> = {
   queued: "bg-amber-500",
@@ -211,7 +204,6 @@ export default function WorkspacePage() {
   // whose read had failed that the 500-item limit had been reached. Starts
   // "pending": no read has settled yet, which is its own state and not a failure.
   const [attentionReach, setAttentionReach] = useState<AttentionReach>("pending");
-  const attentionComplete = attentionReadIsComplete(attentionReach);
   // The other reads of this same refresh that failed. Kept apart from
   // `attentionReach` because they are claims about different reads: a rejected run
   // or task list leaves the rail showing an older snapshot, which is worth saying,
@@ -236,7 +228,14 @@ export default function WorkspacePage() {
 
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [projectFilter, setProjectFilter] = useState("all");
-  const [query, setQuery] = useState("");
+  // The project resources the left column reports on. Their own reads, keyed to the
+  // project in context — the column may not show a count it never fetched, and a failed
+  // fetch has to stay distinguishable from a project that keeps none.
+  const [navDashboard, setNavDashboard] = useState<ProjectDashboard | null>(null);
+  const [navDecisions, setNavDecisions] = useState<ProjectDecisions | null>(null);
+  const [navReadFailures, setNavReadFailures] = useState<{ dashboard: boolean; decisions: boolean }>(
+    { dashboard: false, decisions: false },
+  );
   const [showCreate, setShowCreate] = useState(false);
   // Bumped on every explicit refresh so the selected task's own reads (recap,
   // events, dashboard) reload too. Without it a run finishing without changing
@@ -346,51 +345,6 @@ export default function WorkspacePage() {
     if (task) setSelectedTaskId(task);
   }, []);
 
-  const attentionByTask = useMemo(() => {
-    const map = new Map<string, { kinds: Set<AttentionKind>; ask: string | null }>();
-    for (const item of attention) {
-      const entry = map.get(item.task_id) ?? { kinds: new Set<AttentionKind>(), ask: null };
-      entry.kinds.add(item.kind);
-      if (!entry.ask) entry.ask = item.title;
-      map.set(item.task_id, entry);
-    }
-    return map;
-  }, [attention]);
-
-  const latestRunByTask = useMemo(() => {
-    const map = new Map<string, RunSummary>();
-    for (const run of runs) if (!map.has(run.task_id)) map.set(run.task_id, run);
-    return map;
-  }, [runs]);
-
-  const visibleTasks = useMemo(() => {
-    const scoped = projectFilter === "all" ? tasks : tasks.filter((task) => task.project_id === projectFilter);
-    const active = scoped.filter((task) => !task.archived_at);
-    const needle = query.trim().toLowerCase();
-    return needle ? active.filter((task) => task.title.toLowerCase().includes(needle)) : active;
-  }, [tasks, projectFilter, query]);
-
-  const grouped = useMemo(() => {
-    const groups: Record<RailGroup, Array<{ task: TaskManifest; ask: string | null; run: RunSummary | null; activity: string }>> = {
-      needsYou: [], unknown: [], running: [], review: [], done: [],
-    };
-    // Dropped in one place rather than at each render site, so the state dot, the
-    // relative time and the ordering all stop using a run the page can no longer
-    // vouch for. `activityOf` falls back to `task.updated_at`, which is current.
-    const runsAreCurrent = railRunIsCurrent(staleOrigins);
-    for (const task of visibleTasks) {
-      const info = attentionByTask.get(task.task_id);
-      const run = runsAreCurrent ? latestRunByTask.get(task.task_id) ?? null : null;
-      const group = railGroupOf({ task, kinds: info?.kinds ?? NO_KINDS, attentionComplete });
-      groups[group].push({ task, ask: info?.ask ?? null, run, activity: activityOf(task, run) });
-    }
-    // Newest activity first within each group.
-    for (const group of RAIL_ORDER) {
-      groups[group].sort((a, b) => b.activity.localeCompare(a.activity));
-    }
-    return groups;
-  }, [visibleTasks, attentionByTask, latestRunByTask, attentionComplete, staleOrigins]);
-
   const selectedTask = useMemo(
     () => tasks.find((task) => task.task_id === selectedTaskId) ?? null,
     [tasks, selectedTaskId],
@@ -414,6 +368,93 @@ export default function WorkspacePage() {
       : runs.filter((run) => run.task_id === selectedTask.task_id)),
     [runs, selectedTask],
   );
+
+  // The project this workbench is inside. The mockup's workbench is always within one
+  // project — you arrive from a Today card or the projects page — so this is context, not
+  // a filter. The selected task decides it; before a task is open, a project may still
+  // have been named by the URL. Null is a real answer and the column says so rather than
+  // picking alphabetically, which is how the previous default silently pointed at Agora's
+  // own source tree.
+  const currentProjectId = useMemo(
+    () => selectedTask?.project_id ?? (projectFilter !== "all" ? projectFilter : null),
+    [selectedTask, projectFilter],
+  );
+
+  // The left column's own reads. Kept apart from the selected task's dashboard read
+  // (which lives in TaskWorkspace): this one is keyed to the project, survives task
+  // switches within it, and its failure must not be reported as the project having none.
+  useEffect(() => {
+    if (currentProjectId === null) {
+      setNavDashboard(null);
+      setNavDecisions(null);
+      setNavReadFailures({ dashboard: false, decisions: false });
+      return;
+    }
+    const ctrl = new AbortController();
+    let alive = true;
+    setNavReadFailures({ dashboard: false, decisions: false });
+    void fetchProjectDashboard(currentProjectId, ctrl.signal)
+      .then((payload) => { if (alive) setNavDashboard(payload); })
+      .catch(() => {
+        if (!alive || ctrl.signal.aborted) return;
+        setNavDashboard(null);
+        setNavReadFailures((prev) => ({ ...prev, dashboard: true }));
+      });
+    void fetchProjectDecisions(currentProjectId, ctrl.signal)
+      .then((payload) => { if (alive) setNavDecisions(payload); })
+      .catch(() => {
+        if (!alive || ctrl.signal.aborted) return;
+        setNavDecisions(null);
+        setNavReadFailures((prev) => ({ ...prev, decisions: true }));
+      });
+    return () => { alive = false; ctrl.abort(); };
+  }, [currentProjectId, refreshNonce]);
+
+  /** This project's tasks, and only this project's (constraint 2 of the column). */
+  const projectTasks = useMemo<ProjectNavTask[]>(() => {
+    if (currentProjectId === null) return [];
+    // Dropped in one place rather than per render site, so a run the page can no longer
+    // vouch for does not light a dot: when a sibling read failed, `runs` is stale and
+    // showing "running" off it would be claiming knowledge this refresh does not have.
+    const runsAreCurrent = railRunIsCurrent(staleOrigins);
+    return tasks
+      .filter((task) => task.project_id === currentProjectId && !task.archived_at)
+      .map((task) => ({
+        task_id: task.task_id,
+        title: task.title,
+        state: task.state,
+        running: runsAreCurrent
+          && runs.some((run) => run.task_id === task.task_id && run.state === "running"),
+      }));
+  }, [tasks, runs, currentProjectId, staleOrigins]);
+
+  // Each resource's capability. Every one of these is a sentence about what can be said,
+  // and the three with no read behind them each say which kind of nothing they are.
+  const navCapabilities = useMemo(() => {
+    const failedOr = (failed: boolean, cap: NavCapability): NavCapability =>
+      failed ? navReadFailed() : cap;
+    const runsCap: NavCapability = currentProjectId === null
+      ? NAV_UNREPORTED
+      : { kind: "count", value: projectTasks.length === 0 ? 0 : runs.filter(
+          (run) => projectTasks.some((task) => task.task_id === run.task_id),
+        ).length, caveat: null };
+    return {
+      runs: runsCap,
+      // The dashboard carries the CR Log; cr-log.ts already classifies it, and a missing
+      // field there means this server did not report one — not that the project keeps none.
+      changeRequests: failedOr(
+        navReadFailures.dashboard,
+        navFromCRLog(crLogViewOf(navDashboard?.cr_log)),
+      ),
+      decisions: failedOr(
+        navReadFailures.decisions,
+        navDecisions === null ? NAV_UNREPORTED : navFromDecisions(navDecisions),
+      ),
+      defects: NAV_DEFECTS_NO_SOURCE,
+      skills: NAV_SKILLS_UNBUILT,
+      files: NAV_FILES_NO_READER,
+    };
+  }, [currentProjectId, projectTasks, runs, navDashboard, navDecisions, navReadFailures]);
 
   // Drop a selection the project filter now excludes, so the main view never
   // shows a task hidden from the rail (notes would post to the wrong project).
@@ -454,25 +495,47 @@ export default function WorkspacePage() {
 
   return (
     <div className="flex h-screen overflow-hidden bg-muted/20">
-      <TaskRail
-        groups={grouped}
-        attentionReach={attentionReach}
-        staleOrigins={staleOrigins}
-        projectIds={projectIds}
-        projectFilter={projectFilter}
-        onProjectFilter={setProjectFilter}
-        query={query}
-        onQuery={setQuery}
+      <ProjectNav
+        projectId={currentProjectId}
+        projectName={navDashboard?.name ?? currentProjectId}
+        // The dashboard does not report the project's root, so this stays null rather
+        // than guessing one from the id.
+        projectRoot={null}
+        capabilities={navCapabilities}
+        tasks={projectTasks}
         selectedTaskId={selectedTaskId}
-        onSelect={selectTask}
+        onSelectTask={(taskId) => {
+          const task = tasks.find((candidate) => candidate.task_id === taskId);
+          if (task) selectTask(task);
+        }}
         onNewTask={() => setShowCreate(true)}
-        onRefresh={() => { void load(); void loadWorkspaceSources(); }}
-        loading={loading}
-        workspaceSources={workspaceSources}
-        workspaceReadFailed={workspaceReadFailed}
-        onOpenProject={openProject}
+        header={
+          <RailHeader onRefresh={() => { void load(); void loadWorkspaceSources(); }} loading={loading} />
+        }
+        otherWorkspaces={
+          <WorkspaceTasksPanel
+            sources={workspaceSources}
+            readFailed={workspaceReadFailed}
+            onOpenProject={openProject}
+          />
+        }
       />
       <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
+        {/* The reach notices for the reads behind the task list. They used to sit in the
+            left column; now that the column is project-scoped they belong beside the work
+            rather than above a project's resources — a limit of a global attention read is
+            not a property of this project. The reads are unchanged, and each notice still
+            names which outcome occurred: a failed read is not a reached cap. */}
+        {attentionReach !== "complete" && projectTasks.length > 0 && (
+          <p className="mx-4 mt-4 shrink-0 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] leading-snug text-amber-700 dark:text-amber-400">
+            {t(RAIL_ATTENTION_NOTICE_KEY[attentionReach], { limit: OPEN_ATTENTION_PAGE_LIMIT })}
+          </p>
+        )}
+        {staleOrigins.map((origin) => (
+          <p key={origin} className="mx-4 mt-2 shrink-0 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] leading-snug text-amber-700 dark:text-amber-400">
+            {t(RAIL_STALE_NOTICE_KEY[origin])}
+          </p>
+        ))}
         {error && <div className="m-4 shrink-0 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{t("workspace.errors.loadFailed", { error })}</div>}
         {selectedTask ? (
           <TaskWorkspace
@@ -496,7 +559,14 @@ export default function WorkspacePage() {
       {showCreate && (
         <CreateTaskDialog
           projectIds={projectIds}
-          defaultProject={projectFilter !== "all" ? projectFilter : (projectIds[0] ?? "")}
+          // The project this workbench is inside, not whatever a URL parameter last
+          // named. With the filter dropdown gone these could disagree — a task open in
+          // project A while `projectFilter` still says B — and the dialog defaulting to
+          // B would put the new task somewhere the column never showed. Null falls
+          // through to no default, which is deliberate: better to make the user choose
+          // than to choose the alphabetically first project for them (that default is
+          // how "new task" came to point at Agora's own source tree).
+          defaultProject={currentProjectId ?? ""}
           onClose={() => setShowCreate(false)}
           onCreated={(task) => { setTasks((current) => [task, ...current]); setShowCreate(false); selectTask(task); }}
         />
@@ -505,148 +575,32 @@ export default function WorkspacePage() {
   );
 }
 
-function TaskRail({
-  groups, attentionReach, staleOrigins, projectIds, projectFilter, onProjectFilter, query, onQuery, selectedTaskId, onSelect, onNewTask, onRefresh, loading,
-  workspaceSources, workspaceReadFailed, onOpenProject,
-}: {
-  groups: Record<RailGroup, Array<{ task: TaskManifest; ask: string | null; run: RunSummary | null; activity: string }>>;
-  attentionReach: AttentionReach;
-  staleOrigins: readonly RailStaleOrigin[];
-  projectIds: string[]; projectFilter: string; onProjectFilter: (value: string) => void;
-  query: string; onQuery: (value: string) => void;
-  selectedTaskId: string | null; onSelect: (task: TaskManifest) => void;
-  onNewTask: () => void; onRefresh: () => void; loading: boolean;
-  workspaceSources: WorkspaceSourcePayload[] | null; workspaceReadFailed: boolean;
-  /** Set the project filter to a workspace task's project — the row's "open" onward.
-   *  Threaded from the page rather than a link, because the target is this same page
-   *  and a client-side navigation to it would not remount the filter effect. */
-  onOpenProject: (projectId: string) => void;
-}) {
-  const { t, te } = useI18n();
+/**
+ * The column's top strip: brand, refresh, and the global toggles.
+ *
+ * Passed into ProjectNav rather than living inside it, because none of it is about the
+ * project — the mockup puts these in a top bar, and that move is a later cut of W9. Kept
+ * as a unit here so that cut is a relocation rather than a rewrite.
+ */
+function RailHeader({ onRefresh, loading }: { onRefresh: () => void; loading: boolean }) {
+  const { t, locale, toggleLocale } = useI18n();
   const { resolvedTheme, setTheme } = useTheme();
-  const { locale, toggleLocale } = useI18n();
-  const total = RAIL_ORDER.reduce((sum, group) => sum + groups[group].length, 0);
-
   return (
-    <aside className="flex h-screen w-72 shrink-0 flex-col border-r bg-sidebar lg:w-80">
-      {/* Brand + global toggles */}
-      <div className="flex items-center justify-between px-4 py-3">
-        <Link href="/workspace" className="flex items-center gap-2">
-          <span className="grid size-8 place-items-center rounded-lg bg-primary text-primary-foreground"><Network className="size-4" /></span>
-          <span className="text-sm font-bold">{t("common.brand.name")}</span>
-        </Link>
-        <div className="flex items-center gap-0.5">
-          <button className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground" onClick={toggleLocale} aria-label={t("common.action.toggleLanguage")} title={locale === "zh" ? "EN" : "中文"}><Languages className="size-4" /></button>
-          <button className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground" onClick={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")} aria-label={t("common.action.toggleTheme")}><Sun className="hidden size-4 dark:block" /><Moon className="size-4 dark:hidden" /></button>
-          <Link href="/settings" className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground" aria-label="Settings"><Settings className="size-4" /></Link>
-        </div>
+    <div className="flex items-center justify-between px-4 py-3">
+      <Link href="/workspace" className="flex items-center gap-2">
+        <span className="grid size-8 place-items-center rounded-lg bg-primary text-primary-foreground"><Network className="size-4" /></span>
+        <span className="text-sm font-bold">{t("common.brand.name")}</span>
+      </Link>
+      <div className="flex items-center gap-0.5">
+        <button className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground" onClick={onRefresh} disabled={loading} aria-label="Refresh"><RefreshCw className={cn("size-4", loading && "animate-spin")} /></button>
+        <button className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground" onClick={toggleLocale} aria-label={t("common.action.toggleLanguage")} title={locale === "zh" ? "EN" : "中文"}><Languages className="size-4" /></button>
+        <button className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground" onClick={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")} aria-label={t("common.action.toggleTheme")}><Sun className="hidden size-4 dark:block" /><Moon className="size-4 dark:hidden" /></button>
+        <Link href="/settings" className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground" aria-label="Settings"><Settings className="size-4" /></Link>
       </div>
-
-      {/* Project filter + new task */}
-      <div className="space-y-2 px-4 pb-3">
-        <div className="flex items-center gap-2">
-          <select value={projectFilter} onChange={(e) => onProjectFilter(e.target.value)} className="h-8 min-w-0 flex-1 rounded-lg border bg-background px-2 text-xs" aria-label={t("workspace.rail.allProjects")}>
-            <option value="all">{t("workspace.rail.allProjects")}</option>
-            {projectIds.map((id) => <option key={id} value={id}>{id}</option>)}
-          </select>
-          <button onClick={onRefresh} disabled={loading} className="rounded-lg border p-1.5 text-muted-foreground hover:bg-accent" aria-label="Refresh"><RefreshCw className={cn("size-3.5", loading && "animate-spin")} /></button>
-        </div>
-        <Button size="sm" className="w-full" onClick={onNewTask}><Plus className="size-4" /> {t("workspace.rail.newTask")}</Button>
-        <div className="relative">
-          <Search className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-          <input value={query} onChange={(e) => onQuery(e.target.value)} placeholder={t("workspace.rail.search")} className="h-8 w-full rounded-lg border bg-background pl-7 pr-2 text-xs outline-none focus:border-ring" />
-        </div>
-      </div>
-
-      {/* Grouped task list */}
-      <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-4">
-        {/* Why the rail says this out loud rather than quietly grouping anyway: the
-            groups below "needs you" are a claim that nothing is waiting, and once
-            the global attention page is capped or unreadable it cannot support
-            that claim for a task it does not mention. Those tasks are in
-            "unknown", and this line is the reason — the actual reason: the message
-            names which of the three non-complete outcomes occurred, because a
-            failed read wearing the cap's explanation is a confident falsehood. */}
-        {attentionReach !== "complete" && total > 0 && (
-          <p className="mx-2 mb-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-[11px] leading-snug text-amber-700 dark:text-amber-400">
-            {t(RAIL_ATTENTION_NOTICE_KEY[attentionReach], { limit: OPEN_ATTENTION_PAGE_LIMIT })}
-          </p>
-        )}
-        {/* A sibling read of the same refresh failed. Its own sentence, about its
-            own read: what it costs is a stale rail (or, on a first load, an empty
-            one — which is why this is not gated on there being tasks: "No tasks
-            yet" below would otherwise be the only thing said about a task list
-            that could not be read). It deliberately claims nothing about the
-            attention read, whose reach is settled above from its own outcome. */}
-        {staleOrigins.map((origin) => (
-          <p key={origin} className="mx-2 mb-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-[11px] leading-snug text-amber-700 dark:text-amber-400">
-            {t(RAIL_STALE_NOTICE_KEY[origin])}
-          </p>
-        ))}
-        {total === 0 && (
-          <p className="px-2 py-6 text-center text-xs text-muted-foreground">{query.trim() ? t("workspace.rail.noMatch") : t("workspace.rail.empty")}</p>
-        )}
-        {RAIL_ORDER.map((group) => {
-          const items = groups[group];
-          if (items.length === 0) return null;
-          return (
-            <section key={group} className="mb-3">
-              <div className="flex items-center gap-2 px-2 py-1.5">
-                <span className={cn("size-1.5 rounded-full", GROUP_DOT[group])} />
-                <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{t(`workspace.rail.groups.${group}`)}</span>
-                <span className="text-[11px] text-muted-foreground">{items.length}</span>
-              </div>
-              <ul className="space-y-0.5">
-                {items.map(({ task, ask, run, activity }) => {
-                  const selected = task.task_id === selectedTaskId;
-                  // Never "the lifecycle state, where the ask should have been":
-                  // in the unknown group that substitution is what made a task
-                  // with an off-page approval read as a calm "running".
-                  const subtitle = railSubtitleOf(group, ask);
-                  const sub =
-                    subtitle.kind === "ask"
-                      ? subtitle.text
-                      : subtitle.kind === "stateWithUnknownAttention"
-                        ? t("workspace.rail.unknownSubtitle", { state: te("taskState", task.state) })
-                        : te("taskState", task.state);
-                  return (
-                    <li key={task.task_id}>
-                      <button
-                        onClick={() => onSelect(task)}
-                        className={cn("w-full rounded-lg px-2 py-2 text-left transition-colors", selected ? "bg-primary/10 ring-1 ring-primary/30" : "hover:bg-accent")}
-                      >
-                        <div className="flex items-center gap-2">
-                          <span className={cn("size-2 shrink-0 rounded-full", GROUP_DOT[group])} />
-                          <span className="min-w-0 flex-1 truncate text-sm font-medium">{task.title}</span>
-                          {run && <span className={cn("size-1.5 shrink-0 rounded-full", RUN_TONE[run.state])} title={run.state} />}
-                        </div>
-                        <div className="mt-0.5 flex items-center justify-between gap-2 pl-4">
-                          <span className="min-w-0 truncate text-[11px] text-muted-foreground">{sub}</span>
-                          <span className="shrink-0 text-[11px] text-muted-foreground">{relTime(activity, t)}</span>
-                        </div>
-                      </button>
-                    </li>
-                  );
-                })}
-              </ul>
-            </section>
-          );
-        })}
-        {/* The tasks a registered workspace directory already holds (W7), living here
-            in the workbench instead of on a Settings card. Kept visually apart from the
-            control-plane groups above — they are a different kind of thing (a live,
-            read-only import), and merging them into the lifecycle groups would claim a
-            lifecycle they do not have. */}
-        <WorkspaceTasksPanel sources={workspaceSources} readFailed={workspaceReadFailed} onOpenProject={onOpenProject} />
-      </div>
-    </aside>
+    </div>
   );
 }
 
-// The workspace-task board: the whole thing decided by workspaceBoardOf, then one
-// source at a time by sourceVerdictOf. Nothing here re-derives a state; the three
-// answers a careless version collapses (loading / could-not-read / none registered)
-// are kept apart by the type it renders.
 function WorkspaceTasksPanel({ sources, readFailed, onOpenProject }: { sources: WorkspaceSourcePayload[] | null; readFailed: boolean; onOpenProject: (projectId: string) => void }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(true);

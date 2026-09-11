@@ -5,10 +5,69 @@
 export const workspace = {
   en: {
     title: "Workspace",
+    // Project-level navigation (mockup v2's left column). A nav item does not carry a
+    // number — it carries a capability (see lib/nav-capability.ts), and each of these
+    // is a different sentence. Merging them is what the constitution forbids.
+    nav: {
+      projectLabel: "Project",
+      items: {
+        overview: "Overview",
+        runs: "Runs",
+        goals: "Goals & requirements",
+        changeRequests: "Change requests",
+        decisions: "Decisions (ADR)",
+        defects: "Known defects",
+        skills: "Skills",
+        files: "Files",
+      },
+      capability: {
+        count: "{value}",
+        countWithCaveat: {
+          unclassified: "{value} (+{caveat} unclassified)",
+          unopenable: "{value} (+{caveat} unreadable)",
+        },
+        none: "none",
+        unbuilt: "not built yet",
+        unbuiltWithMilestone: "not built yet ({milestone})",
+        noReader: {
+          reader_unbuilt: "no read yet",
+          no_structured_source: "no source here yet",
+        },
+        unreadable: {
+          too_large: "too large to read",
+          unreadable: "could not be read",
+          malformed: "unreadable format",
+        },
+        unreported: "not reported",
+      },
+      // Long form, shown on hover/focus. Each says which of the sentences it is, because
+      // "unavailable" for all of them is the merge this product refuses to make.
+      why: {
+        none: "Read successfully; the project keeps none.",
+        unbuilt: "This feature does not exist yet, so there is nothing to read.",
+        unbuiltWithMilestone: "This feature does not exist yet — planned for {milestone}.",
+        noReader: {
+          reader_unbuilt: "These exist, but Agora has no read for them yet.",
+          no_structured_source: "These are real, but no structured source exists in this repository yet, so they cannot be listed here.",
+        },
+        unreadable: {
+          too_large: "A read was attempted and the source was too large.",
+          unreadable: "A read was attempted and failed.",
+          malformed: "A read succeeded but the contents could not be parsed.",
+        },
+        unreported: "This server did not report it — a fact about the server, not about the project.",
+        caveat: {
+          unclassified: "{caveat} row(s) could not be classified, so this count may not be the whole story.",
+          unopenable: "{caveat} record(s) could not be opened, so this count is not complete.",
+        },
+      },
+      tasks: "Tasks",
+      otherWorkspaces: "Other workspaces",
+      noProject: "No project selected. Open a task, or pick a project from Today.",
+    },
     rail: {
       newTask: "New task",
       search: "Search tasks",
-      allProjects: "All projects",
       groups: {
         needsYou: "Needs you",
         unknown: "Attention unknown",
@@ -600,10 +659,69 @@ export const workspace = {
   },
   zh: {
     title: "工作台",
+    // 项目级导航（mockup v2 的左栏）。导航项不携带数字，它携带一个「能力」
+    // （见 lib/nav-capability.ts），下面每一条都是**不同的一句话** —— 把它们
+    // 合并成「不可用」正是 constitution 禁止的那件事。
+    nav: {
+      projectLabel: "项目",
+      items: {
+        overview: "概览",
+        runs: "运行",
+        goals: "目标与需求",
+        changeRequests: "变更 CR",
+        decisions: "决策 ADR",
+        defects: "已知缺陷",
+        skills: "技能",
+        files: "文件",
+      },
+      capability: {
+        count: "{value}",
+        countWithCaveat: {
+          unclassified: "{value}（另有 {caveat} 条无法分类）",
+          unopenable: "{value}（另有 {caveat} 条读不到）",
+        },
+        none: "无",
+        unbuilt: "尚未实现",
+        unbuiltWithMilestone: "尚未实现（{milestone}）",
+        noReader: {
+          reader_unbuilt: "尚无读取能力",
+          no_structured_source: "此仓库尚无来源",
+        },
+        unreadable: {
+          too_large: "太大读不了",
+          unreadable: "读取失败",
+          malformed: "格式无法解析",
+        },
+        unreported: "未报告",
+      },
+      // 悬停/聚焦时显示的完整说法。每一条都说明自己是哪一种，因为把它们统称
+      // 「不可用」正是本产品拒绝做的合并。
+      why: {
+        none: "已成功读取，这个项目确实没有。",
+        unbuilt: "这个功能还不存在，所以无从读取。",
+        unbuiltWithMilestone: "这个功能还不存在 —— 计划在 {milestone}。",
+        noReader: {
+          reader_unbuilt: "它们存在，但 Agora 还没有读取它们的能力。",
+          no_structured_source: "它们是真实存在的，但本仓库还没有结构化的来源，所以这里列不出来。",
+        },
+        unreadable: {
+          too_large: "尝试读取了，来源太大。",
+          unreadable: "尝试读取了，失败。",
+          malformed: "读到了，但内容无法解析。",
+        },
+        unreported: "这台服务器没有报告它 —— 这是关于服务器的事实，不是关于项目的事实。",
+        caveat: {
+          unclassified: "有 {caveat} 条的状态无法分类，所以这个数字可能不是全貌。",
+          unopenable: "有 {caveat} 条记录打不开，所以这个数字不完整。",
+        },
+      },
+      tasks: "任务",
+      otherWorkspaces: "其他工作区",
+      noProject: "尚未选定项目。打开一个任务，或从 Today 进入某个项目。",
+    },
     rail: {
       newTask: "新建任务",
       search: "搜索任务",
-      allProjects: "全部项目",
       groups: {
         needsYou: "需你处理",
         unknown: "待确认",

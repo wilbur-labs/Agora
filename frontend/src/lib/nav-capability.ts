@@ -196,8 +196,14 @@ export function navFromDecisions(payload: DecisionsLike): NavCapability {
  * The one question a nav row asks before drawing a count. Only `count` may — and
  * note that `none` may not, which is the point: "no change requests" is a sentence,
  * not a zero.
+ *
+ * A type predicate, so a caller that asks the question also gets the narrowed variant.
+ * Without that, every call site re-tests `kind === "count"` to reach `value`, which is the
+ * judgement moving back out of this module one component at a time.
  */
-export function countSayable(cap: NavCapability): boolean {
+export function countSayable(
+  cap: NavCapability,
+): cap is Extract<NavCapability, { kind: "count" }> {
   return cap.kind === "count";
 }
 

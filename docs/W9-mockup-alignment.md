@@ -106,11 +106,48 @@ mockup 左栏 8 项里 3 项后端无支撑：**已知缺陷**（UI 里完全没
 |---|---|
 | `.gitattributes`（根治 CRLF 让源码断言测试假失败） | ✅ commit `7b307cb` |
 | **能力状态槽判断层** `frontend/src/lib/nav-capability.ts` + 16 条 node 测试 | ✅ commit `61a96fd` |
-| 步骤 A 余下：左栏 JSX 改项目级导航（`workspace/page.tsx` 的 `TaskRail`，531–642 行） | 🔵 下一步 |
+| **左栏改成项目级导航** `frontend/src/components/project-nav.tsx` | ✅ 见下 |
 | 步骤 B：已知缺陷真实读取 | ⬜ 等权威来源 |
 | 「项目」页 / Today 三档 / 中栏卡片流 / 壳 | ⬜ 未开工 |
 
-前端门禁：**339 tests / 338 pass / 1 skip**（新增 16 条）· eslint 0 · build 14 页。
+前端门禁：**339 tests / 338 pass / 1 skip** · tsc 0 · eslint **0** · build 14 页。
+
+### 左栏（第一刀）已落地
+
+**之前**：`TaskRail`（内联在 3011 行 page.tsx 里的 142 行）= 品牌条 + **项目筛选下拉** + 搜索框 +
+**跨项目任务列表按 attention 分组** + W7 面板。
+**之后**：独立组件 `components/project-nav.tsx` = 项目名居首 → 项目的 8 个资源 → 本项目任务（扁平、安静）
+→ W7 面板（折叠、标「其他工作区」、横线隔开）。
+
+- CR / ADR **接真实读取**（`/api/projects/{id}/dashboard` 里的 CR Log、`/api/projects/{id}/decisions`），
+  按项目 keyed、随 refresh 重读；**读取失败映射为 `unreadable` 而不是「没有」**。
+- 已知缺陷 → `noReader("no_structured_source")`；技能 → `unbuilt("W5")`；文件 →
+  `noReader("reader_unbuilt")`。三者**仍可点击**，完整原因在 `title` 上。
+- **「当前项目」是上下文不是筛选**：`selectedTask?.project_id ?? (projectFilter !== "all" ? projectFilter : null)`。
+  null 是真实答案，左栏直说「尚未选定项目」，**不按字母序猜** —— 那个默认值正是 CR-51「新建任务默认指向
+  Agora 自己的源码树」的来源。新建任务对话框的默认项目也改为跟随当前项目（评审指出的状态不一致）。
+
+### ⚠️ 这一刀删掉的能力（记录，不静默丢弃）
+
+独立评审明确要求记录这三项，因为六条约束并不必然要求删掉它们：
+
+1. **跨项目 attention 分组**（needsYou / running / unknown / …）—— 按约束 5 它属于 Today。**但 Today 目前是
+   任务行、不是项目卡三档**，所以在 Today 改造完成前，这是**迁移未完成**而非纯迁移。
+2. **搜索框** —— 明确的能力删除。约束只禁止跨项目筛选器，**并不要求删掉「当前项目内搜索」**；mockup 左栏也
+   没画搜索。可随时按需恢复为项目内搜索。
+3. **按活跃度排序 + 相对时间** —— 旧任务轨按最近活动排序并显示相对时间，新的任务区两者都没有。符合「扁平、
+   安静」的取舍，但确实是信息与排序能力的减少。
+
+两条诚实性提示（attention 读取被截断/不可读、兄弟读取失败导致列表陈旧）**是移位不是删除**：触发条件、
+文本、可见性都不变，只是从项目资源上方移到 `<main>` 顶部 —— 一次**全局**读取的限制不是**这个项目**的属性。
+
+### 保住的不变量（改造时别破）
+
+「陈旧 run 只在一处丢弃」这条 W8 的不变量被保留，但形式随结构变了：旧左栏从 run 派生三样（状态点、相对
+时间、排序），所以必须在建分组处丢弃；新左栏只派生一样（是否在跑），所以在**派生项目任务列表处**门控。
+`rail-group.test.mts` 的源码断言已相应收紧 —— 评审指出我第一版的正则只证明「表达式在文件里出现过」，
+连死代码都拦不住；现在锚定 `running:` 的赋值本身，并断言**组件根本拿不到 runs**（`RunSummary` /
+`runs.some(` / `runs.filter(` 在组件里零出现），这比禁止某一种写法更强，别名和 helper 也绕不过去。
 
 ### 能力状态槽（`NavCapability`）已落地的形状
 

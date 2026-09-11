@@ -335,17 +335,40 @@ test("the rail's rule is narrower than the portfolio card's, on purpose", () => 
 test("the rail drops the stale run in one place, not at each render site", async () => {
   // Structural, and the same honest limit as its counterpart on the portfolio board:
   // node --test strips types but does not transform JSX, so this suite cannot mount
-  // the component. Dropping the run where the groups are built is what makes the
-  // dot, the relative time and the ordering all stop using it at once; three separate
-  // guards at three render sites is three chances for one of them to be forgotten.
+  // the component. Dropping the run where the task list is derived is what keeps
+  // anything downstream from using a run the page cannot vouch for; a guard at each
+  // render site is one chance per site to be forgotten.
+  //
+  // W9 changed the shape this guards, not the guarantee. The column used to derive
+  // three things from the run (a state dot, a relative time, the ordering) and the
+  // drop had to happen where the groups were built so all three stopped at once. The
+  // project-level column derives one — whether a run is in flight — so the drop now
+  // happens where the project's task list is derived. Still one place, still upstream
+  // of every render.
   const { readFile } = await import("node:fs/promises");
   const file = await readFile(
     new URL("../src/app/workspace/page.tsx", import.meta.url), "utf8");
   const source = file.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
   assert.ok(source.includes("railRunIsCurrent(staleOrigins)"),
-    "the rail must ask whether the run it holds is current");
-  assert.ok(source.includes("runsAreCurrent ? latestRunByTask.get(task.task_id) ?? null : null"),
-    "the run must be dropped where the groups are built, so activity and order drop it too");
+    "the column must ask whether the run it holds is current");
+  // Anchored to the assignment, not merely to the expression appearing somewhere: a
+  // regex that only proves the gate exists in the file would pass on dead code, or on a
+  // gate computed and then ignored.
+  assert.ok(/running:\s*runsAreCurrent\s*\n?\s*&&\s*runs\.some\(/.test(source),
+    "the gate must be what produces the derived `running` field");
+  // And the render site cannot reach past it, structurally: the column is not given the
+  // runs at all, so there is nothing behind the gate for it to consult. Stronger than
+  // forbidding one spelling of a second lookup, which aliases and helpers walk around.
+  const column = await readFile(
+    new URL("../src/components/project-nav.tsx", import.meta.url), "utf8");
+  const columnSource = column.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
+  assert.ok(columnSource.includes("task.running"),
+    "the rendered dot must read the gated field");
+  // `runs: NavCapability` is the resource's capability, not the run data — what must not
+  // reach the column is the runs themselves, so match on how they would be consulted and
+  // on the type they would arrive as.
+  assert.ok(!/\brunsAreCurrent\b|\bruns\.some\(|\bruns\.filter\(|\bRunSummary\b/.test(columnSource),
+    "the column must not receive or re-derive runs — the gate is upstream of it");
 });
 
 test("the runs notice describes what the rail now does, not what it used to", async () => {
