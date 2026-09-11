@@ -25,6 +25,20 @@ export const common = {
       workflows: "Workflows",
       attention: "Attention",
     },
+    shell: {
+      tabs: "Screens",
+      // Runs execute on this machine until remote execution (W3-a) lands; the platform
+      // name beside it comes from the same probe as the CLI versions.
+      environmentLocal: "This machine",
+      environmentTitle: "Every run executes on this machine. Choosing an environment comes with remote execution (W3-a).",
+      versions: {
+        pending: "probing the CLIs…",
+        failed: "CLI versions could not be read",
+        notFound: "not installed",
+        uninspectable: "could not be probed",
+        unknownVersion: "version unknown",
+      },
+    },
     action: {
       toggleTheme: "Toggle theme",
       toggleLanguage: "Switch language",
@@ -90,6 +104,18 @@ export const common = {
       runs: "运行记录",
       workflows: "工作流",
       attention: "关注事项",
+    },
+    shell: {
+      tabs: "屏幕",
+      environmentLocal: "本机",
+      environmentTitle: "Run 现在都在本机执行。选环境这一项随远端执行（W3-a）一起来。",
+      versions: {
+        pending: "正在探测 CLI…",
+        failed: "CLI 版本读不到",
+        notFound: "未安装",
+        uninspectable: "无法探测",
+        unknownVersion: "版本未知",
+      },
     },
     action: {
       toggleTheme: "切换主题",

@@ -1,0 +1,71 @@
+/**
+ * The app shell's top bar — what it may list, and what it may say about the CLIs.
+ *
+ * Mockup v2 draws one bar over every screen: four tabs (Today · 项目工作台 · 环境 ·
+ * 技能库) and, on the right, the current environment and the three agent CLIs with
+ * their versions. The tabs are a decision recorded here once, so the shell and its test
+ * read the same list; the version line is a judgement, because a probe of a CLI has
+ * more outcomes than "a version": not installed, installed but not inspectable,
+ * installed with no version string, the probe itself failed, the probe not back yet.
+ * Each is a different sentence, and none of them is an empty string or a "0".
+ *
+ * Deliberately free of React and of "@/" path aliases: `node --test` executes the
+ * companion test file (tests/shell.test.mts) directly.
+ */
+
+/** One of the four screens. `label` is the stable English name pages pass as `active`. */
+export interface ShellTab {
+  href: string;
+  /** Key under `common.nav.*`. */
+  key: string;
+  label: string;
+}
+
+/** The mockup's four tabs, in its order. Not five: the projects inventory and Settings
+ *  are reached from the bar's right-hand cluster, where the mockup's design note for
+ *  Today puts the inventory ("另开「项目」页") without giving it a tab. */
+export const SHELL_TABS: readonly ShellTab[] = [
+  { href: "/", key: "today", label: "Today" },
+  { href: "/workspace", key: "workbench", label: "Workbench" },
+  { href: "/environments", key: "environments", label: "Environments" },
+  { href: "/skills", key: "skills", label: "Skills" },
+];
+
+/** The fields the version line needs from one probed adapter; a structural subset. */
+export interface CliProbeLike {
+  adapter: string;
+  installation_status: "installed" | "not_found" | "uninspectable";
+  version: string | null;
+}
+
+/** What the bar may print beside one CLI's name. */
+export type CliVersionLine =
+  | { kind: "version"; version: string }
+  | { kind: "notFound" }
+  | { kind: "uninspectable" }
+  /** Installed, and the probe returned no version string. Not "0", not blank. */
+  | { kind: "unknownVersion" };
+
+export function cliVersionLineOf(probe: CliProbeLike): CliVersionLine {
+  if (probe.installation_status === "not_found") return { kind: "notFound" };
+  if (probe.installation_status === "uninspectable") return { kind: "uninspectable" };
+  const version = (probe.version ?? "").trim();
+  return version.length > 0 ? { kind: "version", version } : { kind: "unknownVersion" };
+}
+
+/** The probe's own outcome, before any adapter is looked at. */
+export type CliStrip =
+  | { kind: "pending" }
+  | { kind: "failed" }
+  | { kind: "probed"; lines: readonly { adapter: string; line: CliVersionLine }[] };
+
+export function cliStripOf(
+  probe: { adapters: readonly CliProbeLike[] } | null,
+  failed: boolean,
+): CliStrip {
+  if (probe === null) return failed ? { kind: "failed" } : { kind: "pending" };
+  return {
+    kind: "probed",
+    lines: probe.adapters.map((adapter) => ({ adapter: adapter.adapter, line: cliVersionLineOf(adapter) })),
+  };
+}

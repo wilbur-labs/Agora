@@ -22,11 +22,11 @@ import { AlertTriangle, CheckCircle2, HelpCircle, Server, XCircle } from "lucide
 import { DeliveryShell } from "@/components/delivery-shell";
 import { useI18n } from "@/lib/i18n";
 import {
-  getRuntimeCapabilities,
   getSettingsOverview,
   type RuntimeCapabilities,
   type SettingsOverview,
 } from "@/lib/control-plane";
+import { probeRuntimes } from "@/lib/runtime-probe";
 
 export default function EnvironmentsPage() {
   const { t } = useI18n();
@@ -39,7 +39,9 @@ export default function EnvironmentsPage() {
     // Two independent reads, each reporting only for itself. A failed probe of
     // the CLIs says nothing about the project list, and vice versa; one shared
     // error flag would make either failure describe both.
-    getRuntimeCapabilities()
+    // The shared probe (lib/runtime-probe.ts): the top bar asked already, so this
+    // joins that answer instead of spawning the CLIs a second time on one screen.
+    probeRuntimes()
       .then((data) => { setRuntimes(data); setRuntimesFailed(false); })
       .catch(() => { setRuntimes(null); setRuntimesFailed(true); });
     getSettingsOverview()

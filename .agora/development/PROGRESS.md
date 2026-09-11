@@ -7569,3 +7569,106 @@ Commit the slice files on `feature/w8-session-ui`, staged explicitly, and push t
 `private`. Then `docs/NEXT-STEPS.md` §一.3: the shell and top bar (four tabs, the
 environment and CLI versions on the right), which also moves the projects entry to where
 the design puts it. Update `docs/W9-mockup-alignment.md`'s table in the same commit.
+
+
+## W9 — the shell: one top bar over every screen
+
+`feature/w8-session-ui`, on top of `ac3bf39`, not yet committed. The last of W9's three UI
+cuts (`docs/NEXT-STEPS.md` §一.3): the left sidebar becomes the mockup's top bar, and the
+workbench — which had its own chrome — carries the same bar.
+
+### What changed on screen
+
+* **Four tabs, the mockup's four, in its order**: Today · 项目工作台 · 环境 · 技能库. The list
+  is `SHELL_TABS` in `lib/shell.ts`, read by the shell and by its test, so the two cannot
+  disagree about what the product presents.
+* **The right-hand cluster**: the environment runs execute in ("本机 · <platform>", a label
+  with the W3-a reason on hover, not a picker), the three CLIs with their versions, and the
+  doors to the projects inventory and Settings, then language and theme.
+* **The projects inventory left the tab row**, as `NEXT-STEPS` said it would once Today was
+  rebuilt. It is a door on every screen (the icon at the right) and the link on Today; the
+  mockup's bar has exactly four tabs and names the inventory only in Today's design note.
+  The regression guard from W9's second cut still holds — `href: "/portfolio"` is in the
+  shell — because what it guarded was reachability, not a tab.
+* **The workbench carries the bar** and its rail header keeps only the refresh; the brand,
+  language, theme and Settings it duplicated moved up.
+* **The CLI versions are one of four sentences** (`cliVersionLineOf`): the version, "not
+  installed", "could not be probed", "version unknown" — never a blank beside a name, never
+  a zero. The probe's own outcome is separate: "probing…" and "could not be read".
+
+### The probe, shared
+
+`/api/runtime-capabilities` spawns each CLI twice (`--version`, sign-in). Three surfaces now
+show its answer (the bar, Environments, Settings); each asking on its own would have been
+twelve child processes per page load and two answers that could disagree on one screen.
+`lib/runtime-probe.ts` is the one ask: a call joins one in flight, a fresh answer is reused
+for a minute, `force` (the Settings refresh) asks now and drops the cached answer before
+asking, a forced ask overtakes one in flight (the overtaken caller is told so and shows
+nothing), every outcome — answer or failure — is broadcast to subscribers so the bar and the
+page under it say one thing, and a failed probe is not cached.
+
+### Files
+
+`frontend/src/components/delivery-shell.tsx` (`TopBar` + `DeliveryShell`), `frontend/src/lib/shell.ts`
+(new; tabs and the version sentence), `frontend/src/lib/runtime-probe.ts` (new; the shared ask),
+`frontend/tests/shell.test.mts` (new; 4 tests incl. one source scan), `frontend/src/app/workspace/page.tsx`
+(mounts the bar; rail header slimmed), `frontend/src/app/settings/page.tsx` and `frontend/src/app/environments/page.tsx`
+(read the shared probe; Settings publishes each read as it lands, under a load token),
+`frontend/src/lib/i18n/dictionaries/common.ts`, `frontend/package.json`, and this record. No backend file.
+
+### Gate
+
+* Frontend: `pnpm run test:control-plane` **371 collected / 370 passed / 1 skipped**
+  (was 367 / 366 / 1). `tsc --noEmit` 0. `eslint` 0 on the changed files. `next build`
+  14 pages.
+* Backend: no backend file touched.
+* Not exercised by hand: the browser check is owed for all three W9 UI cuts; this machine
+  holds no task, and the bar's version strip needs the CLIs on the path to show anything
+  but "not installed".
+
+### Review state
+
+Seven rounds of independent review on this slice, 13 findings: 11 confirmed and fixed,
+two rejected — the same finding twice, with its reason below. **Every round ran as Kiro
+standing in for codex** (`scripts/kiro-review.sh`, `gpt-5.6-sol`, `--effort max`): codex
+answered `You've hit your usage limit` at every attempt — the documented substitution
+(adr/0017), never alongside codex. The commit message says so.
+
+What the rounds caught, nearly all of it about the one shared probe — which is the point
+of sharing it: one place to get right instead of three.
+
+1. A module-level cache that never refreshed: a CLI installed after the first probe stayed
+   "not installed" until a reload. Now a one-minute reuse, and `force` asks again.
+2. The bar probed on its own beside Environments and Settings probing on theirs — twelve
+   child processes per page load, two answers per screen. One shared ask now.
+3. A forced ask that failed kept the answer it was meant to refuse; the cache is dropped
+   before asking, not after.
+4. Settings' two reads under one `Promise.all`, so a failed overview threw away a probe
+   that had succeeded while the bar already showed it — each read publishes itself now.
+5. `force` ignored while an ask was in flight — a forced ask now overtakes it, and the
+   overtaken caller is told so (`ProbeSupersededError`) rather than handed the older answer.
+6. Only successes broadcast — a failed forced refresh left the bar showing the disowned
+   version; failures are broadcast too, and the bar says "could not be read".
+7. Settings kept the disowned cards after a failed forced probe; it clears them.
+8. Settings' load had no token — an older load's late answer could overwrite a newer one;
+   it has one now, and only the newest writes.
+9. A failure held until the sibling read settled; each read publishes its own failure the
+   moment it lands.
+
+Rejected, the same finding twice (rounds 6 and 7): a request that never settles — a half-open
+connection on `/api/runtime-capabilities` or `/api/settings/overview` — holds the shared
+`inFlight` and Settings' spinner, so neither retries until a reload. True, and the request
+layer's to fix: `request()` in lib/control-plane.ts carries no timeout for any call in this
+app, and adding one is one change for every surface, not one screen's. The same class was
+rejected on the stream slice for the same reason; recorded here so it is not read as unnoticed.
+
+### Blockers
+
+None.
+
+### Next safe action
+
+Commit the slice files on `feature/w8-session-ui`, staged explicitly, and push to
+`private`. W9's three UI cuts are then all on the branch; what remains of W9 is D-5 step B
+(the known-defects reader — its source is now `docs/known-defects.md`) and the browser
+check of all three screens against the mockup. Then `docs/NEXT-STEPS.md` §二: W3-a.

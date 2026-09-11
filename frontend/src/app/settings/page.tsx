@@ -16,7 +16,6 @@ import { DeliveryShell } from "@/components/delivery-shell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
-  getRuntimeCapabilities,
   getSettingsOverview,
   listWorkspaceSources,
   pickProjectsFolder,
@@ -29,6 +28,7 @@ import {
   type RuntimeCapability,
   type SettingsOverview,
 } from "@/lib/control-plane";
+import { isProbeSuperseded, probeRuntimes } from "@/lib/runtime-probe";
 import {
   SOURCE_REASON_KEY,
   sourceVerdictOf,
@@ -43,19 +43,51 @@ export default function SettingsPage() {
   const [overview, setOverview] = useState<SettingsOverview | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Which load is current. Loads overlap — the mount, a refresh, a locale change that
+  // rebuilds `load` — and each read publishes itself the moment it lands, so an older
+  // load's late answer would otherwise overwrite a newer one. Only the newest writes.
+  const loadToken = useRef(0);
 
-  const load = useCallback(async () => {
+  // `force` re-probes the CLIs now (the refresh button); the mount joins the shared
+  // answer the top bar already asked for (lib/runtime-probe.ts).
+  const load = useCallback(async ({ force = false }: { force?: boolean } = {}) => {
+    const token = ++loadToken.current;
+    const current = () => token === loadToken.current;
     setLoading(true);
     setError(null);
-    try {
-      const [caps, ov] = await Promise.all([getRuntimeCapabilities(), getSettingsOverview()]);
-      setRuntimes(caps);
-      setOverview(ov);
-    } catch (err) {
-      setError(t("settings.error.load", { message: (err as Error).message }));
-    } finally {
-      setLoading(false);
-    }
+    // Two reads, each landing on its own the moment it does. Under one `Promise.all` a
+    // failed overview read threw away a CLI probe that had succeeded; under one
+    // `allSettled` a hung overview read held a landed probe off the screen — while the
+    // top bar, subscribed to the same probe, was already showing it. Each read publishes
+    // itself; only the spinner waits for both.
+    // Each read publishes its own answer — and its own failure — the moment it lands;
+    // only the spinner waits for both. A failure held until the sibling read settled was
+    // a failure never shown while the sibling hung.
+    const failures: string[] = [];
+    const describe = (reason: unknown) => (reason instanceof Error ? reason.message : String(reason));
+    const fail = (reason: unknown) => {
+      failures.push(describe(reason));
+      setError(t("settings.error.load", { message: failures.join(" · ") }));
+    };
+    await Promise.allSettled([
+      probeRuntimes({ force }).then(
+        (caps) => { if (current()) setRuntimes(caps); },
+        (reason: unknown) => {
+          // Overtaken by a newer forced ask: that one owns the screen, and this one has
+          // neither an answer to show nor a failure to report.
+          if (isProbeSuperseded(reason) || !current()) return;
+          // A failed probe is a failed probe: the cards must not keep showing the answer
+          // the person just refused by refreshing, while the top bar has already dropped it.
+          setRuntimes(null);
+          fail(reason);
+        },
+      ),
+      getSettingsOverview().then(
+        (ov) => { if (current()) setOverview(ov); },
+        (reason: unknown) => { if (current()) fail(reason); },
+      ),
+    ]);
+    if (current()) setLoading(false); // a newer load owns the spinner otherwise
   }, [t]);
 
   useEffect(() => {
@@ -72,7 +104,7 @@ export default function SettingsPage() {
             <h1 className="mt-1 text-2xl font-bold">{t("settings.header.title")}</h1>
             <p className="mt-1 text-sm text-muted-foreground">{t("settings.header.subtitle")}</p>
           </div>
-          <Button variant="outline" size="lg" onClick={() => void load()} disabled={loading}>
+          <Button variant="outline" size="lg" onClick={() => void load({ force: true })} disabled={loading}>
             <RefreshCw className={cn(loading && "animate-spin")} /> {t("common.action.refresh")}
           </Button>
         </div>

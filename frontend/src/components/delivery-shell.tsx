@@ -1,111 +1,179 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { useTheme } from "next-themes";
 import {
   FolderKanban,
   Languages,
-  Library,
-  MessagesSquare,
   Moon,
   Network,
-  Server,
   Settings,
   Sun,
-  Sunrise,
 } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
+import type { RuntimeCapabilities } from "@/lib/control-plane";
+import { isProbeSuperseded, probeRuntimes, subscribeRuntimes } from "@/lib/runtime-probe";
+import { SHELL_TABS, cliStripOf } from "@/lib/shell";
 import { cn } from "@/lib/utils";
 
-// The four screens of mockup v2, plus the projects inventory and Settings.
+// The app shell: mockup v2's top bar over every screen.
 //
-// What left this list, and why (W8, tasks/agora/adr/0001 and adr/0007):
+// Four tabs — the four screens of the mockup — and, on the right, the environment
+// runs execute in and the three agent CLIs with their versions. The tab list itself is
+// `SHELL_TABS` in lib/shell.ts, so the shell and its test read one list.
 //
-// - **Control Plane / Requirements / Workflows** were the top of the frozen
-//   AI-DLC layer. adr/0001 froze those 45k lines and said the UI must not expose
-//   them; they sat in the first-level navigation for eleven days anyway. The pages
-//   still answer at their URLs — nothing was deleted — they are simply no longer
-//   presented as the product.
-// - **Runs** is not a place any more. A run is a turn inside a task's
-//   conversation (adr/0007), so it is reached through the task it belongs to
-//   rather than through a global list of process launches.
-// - **Attention** is what Today is made of: what needs you, across every project,
-//   on one screen. The mockup draws exactly that at the foot of Today ("卡住 / 需要你
-//   跨全部项目"), so it stays out of here while Today grows into it.
+// What is *not* a tab, and why:
 //
-// **Portfolio came back (W9).** It was taken out with Attention on the reasoning that
-// Today would absorb both. Re-reading the mockup says otherwise, in as many words:
-// "全部项目的库存视图另开「项目」页：Today 回答「今天推什么」，项目页回答「我都有什么」".
-// Those are two different questions, and one screen answering both is what the three-tier
-// Today exists to avoid. So the inventory is its own screen again.
+// - **Control Plane / Requirements / Workflows** were the top of the frozen AI-DLC
+//   layer. adr/0001 froze those 45k lines and said the UI must not expose them; they
+//   sat in the first-level navigation for eleven days anyway. The pages still answer at
+//   their URLs — nothing was deleted — they are simply no longer presented as the
+//   product.
+// - **Runs** is not a place any more. A run is a turn inside a task's conversation
+//   (adr/0007), so it is reached through the task it belongs to.
+// - **Attention** is what Today is made of: the foot of Today is the cross-project
+//   "卡住 / 需要你" list.
+// - **The projects inventory** (/portfolio) and **Settings** are in the bar's right-hand
+//   cluster, not the tab row. The mockup's top bar has exactly four tabs; the inventory
+//   is named in Today's design note ("全部项目的库存视图另开「项目」页") and drawn nowhere,
+//   so it gets a door on every screen without a fifth tab. It sat in the tab row for one
+//   cut (W9's second) as Reach before polish — Today was still task rows then and an
+//   entry that existed only on the rebuilt Today was one nobody could reach.
 //
-// Its position here is provisional. The mockup's top bar has four tabs and this is not
-// one of them — the projects screen is named in Today's design note, not drawn. Putting
-// it in the first-level navigation now is Reach before polish: with Today still showing
-// task rows, an entry that only exists on the rebuilt Today is an entry nobody can reach
-// today. When Today lands, this moves to where the design puts it.
-const links = [
-  { href: "/", key: "today", label: "Today", icon: Sunrise },
+// The environment on the right is a label, not a picker: every run executes on this
+// machine until W3-a lands. The CLI versions come from the one shared probe
+// (lib/runtime-probe.ts) that Environments and Settings read too — it spawns the CLIs,
+// so it is asked once and reused for a minute, and a Settings refresh reaches this bar
+// through the same module rather than leaving two answers on one screen.
+
+/** Where the inventory and Settings live on the bar; `label` matches pages' `active`. */
+const UTILITIES = [
   { href: "/portfolio", key: "projects", label: "Portfolio", icon: FolderKanban },
-  { href: "/workspace", key: "workbench", label: "Workbench", icon: MessagesSquare },
-  { href: "/environments", key: "environments", label: "Environments", icon: Server },
-  { href: "/skills", key: "skills", label: "Skills", icon: Library },
   { href: "/settings", key: "settings", label: "Settings", icon: Settings },
 ] as const;
 
-// `active` is matched against the stable English label so callers stay simple.
-export function DeliveryShell({ active, children }: { active: string; children: ReactNode }) {
+/** The bar. `active` is the stable English label of the screen rendering it. */
+export function TopBar({ active }: { active: string }) {
   const { resolvedTheme, setTheme } = useTheme();
   const { locale, toggleLocale, t } = useI18n();
+  const [runtimes, setRuntimes] = useState<RuntimeCapabilities | null>(null);
+  const [probeFailed, setProbeFailed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    // Every answer that lands while this bar is mounted — including one another screen
+    // forced — so the bar and the page under it cannot say two things about one CLI.
+    const unsubscribe = subscribeRuntimes((outcome) => {
+      if (cancelled) return;
+      if (outcome.ok) { setRuntimes(outcome.value); setProbeFailed(false); }
+      else { setRuntimes(null); setProbeFailed(true); }
+    });
+    // The subscription carries every later outcome; this call only seeds the bar from
+    // the cache or the ask in flight. An ask overtaken by a forced one says nothing here —
+    // the newer one reaches the bar through the subscription.
+    probeRuntimes()
+      .then((data) => { if (!cancelled) { setRuntimes(data); setProbeFailed(false); } })
+      .catch((error: unknown) => { if (!cancelled && !isProbeSuperseded(error)) { setRuntimes(null); setProbeFailed(true); } });
+    return () => { cancelled = true; unsubscribe(); };
+  }, []);
+
+  const strip = cliStripOf(runtimes, probeFailed);
 
   return (
-    <div data-delivery-shell-root className="min-h-screen bg-muted/20 lg:flex">
-      <aside className="border-b bg-sidebar lg:sticky lg:top-0 lg:h-screen lg:w-64 lg:border-b-0 lg:border-r">
-        <div className="flex items-center justify-between px-5 py-4 lg:block lg:py-6">
-          <Link href="/" className="flex items-center gap-3">
-            <span className="grid size-10 place-items-center rounded-xl bg-primary text-primary-foreground"><Network className="size-5" /></span>
-            <span>
-              <span className="block text-lg font-bold leading-tight">{t("common.brand.name")}</span>
-              <span className="block text-xs text-muted-foreground">{t("common.brand.tagline")}</span>
-            </span>
+    <header className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b bg-sidebar px-4 py-2">
+      <Link href="/" className="flex items-center gap-2">
+        <span className="grid size-8 place-items-center rounded-lg bg-primary text-primary-foreground"><Network className="size-4" /></span>
+        <span className="text-sm font-bold">{t("common.brand.name")}</span>
+      </Link>
+
+      <nav className="flex items-center gap-1 overflow-x-auto" aria-label={t("common.shell.tabs")}>
+        {SHELL_TABS.map(({ href, key, label }) => (
+          <Link
+            key={href}
+            href={href}
+            className={cn(
+              "shrink-0 rounded-lg px-3 py-1.5 text-sm transition-colors",
+              active === label
+                ? "bg-primary text-primary-foreground"
+                : "text-muted-foreground hover:bg-accent hover:text-foreground",
+            )}
+          >
+            {t(`common.nav.${key}`)}
           </Link>
-          <div className="flex items-center gap-1 lg:absolute lg:bottom-5 lg:left-5">
-            <button
-              className="rounded-lg p-2 text-muted-foreground hover:bg-accent hover:text-foreground"
-              onClick={toggleLocale}
-              aria-label={t("common.action.toggleLanguage")}
-              title={locale === "zh" ? t("common.language.en") : t("common.language.zh")}
-            >
-              <Languages className="size-4" />
-            </button>
-            <button
-              className="rounded-lg p-2 text-muted-foreground hover:bg-accent hover:text-foreground"
-              onClick={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}
-              aria-label={t("common.action.toggleTheme")}
-            >
-              <Sun className="hidden dark:block" /><Moon className="dark:hidden" />
-            </button>
-          </div>
-        </div>
-        <nav className="flex gap-1 overflow-x-auto px-3 pb-3 lg:block lg:space-y-1 lg:pb-0">
-          {links.map(({ href, key, label, icon: Icon }) => (
+        ))}
+      </nav>
+
+      <div className="ml-auto flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+        {/* The environment runs execute in. A label until W3-a, and it says so on hover. */}
+        <span className="font-mono" title={t("common.shell.environmentTitle")}>
+          {t("common.shell.environmentLocal")}
+          {runtimes?.platform ? ` · ${runtimes.platform}` : ""}
+        </span>
+
+        {/* The three CLIs. Each line is a sentence from lib/shell.ts — "not installed",
+            "could not be probed", "version unknown" — never a blank beside a name. */}
+        <span className="hidden font-mono md:inline" aria-live="polite">
+          {strip.kind === "pending"
+            ? t("common.shell.versions.pending")
+            : strip.kind === "failed"
+              ? t("common.shell.versions.failed")
+              : strip.lines.map(({ adapter, line }, index) => (
+                <span key={adapter}>
+                  {index > 0 && " · "}
+                  {adapter}{" "}
+                  {line.kind === "version"
+                    ? line.version
+                    : <span className="italic">{t(`common.shell.versions.${line.kind}`)}</span>}
+                </span>
+              ))}
+        </span>
+
+        <span className="flex items-center gap-0.5">
+          {UTILITIES.map(({ href, key, label, icon: Icon }) => (
             <Link
               key={href}
               href={href}
               className={cn(
-                "flex shrink-0 items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors",
-                active === label
-                  ? "bg-primary text-primary-foreground"
-                  : "text-muted-foreground hover:bg-accent hover:text-foreground",
+                "rounded-lg p-2 hover:bg-accent hover:text-foreground",
+                active === label ? "bg-primary text-primary-foreground hover:bg-primary hover:text-primary-foreground" : "text-muted-foreground",
               )}
+              aria-label={t(`common.nav.${key}`)}
+              title={t(`common.nav.${key}`)}
             >
               <Icon className="size-4" />
-              {t(`common.nav.${key}`)}
             </Link>
           ))}
-        </nav>
-      </aside>
+          <button
+            className="rounded-lg p-2 text-muted-foreground hover:bg-accent hover:text-foreground"
+            onClick={toggleLocale}
+            aria-label={t("common.action.toggleLanguage")}
+            title={locale === "zh" ? t("common.language.en") : t("common.language.zh")}
+          >
+            <Languages className="size-4" />
+          </button>
+          <button
+            className="rounded-lg p-2 text-muted-foreground hover:bg-accent hover:text-foreground"
+            onClick={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}
+            aria-label={t("common.action.toggleTheme")}
+          >
+            <Sun className="hidden size-4 dark:block" /><Moon className="size-4 dark:hidden" />
+          </button>
+        </span>
+      </div>
+    </header>
+  );
+}
+
+/**
+ * The bar over a screen that scrolls as a page (Today, Environments, Skills, the
+ * inventory, Settings). The workbench mounts `TopBar` itself: its columns manage their
+ * own height and scrolling.
+ */
+export function DeliveryShell({ active, children }: { active: string; children: ReactNode }) {
+  return (
+    <div data-delivery-shell-root className="flex min-h-screen flex-col bg-muted/20">
+      <TopBar active={active} />
       <main className="min-w-0 flex-1">{children}</main>
     </div>
   );

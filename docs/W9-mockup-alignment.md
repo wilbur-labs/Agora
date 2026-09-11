@@ -112,7 +112,8 @@ mockup 左栏 8 项里 3 项后端无支撑：**已知缺陷**（UI 里完全没
 | **Today 三档：D-1 的存储 + API** | ✅ commit `bfeeb7c` |
 | Today 三档：前端（大卡 / 紧凑行 / 休眠折叠 / 说不了 / 卡住-需要你） | ✅ 2026-09-11 家里机。评审轮数与 finding 数**以 `.agora/development/PROGRESS.md`「W9 — Today's three tiers」为准**，这里不复述数字 |
 | 中栏 Run 卡片流（两页签合一条流；卡片带改动文件 / 时长 / 脚注；复核子卡带 id、输出、文件；消息框可记一笔可派活；W8 验收线④结清） | ✅ 2026-09-12 家里机，记录在 PROGRESS.md「W9 — the middle column is one stream」 |
-| 壳 / 顶栏（四 tab + 右侧环境与 CLI 版本；顺手把「项目」页移到设计给它的位置） | ⬜ 未开工 ← **下一步** |
+| 壳 / 顶栏（四 tab + 右侧环境与 CLI 版本 + 「项目」/设置的门；工作台同一条顶栏；CLI 探测三处共用一个） | ✅ 2026-09-12 家里机，记录在 PROGRESS.md「W9 — the shell」 |
+| 步骤 B：已知缺陷真实读取（来源现在是 `docs/known-defects.md`） | ⬜ ← **W9 剩下的最后一件**，加上三屏对 mockup 的浏览器实看 |
 
 ### D-1 已落地（后端）—— 给前端的契约
 

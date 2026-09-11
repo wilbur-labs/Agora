@@ -1,7 +1,6 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useTheme } from "next-themes";
 import Link from "next/link";
 import {
   AlertTriangle,
@@ -10,12 +9,8 @@ import {
   CircleCheck,
   ExternalLink,
   FolderOpen,
-  Languages,
-  Moon,
   Network,
   RefreshCw,
-  Settings,
-  Sun,
   Target,
   X,
 } from "lucide-react";
@@ -142,6 +137,7 @@ import {
 import { useI18n, type Translate, type TranslateEnum } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import { Conversation } from "@/components/conversation";
+import { TopBar } from "@/components/delivery-shell";
 import { DeliverablesBlock } from "@/components/run-deliverables";
 import { relTime } from "@/components/timeline-entry";
 
@@ -468,7 +464,9 @@ export default function WorkspacePage() {
   }, []);
 
   return (
-    <div className="flex h-screen overflow-hidden bg-muted/20">
+    <div className="flex h-screen flex-col overflow-hidden bg-muted/20">
+      <TopBar active="Workbench" />
+      <div className="flex min-h-0 flex-1 overflow-hidden">
       <ProjectNav
         projectId={currentProjectId}
         projectName={navDashboard?.name ?? currentProjectId}
@@ -530,6 +528,7 @@ export default function WorkspacePage() {
           <EmptyWorkspace hasTasks={tasks.length > 0} />
         )}
       </main>
+      </div>
       {showCreate && (
         <CreateTaskDialog
           projectIds={projectIds}
@@ -556,21 +555,14 @@ export default function WorkspacePage() {
  * project — the mockup puts these in a top bar, and that move is a later cut of W9. Kept
  * as a unit here so that cut is a relocation rather than a rewrite.
  */
+// The rail's own header keeps only what is about the rail — the refresh. The brand,
+// language, theme and Settings moved up into the top bar the workbench now shares
+// with every other screen (W9's shell cut); drawing them twice on one screen was noise.
 function RailHeader({ onRefresh, loading }: { onRefresh: () => void; loading: boolean }) {
-  const { t, locale, toggleLocale } = useI18n();
-  const { resolvedTheme, setTheme } = useTheme();
+  const { t } = useI18n();
   return (
-    <div className="flex items-center justify-between px-4 py-3">
-      <Link href="/workspace" className="flex items-center gap-2">
-        <span className="grid size-8 place-items-center rounded-lg bg-primary text-primary-foreground"><Network className="size-4" /></span>
-        <span className="text-sm font-bold">{t("common.brand.name")}</span>
-      </Link>
-      <div className="flex items-center gap-0.5">
-        <button className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground" onClick={onRefresh} disabled={loading} aria-label="Refresh"><RefreshCw className={cn("size-4", loading && "animate-spin")} /></button>
-        <button className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground" onClick={toggleLocale} aria-label={t("common.action.toggleLanguage")} title={locale === "zh" ? "EN" : "中文"}><Languages className="size-4" /></button>
-        <button className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground" onClick={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")} aria-label={t("common.action.toggleTheme")}><Sun className="hidden size-4 dark:block" /><Moon className="size-4 dark:hidden" /></button>
-        <Link href="/settings" className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground" aria-label="Settings"><Settings className="size-4" /></Link>
-      </div>
+    <div className="flex items-center justify-end px-4 py-2">
+      <button className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground" onClick={onRefresh} disabled={loading} aria-label={t("common.action.refresh")} title={t("common.action.refresh")}><RefreshCw className={cn("size-4", loading && "animate-spin")} /></button>
     </div>
   );
 }
