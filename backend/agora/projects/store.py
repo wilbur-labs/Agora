@@ -395,6 +395,29 @@ class ProjectStore:
         self._update(project_id, "charter = ?", (json.dumps(charter),))
         return self.require(project_id)
 
+    def set_charter_with_setting(self, project_id: str, charter: dict[str, Any], key: str, value: str) -> Project:
+        """The charter and a settings row in one transaction — for a write that must
+        leave a marker of itself or not happen at all (the kickoff's "this control plane
+        applied this seal"). Two statements, one commit: a crash between them cannot
+        leave the charter written and the marker missing, or the reverse."""
+        with self._transaction() as db:
+            db.execute(
+                """
+                INSERT INTO project_settings (key, value, updated_at) VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value,
+                                               updated_at = excluded.updated_at
+                """,
+                (key, value, utc_now()),
+            )
+            cursor = db.execute(
+                "UPDATE projects SET charter = ?, agora_revision = agora_revision + 1, "
+                "updated_at = ? WHERE project_id = ?",
+                (json.dumps(charter), utc_now(), project_id),
+            )
+            if cursor.rowcount == 0:
+                raise KeyError(f"Unknown project: {project_id}")
+        return self.require(project_id)
+
     def _update(self, project_id: str, assignment: str, params: tuple[Any, ...]) -> None:
         """The one Agora-side write path for a project row.
 

@@ -2,6 +2,7 @@ import { getApiBase } from "@/lib/api";
 import { MAX_PAGE, SERVER_PAGE_MAX, readPage } from "./paged";
 import type { WorkspaceSourcePayload } from "./workspace-sources";
 import type { CRLogLike } from "@/lib/cr-log";
+import type { KickoffCharterLike, KickoffReadLike, KickoffTaskLike } from "@/lib/kickoff";
 import type { ProgressSnapshotLike } from "@/lib/progress-snapshot";
 
 export type TaskState =
@@ -811,6 +812,57 @@ export function setProjectCharter(projectId: string, charter: Charter): Promise<
   return request(`/api/projects/${encodeURIComponent(projectId)}/charter`, {
     method: "PUT",
     body: JSON.stringify(charter),
+  });
+}
+
+// --- project kickoff (W10) ------------------------------------------------------------
+//
+// The record lives in the project's repository (`.agora/kickoff.json`); every read
+// reports it as available with a record, or unavailable with a reason (absent /
+// unreadable / malformed). Only `adopt` writes to the control plane.
+
+export interface KickoffPayload extends KickoffReadLike {
+  project_id: string;
+}
+
+export function getKickoff(projectId: string, signal?: AbortSignal): Promise<KickoffPayload> {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/kickoff`, { signal });
+}
+
+// Every mutation names the revision of the record the caller was looking at (`null`
+// for "no record"); the server refuses a stale one with 409 `kickoff_stale`. See the
+// router's note on optimistic concurrency.
+
+export function startKickoff(projectId: string, brief: string, expectedRevision: string | null): Promise<KickoffPayload> {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/kickoff`, {
+    method: "POST",
+    body: JSON.stringify({ brief, expected_revision: expectedRevision }),
+  });
+}
+
+export function saveKickoffAnswers(
+  projectId: string, answers: Record<string, string>, expectedRevision: string,
+): Promise<KickoffPayload> {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/kickoff/answers`, {
+    method: "POST",
+    body: JSON.stringify({ answers, expected_revision: expectedRevision }),
+  });
+}
+
+export function refineKickoff(projectId: string, expectedRevision: string): Promise<KickoffPayload> {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/kickoff/refine`, {
+    method: "POST",
+    body: JSON.stringify({ expected_revision: expectedRevision }),
+  });
+}
+
+export function adoptKickoff(
+  projectId: string,
+  body: { charter: KickoffCharterLike; tasks: KickoffTaskLike[]; expected_revision: string },
+): Promise<KickoffPayload> {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/kickoff/adopt`, {
+    method: "POST",
+    body: JSON.stringify(body),
   });
 }
 

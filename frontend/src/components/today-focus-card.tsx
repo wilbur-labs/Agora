@@ -152,7 +152,9 @@ export function TodayFocusCard({
           ) : (
             <span className="text-xs text-muted-foreground">
               {t("today.card.goalNone")}{" "}
-              <Link href="/portfolio" className="text-primary hover:underline">{t("today.card.goalNoneHint")}</Link>
+              <Link href={`/portfolio?project=${encodeURIComponent(project.project_id)}`} className="text-primary hover:underline">
+                {t("today.card.goalKickoff")}
+              </Link>
             </span>
           )}
         </Row>

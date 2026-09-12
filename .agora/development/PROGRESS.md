@@ -7672,3 +7672,721 @@ Commit the slice files on `feature/w8-session-ui`, staged explicitly, and push t
 `private`. W9's three UI cuts are then all on the branch; what remains of W9 is D-5 step B
 (the known-defects reader — its source is now `docs/known-defects.md`) and the browser
 check of all three screens against the mockup. Then `docs/NEXT-STEPS.md` §二: W3-a.
+
+
+## W10 — project kickoff: the agent reads once, asks, proposes; the owner adopts
+
+`feature/w8-session-ui`, on top of `b86b4c6`, not yet committed. CR-54 (2026-09-12): the
+owner created a project and asked for what the mockup already names on Today's card for
+a project without a goal — "接入 Agora 时会跑一次项目初始化 … 让 agent 读一遍 →" — and
+for the alignment loop after it ("需要跟我对齐的需求发给我，一起对齐"). The workspace's
+own `/kickoff` interview, as a product feature.
+
+### The flow, one round
+
+1. **Start** — on the projects screen (and from Today's card, "让 agent 读一遍 →"), the
+   owner writes a brief (required in practice for an empty repository) and clicks. The
+   backend gathers what the repository can say — README head, top-level tree, recent
+   git log — **in Python, not by letting the agent explore**: what the agent read is
+   recorded beside what it concluded, and a part that could not be read is handed to it
+   as "could NOT be read, do not guess". One `claude -p` call, parsed fail-closed like
+   `tasks/clarify.py`, returns a charter draft, 4–6 questions only the owner can answer,
+   whether the project has a UI, and read notes.
+2. **Answer** — suggestion chips and free text; saved to the record. Changing an answer
+   withdraws a proposal built on the old one.
+3. **Propose** — a second `claude -p` call, from the answers: the charter to adopt and the
+   first tasks in order. **If the project has a UI the first task is the mockup** —
+   draw the screens under `docs/mockups/`, get sign-off, and every later acceptance line
+   points at it. A UI project whose proposal forgot that task is *reported* as missing it
+   (`mockup_task_missing`), never silently repaired.
+4. **Adopt** — the owner edits the charter and unticks tasks; adopting writes the charter
+   through the existing human path (`set_charter`) and creates the ticked tasks in the
+   store, mockup first by priority. Nothing before this step wrote anywhere but the record.
+
+### Where the record lives, and what a read of it says
+
+`<root>/.agora/kickoff.json` — the project's own, versioned with it, the rule of adr/0004
+for the CR Log and the decisions. A read reports one of: **absent** (never started — the
+only state that offers "start"), **present**, **unreadable** (the file is there and could
+not be read), **malformed** (read fine, not a record). The panel words each separately;
+`lib/kickoff.ts` is where the step is decided, and a reason this build does not know is
+"unreadable", not "start".
+
+The charter still lives in the control-plane DB: adr/0005 decided it belongs in the
+repository too, and that migration is separate work (recorded in the ADR's Consequences).
+Adoption goes through the path that exists.
+
+### Files
+
+Backend: `agora/projects/kickoff.py` (new; context, two prompts, two parsers, the record),
+`agora/api/kickoff_router.py` (new; GET / POST / answers / refine / adopt),
+`agora/api/app.py` (mounts it), `tests/test_kickoff.py` (new; 130 tests, five skipped where
+symlinks are not permitted — parsing, context, the record's readings, the whole flow through
+`TestClient` with the agent stubbed, sealed/resumable adoption, the races, revision pinning,
+502 on agent failure writes nothing, 404).
+Frontend: `src/lib/kickoff.ts` (new; the step and the caveats), `src/components/kickoff-panel.tsx`
+(new), `src/lib/control-plane.ts` (five calls), `src/app/portfolio/page.tsx` (panel under the
+cockpit, `?project=` deep link), `src/components/today-focus-card.tsx` (the card's link),
+dictionaries `portfolio.ts` / `today.ts`, `tests/kickoff.test.mts` (new; 4 tests incl. a
+source scan), `package.json`, and this record.
+
+### Gate
+
+* Backend: `pytest tests/test_kickoff.py tests/test_projects.py tests/test_project_store.py
+  tests/test_project_provisioning.py tests/test_tasks_controlplane.py tests/test_workspace_tasks.py`
+  — **260 passed, 6 skipped** (`test_kickoff.py` alone 125 passed, 5 skipped). The full
+  suite (40 minutes) was not re-run for a slice that adds a router and touches no
+  existing backend module but `app.py`.
+* Frontend: `pnpm run test:control-plane` **376 collected / 375 passed / 1 skipped**
+  (was 371 / 370 / 1). `tsc --noEmit` 0. `eslint` 0 on the changed files. `next build`
+  12 pages (the app has 12 routes; earlier entries' "14" counted two build lines that are
+  not pages).
+* Not exercised end to end with a real agent: the first real run is the owner's, on
+  NichiMate, with their brief — that is W10's first exit line, and it is theirs to check.
+
+### Review state
+
+**Fifty-three rounds. Codex reviewed rounds 2, 3 and 40; kiro (gpt-5.6) stood in for rounds 1, 4–38 and 41 onward —
+every one of those a Codex usage-limit refusal the same minute, the substitution adr/0017
+allows and the commit message names. Round 29's first kiro report came back empty after
+44 seconds; it was run again on the same, unchanged tree and came back with two findings,
+both recorded as round 29. Round 39 went wrong in the other direction: Codex's quota had
+come back and it reviewed, but the runner's "over the limit → kiro" check matched the words
+"usage limit" quoted from this very file in Codex's output, so kiro ran on the same tree
+as well and Codex's own report was not kept — two reviewers on one diff by accident, the
+thing adr/0017 says not to do on purpose. Kiro's four findings are round 39; Codex's are
+unknown, which is why round 40 was Codex again, captured whole — five findings, all
+fixed. Round 42 was run while two tests were red — two expectations that the round-41
+fix had rightly changed, not code — because the runner's green-gate only guarded the
+record update, not the review; the findings stand on the code as it was, and the tree was
+green again before round 43.** 182 findings: 143 fixed (numbered below), three rejected
+(named after them, one of them raised twice), three deferred with CR rows (named after
+that; two of them raised repeatedly — CR-57 eighteen times, CR-56 eleven), and one
+carried to the backlog unfixed (workspace CR-58, below). Round 53 brought the two
+repeats and that one.
+
+**Stopped here, and the stopping is the finding.** The gates were green from round 6 on;
+the rounds after that each turned up two or three real edge cases of the record's
+honesty, and each was fixed and re-reviewed — for a surface the owner could not reach,
+because the slice was never committed and the backend never restarted. That is the
+inversion adr/0020 exists to stop, done a third time, and the owner said so ("what are you
+doing all day?"). From this commit the owner's first real run on NichiMate decides the
+next cut; a review loop on this slice does not resume until they have been stuck on it.
+
+What the rounds caught, in order — nearly all of it about `adopt`, the one step that
+commits, which is where the honesty of the whole flow is decided:
+
+1. (round 1, P1) `adopt` was neither atomic nor idempotent: a retry after a failure
+   halfway, or after a lost response, created the tasks again. Made **sealed and
+   resumable**: the first call seals the approved charter and tasks (each with a stable
+   key) into the record before any side effect; each task is created with its key in its
+   metadata and the store is asked for the key before creating; a retry resumes from the
+   sealed payload and ignores its own body; a completed adoption answers 409.
+2. (round 1) `refine` read the record, called the agent for minutes, and wrote the whole
+   record back — over answers saved meanwhile. It re-reads before writing, under the
+   project's lock, and refuses (409) if the answers, the questions, the round or the
+   status moved.
+3. (round 1) A record was "available" on the strength of a status field; the UI would
+   have crashed on `questions.length`. `_is_record` now checks every field the flow
+   dereferences, per status, down to the nested strings.
+4. (round 1) The prompt was a command-line argument; a brief plus a README head can pass
+   the Windows limit (~32K). It travels on stdin; the README head is capped in characters
+   as well as lines.
+5. (round 1) Duplicate question ids from the agent would have shared one answer — renamed
+   `id-2`, never merged.
+6. (round 1) The adopted summary counted the proposal's tasks, not the created ones.
+7. (round 2, P1) Task identity by title: two approved tasks with one title lost the
+   second; a crash between "created" and "recorded" duplicated on retry. Keys, and the
+   store consulted by key.
+8. (round 2, P1) A README that is a symlink was followed — a project could point it at a
+   file outside the root and have it sent to the agent. Read without following links,
+   regular files only, and a link is named as unread.
+9. (round 2) Blank answers counted as answered; an empty brief on an empty repository
+   asked the agent to analyse nothing. Both refused.
+10. (round 3, P1) The analyst call ran `claude -p` with default permissions from the
+    project root. It now uses the runtime registry's audited read-only shape: plan mode,
+    safe mode, no session left behind — the analyst is handed the context; it is not to
+    act on the project.
+11. (round 3, P1) Task keys restarted at 1 every round, so a round after an adoption
+    found the previous round's tasks under its keys and skipped its own. Keys carry a
+    round id.
+12. (round 3, P1) Two requests could both read "proposed" and both adopt. A per-project
+    lock (this control plane is one process over one SQLite file) is held across the
+    whole adoption and around every read-compare-write of the record; the second request
+    sees what the first wrote.
+13. (round 3, P1) An old tab's answers could walk an adopted record back to "answered"
+    and reopen adoption. Terminal records refuse answers; ask again starts a new round.
+14. (round 3) "Mockup task present" was accepted anywhere in the list; the rule is
+    *first*, because adoption turns order into priority. Checked as first.
+15. (round 4, P1) A `threading.Lock` taken on the event-loop thread and held across an
+    `await` — the first request could never resume to release it, the second waited
+    forever. Every locked section is now one synchronous function run in the threadpool,
+    lock held inside it.
+16. (round 4, P1) A slow first ask finishing after a faster second one overwrote the
+    newer round — answers, proposal, adoption receipt gone, tasks left in the store. The
+    ask remembers the round it started over and refuses (409) if it moved.
+17. (round 4, P1) Crash recovery looked at the first page of tasks only. It pages
+    through all of them.
+18. (round 4) The record kept counts of what the agent was shown, not the text; the
+    context text is in the record now, so the draft can be checked against it later.
+19. (round 4) `needs_mockup` was read with `bool()` — `"false"` is true. A non-boolean is
+    a refusal.
+20. (round 5, P1) The ask's "did the record move" check compared the round id only;
+    answers, a proposal or an adoption inside the same round were overwritten, and an
+    absent record was indistinguishable from a malformed one. It compares a fingerprint
+    of the whole read now.
+21. (round 5, P1) `.agora` or the record file as a symlink or junction: the write would
+    land wherever the link points. Refused, as `kickoff_path_unsafe`.
+22. (round 5) The second pass re-read the repository and recorded nothing of it; the
+    proposal's own context is on the record beside the first pass's.
+23. (round 5) A second pass saying "no UI" lifted the first-task-is-mockup rule for a
+    project the first pass saw screens in. Either pass saying UI means UI.
+24. (round 5) A failed action left the panel on the step it was on — after an adoption
+    whose answer was lost, every retry said "already adopted" and nothing re-read. Any
+    failed action re-reads the record.
+25. (round 6, P1 ×3) The multi-tab family in one: a tab still showing round one's
+    proposal could adopt it under round two's keys; a tab saving one answer overwrote a
+    sibling tab's other answer; a tab starting over compared against what was on disk
+    when *its request arrived*, not what *it* had seen. One mechanism closes all three —
+    **the record carries a `revision`, every mutation names the revision the caller saw,
+    and a stale one is refused (409 `kickoff_stale`)**; the panel re-reads on refusal.
+26. (round 6, P1) The temporary file was written without a link check — a symlink at
+    `kickoff.json.tmp` would be truncated wherever it pointed, then renamed over the
+    record. Directory, file and temp file are each refused when they are links.
+27. (round 6, P1) "Refuses junctions" was said and not done: `lstat` reports a Windows
+    junction as a directory. `is_junction()` is asked as well as `is_symlink()`.
+28. (round 6) The mockup warning was judged on the proposal, not on what the person
+    ticked — unticking the mockup was exactly the case it should catch. Judged on the
+    selection now.
+29. (round 6) The parsers skipped malformed items and ignored the contract's counts; one
+    usable question out of four became "one question". Any malformed item, or a count
+    outside 3–8 questions / 1–8 tasks, fails the whole answer.
+30. (round 7) "Refuses junctions" was still only true on Python 3.12+: `Path.is_junction`
+    does not exist on the 3.10/3.11 the project supports, and the `getattr` fallback made
+    the guard silently a no-op there. On Windows the reparse-point attribute of `lstat` is
+    asked directly, on every supported interpreter.
+31. (round 7, P1) The revision was a counter, compared alone, while the record is a file
+    versioned with the project: two branches can hold "revision 4" over different answers,
+    and a tab that read one passed the check against the other. **The revision is now a
+    hash of the record's content**, computed at write time, so it cannot be stale against
+    what it names; a stored revision that does not match its content reads as `malformed`
+    (a hand edit, a merge), and the fingerprint that was defined and unused is the same
+    thing under another name.
+32. (round 7) A resumed adoption wrote the sealed charter again — over a charter the person
+    had edited through the charter editor while the adoption sat half done. The resume
+    writes the charter only when the goal is still empty; the tasks it finishes as before.
+33. (round 7) An `adopt` whose response was lost re-read the kickoff record but not the
+    cockpit or the task list, so a page that had in fact adopted showed the old charter
+    until a reload. The failure path of `adopt` now refreshes those too.
+34. (round 8, P1) The resume's "write the charter only if the goal is still empty" (item
+    32) was a guess, and wrong for a project that had a charter before this kickoff: a
+    crash before `set_charter` left the old goal in place, the retry saw a non-empty goal,
+    skipped the write, finished the tasks and said *adopted*. **The sealed payload now
+    records `charter_written`**, set right after the write; a resume writes the charter
+    when the flag is unset and never otherwise. Guessing from state replaced by recording
+    the step.
+35. (round 8, P1) The record was not bound to a project, and the registry allows two
+    project ids on one root: project B would read A's record from the shared directory,
+    could adopt A's proposal into B's charter and tasks, and the shared file then said
+    *adopted* for A too — with A's control plane holding nothing. The record carries its
+    `project_id`; a read for another project answers **`foreign`** (a fourth reason
+    beside absent / unreadable / malformed, with its own sentence in the UI), and every
+    mutation refuses it (409 `kickoff_foreign`) — a start would erase theirs, an adoption
+    would mark theirs done. The per-project lock is now keyed by the resolved root, since
+    two locks over one file would be no lock.
+36. (round 8) Task kinds outside the contract were rounded to `custom` — `"mock-up"`
+    became a custom task and was then reported as "no mockup task". Refused by name
+    instead; and the string-list helper that trimmed to a cap and skipped non-text items
+    without saying so now refuses the list, consistent with "one bad item fails the
+    answer" (item 29), which the code had claimed and not done for those lists.
+37. (round 8) The adopt note said "nothing before this was written", which was true of
+    the control plane and false of the repository: `.agora/kickoff.json` is written from
+    the first step. The note now says both.
+38. (round 9, P1) Item 34's flag was written *after* the charter, and a crash between
+    the two made the resume write the sealed charter over an edit made meanwhile — the
+    very thing item 32 promised not to do, and the comment called it "the cheap side".
+    Neither order of two writes can be right without a transaction, so the resume now
+    **looks instead of trusting a flag**: the seal also holds the charter as it was
+    *before* adopting, and on a resume the project's current charter is one of three
+    things — still the "before" (write the sealed one now), already the sealed one (the
+    flag write was what the crash skipped), or neither (a person edited it: theirs
+    stands, and the record says `charter_kept_edit`, which the panel turns into a
+    sentence instead of "the charter is set").
+39. (round 9, P1) `start` over a record in `adopting` replaced it with a fresh questions
+    record — and with it the only copy of the approved task that had not been created,
+    leaving the created one an orphan. Refused now (409 `kickoff_adopting`), before the
+    agent is spent and again under the lock; resuming is the way out, and there is no
+    path that discards a sealed adoption, on purpose.
+40. (round 9) Task titles were cut at 300 characters and descriptions at 20,000, silently
+    — the acceptance line at the end of a long description would reach the task store
+    missing, with nothing saying so. Refused over the cap, like every other malformed
+    field since item 29.
+41. (round 10, P1) The task key was round + position, and the record is versioned with
+    the project: two branches can carry the same round with a different first task, and
+    the task created under `r1-1` on branch A would be found as branch B's and B's never
+    created — with the record marked adopted. **The key now carries a hash of the task's
+    content** (title, description, kind), so "found by key" means "this task, as approved".
+42. (round 10, P1) The restart block kept the brief typed into it across record changes:
+    a tab that re-read after a 409 held its old brief and would send it with the *new*
+    revision, which the server rightly accepts — another tab's round overwritten through
+    the front door. The block is keyed by the record's revision; when the record moves it
+    remounts and the stale brief is dropped.
+43. (round 10) The parsers took `str()` of text fields — `{"zh": "画原型"}` became the text
+    of a Python dict as a task title, `123` became "123" as a goal — while claiming to fail
+    closed. Every text field is now required to be text, or the answer is refused.
+44. (round 11) "The same request again resumes" was not true: the seal moved the revision,
+    so the very request whose answer was lost carried a stale one and got 409 before the
+    sealed payload was read. A resume is now exempt from the revision check — its body is
+    ignored and it is idempotent — so a retry means what it says; a first adoption is
+    pinned as before.
+45. (round 11) A task without `kind` became `custom` and one without `description` became
+    "" — the first could not be the mockup task, the second had no "done looks like".
+    Both required now; and the charter to *adopt* must carry at least one success
+    criterion (the draft may not: the questions settle them).
+46. (round 11) The prompt filler substituted tokens one after another, so a brief that
+    contained the text "{context}" had the repository pasted into it — and the record
+    said the agent was shown the brief as written. One-pass substitution, with a test that
+    puts a token inside a value.
+47. (round 11, follow-through) `adopt` met a foreign record through the generic
+    "not available" refusal after item 44 reordered the reads; it answers
+    `kickoff_foreign` there too, the one name for that case.
+48. (round 12, P1) The link guard on the write was check-then-write: a symlink planted at
+    the temporary file's fixed name between the look and `write_text` would have been
+    followed. The temporary file now has a fresh random name and is created with
+    `O_EXCL` (and `O_NOFOLLOW` where the platform has it) — nothing placed there first can
+    be opened through. **What remains is said, not implied**: `.agora` and `kickoff.json`
+    are inspected just before the write, and a process with write access to the project
+    root that swaps `.agora` for a junction inside that gap is not stopped — closing that
+    takes a directory handle (`openat`) Windows does not offer here. Workspace CR-56
+    (`defer`) names the condition under which that matters.
+49. (round 12) The adopt route accepted what the parsers refused: a whitespace goal, no
+    success criterion (the editor lets the person clear the list), tasks with any kind or
+    an empty description. The request models hold the person to the same contract (422),
+    and the adopt button is off — and says why — while the goal or the criteria are missing.
+50. (round 12) The README was probed as "a regular file, not a link" and then opened by
+    path — two looks with a gap. It is now opened first and checked on the descriptor
+    (`fstat` against `lstat` of the path, `O_NOFOLLOW` where it exists); a link at the
+    path, or a different file behind the descriptor, is refused and named as unread.
+51. (round 12) A README.md that was a directory or a link stopped the search: a readable
+    README.txt behind it was never tried and the record only mentioned the first. Every
+    candidate is tried until one reads; each that could not be is named.
+52. (round 13, P1) "Sealed before any side effect" was not durable: the record was
+    renamed into place without `fsync`, while the tasks went into SQLite (which syncs).
+    A power cut after the tasks' commit could bring the record back as the *previous*
+    version, offering the adoption again over tasks it did not know about. The temporary
+    file is flushed and fsynced before the rename, and the directory after it where the
+    platform allows (POSIX; Windows offers no directory handle here, which is said).
+53. (round 13) The question and proposal forms were keyed by question ids + saved
+    answers and by the proposal's text, so after a 409 re-read a tab kept its typed text
+    and could save it under the *new* revision — another round's questions with the same
+    ids, or a word-for-word repeated proposal. Every form is keyed by the record's
+    revision, like the restart block since item 42.
+54. (round 15, P1) Item 52 synced the file and, on Windows, skipped the directory —
+    saying so — which left the rename itself undurable there, and this control plane
+    runs on Windows. The rename now goes through `MoveFileExW` with
+    `MOVEFILE_WRITE_THROUGH` on Windows (the platform's "return once it is on disk"),
+    and `os.replace` + directory `fsync` elsewhere.
+55. (round 15) A README that was not UTF-8 (a Shift-JIS one is ordinary on this machine)
+    was decoded with replacement characters and reported as read. It is now named as
+    unread ("not UTF-8 text") and the next candidate is tried; no encoding is guessed.
+56. (round 15) The panel's reads and mutations could land out of order: a re-read started
+    by a failed adopt could arrive after the resume that succeeded and put the panel back
+    on "adopting". Every request that may set the record takes a ticket, and only the
+    newest ticket's answer is applied.
+57. (round 15) The JSON object was cut "from the first brace to the last", so prose with
+    braces of its own before the object (an example, a template) made a fine answer fail
+    and cost another agent call. The first object that *decodes* is taken, wherever it
+    starts.
+58. (round 16, P1) The write refused links and the read did not: `read_kickoff` opened
+    the path as given, so a `.agora` or `kickoff.json` that was a link would have been
+    read from wherever it pointed. The read now honours the same boundary — a linked path
+    answers **`linked`** (a fifth reason, with its own sentence in the UI: neither read
+    nor written), and the content is read on a checked descriptor like the README.
+59. (round 16) After a *completed* adoption, the very request that adopted — carrying the
+    revision from before it — heard `kickoff_stale` instead of the promised
+    `kickoff_already_adopted`, because the revision was looked at before the status.
+    "Already adopted" is now the first answer.
+60. (round 16) The README was read up to a byte limit and then decoded strictly, so a
+    multibyte character cut by the limit made a fine Japanese README "not UTF-8". An
+    incremental decoder holds back a cut sequence; an invalid byte inside still refuses.
+61. (round 16) The answer boxes stayed editable while a save or the second pass was out;
+    the answer landed as a new revision, the block remounted on it (item 53), and text
+    typed meanwhile was dropped without a word. Read-only while a request is out.
+62. (round 17, P1) The read stopped at 4 MB and the write had no ceiling: an answer of a
+    few million characters would have been written over a good record and read back as
+    malformed, with no way on. Answers are bounded per item and in number, charter items
+    per item, and **the write refuses any record larger than the read would take back**
+    — before touching the file.
+63. (round 17) The descriptor read was one `os.read`, and a short read (a network share)
+    would have passed as EOF: a partial README sent as whole, a whole record called
+    malformed. It reads to the limit or EOF.
+64. (round 17) A task in a record could lack `description` (the validator defaulted it),
+    while the adopt route requires one — a resume of such a record would have been 422
+    forever. The record validator requires it, as the parser has since item 45.
+65. (round 17) The extractor took the first object that *decoded*; an example object in
+    the prose before the answer would have been taken and the answer behind it refused.
+    It takes the first object carrying the contract's key (`questions` / `tasks`), and
+    only failing that the first that decodes, so the refusal names what is missing.
+66. (round 18) The record read stopped at its bound without asking whether the file went
+    on: a valid record followed by a tail the flow never wrote (a merge's conflict
+    marker) would have read as present, and the next save would have replaced the whole
+    file, tail and all. One byte past the bound is asked for; a record past it is
+    `malformed`, read entire or not at all, while the README head stays a head by design.
+67. (round 19, P1) An adopted record was believed on the word of the file: the record
+    travels with the repository, and on a clone — or after a database not restored — the
+    panel said "charter set, tasks created" over an empty control plane, and `adopt`
+    answered "already adopted". **The read now says what this control plane holds** of
+    an adopted record (charter present or not, N of M recorded tasks found by id), the
+    panel shows the counts instead of the claim when they fall short, and adopting again
+    re-applies the seal here: what is missing is created (found by key first), what is
+    present is left alone, the first adoption's time stands.
+68. (round 19) The agent's output was decoded with replacement characters, so a CP932
+    console or one broken byte would have put "�" into a charter that parsed, was adopted,
+    and reached the control plane as text the agent wrote. Bytes, decoded strictly;
+    not UTF-8 is a refusal.
+69. (round 19) The parser put no length on question ids while the answers route holds
+    them to 128 — an interview whose ids the route refuses could never be answered. One
+    constant, checked before the interview is shown.
+70. (round 20, P1) "The record says what the agent was shown" was a claim the agent could
+    falsify: plan mode still allows the read tools, and the process ran with the project
+    as its working directory, so it could go and read a `.env` or the source past the
+    README head on its own. **The agent now runs with `--tools ""` and an empty scratch
+    directory as cwd** — no tools, nothing at hand but the prompt — with a test on both.
+71. (round 20) A duplicate question id made unique by a suffix could grow past the cap
+    item 69 introduced. Checked again after the rename.
+72. (round 20) The brief stayed editable while pass one ran, and the restart brief
+    likewise; the request carried the text at the click and the later edits vanished
+    with the step. Read-only while the request is out, like the answers since item 61.
+73. (round 20) The proposal's charter and ticks stayed editable while `adopt` ran; the
+    seal held the click-time snapshot and edits made meanwhile vanished with the form.
+    Read-only while the request is out.
+74. (round 20) On Windows every reparse point was taken for a link, and OneDrive
+    placeholders carry one: a project under a synced folder would have read `linked`
+    and been unwritable. Only the symlink and mount-point (junction) reparse tags count.
+75. (round 20) `git log` was decoded with replacement characters; a repository whose
+    log output is Shift-JIS would have reached the agent with "�" for words, reported as
+    read. Bytes, decoded strictly; not UTF-8 is named as unread.
+76. (round 21, P1) Item 67's "charter present" meant "some goal is there": after a branch
+    switch a leftover charter A counted as the approved B, re-applying left A and then
+    said complete. The view now says `matches` / `differs` / `absent` against the
+    approved charter; an ordinary edit after the adoption (`differs`, tasks all present)
+    is not incomplete, and a re-apply sets the charter to the approved one unless it
+    already matches — the panel says so before the click.
+77. (round 22) The proposal form was locked only while *its own* request was out; a
+    refine started from the answers above it moves the record too, and edits made while
+    it ran vanished with the remount. Locked while any request is out.
+78. (round 22) The parsers put no length on charter fields while the adopt route holds
+    each to 2,000 characters — a proposal the person could not adopt as it stood. One
+    constant, checked in the parser.
+79. (round 22) The agent's scratch directory was left behind when the call timed out or
+    failed to launch. Removed in a `finally`.
+80. (round 23, P1) Item 39 refused a start over `adopting` and not over an *adopted*
+    record this control plane has not applied (item 67's clone case) — whose seal is
+    likewise the only list of what to create here. Refused now (409
+    `kickoff_not_applied_here`, with the counts), and the panel offers no restart there
+    until the seal is applied.
+81. (round 23) After a refused save the panel unlocked its forms while the re-read was
+    still in flight; text typed in that gap was dropped by the remount the re-read then
+    caused. The re-read is awaited before the forms unlock.
+82. (round 24, P1) The revision was checked on one read of the file and the record taken
+    from another: a `git checkout` between the two — the one writer no process lock
+    reaches — would have had a save from page A's record written onto record B. **Every
+    mutation now decides on one snapshot**: read once under the lock, check that read,
+    mutate that read, write; a source test keeps the two-read helpers from returning.
+    The gap between that one read and the rename stays open to an outside writer, and
+    CR-56 now names `git checkout` beside the junction swap.
+83. (round 24) The restart block was locked only during a restart, so it could be
+    started while a save or a second pass was out, and whichever finished first unlocked
+    the forms under the other. Locked while any request is out, like everything else.
+84. (round 24) The panel required a brief for every start while the server requires one
+    only over an empty repository — a project with a README could not be started from
+    the UI on its repository alone. The buttons no longer demand it; the server's 422
+    over an empty repository is shown as before.
+85. (round 25, P1) Item 76's "differs with all tasks present is an ordinary edit" had a
+    hole: a charter-only adoption has no task to prove itself by, so a sealed B arriving
+    over a charter A read as complete, and a restart could then erase B's only copy.
+    Inference from the charter and the count is gone: **the adoption writes a marker
+    with the round id into this control plane's settings**, and "applied here" is that
+    marker — a differing charter is an edit where the marker is, another tree's where
+    it is not; a charter-only adoption from elsewhere is incomplete until re-applied.
+86. (round 25) Any error while inspecting a path for links was reported as "a link" —
+    a disconnected share would have sent the person to replace a real directory. The
+    error is the caller's now: the read says `unreadable`, the write "could not be
+    inspected"; only a symlink or a junction is `linked`.
+87. (round 26, P1) Item 85's marker held the round id, and two branches can fork one
+    questions record and adopt different things under the same round — the other
+    branch's charter-only seal would have read as applied here. **The marker is a
+    fingerprint of the seal** (approved charter and task keys); "applied here" means this
+    seal.
+88. (round 26) A charter cleared through its editor after an adoption applied here was
+    never restored: the re-apply wrote the charter only when the adoption was someone
+    else's. An absent charter is written back whoever applied it.
+89. (round 26) The halfway view counted what the record had written down, and the one
+    crash the resume exists for is "created, not yet recorded". For an `adopting` record
+    the backend now counts the approved keys the store holds and the panel shows that.
+90. (round 27) A re-apply that wrote the approved charter here left the record's
+    `charter_kept_edit` from the machine it came from, and the panel said "the charter
+    was not overwritten" of a charter that had just been written. Cleared when written.
+91. (round 28) The key scan the resume relies on paged with OFFSET, and two pages are
+    not one snapshot: an ordinary task inserted between them shifts the rows, and the
+    one "created, not yet recorded" task could fall off the seam and be created twice.
+    One statement now, with a ceiling past which the scan refuses rather than resumes on
+    a partial list.
+92. (round 29, P1) Item 44 exempted a resume from the revision check altogether, so a
+    page still showing branch A's half-done adoption after a checkout to B could resume
+    — and execute — B's seal. A resume is pinned to *this seal*: the record's current
+    revision, or the revision the proposal had when it was sealed (kept in the seal, so
+    the request whose answer was lost still goes through); anything else is stale.
+93. (round 29) The README was looked for under five fixed spellings; `Readme.md` on a
+    case-sensitive filesystem was neither read nor named as unread, while the tree
+    listing still counted it as content. The directory is listed and matched without
+    regard to case.
+94. (round 30) Starting a new round over a fully applied adopted record replaced the
+    file, and with it the receipt — the approved charter the resume note promised was
+    "still in the record", the task keys and ids, the time. A new round now carries the
+    receipts of the adoptions before it (`previous_adoptions`), never trimmed.
+95. (round 31) The receipt kept key, title and kind of each approved task and dropped
+    the description — where the acceptance lived. The whole approved task travels.
+96. (round 31) A `.git` that could not be inspected (an ACL, a dropped share) was
+    reported as "not a git repository", and the agent would have drafted on that as a
+    fact. Named as unread: "could not be inspected".
+97. (round 32) Item 94's "never trimmed" receipts would, round after round of long task
+    descriptions, have carried a new record past the write bound — a start refused after
+    the agent had already run, with no way to make room. The receipts now have a byte
+    budget a quarter of the record's; past it the oldest are dropped and **the record
+    counts how many were dropped**, so the loss is a stated fact.
+98. (round 32) The tree's "(N more)" counted the raw directory, `.git` and
+    `node_modules` included — a false fact handed to the agent. It counts what was left
+    out of the list that is shown.
+99. (round 33, P1) The record validator held a seal to field *types* while the adopt
+    route — which a resume sends the seal back through — holds it to the contract: a
+    versioned record with a blank description, a kind outside the set or a charter with
+    no criterion read as resumable and was refused on every click. The seal is validated
+    to the same contract; such a record is `malformed`, said once.
+100. (round 34, P1) "What this control plane holds" counted the record's *written-back*
+    task list, and a re-apply that failed halfway writes that list back shorter than the
+    approved one — the next look would have said complete over a missing task. The
+    approved list is the measure now, for adopted and adopting alike, and the store
+    (found by key) is the evidence.
+101. (round 34) A README directory listing that failed was "(none)". Named as unread.
+102. (round 35, P1) The first kickoff creates `.agora`, a write to the project root's
+    directory that was not synced while the rename inside it was — a power cut could
+    have taken the directory with the seal in it, after the tasks were in SQLite. Synced
+    on POSIX when created (Windows journals the creation).
+103. (round 35) The early revision check treated unreadable, malformed and linked as
+    "no record", so a page that had seen none ran a 240-second agent call over a file
+    that had since broken, to be refused at the commit. Refused before the call.
+104. (round 35) The README head's "(N more lines)" counted the lines of a cut read as if
+    they were the file's. Over a cut read it says the file goes on unread; the count is
+    stated only for a file read whole, and the notes are appended after the size cap so
+    the cap never eats them.
+105. (round 36, P1) A seal that fit the record bound could grow past it on the writes
+    that follow side effects (task ids, the time stamp) — an adoption stuck half done,
+    a restart refused, every retry failing the same way. **Before the seal, the record
+    is projected to its adopted shape and refused if that would not fit** (409
+    `kickoff_record_too_large`), with nothing written.
+106. (round 36) `.git` was probed following links and its gitfile form was never looked
+    at: a linked `.git`, or a `gitdir:` pointing outside the project, would have had
+    `git log` read another repository's commits into the prompt. Both are named as
+    unread and not followed; a gitfile is followed only inside the project.
+107. (round 37) A project root that was gone (moved, deleted, misregistered) was
+    recreated by the record write as an empty tree holding one file — the registry split
+    from the real repository. The write refuses a missing root; only `.agora` is created.
+108. (round 37) The seal's lists were not held to the adopt route's counts (20 items,
+    20 tasks): a versioned record past them read as resumable and was refused on every
+    click. Held to the same counts; such a record is `malformed`.
+109. (round 37) A re-apply trusted a recorded task by its id while the view counts by
+    key: a partially restored database with the id under an ordinary task and no key
+    would have looped — present by id, absent by key. Identity is the key, both places.
+110. (round 37) The extractor took the first object *with the contract's key*, so an
+    example shaped like the answer (`{"questions": []}`) before the real one was taken
+    and refused. Every candidate with the key is tried in turn; the first that parses is
+    the answer, and a refusal is about the first.
+111. (round 38, P1) On a re-apply the charter was written first and the "applied here"
+    marker only after the tasks, so a retry after a task failed saw "not applied", and
+    wrote the approved charter a second time — over an edit made meanwhile. The marker
+    goes down with the charter.
+112. (round 38) Twenty approved tasks are allowed and the priority formula ran out at
+    the seventeenth (the rest all 0), so the store's tie-break reordered the tail.
+    Twenty distinct priorities, in the approved order.
+113. (round 39, P1) Item 111 put the marker "right after" the charter — two writes, and
+    a crash between them was the same gap one row further down. **The charter and the
+    marker are one SQLite transaction now** (`ProjectStore.set_charter_with_setting`,
+    the one store change in this slice): written together or not at all.
+114. (round 39) A re-apply whose last task reached the store while the record write
+    after it failed read as complete next time — every approved task present by key —
+    and "already adopted" would have left the receipt short for good. The receipt is
+    part of complete; the adopt route then finds that task by key, records it, creates
+    nothing.
+115. (round 39, P1) `git log` inherited `GIT_DIR` / `GIT_WORK_TREE` from whatever
+    started Agora, so after this project's `.git` had passed every check git could read
+    another repository. Run in an environment scrubbed of `GIT_*`.
+116. (round 39, P1) The per-directory lock was keyed by the normalised path string, and
+    one Windows directory reached as a drive letter and as a UNC path is two strings —
+    two locks over one file. Keyed by the directory's identity (device and file id)
+    where the platform gives one; the path only where it does not.
+117. (round 40, Codex) The kickoff's charter caps (2,000 per item) were wider than the
+    existing charter editor's (500 per list item): a charter that came through the
+    kickoff could not be saved again through the editor. The editor's caps, everywhere.
+118. (round 40, Codex) The cleared "kept a person's edit" note lived in memory until the
+    task stage; a failure there and the retry — seeing "applied here" — wrote the old
+    note back. Persisted before the task stage.
+119. (round 40, Codex) `json.loads` on a record can raise a plain `ValueError` (an integer
+    past the interpreter's digit limit) or `RecursionError` (nesting), neither caught:
+    a 500 where the read contract promised `malformed`. Caught.
+120. (round 40, Codex) A request whose answer was lost left its failure banner over the
+    state the re-read then showed. Withdrawn when the re-read shows the record moved;
+    kept when nothing did, since then the failure is the news.
+121. (round 40, Codex) The refusals used an `error`-keyed shape the shared client does
+    not parse, so the panel showed raw JSON. One shape — `code`, `message`, extras — with
+    a sentence per code.
+122. (round 41, P1) The receipt check (item 114) asked only whether each key was named;
+    a receipt carrying another machine's task ids, over a re-apply that crashed before
+    the record write, read as complete with the wrong ids in it for good. The receipt
+    must name, per key, the task this store holds under it; a re-apply repairs it.
+123. (round 41) `Path.resolve()` on a gitfile's target can raise (a share that dropped,
+    a symlink loop) — a 500 where "could not be read" was promised. Named as unread.
+124. (round 41) `is_empty` took any entry beginning with "…" for the tree's cut marker,
+    and a file named `…仕様書.txt` — ordinary in Japanese — made the repository "empty".
+    The marker is matched whole.
+125. (round 42, P1) Item 92 let a request on the pre-seal revision resume, and two tabs
+    can hold that revision with different edits: the one that sealed second would have
+    "resumed" the first's seal as its own, its choices silently replaced. On the
+    pre-seal revision the body has to be the seal's (409 `kickoff_seal_mismatch`
+    otherwise); the request that sealed still goes through.
+126. (round 42, P1) A re-apply over a charter that already matched wrote neither charter
+    nor marker; a task failure, an edit, a retry — and the edit read as another tree's
+    charter and was overwritten. The marker is written on its own in that case, before
+    the task stage.
+127. (round 42) The size projection (item 105) spelled the flags `true`, a byte shorter
+    than `false`: a record at the exact bound could pass the check and fail the write.
+    The projection takes the longer spellings.
+128. (round 43) After the charter-and-marker transaction on a re-apply, a record write
+    that failed left the file saying "kept a person's edit" of a charter that had just
+    been written — and a charter-only adoption then read as complete, so nothing would
+    ever correct it. **The marker now says what was done** (`…:wrote` / `…:kept`); a
+    record whose note disagrees with the marker is not complete, and the next adopt
+    rewrites the note from the marker.
+129. (round 43) The agent's JSON was decoded catching `JSONDecodeError` alone; nesting
+    past the recursion limit or an integer past the digit limit was a 500. An integer
+    past the limit is a decode failure like any other; nesting past the limit is refused
+    outright rather than rescanned from every inner brace (a hundred thousand of those
+    took over a minute in the test).
+130. (round 44, P1) The task-scan ceiling (item 91) was met *after* the seal, and a read
+    of such a record raised too — an adoption stuck half done with no read to see it by.
+    The scan runs before the seal (refused, nothing written), and a read answers with
+    `scan_failed` said and nothing counted.
+131. (round 44) A resume of a half-done record trusted the task receipts it carried; a
+    clone of such a record carried another machine's ids, and the first resume would
+    have said adopted with the tasks missing. Whatever the status, a receipt counts only
+    when this store holds the task under its key with that id.
+132. (round 44) Every write refusal was reported as "the path is unsafe" — a record too
+    large to read back sent the person to inspect `.agora`. The refusals carry their own
+    names (`kickoff_record_too_large`, `kickoff_project_root_missing`, `kickoff_path_unsafe`).
+133. (round 45) The panel ignored item 130's `scan_failed` and showed its placeholders
+    ("charter absent, 0 tasks") with a re-apply button the server refuses. It says the
+    scan failed and offers nothing.
+134. (round 46, P1) A task under an approved key was taken for the approved task by the
+    key alone, and a key is a string any ordinary task write can carry: a stranger under
+    it would have let the approved task go uncreated and the receipt name the stranger.
+    A task counts only if it *is* the approved task (created by an adoption, approved
+    title and kind); a stranger is a conflict (409 `kickoff_key_conflict`, said in the
+    view too), neither taken nor doubled.
+135. (round 46) The half-done state showed placeholder counts and a resume the server
+    refuses when the scan had failed (item 133 handled the adopted state only). Said
+    there too, nothing offered.
+136. (round 47) A project root that was gone read as `absent` — "never started" — and a
+    start on that reading ran the agent and failed at the write. A missing root is its
+    own reason (`root_missing`, the seventh reading, with its own sentence), refused
+    before the agent.
+137. (round 47) The panel ignored item 134's `key_conflict` and offered a resume or a
+    re-apply the server refuses. Said, with what to do about the task, nothing offered.
+138. (round 48) Item 134's "is the approved task" compared title and the recorded kind
+    only; a task with the approved title and another description (the acceptance) or
+    another actual kind would have been claimed. The whole approved content is compared.
+139. (round 49) The key-conflict hint told the person to "rename or remove" the stranger,
+    and the product can do neither to a task; it can cancel or archive one. A cancelled
+    or archived stranger no longer blocks (the approved task is created beside it), and
+    the hint says exactly that.
+140. (round 49) A project root reached through a symlink — ordinary on POSIX — read as
+    `root_missing` after item 136. The root itself is followed; the boundary is inside it.
+141. (round 50, P1) Item 139 collapsed several tasks under one key to "the active one":
+    an archived stranger beside an approved task the person had since cancelled won the
+    key, the approved task read as missing, and a re-apply would have revived it. The
+    scan keeps every task under a key and the choice is made against the approved
+    task: the approved one wins whatever its state; a stranger counts only while
+    active, and then as a conflict.
+142. (round 51) Start, answers and refine answered with the record alone, and their
+    final re-read can find an adopted record (a checkout between the lock and the read)
+    — the panel then said "charter set, tasks created" on the file's word. Every route
+    answers with the control-plane view; and a panel that has no view says "unchecked"
+    rather than "set".
+143. (round 52, P1) Item 88 wrote an absent charter back "whoever applied it", and the
+    panel promised the rewrite only where the seal was never applied — a person who
+    cleared the charter on purpose after adopting here got it restored. The words win:
+    on the control plane that applied the seal the charter is the person's from then
+    on, cleared or edited, and neither makes the adoption incomplete; the re-apply sets
+    the charter only where the seal was never applied.
+
+Rejected, three. (round 11, P1; raised again in round 14) Item 38's look-based resume has an ABA case: the charter
+was written, the flag write crashed, the person deliberately restored the *old* charter,
+and a resume — seeing the "before" — writes the approved one again. Real, and inherent in
+comparing content: no second write can tell "never written" from "written and put back".
+What is done instead is to say it before the click — the resume note now states exactly
+what a resume does to the charter in each case — rather than to stop writing on resume,
+which would recreate item 34 (a charter never written, silently). (round 8, P2) The parsers accept 3–8 questions and 1–8 tasks while the
+prompts ask for 4–6 and 3–6. Kept apart on purpose and now said at the constants: the
+prompt's band is what a good answer looks like, the parser's bounds are where an answer
+stops being the interview at all — three questions over a one-line brief is usable and the
+person sees all three; a truncated JSON answer fails to parse regardless. (round 1, P2)
+the kickoff always runs the Claude CLI rather than the
+project's configured worker agent. Deliberate and stated in the UI: this is an analyst
+call handed a prompt, the same choice `tasks/clarify.py` makes for the requirements
+interview, not a run in the project's worktree; a project whose worker is Codex still gets
+its runs from Codex. A machine without the Claude CLI gets "agent is unavailable" (502),
+which is true.
+
+Deferred, two, as CR rows. (workspace CR-55, `defer`, OPEN; widened in round 49): the task store has no unique
+constraint on a kickoff key, and no index — the lookup is one full scan with a ceiling
+(item 91); within one process the lock above makes the lookup sufficient, and this control
+plane runs as one process over projects far below the ceiling. Round 49 named the corner:
+a project at the ceiling exactly, grown past it by an ordinary insert between the pre-seal
+scan and the resume, would be stuck. A key column with a unique index removes both the
+race and the scan. The row names what brings it back — the first multi-process
+deployment, or any project past ten thousand tasks.
+(workspace CR-56, `defer`, OPEN; raised again in round 21 on the read side, in rounds 27,
+31, 32, 38, 43, 45, 46 and 48 as the `git checkout` window between the one read and the
+rename, in round 45 as the junction swap once more, in round 51 as the temporary file
+swapped by a writer inside `.agora` between its close and the rename, and in rounds 52 and
+53 again): the `.agora`
+directory swap inside the gap between the link check and the open, on the write (item 48)
+and on the read — where a swapped-in adopted record could, through a re-apply, put another
+tree's charter on this control plane. The row names the condition (a project root writable
+by another user, or a shared host) and the fix (directory-handle-anchored opens and writes
+where the platform offers them); the comment at each site names the row.
+(workspace CR-57, `defer`, OPEN; round 14, P1, raised again in rounds 18, 20, 22, 27, 28, 30, 31, 34, 35, 38, 43, 45, 46, 48, 49, 51, 52 and 53): the adopt's charter write is read-compare-
+write against a store with no compare-and-set, and the charter editor takes no lock — a
+save from the editor landing inside that gap (milliseconds, in one request) is overwritten
+by the approved charter. The fix is the editor's own versioning (adr/0005's migration),
+through which the adopt write should go; the row names it, the comment at the write
+names the row.
+
+Backlog, one, as a CR row (workspace CR-58, `refine`, OPEN; round 53): the mockup rule is
+enforced as "the first approved task is of kind `mockup`" and no further — nothing checks
+that the task names `docs/mockups/`, that later tasks' acceptance points at the mockup, or
+that the owner signed it off. The exit line says later acceptance lines must be able to
+point at the mockup; whether that is the kickoff's job or the workbench's is the owner's
+call, after they have run it once.
+
+### Blockers
+
+None. The prompts are English with Chinese output requested; the first real run will show
+whether `claude -p` honours the "ONLY a JSON object" instruction reliably enough — the
+parser tolerates prose around the object and fails closed otherwise.
+
+### Next safe action
+
+Commit the slice files on `feature/w8-session-ui`, staged explicitly, and push to
+`private`. Then the owner runs the kickoff on NichiMate from the projects screen; what
+they get stuck on decides the next cut (Reach before polish). Still open from W9: D-5
+step B (known defects reader) and the browser check of all screens.

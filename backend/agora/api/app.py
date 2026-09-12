@@ -24,6 +24,7 @@ from agora.control_plane.router import (
     task_discovery_router,
 )
 from agora.api.settings_router import router as settings_router
+from agora.api.kickoff_router import router as kickoff_router
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
@@ -112,6 +113,7 @@ app.include_router(workflows_router, prefix="/api")
 app.include_router(control_plane_router, prefix="/api")
 app.include_router(task_discovery_router, prefix="/api")
 app.include_router(settings_router, prefix="/api")
+app.include_router(kickoff_router, prefix="/api")
 
 
 _RETIRED_API_PREFIXES = (

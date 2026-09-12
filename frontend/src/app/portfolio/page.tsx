@@ -70,6 +70,7 @@ import {
 import { railReadReport, settleRead } from "@/lib/rail-group";
 import { MAX_PAGE, readPage } from "@/lib/paged";
 import { ProgressSnapshotBar } from "@/components/progress-snapshot-bar";
+import { KickoffPanel } from "@/components/kickoff-panel";
 import { useI18n } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
@@ -192,6 +193,16 @@ export default function PortfolioPage() {
     const timeout = window.setTimeout(() => void load(), 0);
     return () => window.clearTimeout(timeout);
   }, [load]);
+
+  // A deep link into one project's cockpit — Today's "让 agent 读一遍 →" lands here. Read
+  // once on mount (query params, not a dynamic route: the app is statically exported).
+  useEffect(() => {
+    const project = new URLSearchParams(window.location.search).get("project");
+    if (project) {
+      const timeout = window.setTimeout(() => setProjectFilter(project), 0);
+      return () => window.clearTimeout(timeout);
+    }
+  }, []);
 
   // The cockpit is per-project: fetch the dashboard (charter + metrics + the one
   // deterministic next action) only when scoped to a single project. Refetch
@@ -338,6 +349,16 @@ export default function PortfolioPage() {
             action as if they were B's. */}
         {dashboard && dashboard.project_id === projectFilter && (
           <ProjectCockpit dashboard={dashboard} onEditCharter={() => setShowCharter(true)} />
+        )}
+        {/* The kickoff, under the same ownership guard: the agent reads the project, asks,
+            proposes; adopting writes the charter above and the first tasks below, so both
+            re-read afterwards. */}
+        {dashboard && dashboard.project_id === projectFilter && (
+          <KickoffPanel
+            key={dashboard.project_id}
+            projectId={dashboard.project_id}
+            onAdopted={() => { void load(); loadDashboard(); }}
+          />
         )}
 
         {PORTFOLIO_GROUPS.map((group) => {
