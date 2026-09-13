@@ -66,7 +66,6 @@ export const workspace = {
       noProject: "No project selected. Open a task, or pick a project from Today.",
     },
     rail: {
-      newTask: "New task",
       search: "Search tasks",
       groups: {
         needsYou: "Needs you",
@@ -572,22 +571,6 @@ export const workspace = {
         moreFiles: "…and {count} more.",
       },
     },
-    create: {
-      eyebrow: "New task",
-      title: "What do you want to accomplish?",
-      close: "Close new task dialog",
-      project: "Project",
-      goalLabel: "1 · What do you want to accomplish?",
-      goalPlaceholder: "e.g. Add email login to the app",
-      doneLabel: "2 · What counts as done? (one per line)",
-      donePlaceholder: "A user can sign in with email\nInvalid credentials show an error",
-      avoidLabel: "3 · Anything it must NOT do? (one per line)",
-      avoidPlaceholder: "No social login\nDon't touch the billing code",
-      advanced: "Advanced settings",
-      advancedHint: "Agent, model, reviewer, permissions and timeout use project defaults. Change them on the full task page after creating.",
-      submit: "Create task",
-      submitting: "Creating…",
-    },
     errors: {
       loadFailed: "Could not load the workspace: {error}",
     },
@@ -723,7 +706,6 @@ export const workspace = {
       noProject: "尚未选定项目。打开一个任务，或从 Today 进入某个项目。",
     },
     rail: {
-      newTask: "新建任务",
       search: "搜索任务",
       groups: {
         needsYou: "需你处理",
@@ -1045,22 +1027,6 @@ export const workspace = {
         files: "交付的文件",
         moreFiles: "……另有 {count} 个。",
       },
-    },
-    create: {
-      eyebrow: "新建任务",
-      title: "你想完成什么?",
-      close: "关闭新建任务对话框",
-      project: "项目",
-      goalLabel: "1 · 你想完成什么?",
-      goalPlaceholder: "例如:给应用增加邮箱登录",
-      doneLabel: "2 · 什么算完成?(每行一条)",
-      donePlaceholder: "用户能用邮箱登录\n凭证错误时显示提示",
-      avoidLabel: "3 · 有哪些不能做?(每行一条)",
-      avoidPlaceholder: "不做社交登录\n不要改动计费相关代码",
-      advanced: "高级设置",
-      advancedHint: "Agent、模型、Reviewer、权限与超时使用项目默认值。创建后可在完整任务页修改。",
-      submit: "创建任务",
-      submitting: "创建中…",
     },
     errors: {
       loadFailed: "无法加载工作台:{error}",

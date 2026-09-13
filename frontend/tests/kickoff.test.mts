@@ -102,13 +102,14 @@ test("the caveats are judged on the ticked tasks: unticking the mockup is the ca
   assert.deepEqual(proposalCaveatsOf({ needs_mockup: false }, [{ kind: "feature" }]), []);
 });
 
-test("the kickoff panel decides its step through this module and never offers 'start' by itself", async () => {
+test("the conversation decides its step through this module and never offers 'start' by itself", async () => {
   const { readFile } = await import("node:fs/promises");
-  const panel = await readFile(new URL("../src/components/kickoff-panel.tsx", import.meta.url), "utf8");
+  // The panel became the workbench's project conversation (CR-62); the check follows it.
+  const panel = await readFile(new URL("../src/components/project-chat.tsx", import.meta.url), "utf8");
   const source = panel.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
-  assert.ok(source.includes("kickoffStepOf("), "the panel must derive its step from lib/kickoff.ts");
-  assert.ok(source.includes("proposalCaveatsOf("), "the panel must show the proposal's caveats before adopt");
-  assert.ok(!/reason\s*===\s*"absent"/.test(source), "the panel must not re-decide what an absent record means");
+  assert.ok(source.includes("kickoffStepOf("), "the conversation must derive its step from lib/kickoff.ts");
+  assert.ok(source.includes("proposalCaveatsOf("), "the conversation must show the proposal's caveats before adopt");
+  assert.ok(!/reason\s*===\s*"absent"/.test(source), "the conversation must not re-decide what an absent record means");
 });
 
 

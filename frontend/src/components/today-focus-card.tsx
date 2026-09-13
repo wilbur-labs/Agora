@@ -23,7 +23,7 @@
  */
 
 import Link from "next/link";
-import { ArrowDownToLine, ArrowRight, Eye } from "lucide-react";
+import { ArrowDownToLine, ArrowRight, Eye, Sparkles } from "lucide-react";
 
 import { Button, buttonVariants } from "@/components/ui/button";
 import { CapabilitySlot } from "@/components/capability-slot";
@@ -150,12 +150,10 @@ export function TodayFocusCard({
           {goal.kind === "goal" ? (
             <span className="leading-relaxed">{goal.text}</span>
           ) : (
-            <span className="text-xs text-muted-foreground">
-              {t("today.card.goalNone")}{" "}
-              <Link href={`/portfolio?project=${encodeURIComponent(project.project_id)}`} className="text-primary hover:underline">
-                {t("today.card.goalKickoff")}
-              </Link>
-            </span>
+            // No link here any more. The way in used to be a few words at the end of this
+            // line, and the owner looked at this card repeatedly without ever seeing it
+            // (CR-59); the card's own action is the entry now, and it is the only one.
+            <span className="text-xs text-muted-foreground">{t("today.card.goalNone")}</span>
           )}
         </Row>
       </dl>
@@ -166,9 +164,18 @@ export function TodayFocusCard({
       </div>
 
       <footer className="mt-auto flex flex-wrap items-center gap-2 pt-1">
-        {/* "Continue" only when there is an open task to continue: under adr/0007 the task
-            is the session, so a continue button with no task behind it would start
-            something rather than continue it. */}
+        {/* A project with no goal gets one action and no others (CR-59, CR-61): "continue"
+            and "look at this project" both invite pushing a project nobody has said what
+            is for, and the goal is settled in the workbench's middle column. */}
+        {goal.kind !== "goal" ? (
+          <>
+            <Link href={workbenchHref} className={cn(buttonVariants({ size: "lg" }))}>
+              <Sparkles /> {t("today.card.actions.settleGoal")}
+            </Link>
+            <span className="text-xs text-muted-foreground">{t("today.card.actions.settleGoalHint")}</span>
+          </>
+        ) : (
+          <>
         {continueTask !== null && (
           <Link
             href={`/workspace?task=${encodeURIComponent(continueTask.task_id)}`}
@@ -185,6 +192,8 @@ export function TodayFocusCard({
         >
           <Eye /> {t("today.card.actions.look")}
         </Link>
+          </>
+        )}
         <Button
           variant="ghost"
           size="lg"

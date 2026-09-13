@@ -1,10 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, ArrowRight, ChevronRight, CircleCheck, FileCheck2, FolderPlus, Pencil, Plus, RefreshCw, Target, X } from "lucide-react";
+import Link from "next/link";
+import { AlertTriangle, ArrowRight, ChevronRight, CircleCheck, FileCheck2, FolderPlus, Pencil, Plus, RefreshCw, Sparkles, Target, X } from "lucide-react";
 import { DeliveryShell } from "@/components/delivery-shell";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import {
   ApiError,
   archiveTask,
@@ -70,7 +71,6 @@ import {
 import { railReadReport, settleRead } from "@/lib/rail-group";
 import { MAX_PAGE, readPage } from "@/lib/paged";
 import { ProgressSnapshotBar } from "@/components/progress-snapshot-bar";
-import { KickoffPanel } from "@/components/kickoff-panel";
 import { useI18n } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
@@ -291,6 +291,13 @@ export default function PortfolioPage() {
     setTasks((current) => current.map((task) => (task.task_id === updated.task_id ? updated : task)));
   };
 
+  // This project, as far as this page can see, has no goal. Only claimed while the
+  // dashboard in hand is the filtered project's: a dashboard left over from the previous
+  // selection would gate the wrong project, and a read that has not landed says nothing.
+  const gatedProject = dashboard !== null
+    && dashboard.project_id === projectFilter
+    && !(dashboard.charter?.goal ?? "").trim();
+
   return (
     <DeliveryShell active="Portfolio">
       <header className="border-b bg-background/80 px-5 py-5 backdrop-blur md:px-8">
@@ -335,7 +342,21 @@ export default function PortfolioPage() {
               <RefreshCw className={cn("size-4", loading && "animate-spin")} />
             </Button>
             <Button variant="outline" size="lg" onClick={() => setShowNewProject(true)}><FolderPlus /> {t("portfolio.actions.newProject")}</Button>
-            <Button size="lg" onClick={() => setShowCreate(true)}><Plus /> {t("portfolio.actions.newTask")}</Button>
+            {/* Off for a project this page can see has no goal (CR-61): the block below
+                says tasks are settled in the conversation, and a button beside it that
+                creates one anyway makes the gate advice into a suggestion. Only when the
+                board is filtered to that project — in the all-projects view this page
+                holds no charter per project, and guessing would be the same mistake in
+                the other direction. That case is what the server-side refusal is for,
+                and it is still open. */}
+            <Button
+              size="lg"
+              disabled={gatedProject}
+              title={gatedProject ? t("projectChat.gate.noCharter") : undefined}
+              onClick={() => setShowCreate(true)}
+            >
+              <Plus /> {t("portfolio.actions.newTask")}
+            </Button>
           </div>
         </div>
       </header>
@@ -350,15 +371,21 @@ export default function PortfolioPage() {
         {dashboard && dashboard.project_id === projectFilter && (
           <ProjectCockpit dashboard={dashboard} onEditCharter={() => setShowCharter(true)} />
         )}
-        {/* The kickoff, under the same ownership guard: the agent reads the project, asks,
-            proposes; adopting writes the charter above and the first tasks below, so both
-            re-read afterwards. */}
-        {dashboard && dashboard.project_id === projectFilter && (
-          <KickoffPanel
-            key={dashboard.project_id}
-            projectId={dashboard.project_id}
-            onAdopted={() => { void load(); loadDashboard(); }}
-          />
+        {/* The kickoff is not a form on this screen any more (CR-62). It is the project's
+            conversation, in the workbench's middle column, and it stays open after the
+            goal is settled — so this screen points at it rather than holding a second,
+            differently-shaped copy of it. */}
+        {gatedProject && (
+          <section className="flex flex-wrap items-center gap-3 rounded-xl border border-dashed bg-muted/20 p-4">
+            <Sparkles className="size-4 text-primary" />
+            <p className="text-sm text-muted-foreground">{t("projectChat.gate.noCharter")}</p>
+            <Link
+              href={`/workspace?project=${encodeURIComponent(dashboard.project_id)}`}
+              className={cn(buttonVariants({ size: "sm" }), "ml-auto")}
+            >
+              {t("projectChat.gate.settle")}
+            </Link>
+          </section>
         )}
 
         {PORTFOLIO_GROUPS.map((group) => {

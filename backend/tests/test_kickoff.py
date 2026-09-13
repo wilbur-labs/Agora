@@ -533,6 +533,9 @@ def test_kickoff_flow_start_answer_refine_adopt(tmp_path, monkeypatch):
         created = tasks.list(project_id=pid, limit=10)
         assert [t.title for t in sorted(created, key=lambda t: -t.priority)] == ["画 mockup", "搭骨架"]
         assert all(t.metadata.get("kickoff") is True for t in created)
+        # Planned, not backlog: the kickoff *is* their requirements-and-design step, and
+        # a backlog task cannot be dispatched — the defect the owner hit on 2026-09-13.
+        assert {t.state.value for t in created} == {"planned"}
         assert adopted["record"]["adopted"]["tasks"][0]["kind"] == "mockup"
         # Once is once: a retry (a lost response, a double click) creates nothing again.
         again = client.post(f"/api/projects/{pid}/kickoff/adopt", json={"charter": {"goal": "x", "success_criteria": ["y"]}, "tasks": proposed["record"]["proposal"]["tasks"], "expected_revision": _rev(adopted)})
@@ -547,6 +550,36 @@ def test_kickoff_flow_start_answer_refine_adopt(tmp_path, monkeypatch):
         assert len(tasks.list(project_id=pid, limit=10)) == 2
         # And a terminal record is not reopened by an old tab's answers.
         assert client.post(f"/api/projects/{pid}/kickoff/answers", json={"answers": {"audience": "late"}, "expected_revision": _rev(adopted)}).status_code == 409
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_a_remark_about_a_proposal_reaches_the_pass_that_draws_the_next_one(tmp_path, monkeypatch):
+    # A box whose text goes nowhere is worse than no box: the conversation invites the
+    # person to say what is wrong with the draft, so the instruction has to be in the
+    # prompt, with the draft it is about.
+    seen: list[str] = []
+
+    def agent(prompt: str, cwd) -> str:
+        seen.append(prompt)
+        return GENERATE_OK if "charter_draft" in prompt else REFINE_OK
+
+    client, registry, tasks, pid = _client(tmp_path, monkeypatch)
+    monkeypatch.setattr(kickoff, "_run_agent", agent)
+    try:
+        started = client.post(f"/api/projects/{pid}/kickoff", json={"brief": "b", "expected_revision": None}).json()
+        answered = client.post(f"/api/projects/{pid}/kickoff/answers", json={"answers": {"audience": "自己"}, "expected_revision": _rev(started)}).json()
+        first = client.post(f"/api/projects/{pid}/kickoff/refine", json={"expected_revision": _rev(answered)}).json()
+        # No remark: nothing extra is put in the agent's mouth.
+        assert "the owner was not happy" not in seen[-1]
+        again = client.post(f"/api/projects/{pid}/kickoff/refine", json={
+            "note": "第二条任务不该在这一版里", "expected_revision": _rev(first),
+        }).json()
+        assert "第二条任务不该在这一版里" in seen[-1]
+        # With the draft it points at — "the second task" means nothing without the list.
+        assert "画 mockup" in seen[-1]
+        # And on the record, so the next reader can see why the proposal changed.
+        assert again["record"]["refine_note"] == "第二条任务不该在这一版里"
     finally:
         app.dependency_overrides.clear()
 
@@ -584,11 +617,11 @@ def test_kickoff_adopt_resumes_after_a_failure_halfway_without_duplicating(tmp_p
     real_create = tasks.create
     calls = {"n": 0}
 
-    def flaky(req):
+    def flaky(req, **kwargs):
         calls["n"] += 1
         if calls["n"] == 2:
             raise RuntimeError("disk full")
-        return real_create(req)
+        return real_create(req, **kwargs)
 
     monkeypatch.setattr(tasks, "create", flaky)
     try:
@@ -622,11 +655,11 @@ def test_kickoff_resume_keeps_a_charter_edited_while_the_adoption_sat_half_done(
     real_create = tasks.create
     calls = {"n": 0}
 
-    def flaky(req):
+    def flaky(req, **kwargs):
         calls["n"] += 1
         if calls["n"] == 2:
             raise RuntimeError("disk full")
-        return real_create(req)
+        return real_create(req, **kwargs)
 
     monkeypatch.setattr(tasks, "create", flaky)
     try:
@@ -724,11 +757,11 @@ def test_kickoff_start_over_a_halfway_adoption_is_refused(tmp_path, monkeypatch)
     real_create = tasks.create
     calls = {"n": 0}
 
-    def flaky(req):
+    def flaky(req, **kwargs):
         calls["n"] += 1
         if calls["n"] == 2:
             raise RuntimeError("disk full")
-        return real_create(req)
+        return real_create(req, **kwargs)
 
     monkeypatch.setattr(tasks, "create", flaky)
     try:
@@ -984,11 +1017,11 @@ def test_kickoff_resume_is_pinned_to_the_seals_own_revisions(tmp_path, monkeypat
     real_create = tasks.create
     calls = {"n": 0}
 
-    def flaky(req):
+    def flaky(req, **kwargs):
         calls["n"] += 1
         if calls["n"] == 2:
             raise RuntimeError("disk full")
-        return real_create(req)
+        return real_create(req, **kwargs)
 
     monkeypatch.setattr(tasks, "create", flaky)
     try:
@@ -1244,7 +1277,7 @@ def test_kickoff_reapply_retry_after_a_task_failure_keeps_a_charter_edited_meanw
     write_kickoff(root, _record(status="adopted", answers={"a": "x"}, proposal=PROPOSAL, adopted=sealed))
     body = {"charter": sealed["charter"], "tasks": [], "expected_revision": _disk_rev(root)}
     real_create = tasks.create
-    monkeypatch.setattr(tasks, "create", lambda req: (_ for _ in ()).throw(RuntimeError("disk full")))
+    monkeypatch.setattr(tasks, "create", lambda req, **kwargs: (_ for _ in ()).throw(RuntimeError("disk full")))
     try:
         with pytest.raises(RuntimeError):
             client.post(f"/api/projects/{pid}/kickoff/adopt", json=body)
@@ -1414,7 +1447,7 @@ def test_kickoff_resume_on_the_pre_seal_revision_must_carry_the_seals_content(tm
     pre = _disk_rev(root)
     a_body = {"charter": {"goal": "A's goal", "success_criteria": ["a"]}, "tasks": PROPOSAL["tasks"][:1], "expected_revision": pre}
     b_body = {"charter": {"goal": "B's goal", "success_criteria": ["b"]}, "tasks": PROPOSAL["tasks"], "expected_revision": pre}
-    monkeypatch.setattr(tasks, "create", lambda req: (_ for _ in ()).throw(RuntimeError("disk full")))
+    monkeypatch.setattr(tasks, "create", lambda req, **kwargs: (_ for _ in ()).throw(RuntimeError("disk full")))
     try:
         with pytest.raises(RuntimeError):
             client.post(f"/api/projects/{pid}/kickoff/adopt", json=a_body)  # A sealed, failed halfway
@@ -1444,7 +1477,7 @@ def test_kickoff_reapply_marks_applied_even_when_the_charter_already_matches(tmp
     write_kickoff(root, _record(status="adopted", answers={"a": "x"}, proposal=PROPOSAL, adopted=sealed))
     body = {"charter": sealed["charter"], "tasks": [], "expected_revision": _disk_rev(root)}
     real_create = tasks.create
-    monkeypatch.setattr(tasks, "create", lambda req: (_ for _ in ()).throw(RuntimeError("disk full")))
+    monkeypatch.setattr(tasks, "create", lambda req, **kwargs: (_ for _ in ()).throw(RuntimeError("disk full")))
     try:
         with pytest.raises(RuntimeError):
             client.post(f"/api/projects/{pid}/kickoff/adopt", json=body)

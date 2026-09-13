@@ -7,7 +7,7 @@ import uuid
 from contextlib import closing, contextmanager
 from datetime import timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Collection, Iterable
 
 from .models import (
     AppendEventRequest,
@@ -127,7 +127,26 @@ class TaskStore:
         finally:
             db.close()
 
-    def create(self, request: CreateTaskRequest) -> TaskManifest:
+    #: The states `create` may be asked for. `backlog` is where the lifecycle starts and
+    #: stays the default. `planned` is for a task whose requirements-and-design step
+    #: happened *outside* the board — the project kickoff, where the owner approved a
+    #: charter with success criteria and a card that says what done looks like, and the
+    #: project conversation that proposes a card against that charter afterwards. Walking
+    #: such a task up the chain instead would demand an approved requirement spec it has
+    #: no reason to have (`transition` gates `design` on one), and leaving it in `backlog`
+    #: is what made every kickoff task undispatchable.
+    #:
+    #: It is a keyword of *this method*, deliberately not a field of `CreateTaskRequest`:
+    #: that model is the body of the public `POST /api/tasks`, and a state on it would let
+    #: any client create a dispatchable task and skip the lifecycle entirely.
+    CREATABLE_STATES = frozenset({TaskState.BACKLOG, TaskState.PLANNED})
+
+    def create(self, request: CreateTaskRequest, *, state: TaskState = TaskState.BACKLOG) -> TaskManifest:
+        if state not in self.CREATABLE_STATES:
+            raise ValueError(
+                f"a task may not be created in {state.value}; "
+                f"create it in {' or '.join(sorted(s.value for s in self.CREATABLE_STATES))} and transition it"
+            )
         task_id = self._new_id("task")
         now = utc_now()
         with self._transaction() as db:
@@ -145,7 +164,7 @@ class TaskStore:
                     request.title,
                     request.description,
                     request.kind,
-                    TaskState.BACKLOG.value,
+                    state.value,
                     request.risk.value,
                     request.priority,
                     request.primary_agent,
@@ -163,7 +182,10 @@ class TaskStore:
                 task_id=task_id,
                 event_type="task_created",
                 actor=request.created_by,
-                payload={"state": TaskState.BACKLOG.value, "version": 1},
+                # The state it was actually created in. A task that appears already
+                # planned has to say so in its own timeline; a hard-coded "backlog" here
+                # would make the board and the history disagree from the first event.
+                payload={"state": state.value, "version": 1},
                 created_at=now,
             )
         task = self.get(task_id)
@@ -180,7 +202,13 @@ class TaskStore:
         *,
         project_id: str | None = None,
         state: TaskState | None = None,
+        #: Keep only these states. Applied in the query, not after it: a caller that
+        #: filtered a page in Python would be filtering the *first* `limit` rows by
+        #: priority, and a project whose top rows are all finished would come back empty
+        #: while live tasks sat below the cut.
+        states: Collection[TaskState] | None = None,
         kind: str | None = None,
+        include_archived: bool = True,
         limit: int = 100,
         offset: int = 0,
     ) -> list[TaskManifest]:
@@ -192,6 +220,14 @@ class TaskStore:
         if state:
             clauses.append("state = ?")
             values.append(state.value)
+        if states is not None:
+            wanted = sorted({s.value for s in states})
+            if not wanted:
+                return []
+            clauses.append(f"state IN ({', '.join('?' for _ in wanted)})")
+            values.extend(wanted)
+        if not include_archived:
+            clauses.append("archived_at IS NULL")
         if kind:
             clauses.append("kind = ?")
             values.append(kind)

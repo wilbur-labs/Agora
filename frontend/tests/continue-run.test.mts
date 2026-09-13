@@ -24,14 +24,24 @@ import {
   type WorkspaceReadiness,
 } from "../src/lib/continue-run.ts";
 import { workspace as workspaceDictionary } from "../src/lib/i18n/dictionaries/workspace.ts";
+import { projectChat as projectChatDictionary } from "../src/lib/i18n/dictionaries/project-chat.ts";
 
 type Locale = "en" | "zh";
 
-/** Resolve a "workspace.…" message key against one locale, or undefined. */
+/** Resolve a message key against one locale, or undefined. Two namespaces reach these
+ *  messages now: the workbench's own, and the project conversation's — the refusal for a
+ *  project with no goal is one sentence, and it is said in both places rather than
+ *  written twice (CR-61). */
+const DICTIONARIES = { workspace: workspaceDictionary, projectChat: projectChatDictionary };
+
 function lookup(locale: Locale, key: string): string | undefined {
   const parts = key.split(".");
-  assert.equal(parts.shift(), "workspace", `key must be in the workspace namespace: ${key}`);
-  let node: unknown = workspaceDictionary[locale];
+  const namespace = parts.shift();
+  assert.ok(
+    namespace !== undefined && namespace in DICTIONARIES,
+    `key must be in a namespace this test knows: ${key}`,
+  );
+  let node: unknown = DICTIONARIES[namespace as keyof typeof DICTIONARIES][locale];
   for (const part of parts) {
     if (!node || typeof node !== "object" || !(part in (node as Record<string, unknown>))) {
       return undefined;
@@ -121,6 +131,33 @@ test("Continue is unavailable while a run for the task is active", () => {
     continueEntryGate({ taskState: "running", activeRunCount: 0, openAttentionCount: 0, followUpArmed: false, dispatching: false }),
     { ready: true, needsProvision: false, block: null },
   );
+});
+
+test("a project whose goal was never settled refuses every turn, and an unread one does not", () => {
+  // CR-61. Dispatching into a project with no goal is how work starts without anyone
+  // having said what it is for — so it is the first refusal, ahead of every other one.
+  const ready = { taskState: "planned", activeRunCount: 0, openAttentionCount: 0, followUpArmed: false, dispatching: false } as const;
+  assert.deepEqual(
+    continueEntryGate({ ...ready, projectGate: "noCharter" }),
+    { ready: false, needsProvision: false, block: "noCharter" },
+  );
+  // It outranks the other blocks rather than hiding behind them.
+  assert.equal(
+    continueEntryGate({ ...ready, activeRunCount: 1, projectGate: "noCharter" }).block,
+    "noCharter",
+  );
+  // "Could not read the charter" is not "has no charter": a failed dashboard read must
+  // not stop work, or one timed-out request would close the workbench.
+  assert.deepEqual(
+    continueEntryGate({ ...ready, projectGate: "unknown" }),
+    { ready: true, needsProvision: false, block: null },
+  );
+  assert.deepEqual(
+    continueEntryGate({ ...ready, projectGate: "open" }),
+    { ready: true, needsProvision: false, block: null },
+  );
+  // A caller that says nothing about the project is unchanged.
+  assert.deepEqual(continueEntryGate(ready), { ready: true, needsProvision: false, block: null });
 });
 
 test("the auto-review handoff window blocks Continue before any review run exists", () => {

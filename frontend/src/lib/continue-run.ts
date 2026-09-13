@@ -94,6 +94,7 @@ export function workspaceReadiness(facts: WorkspaceFacts): WorkspaceReadiness {
 // --- Gating ------------------------------------------------------------------
 
 export type ContinueBlock =
+  | "noCharter"
   | "dispatching"
   | "taskNotRunnable"
   | "runsUnknown"
@@ -150,6 +151,10 @@ export interface ContinueDecision {
  */
 export function continueEntryGate(input: {
   taskState: string;
+  /** Whether the project may be given work at all (CR-61). "unknown" does NOT block: a
+   *  dashboard read that failed is not evidence the project has no goal, and refusing on
+   *  it would stop work over a request that timed out. */
+  projectGate?: "open" | "noCharter" | "unknown";
   activeRunCount: number | null;
   openAttentionCount: number | null;
   /** A run settled moments ago and the review it may trigger has not appeared yet. */
@@ -157,6 +162,12 @@ export function continueEntryGate(input: {
   dispatching: boolean;
 }): ContinueDecision {
   if (input.dispatching) return { ready: false, needsProvision: false, block: "dispatching" };
+  // First, because it is the most fundamental refusal: a project whose goal was never
+  // settled has nothing to judge a run against, and dispatching into it is how work
+  // starts without anyone having said what it is for.
+  if (input.projectGate === "noCharter") {
+    return { ready: false, needsProvision: false, block: "noCharter" };
+  }
   if (!CONTINUABLE_TASK_STATES.includes(input.taskState)) {
     return { ready: false, needsProvision: false, block: "taskNotRunnable" };
   }
@@ -181,6 +192,7 @@ export function continueEntryGate(input: {
 /** The full decision: the entry facts plus the worktree the run would write to. */
 export function continueGate(input: {
   taskState: string;
+  projectGate?: "open" | "noCharter" | "unknown";
   activeRunCount: number | null;
   openAttentionCount: number | null;
   followUpArmed: boolean;
@@ -210,6 +222,7 @@ export function continueGate(input: {
 }
 
 export const CONTINUE_BLOCK_KEY: Record<ContinueBlock, string> = {
+  noCharter: "projectChat.gate.noCharter",
   dispatching: "workspace.continue.blocked.dispatching",
   taskNotRunnable: "workspace.continue.blocked.taskNotRunnable",
   runsUnknown: "workspace.continue.blocked.runsUnknown",

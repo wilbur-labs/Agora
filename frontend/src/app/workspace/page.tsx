@@ -12,12 +12,8 @@ import {
   Network,
   RefreshCw,
   Target,
-  X,
 } from "lucide-react";
-import { Button } from "@/components/ui/button";
 import {
-  ApiError,
-  createTask,
   fetchDelivery,
   fetchProjectDashboard,
   fetchProjectDecisions,
@@ -53,6 +49,8 @@ import {
   type RunSummary,
 } from "@/lib/execution";
 import { ContinueAction } from "@/components/continue-action";
+import { ProjectChat } from "@/components/project-chat";
+import { projectGateOf, type ProjectGate } from "@/lib/project-chat";
 import { listAttention } from "@/lib/attention";
 import { mergeRunUpdates, type ContinueSeedFacts } from "@/lib/continue-run";
 import {
@@ -182,7 +180,6 @@ export default function WorkspacePage() {
   // beside an attention read that had succeeded.
   const [staleOrigins, setStaleOrigins] = useState<readonly RailStaleOrigin[]>([]);
   const [runs, setRuns] = useState<RunSummary[]>([]);
-  const [projectIds, setProjectIds] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -206,7 +203,6 @@ export default function WorkspacePage() {
   const [navReadFailures, setNavReadFailures] = useState<{ dashboard: boolean; decisions: boolean }>(
     { dashboard: false, decisions: false },
   );
-  const [showCreate, setShowCreate] = useState(false);
   // Bumped on every explicit refresh so the selected task's own reads (recap,
   // events, dashboard) reload too. Without it a run finishing without changing
   // the task's state leaves the child's effect deps untouched, and Refresh
@@ -262,9 +258,6 @@ export default function WorkspacePage() {
       // disclosed as stale by the rail — rather than replacing it with an empty
       // list that would read as "there are none".
       if (tasksRead.status === "fulfilled") setTasks(tasksRead.value);
-      if (projectsRead.status === "fulfilled") {
-        setProjectIds(projectsRead.value.items.map((item) => item.project_id));
-      }
       if (attentionRead.status === "fulfilled") setAttention(attentionRead.value.items);
       if (runsRead.status === "fulfilled") setRuns(runsRead.value);
     } catch (err) {
@@ -426,6 +419,23 @@ export default function WorkspacePage() {
     };
   }, [currentProjectId, projectTasks, runs, navDashboard, navDecisions, navReadFailures]);
 
+  // Whether this project may be given work (CR-61). Three answers, not two: the
+  // dashboard read is what carries the charter, and a read that did not land cannot
+  // support "this project has no goal" — so it says it could not tell instead.
+  const gate = useMemo(() => {
+    // Only while the dashboard in hand is *this* project's. Switching projects leaves
+    // the previous one in state until the new request settles, and reading the charter
+    // off it would open the gate for a project whose charter has not been read — the
+    // window in which a run could be dispatched into a project with no goal at all.
+    const mine = navDashboard !== null && navDashboard.project_id === currentProjectId;
+    return projectGateOf(
+      mine ? navDashboard.charter?.goal : undefined,
+      currentProjectId === null ? "pending"
+        : navReadFailures.dashboard ? "failed"
+          : mine ? "landed" : "pending",
+    );
+  }, [navDashboard, navReadFailures.dashboard, currentProjectId]);
+
   // Drop a selection the project filter now excludes, so the main view never
   // shows a task hidden from the rail (notes would post to the wrong project).
   useEffect(() => {
@@ -480,7 +490,16 @@ export default function WorkspacePage() {
           const task = tasks.find((candidate) => candidate.task_id === taskId);
           if (task) selectTask(task);
         }}
-        onNewTask={() => setShowCreate(true)}
+        gate={gate}
+        // The goal is settled in the middle column, so "settle it" is closing the task
+        // that is covering it — and pinning the project first, because the project may
+        // only have been in context through that task (`projectFilter` is still "all"
+        // when the workbench was entered by task), and dropping the selection alone
+        // would leave the column with no project and show the empty state instead.
+        onSettleGoal={() => {
+          if (currentProjectId !== null) openProject(currentProjectId);
+          setSelectedTaskId(null);
+        }}
         header={
           <RailHeader onRefresh={() => { void load(); void loadWorkspaceSources(); }} loading={loading} />
         }
@@ -514,6 +533,9 @@ export default function WorkspacePage() {
             key={selectedTask.task_id}
             refreshNonce={refreshNonce}
             task={selectedTask}
+            // The same gate the rail shows, so a task open in a project with no goal
+            // cannot be dispatched into from here either (CR-61).
+            projectGate={gate.kind}
             // What this page's own reads have seen of the selected task. The child's
             // reads and these overlap in time — `load` bumps `refreshNonce` before its
             // four reads settle — so the rail can learn of a gate or a run before the
@@ -525,25 +547,35 @@ export default function WorkspacePage() {
             onTaskMayHaveChanged={load}
           />
         ) : (
-          <EmptyWorkspace hasTasks={tasks.length > 0} />
+          currentProjectId !== null ? (
+            // The project's own conversation: it settles the goal when there is none, and
+            // stays open afterwards as the place tasks are proposed (CR-62, CR-63).
+            <ProjectChat
+              key={currentProjectId}
+              projectId={currentProjectId}
+              onAdopted={load}
+              // Through the one selection path, so `?project`/`?task` follow: setting the
+              // state alone left a reload, a copied link or the back button landing on
+              // the project conversation rather than the task that was just opened.
+              // The task may not be in `tasks` yet (it was created seconds ago by the
+              // adoption), so the selection is set either way and the URL with it.
+              onOpenTask={(taskId) => {
+                const task = tasks.find((candidate) => candidate.task_id === taskId);
+                if (task) { selectTask(task); return; }
+                setSelectedTaskId(taskId);
+                const params = new URLSearchParams(window.location.search);
+                params.set("project", currentProjectId);
+                params.set("task", taskId);
+                window.history.replaceState(null, "", `${window.location.pathname}?${params}`);
+                load();
+              }}
+            />
+          ) : (
+            <EmptyWorkspace hasTasks={tasks.length > 0} />
+          )
         )}
       </main>
       </div>
-      {showCreate && (
-        <CreateTaskDialog
-          projectIds={projectIds}
-          // The project this workbench is inside, not whatever a URL parameter last
-          // named. With the filter dropdown gone these could disagree — a task open in
-          // project A while `projectFilter` still says B — and the dialog defaulting to
-          // B would put the new task somewhere the column never showed. Null falls
-          // through to no default, which is deliberate: better to make the user choose
-          // than to choose the alphabetically first project for them (that default is
-          // how "new task" came to point at Agora's own source tree).
-          defaultProject={currentProjectId ?? ""}
-          onClose={() => setShowCreate(false)}
-          onCreated={(task) => { setTasks((current) => [task, ...current]); setShowCreate(false); selectTask(task); }}
-        />
-      )}
     </div>
   );
 }
@@ -952,7 +984,7 @@ const HANDOFF_FILES_SHOWN = 12;
 // The parent's summary comes from a capped, global run page and cannot make that
 // distinction — it would be the rail's projection standing in for the task's own
 // answer, which is the substitution this file has had to remove twice already.
-function TaskWorkspace({ task, refreshNonce, railAttention, railRuns, onTaskMayHaveChanged }: { task: TaskManifest; refreshNonce: number; railAttention: readonly AttentionItem[]; railRuns: readonly RunSummary[]; onTaskMayHaveChanged: () => void }) {
+function TaskWorkspace({ task, projectGate, refreshNonce, railAttention, railRuns, onTaskMayHaveChanged }: { task: TaskManifest; projectGate: ProjectGate["kind"]; refreshNonce: number; railAttention: readonly AttentionItem[]; railRuns: readonly RunSummary[]; onTaskMayHaveChanged: () => void }) {
   const { t, te } = useI18n();
   const [dashboard, setDashboard] = useState<ProjectDashboard | null>(null);
   const [dashError, setDashError] = useState(false);
@@ -1594,6 +1626,7 @@ function TaskWorkspace({ task, refreshNonce, railAttention, railRuns, onTaskMayH
         <ResumeBrief recap={recap} recapError={recapError} t={t} te={te} />
         <ContinueAction
           task={task}
+          projectGate={projectGate}
           seed={continueSeed}
           activeRunCount={activeRunCount}
           openAttentionCount={openAttentionCount}
@@ -1638,6 +1671,7 @@ function TaskWorkspace({ task, refreshNonce, railAttention, railRuns, onTaskMayH
             through the same `timelineVerdictOf` the old timeline tab used. */}
         <CenterColumn
           task={task}
+          projectGate={projectGate}
           events={events}
           eventsReadFailed={eventsError}
           eventsBehind={eventsGap}
@@ -1677,6 +1711,7 @@ function TaskWorkspace({ task, refreshNonce, railAttention, railRuns, onTaskMayH
 // notes or dispatches. The two-tab layout put notes where nobody looked.
 function CenterColumn({
   task,
+  projectGate,
   events,
   eventsReadFailed,
   eventsBehind,
@@ -1688,6 +1723,7 @@ function CenterColumn({
   onTaskMayHaveChanged,
 }: {
   task: TaskManifest;
+  projectGate: ProjectGate["kind"];
   events: TaskEvent[] | null;
   eventsReadFailed: boolean;
   eventsBehind: boolean;
@@ -1702,6 +1738,7 @@ function CenterColumn({
     <div className="flex min-h-0 flex-1 flex-col border-r">
       <Conversation
         task={task}
+        projectGate={projectGate}
         events={events}
         eventsReadFailed={eventsReadFailed}
         eventsBehind={eventsBehind}
@@ -2519,78 +2556,3 @@ function AttentionList({ view }: { view: TaskAttentionView<AttentionItem> }) {
 
 // Dead-simple task creation: three questions, everything else uses project
 // defaults (advanced settings live on the full task page).
-function CreateTaskDialog({ projectIds, defaultProject, onClose, onCreated }: { projectIds: string[]; defaultProject: string; onClose: () => void; onCreated: (task: TaskManifest) => void }) {
-  const { t } = useI18n();
-  const [projectId, setProjectId] = useState(defaultProject);
-  const [goal, setGoal] = useState("");
-  const [done, setDone] = useState("");
-  const [avoid, setAvoid] = useState("");
-  const [showAdvanced, setShowAdvanced] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const ref = useRef<HTMLFormElement>(null);
-
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
-    document.addEventListener("keydown", handleKeyDown);
-    ref.current?.querySelector<HTMLElement>("input, textarea")?.focus();
-    return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [onClose]);
-
-  const toLines = (value: string) => value.split("\n").map((line) => line.trim()).filter(Boolean);
-
-  return (
-    <div className="fixed inset-0 z-50 flex justify-end bg-black/35" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <form
-        ref={ref}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="ws-create-title"
-        className="h-full w-full max-w-lg space-y-5 overflow-y-auto bg-background p-6 shadow-2xl"
-        onSubmit={async (event) => {
-          event.preventDefault(); setSubmitting(true); setError(null);
-          const avoidLines = toLines(avoid);
-          const description = avoidLines.length > 0 ? `${t("workspace.create.avoidLabel")}\n${avoidLines.map((line) => `- ${line}`).join("\n")}` : "";
-          try {
-            onCreated(await createTask({ project_id: projectId.trim(), title: goal.trim(), description, acceptance: toLines(done) }));
-          } catch (err) {
-            setError(err instanceof ApiError ? err.message : (err as Error).message); setSubmitting(false);
-          }
-        }}
-      >
-        <div className="flex items-center justify-between">
-          <div><p className="text-xs uppercase tracking-widest text-muted-foreground">{t("workspace.create.eyebrow")}</p><h2 id="ws-create-title" className="text-xl font-bold">{t("workspace.create.title")}</h2></div>
-          <Button type="button" variant="ghost" size="icon" onClick={onClose} aria-label={t("workspace.create.close")}><X /></Button>
-        </div>
-
-        <label className="block space-y-1.5 text-sm font-medium">
-          <span>{t("workspace.create.project")}</span>
-          <input list="ws-projects" required value={projectId} onChange={(e) => setProjectId(e.target.value)} className="field" />
-          <datalist id="ws-projects">{projectIds.map((id) => <option key={id}>{id}</option>)}</datalist>
-        </label>
-        <label className="block space-y-1.5 text-sm font-medium">
-          <span>{t("workspace.create.goalLabel")}</span>
-          <input required value={goal} onChange={(e) => setGoal(e.target.value)} className="field" placeholder={t("workspace.create.goalPlaceholder")} />
-        </label>
-        <label className="block space-y-1.5 text-sm font-medium">
-          <span>{t("workspace.create.doneLabel")}</span>
-          <textarea value={done} onChange={(e) => setDone(e.target.value)} className="field min-h-24 resize-y" placeholder={t("workspace.create.donePlaceholder")} />
-        </label>
-        <label className="block space-y-1.5 text-sm font-medium">
-          <span>{t("workspace.create.avoidLabel")}</span>
-          <textarea value={avoid} onChange={(e) => setAvoid(e.target.value)} className="field min-h-20 resize-y" placeholder={t("workspace.create.avoidPlaceholder")} />
-        </label>
-
-        <div>
-          <button type="button" onClick={() => setShowAdvanced((v) => !v)} className="flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground">
-            <ChevronDown className={cn("size-3.5 transition-transform", showAdvanced && "rotate-180")} /> {t("workspace.create.advanced")}
-          </button>
-          {showAdvanced && <p className="mt-2 rounded-lg bg-muted/40 p-3 text-xs leading-relaxed text-muted-foreground">{t("workspace.create.advancedHint")}</p>}
-        </div>
-
-        {error && <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{error}</div>}
-        <Button type="submit" size="lg" className="w-full" disabled={submitting || !projectId.trim() || !goal.trim()}>{submitting ? t("workspace.create.submitting") : t("workspace.create.submit")}</Button>
-      </form>
-    </div>
-  );
-}

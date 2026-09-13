@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from agora.projects import ProjectRegistry
 from agora.projects import kickoff
-from agora.tasks.models import CreateTaskRequest
+from agora.tasks.models import CreateTaskRequest, TaskState
 from agora.tasks.router import get_project_registry, get_task_store
 from agora.tasks.store import TaskStore
 
@@ -55,6 +55,12 @@ class KickoffAnswersRequest(BaseModel):
 
 
 class KickoffRefineRequest(BaseModel):
+    #: What the person said about the proposal they are looking at, if anything. The
+    #: conversation offers a box at this step, and a remark typed into it has to reach
+    #: the pass that draws the next proposal — a box whose text goes nowhere is worse
+    #: than no box. Recorded with the record, so a reload says what this draft was
+    #: drawn from.
+    note: str = Field(default="", max_length=kickoff.ANSWER_CHARS)
     expected_revision: str | None = None
 
 
@@ -149,6 +155,7 @@ _MESSAGES = {
     "kickoff_record_too_large": "The adopted record would be larger than can be read back; shorten the tasks or the answers.",
     "kickoff_project_root_missing": "The project's root directory does not exist; nothing was written.",
     "kickoff_key_conflict": "A task in this project already carries one of this adoption's keys but is not the approved task; nothing was created. Cancel or archive that task in the workbench, then adopt again.",
+    "project_has_no_charter": "This project has no goal yet. Settle it with the agent first; tasks are proposed against the charter.",
     "kickoff_seal_mismatch": "Another adoption of this proposal is half done and its content differs from yours; the record was re-read — resume that one, or start over.",
 }
 
@@ -549,6 +556,7 @@ async def refine_kickoff(
     """Pass two: from the answers, the charter to adopt and the first tasks."""
     project = _project(registry, project_id)
     expected = request.expected_revision if request is not None else None
+    note = (request.note if request is not None else "").strip()
     early = _snapshot(project_id, project)
     _check_revision(early, expected)
     record = _record_of(early)
@@ -562,6 +570,7 @@ async def refine_kickoff(
             kickoff.refine,
             name=project.name, brief=record.get("brief", ""), root=project.root, context=context,
             charter_draft=record["charter_draft"], questions=record["questions"], answers=record["answers"],
+            note=note, previous=record.get("proposal"),
         )
     except kickoff.KickoffError as exc:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from None
@@ -593,6 +602,10 @@ async def refine_kickoff(
             # What *this* pass was shown. The repository may have moved since the first
             # read, and the proposal was drawn from this text, not that one.
             current["context_at_proposal"] = context.summary()
+            # What the person said about the draft this one replaces. Kept on the record
+            # rather than only in the prompt: the next reader of the file should be able
+            # to see why the proposal changed.
+            current["refine_note"] = note
             current["status"] = "proposed"
             current["proposed_at"] = kickoff.now_iso()
             _write(project, current)
@@ -840,7 +853,15 @@ def _adopt_locked(project_id: str, project, request: AdoptKickoffRequest, regist
                 priority=100 - index * 4,
                 metadata={"kickoff": True, "kickoff_key": task["key"], "kickoff_kind": task.get("kind", "custom")},
                 created_by="user",
-            ))
+            ),
+                # Planned, not backlog. The requirements-and-design step for these tasks
+                # is the kickoff itself: the owner approved a charter with success
+                # criteria and ticked a card whose description says what done looks like.
+                # Created in backlog they were undispatchable — "Execution runs require a
+                # planned or running task" — and nothing in the product moved them on,
+                # because `design` wants an approved requirement spec they do not have.
+                state=TaskState.PLANNED,
+            )
         created.append({"key": task["key"], "task_id": manifest.task_id, "title": manifest.title, "kind": task.get("kind", "custom")})
         recorded_keys.add(task["key"])
         record["adopted"]["tasks"] = created
@@ -852,3 +873,203 @@ def _adopt_locked(project_id: str, project, request: AdoptKickoffRequest, regist
     registry.store.set_setting(_adopted_marker_key(project_id), _marker(record["adopted"], kept_edit=bool(record["adopted"].get("charter_kept_edit", False))))
     _write(project, record)
     return _payload(project_id, project, registry, tasks)
+
+
+# --- the project conversation after adoption (CR-63) -------------------------------------
+#
+# The kickoff dialogue does not end when the charter is adopted; it becomes the project's
+# one conversation. The owner says something, the agent says what it is against the
+# charter — work to do now, a second version, or a remark — and proposes a card with a
+# place in the development order. That replaces the "new task" dialog, which asked the
+# person to be the one who knew the title, the kind, the acceptance line and the priority.
+#
+# Two routes, deliberately: proposing writes nothing, and placing writes without asking
+# the agent again. A proposal the person never accepted must not reach the board, and a
+# card they did accept must not depend on a second agent call to land.
+
+
+class IdeaRequest(BaseModel):
+    idea: str = Field(min_length=1, max_length=kickoff.IDEA_CHARS)
+
+    @field_validator("idea")
+    @classmethod
+    def _not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("idea is blank")
+        return value.strip()
+
+
+class PlaceTaskRequest(BaseModel):
+    """The card as the person accepted it, and where they put it. The card is sent back
+    rather than looked up: nothing was written when it was proposed, so this request is
+    the first time it exists anywhere."""
+    task: AdoptTask
+    #: 1 is first. The end of the order is any position past the last task; the answer
+    #: reports where it actually landed, read back from the board.
+    position: int = Field(ge=1, le=kickoff.ORDER_SHOWN + 1)
+
+
+def _charter_or_refuse(project) -> dict[str, Any]:
+    """The conversation proposes work *against the charter*. Without one there is nothing
+    to judge an idea against, and a card proposed from the idea alone would be exactly the
+    "new task" dialog again, with an agent in front of it. The kickoff comes first."""
+    charter = kickoff.charter_triplet(getattr(project, "charter", None))
+    if not charter["goal"]:
+        raise HTTPException(status.HTTP_409_CONFLICT, _detail("project_has_no_charter"))
+    return charter
+
+
+#: The states a task is still part of the development order in. Finished and abandoned
+#: work is not something a new card is placed before or after.
+_LIVE_STATES = frozenset(TaskState) - {TaskState.DONE, TaskState.FAILED, TaskState.CANCELLED}
+
+
+def _order(tasks: TaskStore, project_id: str) -> tuple[list[dict[str, Any]], bool]:
+    """The development order as the board holds it, and whether it was seen whole.
+
+    Board order is `priority DESC, created_at DESC`; this reads one row past the ceiling
+    so "there are more" is a fact rather than an assumption about a full page.
+
+    The live filter is part of the *query*. Filtering a page in Python would filter the
+    top `ORDER_SHOWN + 1` rows by priority, so a project whose highest-priority rows are
+    all finished would report an empty order — and the agent would then be shown, and the
+    card placed into, an order that is not the one on the board.
+    """
+    page = tasks.list(
+        project_id=project_id, states=_LIVE_STATES, include_archived=False,
+        limit=kickoff.ORDER_SHOWN + 1,
+    )
+    truncated = len(page) > kickoff.ORDER_SHOWN
+    return (
+        [
+            {"task_id": task.task_id, "title": task.title, "state": task.state.value, "priority": task.priority}
+            for task in page[:kickoff.ORDER_SHOWN]
+        ],
+        truncated,
+    )
+
+
+@router.post("/projects/{project_id}/ideas")
+async def propose_from_idea(
+    project_id: str,
+    request: IdeaRequest,
+    registry: ProjectRegistry = Depends(get_project_registry),
+    tasks: TaskStore = Depends(get_task_store),
+) -> dict[str, Any]:
+    """One analyst call over the charter, the order and what the owner just said. Writes
+    nothing: the answer is a proposal, and accepting it is the next request."""
+    project = _project(registry, project_id)
+    charter = _charter_or_refuse(project)
+    order, truncated = _order(tasks, project_id)
+    try:
+        proposal = await run_in_threadpool(
+            kickoff.propose_from_idea,
+            name=project.name, root=project.root, charter=charter, order=order, idea=request.idea,
+        )
+    except kickoff.KickoffError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from None
+    return {
+        "idea": request.idea,
+        **proposal,
+        # What the position means, sent with it: the same list the agent was shown and the
+        # person picks a place in. `truncated` is the honest half — the order goes on past
+        # what either of them saw, so "last" means last of these.
+        "order": order,
+        "order_truncated": truncated,
+    }
+
+
+@router.post("/projects/{project_id}/ideas/place")
+def place_idea_task(
+    project_id: str,
+    request: PlaceTaskRequest,
+    registry: ProjectRegistry = Depends(get_project_registry),
+    tasks: TaskStore = Depends(get_task_store),
+) -> dict[str, Any]:
+    """Create the accepted card at the position the person picked.
+
+    Position is expressed in the board's own ordering (`priority DESC, created_at DESC`),
+    which is why the priority is taken from the task currently *at* that position: a tie
+    breaks by recency, and this card is the newest, so it sorts immediately above it.
+    That is exact except where the neighbours above and below already share a priority —
+    there the tie cannot be split, and the answer says where the card actually landed,
+    read back from the board, rather than repeating what was asked for.
+    """
+    project = _project(registry, project_id)
+    _charter_or_refuse(project)
+    # The look-up and the create, under the project's lock and in that order. The store's
+    # own transaction covers the INSERT and nothing before it, and the key lives in a
+    # metadata field with no unique index — so two identical requests arriving together (a
+    # double click, a retry racing the original) would both read "not there" and both
+    # create. The lock is the same one the adoption takes, for the same reason.
+    with kickoff.project_lock(project.root):
+        return _place_locked(project_id, request, tasks)
+
+
+def _place_locked(project_id: str, request: PlaceTaskRequest, tasks: TaskStore) -> dict[str, Any]:
+    order, truncated = _order(tasks, project_id)
+    key = kickoff.idea_key(request.task.model_dump())
+    # Once is once. The request that created the task and lost its answer sends the same
+    # card again — the panel shows a failure and the person clicks again — and without
+    # this it would create a second planned task every time. Looked up, not remembered:
+    # the key is in the task's own metadata, so a retry after a restart still finds it.
+    existing = _task_by_idea_key(tasks, project_id, key)
+    if existing is not None:
+        return _placement(tasks, project_id, existing, request.position, truncated)
+    # Past the end is the end. Not refused: the person clicked "put it last" on the order
+    # they were shown, and a task created meanwhile must not turn that into an error.
+    index = min(request.position, len(order) + 1) - 1
+    if index >= len(order):
+        # Last: below everything shown. Never below 0, and when the tail is already at 0
+        # it ties with it and sorts above by recency — said in `landed_at`, not assumed.
+        priority = max(0, (order[-1]["priority"] - 1) if order else 50)
+    else:
+        priority = order[index]["priority"]
+    created = tasks.create(
+        CreateTaskRequest(
+            project_id=project_id,
+            title=request.task.title,
+            description=request.task.description,
+            kind=request.task.kind,
+            priority=priority,
+            metadata={"kickoff_idea": True, "kickoff_idea_key": key, "kickoff_kind": request.task.kind},
+            created_by="user",
+        ),
+        # Planned for the same reason the adopted tasks are: the card carries what done
+        # looks like and was accepted against the charter, so the board step it would
+        # otherwise wait for has already happened — in the conversation.
+        state=TaskState.PLANNED,
+    )
+    return _placement(tasks, project_id, created, request.position, truncated)
+
+
+def _task_by_idea_key(tasks: TaskStore, project_id: str, key: str):
+    """The task this project already holds under an accepted card's key, or None.
+
+    Every page of the project's tasks up to the same ceiling the adoption scans to, and
+    the scan failing is said rather than taken for "not there" — creating a second task
+    because a scan was too large is exactly the duplicate this lookup exists to stop.
+    """
+    rows = tasks.list(project_id=project_id, limit=_TASK_SCAN_CEILING + 1, offset=0)
+    if len(rows) > _TASK_SCAN_CEILING:
+        raise HTTPException(status.HTTP_409_CONFLICT, _detail("kickoff_task_scan_too_large", ceiling=_TASK_SCAN_CEILING))
+    for manifest in rows:
+        if (manifest.metadata or {}).get("kickoff_idea_key") == key:
+            return manifest
+    return None
+
+
+def _placement(tasks: TaskStore, project_id: str, task, asked: int, truncated_before: bool) -> dict[str, Any]:
+    after, after_truncated = _order(tasks, project_id)
+    landed = next((i + 1 for i, row in enumerate(after) if row["task_id"] == task.task_id), None)
+    return {
+        "task_id": task.task_id,
+        "title": task.title,
+        "state": task.state.value,
+        "asked_position": asked,
+        # Where it is, not where it was asked to be. Null only when the board no longer
+        # shows it within the ceiling — a project past ORDER_SHOWN live tasks.
+        "landed_at": landed,
+        "order": after,
+        "order_truncated": after_truncated or truncated_before,
+    }

@@ -326,6 +326,29 @@ _REFINE_PROMPT = (
 )
 
 
+_IDEA_PROMPT = (
+    "You are the advisor who ran this project's kickoff, still in the same conversation. "
+    "The owner has just said something new. Decide what it is against the charter they "
+    "adopted and the development order they already have. Produce ONLY a JSON object (no "
+    "prose, no markdown fence) with keys:\n"
+    "  \"verdict\": \"task\" if it is work to do now, \"later\" if it belongs to a second "
+    "version (outside the charter's scope), \"note\" if it is a remark, a question or a "
+    "constraint rather than a piece of work,\n"
+    "  \"echo\": one sentence (Simplified Chinese) restating what they said, as a boundary. "
+    "It is shown after the words 「我记成：」, so write only the part after that,\n"
+    "  \"why\": one short sentence (Chinese) saying why it is that verdict, naming the "
+    "charter or an existing task where that helps,\n"
+    "  \"task\": {\"title\": (Chinese, imperative), \"description\": 2-4 sentences (Chinese) "
+    "incl. what done looks like, \"kind\": one of \"mockup\", \"scaffold\", \"feature\", "
+    "\"research\", \"custom\"} when the verdict is \"task\", otherwise null,\n"
+    "  \"position\": where it goes in the development order when the verdict is \"task\" — "
+    "1 is first, {append} is last, after everything listed; otherwise null.\n\n"
+    "Project name: {name}\n\nThe adopted charter:\n{charter}\n\n"
+    "The development order as it stands ({count} tasks, the first one is next):\n{order}\n\n"
+    "What the owner just said:\n{idea}"
+)
+
+
 class FileTooLarge(OSError):
     """The file goes past the limit and the caller asked for whole-or-nothing."""
 
@@ -682,18 +705,131 @@ def generate(*, name: str, brief: str, root: Path, context: RepoContext) -> dict
 def refine(
     *, name: str, brief: str, root: Path, context: RepoContext,
     charter_draft: dict[str, Any], questions: list[dict[str, Any]], answers: dict[str, str],
+    note: str = "", previous: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Pass two: the charter to adopt and the first tasks, from the answers."""
+    """Pass two: the charter to adopt and the first tasks, from the answers.
+
+    `note` is what the person said about the draft this one replaces — the conversation
+    lets them answer a proposal in words, and that has to reach the pass that draws the
+    next one. It is passed with the draft it is about, because "the second task is wrong"
+    means nothing without the list it points at.
+    """
     qa = "\n".join(
         f"- Q({q['id']}): {q['question']}\n  A: {answers.get(q['id'], '').strip() or '(unanswered)'}"
         for q in questions
     )
+    remark = ""
+    if note.strip():
+        drafted = json.dumps(previous, ensure_ascii=False) if isinstance(previous, dict) else "(none)"
+        remark = (
+            "\n\nYou already proposed this, and the owner was not happy with it:\n"
+            f"{drafted}\n\nWhat they said about it — this is the instruction for the "
+            f"draft you are about to write:\n{note.strip()}"
+        )
     prompt = _fill(
         _REFINE_PROMPT,
         name=name, brief=brief or "(none)", context=context.as_prompt_text(),
         draft=json.dumps(charter_draft, ensure_ascii=False), qa=qa,
-    )
+    ) + remark
     return parse_refine(_run_agent(prompt, root))
+
+
+#: An idea the owner types into the project conversation, and the lines the agent answers
+#: with. Both bounded, so a proposal stays something a person reads rather than scrolls.
+IDEA_CHARS = 4_000
+IDEA_LINE_CHARS = 1_000
+#: The most tasks of the development order that are shown to the agent and offered as
+#: positions. Past it the conversation says the order was only partly seen, rather than
+#: proposing a place inside a list it does not know the end of.
+ORDER_SHOWN = 50
+
+IDEA_VERDICTS = frozenset({"task", "later", "note"})
+
+
+def parse_idea(text: str, *, order_length: int) -> dict[str, Any]:
+    return _first_that_parses(
+        text, must_have="verdict", build=lambda raw: _build_idea(raw, order_length=order_length),
+    )
+
+
+def _build_idea(raw: dict[str, Any], *, order_length: int) -> dict[str, Any]:
+    verdict = _text(raw.get("verdict"), "verdict", required=True).strip().lower()
+    if verdict not in IDEA_VERDICTS:
+        raise KickoffError(f"agent output's verdict {verdict!r} is not one of {sorted(IDEA_VERDICTS)}")
+    echo = _text(raw.get("echo"), "echo", required=True)
+    why = _text(raw.get("why"), "why", required=False)
+    for what, line in (("echo", echo), ("why", why)):
+        if len(line) > IDEA_LINE_CHARS:
+            raise KickoffError(f"agent output's {what} is longer than {IDEA_LINE_CHARS} characters")
+    task: dict[str, Any] | None = None
+    position: int | None = None
+    if verdict == "task":
+        # A "task" verdict with no card is not a proposal anyone can act on, and a card
+        # with no place in the order is one the conversation cannot offer a position for.
+        # Refused whole rather than half-shown: asking again costs one click, and half a
+        # proposal reads as a decision that was already made.
+        task = _one_task(raw.get("task"))
+        value = raw.get("position")
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise KickoffError("agent output's position was not an integer")
+        # 1 .. len+1 — every gap between the tasks it was shown, plus the end. Outside
+        # that it is not a position in *this* order, and a clamp would quietly move the
+        # card somewhere the agent never proposed.
+        if not 1 <= value <= order_length + 1:
+            raise KickoffError(f"agent output's position {value} is outside 1..{order_length + 1}")
+        position = value
+    elif raw.get("task") is not None or raw.get("position") is not None:
+        # A verdict of "note" or "later" carrying a card is the agent contradicting
+        # itself, and dropping the card silently would hide a piece of work it *did*
+        # propose behind a one-line remark. Refused like every other broken answer:
+        # the route turns it into a 502 and the person asks again.
+        raise KickoffError(f"agent output's verdict is {verdict!r} but it also proposed a task")
+    return {"verdict": verdict, "echo": echo, "why": why, "task": task, "position": position}
+
+
+def _one_task(value: Any) -> dict[str, Any]:
+    """One task object, held to exactly what the proposal's tasks are held to."""
+    if not isinstance(value, dict):
+        raise KickoffError("agent output had no task object")
+    kind = _text(value.get("kind"), "task kind", required=True).lower()
+    if kind not in _TASK_KINDS:
+        raise KickoffError(f"agent output's task kind {kind!r} is not one of {sorted(_TASK_KINDS)}")
+    title = _text(value.get("title"), "task title", required=True)
+    description = _text(value.get("description"), "task description", required=True)
+    if len(title) > TITLE_CHARS:
+        raise KickoffError(f"agent output's task title is {len(title)} characters; at most {TITLE_CHARS}")
+    if len(description) > DESCRIPTION_CHARS:
+        raise KickoffError(
+            f"agent output's task description is {len(description)} characters; at most {DESCRIPTION_CHARS}"
+        )
+    return {"title": title, "description": description, "kind": kind}
+
+
+def propose_from_idea(
+    *, name: str, root: Path, charter: dict[str, Any], order: list[dict[str, Any]], idea: str,
+) -> dict[str, Any]:
+    """The project conversation after adoption: the owner says something, the agent says
+    what it is — work to do now, a second version, or a remark — and, when it is work,
+    proposes a card with a place in the development order.
+
+    One call, nothing written. The card becomes a task only when the person picks a
+    position, and that is a separate request: what the agent proposes and what the person
+    accepts stay two events, the same split the kickoff proposal has.
+    """
+    listed = "\n".join(
+        f"{index + 1}. [{task.get('state', '')}] {task.get('title', '')}"
+        for index, task in enumerate(order)
+    ) or "(no tasks yet)"
+    prompt = _fill(
+        _IDEA_PROMPT,
+        name=name,
+        charter=json.dumps(charter_triplet(charter), ensure_ascii=False),
+        order=listed,
+        count=str(len(order)),
+        append=str(len(order) + 1),
+        idea=idea,
+    )
+    return parse_idea(_run_agent(prompt, root), order_length=len(order))
 
 
 # --- the record in the repository -------------------------------------------------------
@@ -959,6 +1095,25 @@ def task_key(round_id: str, index: int, task: dict[str, Any]) -> str:
         sort_keys=True, ensure_ascii=False,
     )
     return f"{round_id}-{index + 1}-{hashlib.sha256(body.encode('utf-8')).hexdigest()[:10]}"
+
+
+def idea_key(task: dict[str, Any]) -> str:
+    """The key a card accepted in the project conversation is created under.
+
+    Content only — no round, no position. The point is a *retry*: the request that
+    created the task and lost its answer sends the same card again, and must find the
+    task rather than make a second one. Position is deliberately out of it, so a double
+    click that lands on two different chips still means one card.
+
+    The cost, said plainly: two cards with the same title, description and kind are one
+    card to this key, so a person who wants a second copy of an identical task cannot get
+    it from the conversation. That is the trade for never silently doubling one.
+    """
+    body = json.dumps(
+        {"title": task.get("title", ""), "description": task.get("description", ""), "kind": task.get("kind", "")},
+        sort_keys=True, ensure_ascii=False,
+    )
+    return f"idea-{hashlib.sha256(body.encode('utf-8')).hexdigest()[:16]}"
 
 
 def adoption_receipt(record: dict[str, Any]) -> dict[str, Any] | None:

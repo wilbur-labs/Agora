@@ -15,6 +15,7 @@ import { settings } from "./dictionaries/settings";
 import { workspace } from "./dictionaries/workspace";
 import { conversation } from "./dictionaries/conversation";
 import { today } from "./dictionaries/today";
+import { projectChat } from "./dictionaries/project-chat";
 import { environments, skills } from "./dictionaries/environments";
 
 export type Locale = "en" | "zh";
@@ -37,6 +38,7 @@ export const messages = {
     workspace: workspace.en,
     conversation: conversation.en,
     today: today.en,
+    projectChat: projectChat.en,
     environments: environments.en,
     skills: skills.en,
   },
@@ -54,6 +56,7 @@ export const messages = {
     workspace: workspace.zh,
     conversation: conversation.zh,
     today: today.zh,
+    projectChat: projectChat.zh,
     environments: environments.zh,
     skills: skills.zh,
   },

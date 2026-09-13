@@ -47,6 +47,7 @@ const PROVISION_POLL_MS = 1_500;
 
 export function ContinueAction({
   task,
+  projectGate,
   seed,
   activeRunCount,
   openAttentionCount,
@@ -55,6 +56,9 @@ export function ContinueAction({
   onTaskMayHaveChanged,
 }: {
   task: TaskManifest;
+  /** Whether this task's project may be given work at all (CR-61); "unknown" does not
+   *  block, because a charter read that failed says nothing about the project. */
+  projectGate: "open" | "noCharter" | "unknown";
   seed: ContinueSeedFacts;
   /** Runs for this task that have not settled. null = the fact couldn't be read. */
   activeRunCount: number | null;
@@ -125,6 +129,7 @@ export function ContinueAction({
   });
   const entry = continueEntryGate({
     taskState: task.state,
+    projectGate,
     activeRunCount,
     openAttentionCount,
     followUpArmed,
@@ -132,6 +137,7 @@ export function ContinueAction({
   });
   const decision = continueGate({
     taskState: task.state,
+    projectGate,
     activeRunCount,
     openAttentionCount,
     followUpArmed,

@@ -50,6 +50,7 @@ import { cn } from "@/lib/utils";
 import { CapabilitySlot } from "@/components/capability-slot";
 import { useI18n } from "@/lib/i18n";
 import type { NavCapability } from "@/lib/nav-capability";
+import type { ProjectGate } from "@/lib/project-chat";
 
 export interface ProjectNavTask {
   task_id: string;
@@ -76,7 +77,13 @@ export interface ProjectNavProps {
   tasks: ProjectNavTask[];
   selectedTaskId: string | null;
   onSelectTask: (taskId: string) => void;
-  onNewTask: () => void;
+  /** Whether this project may be given work at all (CR-61). A project with no goal shows
+   *  the way to settle one instead of a "new task" button; a project whose charter could
+   *  not be read shows neither claim. Tasks are proposed in the conversation now, so
+   *  there is nothing here to open a dialog with (CR-63). */
+  gate: ProjectGate;
+  /** Sends the person to the conversation that settles the goal. */
+  onSettleGoal: () => void;
   /** The W7 read of other workspaces on disk. Folded and visually separated: it is not
    *  part of this project, and it predates this column's design. */
   otherWorkspaces: React.ReactNode;
@@ -139,7 +146,8 @@ export function ProjectNav({
   tasks,
   selectedTaskId,
   onSelectTask,
-  onNewTask,
+  gate,
+  onSettleGoal,
   otherWorkspaces,
   header,
 }: ProjectNavProps) {
@@ -203,14 +211,20 @@ export function ProjectNav({
             <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
               {t("workspace.nav.tasks")}
             </span>
-            <button
-              type="button"
-              onClick={onNewTask}
-              className="rounded-md px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground"
-            >
-              + {t("workspace.rail.newTask")}
-            </button>
           </div>
+          {/* What stands in the way of work, said once, where the "new task" button used
+              to be. "This project has no goal" is a claim, so the unknown case says it
+              could not be read rather than making it. */}
+          {gate.kind !== "open" && (
+            <div className="mx-2 mb-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-2 text-[11px] leading-relaxed text-amber-700 dark:text-amber-400">
+              <p>{t(gate.kind === "noCharter" ? "projectChat.gate.noCharter" : "projectChat.gate.unknown")}</p>
+              {gate.kind === "noCharter" && (
+                <button type="button" onClick={onSettleGoal} className="mt-1 font-medium underline">
+                  {t("projectChat.gate.settle")}
+                </button>
+              )}
+            </div>
+          )}
           {tasks.length === 0 ? (
             <p className="px-2 py-3 text-[11px] text-muted-foreground">
               {t("workspace.rail.empty")}

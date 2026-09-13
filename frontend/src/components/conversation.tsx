@@ -118,6 +118,7 @@ interface TaskLike {
 
 export function Conversation({
   task,
+  projectGate,
   events,
   eventsReadFailed,
   eventsBehind,
@@ -129,6 +130,8 @@ export function Conversation({
   onTaskMayHaveChanged,
 }: {
   task: TaskLike;
+  /** Whether this task's project may be given work at all (CR-61). */
+  projectGate: "open" | "noCharter" | "unknown";
   /**
    * The task's whole event history, read by the page (the endpoint takes no limit, so
    * the read is never capped). `null` until it lands or when it failed — told apart by
@@ -197,7 +200,10 @@ export function Conversation({
   // promising a new session while each send came back refused, with no button
   // anywhere to clear the row that was doing the refusing.
   const orphan = orphanSession(sessions, adapter);
-  const refuseSend = sendWouldBeRefused(verdict) || orphan !== null;
+  // A project with no goal refuses every turn (CR-61): dispatching into it is how work
+  // starts without anyone having said what it is for. "unknown" does not refuse — a
+  // charter read that failed is not evidence the project has none.
+  const refuseSend = sendWouldBeRefused(verdict) || orphan !== null || projectGate === "noCharter";
 
   useEffect(() => {
     const ctrl = new AbortController();
@@ -754,9 +760,11 @@ export function Conversation({
         )}
         {refuseSend && (
           <Notice tone="warn">
-            {orphan !== null
-              ? t("conversation.session.orphanDetail")
-              : t("conversation.session.lostDetail")}
+            {projectGate === "noCharter"
+              ? t("projectChat.gate.noCharter")
+              : orphan !== null
+                ? t("conversation.session.orphanDetail")
+                : t("conversation.session.lostDetail")}
           </Notice>
         )}
         <div className="flex items-end gap-3">

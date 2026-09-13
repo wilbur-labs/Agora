@@ -58,9 +58,6 @@ export const today = {
         progress: "Progress",
       },
       goalNone: "No goal recorded yet.",
-      goalNoneHint: "Set it on the projects screen.",
-      // The mockup's own wording for the card of a project without a goal.
-      goalKickoff: "Have the agent read it once →",
       dashboardLoading: "Reading the project…",
       dashboardUnreadable: "The project dashboard could not be read, so the next step, what blocks it and its progress are not known.",
       dashboardStale: "The dashboard refresh failed; the next step and blocking count are withheld and the progress shown may be out of date.",
@@ -71,6 +68,10 @@ export const today = {
         continueTitle: "Opens the most recently updated open task: {title}",
         look: "Look at the project first",
         lookTitle: "Opens the workbench inside this project without starting anything",
+        // The one action a project with no goal offers. It is the card's own button, not
+        // a few words at the end of the goal line: that link was looked past repeatedly.
+        settleGoal: "Settle the goal with the agent →",
+        settleGoalHint: "A minute or two: the agent reads the repository, then asks one question at a time — mostly clicking.",
         demote: "Put down",
       },
     },
@@ -157,8 +158,6 @@ export const today = {
         progress: "进度",
       },
       goalNone: "这个项目还没有目标记录。",
-      goalNoneHint: "到「项目」页填写。",
-      goalKickoff: "让 agent 读一遍 →",
       dashboardLoading: "正在读这个项目……",
       dashboardUnreadable: "项目驾驶舱读不到，所以下一步、拦路项和进度都不知道。",
       dashboardStale: "刷新失败；下一步和拦路数先不显示，下面的进度可能已过期。",
@@ -168,6 +167,8 @@ export const today = {
         continue: "继续工作 →",
         continueTitle: "打开最近更新的未完成任务：{title}",
         look: "先看看这个项目",
+        settleGoal: "和 agent 一起定目标 →",
+        settleGoalHint: "大约 1~2 分钟：agent 先读一遍仓库，然后一次问你一条，点选就行。",
         lookTitle: "进这个项目的工作台，不启动任何东西",
         demote: "放下",
       },

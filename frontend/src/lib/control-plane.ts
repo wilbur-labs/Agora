@@ -849,10 +849,12 @@ export function saveKickoffAnswers(
   });
 }
 
-export function refineKickoff(projectId: string, expectedRevision: string): Promise<KickoffPayload> {
+/** `note` is what the person said about the proposal on the table; the next draft is
+ *  drawn with it. Empty when they simply asked for another one. */
+export function refineKickoff(projectId: string, expectedRevision: string, note = ""): Promise<KickoffPayload> {
   return request(`/api/projects/${encodeURIComponent(projectId)}/kickoff/refine`, {
     method: "POST",
-    body: JSON.stringify({ expected_revision: expectedRevision }),
+    body: JSON.stringify({ note, expected_revision: expectedRevision }),
   });
 }
 
@@ -863,6 +865,59 @@ export function adoptKickoff(
   return request(`/api/projects/${encodeURIComponent(projectId)}/kickoff/adopt`, {
     method: "POST",
     body: JSON.stringify(body),
+  });
+}
+
+// --- the project conversation after adoption (CR-63) -----------------------------------
+//
+// The kickoff dialogue becomes the project's one conversation: the owner says something,
+// the agent says what it is against the charter and proposes a card with a place in the
+// development order. Proposing writes nothing; placing is the separate request that does.
+
+export interface IdeaOrderEntry {
+  task_id: string;
+  title: string;
+  state: string;
+  priority: number;
+}
+
+export interface IdeaProposal {
+  idea: string;
+  verdict: "task" | "later" | "note";
+  /** The agent's restatement, shown after "我记成：" so a wrong reading can be corrected. */
+  echo: string;
+  why: string;
+  task: KickoffTaskLike | null;
+  /** 1-based, in `order`; null unless the verdict is "task". */
+  position: number | null;
+  order: readonly IdeaOrderEntry[];
+  /** The project has more live tasks than the order shown; "last" means last of these. */
+  order_truncated: boolean;
+}
+
+export interface IdeaPlacement {
+  task_id: string;
+  title: string;
+  state: string;
+  asked_position: number;
+  /** Where it actually landed, read back from the board; null when the board no longer
+   *  shows it within the ceiling the order is read to. */
+  landed_at: number | null;
+  order: readonly IdeaOrderEntry[];
+  order_truncated: boolean;
+}
+
+export function proposeFromIdea(projectId: string, idea: string): Promise<IdeaProposal> {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/ideas`, {
+    method: "POST",
+    body: JSON.stringify({ idea }),
+  });
+}
+
+export function placeIdeaTask(projectId: string, task: KickoffTaskLike, position: number): Promise<IdeaPlacement> {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/ideas/place`, {
+    method: "POST",
+    body: JSON.stringify({ task, position }),
   });
 }
 
