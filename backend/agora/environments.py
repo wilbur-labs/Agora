@@ -303,6 +303,111 @@ class AsyncExecutionEnvironment(Protocol):
         ...
 
 
+#: A remote file whose content is read back (U4's read_file, and a seed .gitignore's
+#: absence check) must be bounded — an unbounded read of an attacker- or accident-
+#: sized file over SFTP would exhaust memory. The provisioner only ever reads tiny
+#: control files (.gitignore, git metadata); a real cap that is never legitimately hit
+#: is the safe default. U4 reuses the deliverables MAX_FILE_BYTES for changed-file
+#: reads; this is the floor for the filesystem seam itself.
+MAX_FS_READ_BYTES = 1 << 20  # 1 MiB
+
+
+class AsyncFilesystem(Protocol):
+    """Look at and mutate a remote filesystem — the capabilities git-over-SSH needs
+    that :class:`Environment` deliberately does not have.
+
+    **Why a separate protocol, not more methods on Environment (CR-11, Q1=A).**
+    The provisioner (U3) has to list a directory to tell empty from occupied, write a
+    ``.gitignore``, make and remove directories, and — the one that matters for safety
+    — resolve a path on the host git will actually touch. U4 additionally reads a
+    changed file's bytes. ``Environment`` froze at run/probe/launch; adding six
+    filesystem methods to it would force ``LocalEnvironment`` and every existing caller
+    to grow with a surface they never use. A separate protocol, reached through a typed
+    ``env.fs`` accessor on the environments that HAVE a remote filesystem, keeps the
+    frozen contract untouched (U1/U2 unchanged) and lets a local environment opt out
+    until a local consumer exists.
+
+    **Why typed methods, not a raw SFTPClient.** Handing back ``asyncssh.SFTPClient``
+    would leak the transport into the provisioner and make the safety semantics
+    (below) unenforceable — each call site would re-decide them. The SFTP session,
+    file handles and chunked transfer stay inside the implementation; what crosses the
+    seam is six operations with stated meaning.
+
+    **Error classification — the fsprobe rule, kept (see :mod:`agora.fsprobe`).**
+    Only a definite ENOENT is absence. A permission error, ENOTDIR, a broken
+    connection, a decode failure — none of these is "nothing is there"; each is a
+    failure to observe and MUST raise, never be flattened into a negative answer that
+    a caller reads as "safe to create/overwrite/delete". This is the async filesystem
+    counterpart of ``PathProbe.absent`` vs ``.unknown``.
+
+    All paths are remote POSIX paths. All methods are async (one asyncssh connection,
+    one event loop — CR-4)."""
+
+    async def realpath(self, path: Path) -> Path:
+        """Canonicalize ``path`` on the REMOTE host (resolve symlinks + ``..``),
+        returning an absolute remote path. The confinement check (U3 ``_assert_allowed``)
+        depends on this being resolved where git will act, not on this client's host:
+        a local ``Path.resolve()`` would apply the CLIENT's filesystem semantics
+        (and ``C:\\`` drive rules on Windows) to a path that lives on Linux, and could
+        not see a remote symlink that escapes the allowed root.
+
+        For a path that does not yet exist, resolve the nearest existing ancestor and
+        re-append the remaining components (a not-yet-created workspace dir is a normal
+        case, not an error). Raises on a transport failure or an ambiguous result —
+        never returns an unresolved path silently (that would let confinement pass on a
+        path it never actually checked)."""
+        ...
+
+    async def is_empty_dir(self, path: Path) -> bool:
+        """True IFF ``path`` is a directory containing nothing but ``.`` and ``..``.
+
+        A COMPLETE PROOF, not a best effort (a false ``True`` unlocks provisioning over
+        a directory that is not actually empty). Hidden entries count as content — only
+        the two exact self/parent links are ignored. Return ``True`` only when the
+        listing completed normally with no other entry; a permission error, a dropped
+        connection, ENOTDIR, or a decode failure MUST raise, never return ``False`` (a
+        caller reads ``False`` as "occupied, leave it alone" — acceptable — but must
+        never read a failed listing as either answer). Not a directory → raise (the
+        caller asked a question that has no yes/no answer for a file)."""
+        ...
+
+    async def read_file(self, path: Path, *, max_bytes: int = MAX_FS_READ_BYTES) -> bytes:
+        """Read ``path``'s bytes (caller decodes; the remote locale never decides it).
+        A file larger than ``max_bytes`` raises rather than truncating — a silently
+        truncated read is a wrong answer, not a smaller one. A missing file raises
+        ``FileNotFoundError``; unreadable raises ``PermissionError``/``OSError`` — U4's
+        caller skips such a file rather than reading absence as empty content."""
+        ...
+
+    async def write_file(self, path: Path, content: bytes) -> None:
+        """Write ``content`` to ``path``, creating it or REPLACING its contents whole
+        (used only for the seed ``.gitignore``). Does NOT create parent directories —
+        the caller makes the directory explicitly (:meth:`mkdir`) so directory creation
+        stays one auditable step, not a side effect of a write. The caller checks
+        absence with :meth:`probe` first: this method does not itself decide whether an
+        existing file should be preserved (that is a provisioning rule, not a filesystem
+        primitive). A transport/permission failure raises."""
+        ...
+
+    async def mkdir(self, path: Path) -> None:
+        """Create the single directory ``path``. NON-RECURSIVE on purpose: a recursive
+        ``mkdir -p`` would silently recreate a deleted project root, which D2 form-2
+        forbids Agora from ever creating (the root is the user's to pre-provision). The
+        caller creates only the workspace's immediate parent, having first confirmed the
+        root still exists. Already-exists → raise (the caller's emptiness/probe logic,
+        not a silent ``exist_ok``, decides what an existing directory means). A missing
+        PARENT raises rather than being created."""
+        ...
+
+    async def rmdir(self, path: Path) -> None:
+        """Remove the EMPTY directory ``path``. If it is not empty, raise and STOP —
+        never escalate to a recursive delete. This method exists to reclaim a directory
+        the provisioner itself just found empty; a non-empty result means the world
+        changed under it (a race), and deleting content the provisioner did not put
+        there is exactly the blast radius FR-5 fails closed against."""
+        ...
+
+
 class LocalEnvironment:
     """The machine the server itself runs on."""
 

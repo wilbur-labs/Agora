@@ -39,7 +39,8 @@ import asyncio
 import os
 import shlex
 import stat
-from pathlib import Path
+from collections import deque
+from pathlib import Path, PurePosixPath
 from typing import Mapping, Sequence
 
 import asyncssh
@@ -50,6 +51,7 @@ from agora.environments import (
     CONNECT_TIMEOUT,
     KEEPALIVE_INTERVAL,
     KEEPALIVE_MAX_MISSED,
+    MAX_FS_READ_BYTES,
     CommandResult,
     PathProbe,
     ProcessHandle,
@@ -384,6 +386,274 @@ class RemoteEnvironment:
         proc = await conn.create_process(cmd, encoding=None, env=remote_env)
         return RemoteProcessHandle(proc)
 
+    # --- AsyncFilesystem (CR-11) ---
+
+    @property
+    def fs(self) -> "RemoteFilesystem":
+        """The remote filesystem seam (U3/U4). Shares this environment's ONE asyncssh
+        connection (same instance, same event loop — CR-4); it does not open a second.
+        A fresh SFTP client is started per operation (asyncssh multiplexes them over the
+        one connection) and closed with the operation, so no handle outlives its use."""
+        return RemoteFilesystem(self)
+
+
+class RemoteFilesystem:
+    """SFTP-backed :class:`agora.environments.AsyncFilesystem`, over a
+    :class:`RemoteEnvironment`'s reused connection. See the protocol for the safety
+    semantics each method upholds; this implements them on asyncssh SFTP.
+
+    Every method reaches the connection through ``self._env._ensure_conn()`` (lazy,
+    bounded-retry, host-key-checked — the same path run/probe/launch use) and opens a
+    per-op SFTP client. Transport errors are NOT silently retried here the way probe is:
+    a filesystem MUTATION (mkdir/rmdir/write) that half-happened must not be blindly
+    repeated. Read-only ``realpath``/``is_empty_dir``/``read_file`` surface the error to
+    the caller, which fails closed."""
+
+    def __init__(self, env: "RemoteEnvironment") -> None:
+        self._env = env
+
+    async def realpath(self, path: Path) -> Path:
+        conn = await self._env._ensure_conn()
+        async with conn.start_sftp_client() as sftp:
+            return await self._resolve_verified(sftp, _posix(path))
+
+    async def _resolve_verified(self, sftp, target: str) -> "PurePosixPath":
+        """Canonicalize ``target`` by walking it ONE component at a time with ``lstat``,
+        so every component the result claims to exist is one we actually observed. This
+        is a single state machine over a PENDING queue of components (not recursion):
+        a symlink expands by pushing its target's components back onto the front of the
+        queue, so the "not-yet-existing tail" state and the ``..`` rule live in exactly
+        one place and cannot be lost across a recursion boundary.
+
+        Why not ``sftp.realpath``: its default mode is NO_CHECK — asyncssh's built-in
+        server canonicalizes with a non-strict ``os.path.realpath`` that can keep going
+        past a permission-blocked or absent component and return a plausible string. A
+        confinement check built on that would read a merely-unobservable component as
+        absent, and let a dangling symlink whose target escapes the allowed root come
+        back looking like an in-root path. So we resolve it ourselves, with these rules:
+
+          - ``lstat`` (never dereferences) each existing component. ``SFTPNoSuchFile`` —
+            the one status that means definite ENOENT — flips into ``exhausted``: this
+            and every remaining component (INCLUDING those a symlink pushed on) is a
+            not-yet-existing tail. ANY other SFTPError (permission, ENOTDIR, transport)
+            RAISES — could-not-observe is never absence.
+          - a symlink is resolved EXPLICITLY via ``readlink``; its target's components
+            are pushed back onto the queue (absolute target also resets ``resolved`` to
+            ``/``), so an escaping link is followed to where it really goes and then
+            confinement-checked there — never masked. Bounded by a symlink budget.
+          - an ``exhausted`` (not-yet-existing) component is appended literally; a
+            symlink cannot exist under a not-yet-existing prefix, so no lstat is done
+            once exhausted.
+          - a component that exists but whose type cannot be determined
+            (``permissions is None``) RAISES — an unknown type is not assumed to be a
+            plain directory (it could be an escaping link).
+          - descending INTO a component requires it to be a directory; a regular file
+            (or other non-dir) as an intermediate component RAISES ENOTDIR rather than
+            being silently traversed (which would swallow a ``..`` off a file).
+          - ``..`` pops the resolved prefix (never below ``/``); ``.`` is a no-op.
+            ``..`` while ``exhausted`` is an escape past the verified prefix -> raise.
+        """
+        if not target.startswith("/"):
+            raise ValueError(f"remote path must be absolute: {target!r}")
+
+        resolved = PurePosixPath("/")
+        # Split the RAW target on "/" (NOT PurePosixPath.parts): parts collapses a
+        # trailing "/." or "/" so "/file/." would lose the marker that its last real
+        # component must be a directory. Keeping the literal ""/"." components lets the
+        # ENOTDIR check fire for an initial input just as it does for a symlink target
+        # (the two must not diverge — a gap in either is the same escape). The leading
+        # "" from the absolute prefix is dropped.
+        initial = target.split("/")[1:]
+        pending: deque[str] = deque(initial)
+        exhausted = False  # have we passed the last existing component?
+        symlink_budget = 32
+
+        # Verify the root itself is observable before trusting it as the prefix — the
+        # method promises "unobservable raises", and returning "/" for an input of "/"
+        # (empty queue) or a link that lands on "/" must not skip that promise.
+        try:
+            root_attrs = await sftp.lstat("/")
+        except asyncssh.SFTPError as exc:
+            raise OSError(f"cannot resolve remote root '/': {exc}") from exc
+        root_mode = root_attrs.permissions
+        if root_mode is None or not stat.S_ISDIR(root_mode):
+            raise OSError("remote root '/' is not an observable directory")
+
+        while pending:
+            name = pending.popleft()
+            if name in ("", "."):
+                continue
+            if name == "..":
+                if exhausted:
+                    # A '..' after a component we already proved absent would climb back
+                    # over the verified prefix — the escape the confinement check exists
+                    # to refuse.
+                    raise ValueError(
+                        f"remote path escapes via '..' after the existing prefix: {target!r}"
+                    )
+                if resolved != PurePosixPath("/"):
+                    resolved = resolved.parent
+                continue
+            if exhausted:
+                # Nothing under a not-yet-existing prefix can be lstat'd; append literally.
+                resolved = resolved / name
+                continue
+
+            candidate = resolved / name
+            try:
+                attrs = await sftp.lstat(_posix(candidate))
+            except asyncssh.SFTPNoSuchFile:
+                exhausted = True
+                resolved = candidate  # first not-yet-existing component
+                continue
+            except asyncssh.SFTPError as exc:
+                # Permission, ENOTDIR, transport, ... — unobservable, NOT absent.
+                raise OSError(
+                    f"cannot resolve remote component {_posix(candidate)}: {exc}"
+                ) from exc
+
+            mode = attrs.permissions
+            if mode is None:
+                # Type undeterminable: do NOT assume "plain directory" — it could be an
+                # escaping symlink. Fail closed rather than confinement-check a guess.
+                raise OSError(
+                    f"cannot determine type of remote component {_posix(candidate)}"
+                )
+            if stat.S_ISLNK(mode):
+                symlink_budget -= 1
+                if symlink_budget < 0:
+                    raise OSError(f"too many symlink levels resolving {target!r}")
+                link_target = _as_str(await sftp.readlink(_posix(candidate)))
+                # Split the RAW target on "/" rather than through PurePosixPath.parts:
+                # PurePosixPath collapses a trailing "/." or "/" ("/file/." -> parts
+                # ('/','file')), which would hide that the target REQUIRES its last real
+                # component to be a directory. Keeping the literal "." / "" components
+                # lets the ENOTDIR check below fire when the target names a non-dir with
+                # a trailing slash. The loop already treats "" and "." as no-ops except
+                # that they keep `pending` non-empty, which is exactly the signal needed.
+                is_absolute = link_target.startswith("/")
+                link_parts = [c for c in link_target.split("/")]
+                if is_absolute:
+                    resolved = PurePosixPath("/")  # absolute target restarts from root
+                    link_parts = link_parts[1:]  # drop the empty leading component
+                # Push the link's components to the FRONT, ahead of the remaining tail,
+                # so they are walked (and confinement-checked) before we continue.
+                pending.extendleft(reversed(link_parts))
+                continue
+            if stat.S_ISDIR(mode):
+                resolved = candidate
+                continue
+            # A regular file or other non-directory as an INTERMEDIATE component. If it
+            # is the last component, it is a valid resolved path; if anything follows,
+            # descending into it is ENOTDIR.
+            if pending:
+                raise OSError(
+                    f"remote component is not a directory (ENOTDIR): {_posix(candidate)}"
+                )
+            resolved = candidate
+        return resolved
+
+    async def is_empty_dir(self, path: Path) -> bool:
+        conn = await self._env._ensure_conn()
+        async with conn.start_sftp_client() as sftp:
+            # readdir enumerates the directory itself; SFTPError (permission, ENOTDIR,
+            # transport) propagates rather than being read as an answer. A '.'/'..'-only
+            # listing is empty; ANY other name (including hidden dotfiles) is content.
+            names = await sftp.listdir(_posix(path))
+            for name in names:
+                n = _as_str(name)
+                if n not in (".", ".."):
+                    return False
+            return True
+
+    async def read_file(self, path: Path, *, max_bytes: int = MAX_FS_READ_BYTES) -> bytes:
+        conn = await self._env._ensure_conn()
+        async with conn.start_sftp_client() as sftp:
+            # Refuse an oversized file BEFORE reading it into memory: stat, then read at
+            # most max_bytes+1 and reject if it overflows (covers a file that grows
+            # between stat and read). SFTPNoSuchFile -> FileNotFoundError (absence);
+            # SFTPPermissionDenied -> PermissionError; other SFTP -> OSError.
+            try:
+                attrs = await sftp.stat(_posix(path))
+            except asyncssh.SFTPNoSuchFile as exc:
+                raise FileNotFoundError(_posix(path)) from exc
+            except asyncssh.SFTPPermissionDenied as exc:
+                raise PermissionError(_posix(path)) from exc
+            except asyncssh.SFTPError as exc:
+                raise OSError(f"cannot stat remote file {_posix(path)}: {exc}") from exc
+            if attrs.size is not None and attrs.size > max_bytes:
+                raise OSError(
+                    f"remote file {_posix(path)} is {attrs.size} bytes, exceeds cap {max_bytes}"
+                )
+            try:
+                async with sftp.open(_posix(path), "rb") as fh:
+                    # SFTP read(n) may return a SHORT read that is NOT EOF (a server
+                    # can cap its reply size); a single read(max_bytes+1) could silently
+                    # truncate a legitimate file or miss an over-cap one that grew after
+                    # stat. Loop until EOF (empty read) or we exceed the cap by one byte,
+                    # which is enough to prove "over the cap" without buffering it all.
+                    chunks: list[bytes] = []
+                    total = 0
+                    while total <= max_bytes:
+                        chunk = await fh.read(max_bytes + 1 - total)
+                        if not chunk:
+                            break  # EOF
+                        chunks.append(chunk)
+                        total += len(chunk)
+                    data = b"".join(chunks)
+            except asyncssh.SFTPNoSuchFile as exc:
+                raise FileNotFoundError(_posix(path)) from exc
+            except asyncssh.SFTPPermissionDenied as exc:
+                raise PermissionError(_posix(path)) from exc
+            except asyncssh.SFTPError as exc:
+                raise OSError(f"cannot read remote file {_posix(path)}: {exc}") from exc
+            if len(data) > max_bytes:
+                raise OSError(
+                    f"remote file {_posix(path)} exceeds cap {max_bytes} bytes"
+                )
+            return data
+
+    async def write_file(self, path: Path, content: bytes) -> None:
+        conn = await self._env._ensure_conn()
+        async with conn.start_sftp_client() as sftp:
+            # "wb" creates or truncates. Does NOT create parents (mkdir is the explicit,
+            # auditable step); a missing parent surfaces as SFTPNoSuchFile -> OSError.
+            try:
+                async with sftp.open(_posix(path), "wb") as fh:
+                    await fh.write(content)
+            except asyncssh.SFTPPermissionDenied as exc:
+                raise PermissionError(_posix(path)) from exc
+            except asyncssh.SFTPError as exc:
+                raise OSError(f"cannot write remote file {_posix(path)}: {exc}") from exc
+
+    async def mkdir(self, path: Path) -> None:
+        conn = await self._env._ensure_conn()
+        async with conn.start_sftp_client() as sftp:
+            # Single directory only (asyncssh mkdir is non-recursive — it does not
+            # create parents, which is exactly what D2 form-2 needs: a missing parent
+            # must fail, not silently rebuild a deleted root). Already-exists surfaces
+            # as SFTPFailure; let it raise so the caller's probe/empty logic decides.
+            try:
+                await sftp.mkdir(_posix(path))
+            except asyncssh.SFTPPermissionDenied as exc:
+                raise PermissionError(_posix(path)) from exc
+            except asyncssh.SFTPError as exc:
+                raise OSError(f"cannot mkdir remote {_posix(path)}: {exc}") from exc
+
+    async def rmdir(self, path: Path) -> None:
+        conn = await self._env._ensure_conn()
+        async with conn.start_sftp_client() as sftp:
+            # asyncssh rmdir removes an EMPTY directory and fails on a non-empty one —
+            # it never recurses. A non-empty failure means the world changed under the
+            # provisioner; we surface it and STOP (FR-5: never delete content we did not
+            # place). No _SFTP_TRANSPORT_ERRORS retry: a mutation must not blindly repeat.
+            try:
+                await sftp.rmdir(_posix(path))
+            except asyncssh.SFTPPermissionDenied as exc:
+                raise PermissionError(_posix(path)) from exc
+            except asyncssh.SFTPError as exc:
+                raise OSError(f"cannot rmdir remote {_posix(path)}: {exc}") from exc
+
 
 #: The ONLY env vars forwarded to the remote agent process. A finite, explicit list —
 #: NOT an "AGORA_*" prefix, because Agora-local secrets also carry that prefix (e.g.
@@ -407,6 +677,17 @@ def _env_name_eq(a: str, b: str) -> bool:
     — so match with ``upper()`` (NOT ``os.path.normcase``, which is *path* normalization:
     it lowercases and treats ``/`` == ``\\``). Elsewhere names are case-sensitive."""
     return a.upper() == b.upper() if os.name == "nt" else a == b
+
+
+def _as_str(value) -> str:
+    """asyncssh SFTP methods (``realpath``, ``listdir``) return ``str`` or ``bytes``
+    depending on the client's ``path_encoding`` — normalize to ``str`` so callers never
+    branch on it. Bytes decode UTF-8 (never the remote locale, same rule as command
+    output); a surrogateescape-safe decode keeps an odd byte from raising here (a
+    filename we cannot decode is still a filename that occupies the directory)."""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="surrogateescape")
+    return value
 
 
 def _posix(path) -> str:
