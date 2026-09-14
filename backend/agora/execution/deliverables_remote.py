@@ -56,37 +56,74 @@ class RemoteDeliverables:
         local ``list_changes``; a run's permanent record uses ``snapshot_changes``,
         which reports collection failure instead of hiding it. Read-only, so the git
         query may be retried on a transport error."""
-        entries = await self._status_entries(workspace)
-        if entries is None:
+        result = await self._status_entries(workspace)
+        if result is None:
             return []
+        entries, _truncated = result  # a best-effort view drops the truncation flag
         return entries
 
     async def snapshot_changes(
         self, workspace: Path, baseline: "tuple[dict, bool] | None"
-    ) -> list[dict]:
+    ) -> "dict | None":
         """Freeze what THIS run delivered, subtracting a pre-run ``baseline``.
 
-        ``baseline`` mirrors the local contract's three shapes: ``(before, complete)``
-        with ``complete=True`` subtracts entries already present before the run;
-        ``complete=False`` (the pre-run state itself hit MAX_FILES, cannot be subtracted
-        reliably) and ``None`` (pre-run state unreadable — a reused worktree may hold an
-        earlier run's files) both yield ``[]`` (nothing this run can be proven to own),
-        never a guess. Identity here is (path, status): the remote content digest is
-        U4's read path, not recomputed per entry over SSH for every snapshot."""
+        Returns ``{"files": [...], "truncated": bool}``, or ``None`` when the delivery
+        cannot be established — matching the local ``snapshot_changes`` contract exactly
+        (store.finish requires a dict with a ``files`` list; ``None`` is the distinct
+        "could not establish", never frozen as "changed nothing"). ``truncated`` is True
+        when more than ``MAX_FILES`` files changed: the list is then "at least these",
+        and a path absent from it is UNKNOWN, not known-not-delivered.
+
+        ``baseline``'s three shapes are three distinct answers, as local:
+          - ``(before, complete=True)`` — subtract it; entries unchanged since then
+            belong to an earlier run.
+          - ``(before, complete=False)`` — the pre-run state itself hit MAX_FILES and
+            cannot be subtracted reliably → ``None`` (not ``[]``: we cannot prove what
+            this run owns, which is different from proving it owns nothing).
+          - ``None`` — pre-run state unreadable (git error/timeout); a reused worktree
+            may hold an earlier run's files, indistinguishable without the baseline →
+            ``None``.
+
+        Identity is (path, status): the remote content digest is U4's read path, not
+        recomputed per entry over SSH for every snapshot."""
         if baseline is None:
-            return []
+            return None
         before, complete = baseline[0], baseline[1]
         if not complete:
-            return []
-        entries = await self._status_entries(workspace)
-        if entries is None:
-            return []
+            return None
+        result = await self._status_entries(workspace)
+        if result is None:
+            return None
+        entries, truncated = result
         delivered: list[dict] = []
         for item in entries:
             if before.get(item["path"]) == item["status"]:
                 continue  # unchanged since before this run started
             delivered.append(item)
-        return delivered
+        # A path the baseline held and the final list does not is a change too — but
+        # WHY it left the list decides what the row says, exactly as local
+        # snapshot_changes: the run may have deleted it, or put it back the way HEAD
+        # has it (reverted/committed) so it still exists but no longer differs, or it
+        # may be unreadable. Calling a still-present file "deleted" would tell review
+        # and any restore step a file that is sitting right there should be gone. A
+        # remote probe (SFTP lstat, three-state) distinguishes the three. Skipped when
+        # truncated: an absent path may just be one that did not fit, and inventing a
+        # deletion is worse than silence.
+        if not truncated:
+            present = {item["path"] for item in entries}
+            for path in sorted(before):
+                if path in present:
+                    continue
+                probe = await self.env.probe(PurePosixPath(_as_posix(workspace)) / path)
+                if probe.unknown:
+                    status = "unreadable"
+                elif probe.absent:
+                    status = "deleted"
+                else:
+                    status = "no longer differs"
+                delivered.append({"path": path, "status": status})
+        delivered.sort(key=lambda item: item["path"])
+        return {"files": delivered, "truncated": truncated}
 
     async def read_file(self, workspace: Path, path: str) -> dict:
         """A bounded, redacted UTF-8 preview of one file confined to the remote
@@ -122,9 +159,20 @@ class RemoteDeliverables:
         # FAILURE here is NOT "no files": committing on it would bind a handoff whose file
         # list is a lie. list_changes' git-fail->[] tolerance is for a best-effort VIEW,
         # never for a handoff that writes a record — so abort before any mutation.
-        entries = await self._status_entries(workspace)
-        if entries is None:
+        result = await self._status_entries(workspace)
+        if result is None:
             raise OSError("cannot read remote worktree status before handoff — refusing to commit")
+        entries, truncated = result
+        if truncated:
+            # The status list is capped at MAX_FILES but `git add -A` would commit
+            # ALL changes — the returned file list would then be a lie (fewer paths
+            # than committed). A handoff record that undercounts what it bound is
+            # worse than none, so fail closed before any mutation rather than commit
+            # with an incomplete manifest.
+            raise OSError(
+                f"remote worktree has more than {MAX_FILES} changes — refusing to bind a "
+                "handoff whose file list would be incomplete"
+            )
         files = [e["path"] for e in entries]
         cwd = PurePosixPath(_as_posix(workspace))
         await self._git(cwd, ["add", "-A"])
@@ -137,10 +185,13 @@ class RemoteDeliverables:
 
     # --- internals ---
 
-    async def _status_entries(self, workspace: Path) -> list[dict] | None:
+    async def _status_entries(self, workspace: Path) -> "tuple[list[dict], bool] | None":
         """``git status --porcelain=v1 -z`` on the remote, parsed with the SHARED
-        upstream parser, capped at MAX_FILES. ``None`` when git could not answer (the
-        caller decides whether that is ``[]`` or a reported failure). Read-only, retried."""
+        upstream parser, capped at MAX_FILES. Returns ``(entries, truncated)`` where
+        ``truncated`` is True iff the parser still had entries past the cap — the list
+        is then "at least these", matching local ``_read_changes``. ``None`` when git
+        could not answer (the caller decides whether that is ``[]`` or a reported
+        failure). Read-only, retried."""
         cwd = PurePosixPath(_as_posix(workspace))
         result = await self.env.run(
             [_GIT, "-C", str(cwd), "status", "--porcelain=v1", "-z", "--untracked-files=all"],
@@ -150,8 +201,12 @@ class RemoteDeliverables:
         if not result.ok:
             return None
         files: list[dict] = []
+        truncated = False
         for code, path in _porcelain_z_entries(result.stdout):
             if len(files) >= MAX_FILES:
+                # More entries exist than the cap holds: the list is a floor, not the
+                # whole set. A path absent from it is UNKNOWN, not known-not-changed.
+                truncated = True
                 break
             # size is not fetched here: a per-file remote stat for every entry is a
             # round-trip the change LIST does not need; content/size come from read_file.
@@ -160,7 +215,7 @@ class RemoteDeliverables:
                 "status": _STATUS_LABELS.get(code, code or "changed"),
             })
         files.sort(key=lambda item: item["path"])
-        return files
+        return files, truncated
 
     async def _git(self, cwd: PurePosixPath, args: list[str]) -> str:
         """Run one MUTATING git command on the remote (add/commit). Not read_only: a

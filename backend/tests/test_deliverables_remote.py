@@ -15,6 +15,7 @@ import pytest
 
 from agora.environments import CommandResult
 from agora.execution.deliverables_remote import RemoteDeliverables
+from agora.fsprobe import PathProbe
 
 
 def _run(coro):
@@ -22,8 +23,9 @@ def _run(coro):
 
 
 class _FakeEnv:
-    def __init__(self, git=None):
+    def __init__(self, git=None, probes=None):
         self._git = git or {}
+        self._probes = probes or {}   # path str -> PathProbe for deletion-detection
         self.calls: list[tuple[str, ...]] = []
         self.readonly: list[bool] = []  # read_only flag per call, positionally aligned
 
@@ -37,7 +39,9 @@ class _FakeEnv:
         return CommandResult("completed", returncode=0, stdout="", stderr="")
 
     async def probe(self, path, *, follow_symlinks=True):
-        raise NotImplementedError
+        # Deletion detection probes a baseline path no longer in the status list.
+        # Default: absent (the common "the run deleted it" case) unless configured.
+        return self._probes.get(str(path), PathProbe(kind="absent"))
 
 
 class _FakeFS:
@@ -126,24 +130,86 @@ def test_snapshot_subtracts_baseline():
     d = RemoteDeliverables(env, _FakeFS())
     # kept.py was already "modified" before the run; new.py is this run's.
     baseline = ({"kept.py": "modified"}, True)
-    delivered = _run(d.snapshot_changes(Path(WS), baseline))
-    assert [c["path"] for c in delivered] == ["new.py"]
+    snapshot = _run(d.snapshot_changes(Path(WS), baseline))
+    # Same shape as local snapshot_changes: a dict with files + truncated.
+    assert snapshot["truncated"] is False
+    assert [c["path"] for c in snapshot["files"]] == ["new.py"]
 
 
-def test_snapshot_none_baseline_returns_empty():
+def test_snapshot_none_baseline_returns_none():
+    # None baseline = pre-run state unreadable -> cannot establish -> None (NOT []).
+    # None and [] are different answers: "could not establish" vs "verified nothing".
     env = _FakeEnv(git={
         ("status", "--porcelain=v1", "-z", "--untracked-files=all"): _status(" M x.py\x00"),
     })
     d = RemoteDeliverables(env, _FakeFS())
-    assert _run(d.snapshot_changes(Path(WS), None)) == []
+    assert _run(d.snapshot_changes(Path(WS), None)) is None
 
 
-def test_snapshot_incomplete_baseline_returns_empty():
+def test_snapshot_incomplete_baseline_returns_none():
+    # complete=False = pre-run state itself hit MAX_FILES, cannot subtract reliably
+    # -> None (we cannot prove what this run owns; that differs from proving nothing).
     env = _FakeEnv(git={
         ("status", "--porcelain=v1", "-z", "--untracked-files=all"): _status(" M x.py\x00"),
     })
     d = RemoteDeliverables(env, _FakeFS())
-    assert _run(d.snapshot_changes(Path(WS), ({}, False))) == []
+    assert _run(d.snapshot_changes(Path(WS), ({}, False))) is None
+
+
+def test_snapshot_git_failure_returns_none():
+    # A failed status is never frozen as "changed nothing" — it is None (unestablished).
+    env = _FakeEnv(git={
+        ("status", "--porcelain=v1", "-z", "--untracked-files=all"):
+            CommandResult("unstartable", error=OSError("no git")),
+    })
+    d = RemoteDeliverables(env, _FakeFS())
+    assert _run(d.snapshot_changes(Path(WS), ({}, True))) is None
+
+
+def test_snapshot_over_max_files_marks_truncated_and_skips_deletion_detection():
+    from agora.execution.deliverables import MAX_FILES
+    # MAX_FILES+1 changed entries: the list is capped and truncated=True. A baseline
+    # path missing from the (capped) list must NOT be invented as a deletion when
+    # truncated — it may simply be one that did not fit.
+    payload = "".join(f" M f{i:04d}.py\x00" for i in range(MAX_FILES + 1))
+    env = _FakeEnv(git={
+        ("status", "--porcelain=v1", "-z", "--untracked-files=all"): _status(payload),
+    })
+    d = RemoteDeliverables(env, _FakeFS())
+    snapshot = _run(d.snapshot_changes(Path(WS), ({"gone.py": "modified"}, True)))
+    assert snapshot["truncated"] is True
+    assert len(snapshot["files"]) == MAX_FILES
+    assert not any(c["path"] == "gone.py" for c in snapshot["files"])  # no invented deletion
+
+
+def test_snapshot_deletion_detection_is_three_state():
+    # A baseline path absent from the complete list is classified by a remote probe,
+    # not assumed deleted — matching local snapshot_changes' lstat three-state:
+    #   absent  -> "deleted"
+    #   present -> "no longer differs" (run reverted/committed it; file still there)
+    #   unknown -> "unreadable"
+    # Inventing "deleted" for a still-present file would tell review/restore a file
+    # that is sitting right there should be gone (the bug CR-14 round 2 caught).
+    env = _FakeEnv(
+        git={("status", "--porcelain=v1", "-z", "--untracked-files=all"): _status(" M kept.py\x00")},
+        probes={
+            f"{WS}/removed.py": PathProbe(kind="absent"),
+            f"{WS}/reverted.py": PathProbe(kind="file"),
+            f"{WS}/locked.py": PathProbe(kind="unknown", error=PermissionError("denied")),
+        },
+    )
+    d = RemoteDeliverables(env, _FakeFS())
+    baseline = ({
+        "kept.py": "modified", "removed.py": "modified",
+        "reverted.py": "modified", "locked.py": "modified",
+    }, True)
+    snapshot = _run(d.snapshot_changes(Path(WS), baseline))
+    by_path = {c["path"]: c["status"] for c in snapshot["files"]}
+    assert by_path["removed.py"] == "deleted"
+    assert by_path["reverted.py"] == "no longer differs"
+    assert by_path["locked.py"] == "unreadable"
+    # kept.py was unchanged since baseline -> not delivered
+    assert "kept.py" not in by_path
 
 
 # --- read_file (remote confinement + bounds + redaction) ---
@@ -226,6 +292,22 @@ def test_handoff_aborts_when_status_unreadable():
     })
     d = RemoteDeliverables(env, _FakeFS())
     with pytest.raises(OSError, match="refusing to commit"):
+        _run(d.handoff_commit(Path(WS), "m"))
+    assert not any("commit" in c for c in env.calls)
+    assert not any("add" in c for c in env.calls)
+
+
+def test_handoff_aborts_when_status_truncated():
+    # > MAX_FILES changes: `git add -A` would commit everything but the returned file
+    # list is capped -> incomplete manifest. Fail closed BEFORE any mutation rather
+    # than bind a handoff that undercounts what it committed (CR-14 round 2, High#2).
+    from agora.execution.deliverables import MAX_FILES
+    payload = "".join(f" M f{i:04d}.py\x00" for i in range(MAX_FILES + 1))
+    env = _FakeEnv(git={
+        ("status", "--porcelain=v1", "-z", "--untracked-files=all"): _status(payload),
+    })
+    d = RemoteDeliverables(env, _FakeFS())
+    with pytest.raises(OSError, match="incomplete"):
         _run(d.handoff_commit(Path(WS), "m"))
     assert not any("commit" in c for c in env.calls)
     assert not any("add" in c for c in env.calls)
