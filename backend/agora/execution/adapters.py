@@ -1,11 +1,42 @@
 """Safe argv builders for supported coding-agent CLIs."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, Optional
+
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from .models import AdapterCapability
+
+
+#: SSH host-key verification mode (contract config-and-tests.py). ``strict`` is the
+#: NFR-1 default and is fully implemented; ``tofu`` is accepted at config time but
+#: fails closed at connect (CR-6 — full TOFU awaits a real host to verify against).
+HostKeyMode = Literal["strict", "tofu"]
+
+
+class RemoteAdapterConfig(BaseModel):
+    """SSH remote section of an execution adapter (FROZEN contract:
+    ``contracts/config-and-tests.py``). Present only when ``bridge_mode == 'ssh'``.
+
+    Credentials are NEVER stored here: ``secret_ref`` names the env var holding the
+    key path or password (NFR-2, SECURITY-12) — no plaintext secret / host / IP is
+    committed (the repo is public). ``extra='forbid'`` fails closed at load time on
+    an unknown key rather than silently ignoring a misspelled or unsupported field.
+    """
+
+    ssh_host: str
+    ssh_port: int = 22
+    ssh_user: str
+    remote_workspace: str                       # per-adapter remote worktree dir
+    remote_project_root: str                    # user pre-created; Agora inits repo here (D2 form-2)
+    secret_ref: str                             # env-var name, e.g. AGORA_SSH_KEY_<adapter>
+    host_key_mode: HostKeyMode = "strict"       # NFR-1 default strict; tofu opt-in
+    known_hosts_path: Optional[str] = None      # used/required under strict
+    cleanup_worktree: bool = False              # Q5=C: default keep; true = teardown after handoff
+
+    model_config = ConfigDict(extra="forbid")   # unknown keys fail-closed at load
 
 
 #: Where a provider's session id comes from.
@@ -55,6 +86,11 @@ class ExecutionAdapter:
     resume_template: tuple[str, ...] = ()
     session_id_source: str = SESSION_ID_OBSERVED
     event_format: str = EVENT_FORMAT_PLAIN
+    #: SSH remote config, present IFF ``bridge_mode == 'ssh'`` (contract
+    #: config-and-tests.py). ``None`` for local adapters. The dispatcher reads this
+    #: to build a RemoteEnvironment/RemoteWorkspaceProvisioner instead of the local
+    #: ones; a local adapter leaves it ``None`` and runs on ``LocalEnvironment``.
+    remote: Optional[RemoteAdapterConfig] = None
 
     def build_command(
         self, prompt: str, *, session_id: str | None = None, resume: bool = False
@@ -205,6 +241,12 @@ def build_adapter_registry(config: dict[str, Any]) -> dict[str, ExecutionAdapter
     for name, defaults in DEFAULT_ADAPTERS.items():
         values = configured.get(name, {})
         if values.get("enabled", True) is False:
+            # A disabled adapter never enters the registry, so its config is never
+            # consumed — its ssh/command/etc. are deliberately NOT validated. The
+            # point of load-time validation is to prevent a config that LOOKS active
+            # but is wrong; a disabled adapter makes no such claim. (An invalid ssh
+            # section under enabled:false is inert, not a silent acceptance of remote
+            # execution that will happen.)
             continue
         overridden = "command" in values
         command = _validated_argv(name, "command", values.get("command", defaults["command"]))
@@ -285,8 +327,28 @@ def build_adapter_registry(config: dict[str, Any]) -> dict[str, ExecutionAdapter
             session_id_source=session_id_source,
             event_format=event_format,
         )
-        if registry[name].bridge_mode not in {"cli", "codex_app_server"}:
+        if registry[name].bridge_mode not in {"cli", "codex_app_server", "ssh"}:
             raise ValueError(f"execution adapter {name} has unsupported bridge_mode")
         if registry[name].bridge_mode == "codex_app_server" and name != "codex":
             raise ValueError("codex_app_server bridge_mode is supported only for codex")
+        # SSH remote config: required exactly when bridge_mode is 'ssh', forbidden
+        # otherwise. A missing 'ssh' section on an ssh adapter, or an 'ssh' section
+        # on a local one, is a config error caught at load — not a runtime surprise
+        # when the dispatcher tries to pick an environment. Presence is keyed on
+        # 'ssh' in values (not values.get, which cannot tell an absent key from an
+        # explicit ssh: null); RemoteAdapterConfig's extra='forbid' rejects unknown
+        # keys and pydantic reports a missing required field. Both surface as a
+        # ValueError naming the adapter.
+        has_ssh_section = "ssh" in values
+        ssh_values = values.get("ssh")
+        if registry[name].bridge_mode == "ssh":
+            if not isinstance(ssh_values, dict):
+                raise ValueError(f"execution adapter {name} with bridge_mode 'ssh' needs an 'ssh' config section")
+            try:
+                remote = RemoteAdapterConfig(**ssh_values)
+            except ValidationError as exc:
+                raise ValueError(f"execution adapter {name} ssh config invalid: {exc}") from exc
+            registry[name] = replace(registry[name], remote=remote)
+        elif has_ssh_section:
+            raise ValueError(f"execution adapter {name} has an 'ssh' section but bridge_mode is not 'ssh'")
     return registry

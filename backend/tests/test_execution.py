@@ -21,7 +21,7 @@ from fastapi.testclient import TestClient
 import agora.api.app as app_module
 from agora.api.app import app
 from agora.fsprobe import PathProbe
-from agora.execution.adapters import ExecutionAdapter, build_adapter_registry
+from agora.execution.adapters import ExecutionAdapter, RemoteAdapterConfig, build_adapter_registry
 from agora.execution.dispatcher import ExecutionDispatcher, redact_output
 from agora.execution.models import (
     CancelRunRequest,
@@ -230,6 +230,92 @@ def test_adapter_keeps_prompt_as_one_argv_item_and_validates_template():
         build_adapter_registry({"execution": {"adapters": {
             "codex": {"bridge_mode": "codex_app_server", "app_server_command": "codex app-server"}
         }}})
+
+
+def _ssh_adapter_config(**overrides):
+    """A minimal valid ssh adapter config section. Host is a placeholder — no real
+    IP/hostname is committed (public repo, SECURITY-12)."""
+    ssh = {
+        "ssh_host": "example.test",
+        "ssh_user": "runner",
+        "remote_workspace": "/srv/agora/wt",
+        "remote_project_root": "/srv/agora/repo",
+        "secret_ref": "AGORA_SSH_KEY_CODEX",
+    }
+    ssh.update(overrides)
+    return {"execution": {"adapters": {"codex": {"bridge_mode": "ssh", "ssh": ssh}}}}
+
+
+def test_ssh_adapter_config_parsed_onto_adapter():
+    registry = build_adapter_registry(_ssh_adapter_config())
+    remote = registry["codex"].remote
+    assert isinstance(remote, RemoteAdapterConfig)
+    assert remote.ssh_host == "example.test"
+    assert remote.ssh_user == "runner"
+    assert remote.remote_project_root == "/srv/agora/repo"
+    assert remote.secret_ref == "AGORA_SSH_KEY_CODEX"
+    # Defaults from the frozen contract.
+    assert remote.ssh_port == 22
+    assert remote.host_key_mode == "strict"       # NFR-1 default
+    assert remote.known_hosts_path is None
+    assert remote.cleanup_worktree is False       # Q5=C default keep
+
+
+def test_local_adapter_has_no_remote_config():
+    registry = build_adapter_registry({"execution": {"adapters": {}}})
+    assert registry["codex"].remote is None
+
+
+def test_ssh_bridge_mode_requires_ssh_section():
+    cfg = {"execution": {"adapters": {"codex": {"bridge_mode": "ssh"}}}}
+    with pytest.raises(ValueError, match="needs an 'ssh' config section"):
+        build_adapter_registry(cfg)
+
+
+def test_ssh_section_forbidden_without_ssh_bridge_mode():
+    # A local adapter carrying ssh config is a config error, not silently ignored:
+    # it signals the operator expected remote execution that will not happen.
+    cfg = {"execution": {"adapters": {"codex": {"ssh": {"ssh_host": "example.test"}}}}}
+    with pytest.raises(ValueError, match="bridge_mode is not 'ssh'"):
+        build_adapter_registry(cfg)
+
+
+def test_explicit_ssh_null_without_ssh_bridge_mode_is_a_config_error():
+    # 'ssh' present as an explicit null is still a present 'ssh' section on a local
+    # adapter — keyed on membership, not truthiness, so it fails closed like {...}.
+    cfg = {"execution": {"adapters": {"codex": {"bridge_mode": "cli", "ssh": None}}}}
+    with pytest.raises(ValueError, match="bridge_mode is not 'ssh'"):
+        build_adapter_registry(cfg)
+
+
+def test_disabled_adapter_skips_ssh_validation_on_purpose():
+    # A disabled adapter never enters the registry; its (here invalid) ssh section
+    # is inert and deliberately not validated. Locks that intentional behavior so a
+    # later "validate everything" change is a conscious decision, not a silent one.
+    cfg = {"execution": {"adapters": {"codex": {"enabled": False, "bridge_mode": "ssh"}}}}
+    registry = build_adapter_registry(cfg)
+    assert "codex" not in registry
+
+
+def test_ssh_config_rejects_unknown_key_fail_closed():
+    # extra='forbid': a misspelled/unsupported field fails at load, never ignored.
+    with pytest.raises(ValueError, match="ssh config invalid"):
+        build_adapter_registry(_ssh_adapter_config(ssh_hostt="typo.test"))
+
+
+def test_ssh_config_requires_mandatory_fields():
+    cfg = {"execution": {"adapters": {"codex": {
+        "bridge_mode": "ssh", "ssh": {"ssh_host": "example.test"}  # missing user/workspace/root/secret_ref
+    }}}}
+    with pytest.raises(ValueError, match="ssh config invalid"):
+        build_adapter_registry(cfg)
+
+
+def test_ssh_config_carries_no_plaintext_secret_field():
+    # Credentials travel by env-var name (secret_ref), never inline. extra='forbid'
+    # means an attempt to put a raw key/password field in config fails closed.
+    with pytest.raises(ValueError, match="ssh config invalid"):
+        build_adapter_registry(_ssh_adapter_config(ssh_password="hunter2"))
 
 
 def test_adapter_capabilities_do_not_overstate_delivery():
