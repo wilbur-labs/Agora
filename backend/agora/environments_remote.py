@@ -566,12 +566,17 @@ class RemoteFilesystem:
                     return False
             return True
 
-    async def read_file(self, path: Path, *, max_bytes: int = MAX_FS_READ_BYTES) -> bytes:
+    async def read_file(
+        self, path: Path, *, max_bytes: int = MAX_FS_READ_BYTES, truncate: bool = False
+    ) -> bytes:
         conn = await self._env._ensure_conn()
         async with conn.start_sftp_client() as sftp:
-            # Refuse an oversized file BEFORE reading it into memory: stat, then read at
-            # most max_bytes+1 and reject if it overflows (covers a file that grows
-            # between stat and read). SFTPNoSuchFile -> FileNotFoundError (absence);
+            # Two modes. Default (truncate=False): WHOLE file or raise — a file larger
+            # than max_bytes is an error, never a silent short answer (config-file
+            # semantics; U3 provisioner). truncate=True: a bounded PREVIEW — read at most
+            # max_bytes and return what is there, never raising for size (U4 read_file,
+            # which reports its own `truncated` flag). Absence/permission still raise in
+            # both modes (fsprobe rule): SFTPNoSuchFile -> FileNotFoundError;
             # SFTPPermissionDenied -> PermissionError; other SFTP -> OSError.
             try:
                 attrs = await sftp.stat(_posix(path))
@@ -581,21 +586,21 @@ class RemoteFilesystem:
                 raise PermissionError(_posix(path)) from exc
             except asyncssh.SFTPError as exc:
                 raise OSError(f"cannot stat remote file {_posix(path)}: {exc}") from exc
-            if attrs.size is not None and attrs.size > max_bytes:
+            if not truncate and attrs.size is not None and attrs.size > max_bytes:
                 raise OSError(
                     f"remote file {_posix(path)} is {attrs.size} bytes, exceeds cap {max_bytes}"
                 )
+            # Read cap: whole-file mode reads max_bytes+1 to DETECT overflow; preview mode
+            # reads exactly max_bytes (a short read past it is the truncation, not an error).
+            read_cap = max_bytes if truncate else max_bytes + 1
             try:
                 async with sftp.open(_posix(path), "rb") as fh:
                     # SFTP read(n) may return a SHORT read that is NOT EOF (a server
-                    # can cap its reply size); a single read(max_bytes+1) could silently
-                    # truncate a legitimate file or miss an over-cap one that grew after
-                    # stat. Loop until EOF (empty read) or we exceed the cap by one byte,
-                    # which is enough to prove "over the cap" without buffering it all.
+                    # can cap its reply size); loop until EOF or the read cap.
                     chunks: list[bytes] = []
                     total = 0
-                    while total <= max_bytes:
-                        chunk = await fh.read(max_bytes + 1 - total)
+                    while total < read_cap:
+                        chunk = await fh.read(read_cap - total)
                         if not chunk:
                             break  # EOF
                         chunks.append(chunk)
@@ -607,7 +612,7 @@ class RemoteFilesystem:
                 raise PermissionError(_posix(path)) from exc
             except asyncssh.SFTPError as exc:
                 raise OSError(f"cannot read remote file {_posix(path)}: {exc}") from exc
-            if len(data) > max_bytes:
+            if not truncate and len(data) > max_bytes:
                 raise OSError(
                     f"remote file {_posix(path)} exceeds cap {max_bytes} bytes"
                 )

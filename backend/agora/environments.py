@@ -371,12 +371,15 @@ class AsyncFilesystem(Protocol):
         caller asked a question that has no yes/no answer for a file)."""
         ...
 
-    async def read_file(self, path: Path, *, max_bytes: int = MAX_FS_READ_BYTES) -> bytes:
+    async def read_file(self, path: Path, *, max_bytes: int = MAX_FS_READ_BYTES, truncate: bool = False) -> bytes:
         """Read ``path``'s bytes (caller decodes; the remote locale never decides it).
-        A file larger than ``max_bytes`` raises rather than truncating — a silently
-        truncated read is a wrong answer, not a smaller one. A missing file raises
-        ``FileNotFoundError``; unreadable raises ``PermissionError``/``OSError`` — U4's
-        caller skips such a file rather than reading absence as empty content."""
+
+        Default (``truncate=False``): the WHOLE file, or raise if it exceeds
+        ``max_bytes`` — a silently truncated read is a wrong answer, not a smaller one
+        (config-file / provisioner semantics). ``truncate=True``: a bounded PREVIEW —
+        return at most ``max_bytes`` bytes and never raise for size (the caller reports
+        its own truncation). In both modes a missing file raises ``FileNotFoundError``;
+        unreadable raises ``PermissionError``/``OSError`` — never absence-as-empty."""
         ...
 
     async def write_file(self, path: Path, content: bytes) -> None:
