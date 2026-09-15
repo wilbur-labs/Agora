@@ -132,8 +132,30 @@ export function listRuns(params: ListRunsParams = {}, signal?: AbortSignal): Pro
  * the set is asked for atomically instead.
  */
 export function listActiveRuns(taskId: string, signal?: AbortSignal): Promise<RunSummary[]> {
-  const states: RunState[] = ["queued", "running"];
-  return listRuns({ task_id: taskId, states, limit: 500 }, signal);
+  return listRuns({ task_id: taskId, states: [...ACTIVE_RUN_STATES], limit: 500 }, signal);
+}
+
+/**
+ * What "active" means, in one place. Two call sites asking the same question with two
+ * spellings of the set is how they start disagreeing about whether a queued run counts.
+ */
+export const ACTIVE_RUN_STATES: readonly RunState[] = ["queued", "running"];
+
+/**
+ * The same question as `listActiveRuns`, asked for a whole project at once.
+ *
+ * The plan needs it for every step it shows, and one request per row would be N moments
+ * rather than one — the same drift the per-task reader's comment above rejects, one
+ * level up. `limit` is the caller's because it pages: unlike the per-task set, a project
+ * could in principle hold more active runs than one page, and the caller has to be able
+ * to tell a full page from the whole set.
+ */
+export function listActiveProjectRuns(
+  projectId: string,
+  limit: number,
+  signal?: AbortSignal,
+): Promise<RunSummary[]> {
+  return listRuns({ project_id: projectId, states: [...ACTIVE_RUN_STATES], limit }, signal);
 }
 
 export function listExecutionAdapters(signal?: AbortSignal): Promise<AdapterCapability[]> {

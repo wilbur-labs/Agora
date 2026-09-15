@@ -14,18 +14,22 @@
  * with a new title:
  *
  *   1. the project's name and its resources come first;
- *   2. tasks are only ever this project's;
+ *   2. tasks are only ever this project's — and since W11 they are not here at all;
  *   3. the current task is context inside the project, not a global object;
- *   4. no project filter;
+ *   4. no filter over tasks (a switcher *between projects* is not one — see below);
  *   5. no cross-project attention — that belongs to Today;
  *   6. runs stay nested under tasks.
  *
- * The task section exists because the middle column is a task-scoped conversation, so a
- * task has to be switchable at all times — the mockup depicts one task mid-flight and
- * simply never draws the switcher. It is deliberately quiet: a flat list, no attention
- * grouping, no banners competing with the project's own resources. The test of whether
- * this stayed project-first is whether the task list is once again the largest, busiest,
- * most organising thing on the page.
+ * **The task list has left this column (W11).** It was here because the middle column is
+ * task-scoped and a task had to be switchable at all times. That is now the plan's job:
+ * the page itself opens on the project's development order, which switches tasks *and*
+ * answers how many steps there are and which one is live — questions a quiet rail could
+ * never answer. What replaced it at the top is a project switcher, because the owner's
+ * question at this level turned out to be "which project", not "which task".
+ *
+ * Constraint 4 above is therefore narrowed, not broken: this is a switcher between
+ * projects, never a filter over tasks. Picking one enters that project; it does not
+ * cross-filter anything.
  *
  * Counts are not numbers here — they are capabilities (see lib/nav-capability.ts). Three
  * of the eight resources have nothing behind them yet, and each says which kind of
@@ -52,12 +56,9 @@ import { useI18n } from "@/lib/i18n";
 import type { NavCapability } from "@/lib/nav-capability";
 import type { ProjectGate } from "@/lib/project-chat";
 
-export interface ProjectNavTask {
-  task_id: string;
-  title: string;
-  state: string;
-  /** A run in flight, if any — a dot, not a section. Runs stay nested under tasks. */
-  running: boolean;
+export interface ProjectNavProject {
+  project_id: string;
+  name: string;
 }
 
 export interface ProjectNavProps {
@@ -74,9 +75,12 @@ export interface ProjectNavProps {
     skills: NavCapability;
     files: NavCapability;
   };
-  tasks: ProjectNavTask[];
-  selectedTaskId: string | null;
-  onSelectTask: (taskId: string) => void;
+  /** Every project this control plane holds, for the switcher. Empty when the read
+   *  failed — the switcher then shows only the project in context rather than claiming
+   *  this is the whole list. */
+  projects: readonly ProjectNavProject[];
+  /** Enters another project. Not a filter: it changes which project the page is inside. */
+  onSwitchProject: (projectId: string) => void;
   /** Whether this project may be given work at all (CR-61). A project with no goal shows
    *  the way to settle one instead of a "new task" button; a project whose charter could
    *  not be read shows neither claim. Tasks are proposed in the conversation now, so
@@ -143,9 +147,8 @@ export function ProjectNav({
   projectName,
   projectRoot,
   capabilities,
-  tasks,
-  selectedTaskId,
-  onSelectTask,
+  projects,
+  onSwitchProject,
   gate,
   onSettleGoal,
   otherWorkspaces,
@@ -158,13 +161,16 @@ export function ProjectNav({
     <aside className="flex h-screen w-72 shrink-0 flex-col border-r bg-sidebar lg:w-80">
       {header}
 
-      {/* 1. The project comes first. Not a filter — the column is inside one project. */}
+      {/* 1. The projects. The one in context is named first and stays named; the others
+             are a way in, not a filter. When the projects read failed the list is empty
+             and only the project in context appears — silence about the rest, rather
+             than a short list that reads as the whole. */}
       <div className="border-b px-4 pb-3">
+        <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+          {t("workspace.nav.projectsLabel")}
+        </div>
         {projectId ? (
           <>
-            <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
-              {t("workspace.nav.projectLabel")}
-            </div>
             <div className="truncate text-sm font-semibold" title={projectName ?? projectId}>
               {projectName ?? projectId}
             </div>
@@ -178,6 +184,28 @@ export function ProjectNav({
           <p className="text-[11px] leading-snug text-muted-foreground">
             {t("workspace.nav.noProject")}
           </p>
+        )}
+        {projects.length > 1 && (
+          <ul className="mt-2 space-y-0.5" aria-label={t("workspace.nav.switchProject")}>
+            {projects.map((project) => (
+              <li key={project.project_id}>
+                <button
+                  type="button"
+                  onClick={() => onSwitchProject(project.project_id)}
+                  aria-current={project.project_id === projectId ? "true" : undefined}
+                  className={cn(
+                    "w-full truncate rounded-lg px-2 py-1 text-left text-[12px] transition-colors",
+                    project.project_id === projectId
+                      ? "bg-primary/10 font-medium ring-1 ring-primary/30"
+                      : "hover:bg-accent",
+                  )}
+                  title={project.name}
+                >
+                  {project.name}
+                </button>
+              </li>
+            ))}
+          </ul>
         )}
       </div>
 
@@ -204,58 +232,21 @@ export function ProjectNav({
           </nav>
         )}
 
-        {/* 3. Tasks: this project's only, flat and quiet. Switchable at all times because
-               the middle column is task-scoped, but never the organising element. */}
-        <div className="mt-4">
-          <div className="flex items-center justify-between px-2 py-1">
-            <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-              {t("workspace.nav.tasks")}
-            </span>
+        {/* 3. What stands in the way of work, said once. It is project-level — a project
+               with no settled goal may not be given work at all (CR-61) — so it outlived
+               the task list it used to sit above. "This project has no goal" is a claim,
+               so the unknown case says the charter could not be read rather than making
+               it. The way onward is the conversation, which is where a goal is settled. */}
+        {gate.kind !== "open" && (
+          <div className="mx-2 mt-4 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-2 text-[11px] leading-relaxed text-amber-700 dark:text-amber-400">
+            <p>{t(gate.kind === "noCharter" ? "projectChat.gate.noCharter" : "projectChat.gate.unknown")}</p>
+            {gate.kind === "noCharter" && (
+              <button type="button" onClick={onSettleGoal} className="mt-1 font-medium underline">
+                {t("projectChat.gate.settle")}
+              </button>
+            )}
           </div>
-          {/* What stands in the way of work, said once, where the "new task" button used
-              to be. "This project has no goal" is a claim, so the unknown case says it
-              could not be read rather than making it. */}
-          {gate.kind !== "open" && (
-            <div className="mx-2 mb-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-2 text-[11px] leading-relaxed text-amber-700 dark:text-amber-400">
-              <p>{t(gate.kind === "noCharter" ? "projectChat.gate.noCharter" : "projectChat.gate.unknown")}</p>
-              {gate.kind === "noCharter" && (
-                <button type="button" onClick={onSettleGoal} className="mt-1 font-medium underline">
-                  {t("projectChat.gate.settle")}
-                </button>
-              )}
-            </div>
-          )}
-          {tasks.length === 0 ? (
-            <p className="px-2 py-3 text-[11px] text-muted-foreground">
-              {t("workspace.rail.empty")}
-            </p>
-          ) : (
-            <ul className="space-y-0.5">
-              {tasks.map((task) => (
-                <li key={task.task_id}>
-                  <button
-                    type="button"
-                    onClick={() => onSelectTask(task.task_id)}
-                    className={cn(
-                      "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition-colors",
-                      task.task_id === selectedTaskId
-                        ? "bg-primary/10 ring-1 ring-primary/30"
-                        : "hover:bg-accent",
-                    )}
-                  >
-                    <span
-                      className={cn(
-                        "size-1.5 shrink-0 rounded-full",
-                        task.running ? "bg-emerald-500" : "bg-muted-foreground/40",
-                      )}
-                    />
-                    <span className="min-w-0 flex-1 truncate text-[13px]">{task.title}</span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
+        )}
       </div>
 
       {/* 4. Other workspaces (W7). Folded, named, and separated by a rule: it is a read of

@@ -23,6 +23,7 @@ import {
   listSpecs,
   listTaskEvents,
   listTasks,
+  TASK_PAGE_LIMIT,
   listWorkspaceSources,
   OPEN_ATTENTION_PAGE_LIMIT,
   type AttentionItem,
@@ -40,6 +41,7 @@ import {
   asRunSummary,
   getRun,
   getRunDeliverables,
+  listActiveProjectRuns,
   listActiveRuns,
   listRuns,
   TERMINAL_RUN_STATES,
@@ -56,7 +58,6 @@ import { mergeRunUpdates, type ContinueSeedFacts } from "@/lib/continue-run";
 import {
   RAIL_ATTENTION_NOTICE_KEY,
   RAIL_STALE_NOTICE_KEY,
-  railRunIsCurrent,
   railReadReport,
   settleRead,
   type AttentionReach,
@@ -65,7 +66,12 @@ import {
 // The left column is project-level navigation now (mockup v2). Its resource counts are
 // capabilities rather than numbers: three of the eight resources have no read behind them
 // yet, and each has to say which kind of nothing that is.
-import { ProjectNav, type ProjectNavTask } from "@/components/project-nav";
+import { ProjectNav, type ProjectNavProject } from "@/components/project-nav";
+// The plan is the page's opening view (W11): the project's tasks as an ordered whole.
+// Every judgment behind it — step numbers, what a step waits on, whether it may be
+// continued — is in lib/task-plan.ts, which is testable without a browser (CR-18).
+import { TaskPlan } from "@/components/task-plan";
+import { planHeadlineOf, planRowsOf, type PlanTotalReach } from "@/lib/task-plan";
 import {
   NAV_DEFECTS_NO_SOURCE,
   NAV_FILES_NO_READER,
@@ -103,6 +109,7 @@ import {
   type RunColumn,
 } from "@/lib/run-column";
 import { MAX_PAGE, readPage } from "@/lib/paged";
+import { taskInventoryReachOf } from "@/lib/portfolio-bucket";
 import {
   eventsLackKnown,
   runsLackKnown,
@@ -195,6 +202,18 @@ export default function WorkspacePage() {
 
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [projectFilter, setProjectFilter] = useState("all");
+  // Every project this control plane holds, for the column's switcher. Left as it was
+  // when the read fails, exactly like the other four: an empty list would read as "this
+  // is the only project", which is a claim a failed read cannot make.
+  const [projects, setProjects] = useState<readonly ProjectNavProject[]>([]);
+  // Whether each read covered the whole list. Both start "pending": before a read has
+  // settled there are no rows *and* no evidence, and calling that "complete" is what let
+  // the plan say "this project has no tasks" out of nothing at all.
+  const [taskReach, setTaskReach] = useState<PlanTotalReach>("pending");
+  // "Does this project have work in flight" — its own read and its own reach. Named
+  // for the project because `TaskWorkspace` further down holds a task-scoped one.
+  const [projectActiveRuns, setProjectActiveRuns] = useState<RunSummary[]>([]);
+  const [projectActiveReach, setProjectActiveReach] = useState<PlanTotalReach>("pending");
   // The project resources the left column reports on. Their own reads, keyed to the
   // project in context — the column may not show a count it never fetched, and a failed
   // fetch has to stay distinguishable from a project that keeps none.
@@ -236,10 +255,10 @@ export default function WorkspacePage() {
       // reports only about itself: `settleRead` never rejects, so there is no
       // combined failure left to infer a reach from.
       const [tasksRead, projectsRead, attentionRead, runsRead] = await Promise.all([
-        settleRead(() => listTasks()),
+        settleRead(() => readPage(TASK_PAGE_LIMIT, listTasks)),
         settleRead(() => listProjects()),
         settleRead(() => listOpenAttention()),
-        settleRead(() => listRuns({ limit: 500 })),
+        settleRead(() => readPage(MAX_PAGE, (limit) => listRuns({ limit }))),
       ]);
       // The generation guard is unchanged and still covers every write below,
       // including the spinner in `finally`: only the newest request may write.
@@ -257,9 +276,19 @@ export default function WorkspacePage() {
       // A failed read leaves its own slice of the snapshot as it was — stale, and
       // disclosed as stale by the rail — rather than replacing it with an empty
       // list that would read as "there are none".
-      if (tasksRead.status === "fulfilled") setTasks(tasksRead.value);
+      // The page *and* whether it was the whole list. `listTasks` returns a bare array,
+      // so a full page was indistinguishable from "there is more" — and the plan prints a
+      // step count off it. Same fix the portfolio board already carries (CR-28).
+      if (tasksRead.status === "fulfilled") setTasks([...tasksRead.value.items]);
+      setTaskReach(taskInventoryReachOf(tasksRead));
+      if (projectsRead.status === "fulfilled") {
+        setProjects(projectsRead.value.items.map(
+          (project) => ({ project_id: project.project_id, name: project.name }),
+        ));
+      }
       if (attentionRead.status === "fulfilled") setAttention(attentionRead.value.items);
-      if (runsRead.status === "fulfilled") setRuns(runsRead.value);
+      if (runsRead.status === "fulfilled") setRuns([...runsRead.value.items]);
+
     } catch (err) {
       // Not a read failure: `settleRead` gives every read its own outcome and the
       // batch above cannot reject. This is a fault in the handling itself, so it is
@@ -373,29 +402,59 @@ export default function WorkspacePage() {
     return () => { alive = false; ctrl.abort(); };
   }, [currentProjectId, refreshNonce]);
 
-  /** This project's tasks, and only this project's (constraint 2 of the column). */
-  const projectTasks = useMemo<ProjectNavTask[]>(() => {
-    if (currentProjectId === null) return [];
-    // Dropped in one place rather than per render site, so a run the page can no longer
-    // vouch for does not light a dot: when a sibling read failed, `runs` is stale and
-    // showing "running" off it would be claiming knowledge this refresh does not have.
-    const runsAreCurrent = railRunIsCurrent(staleOrigins);
-    return tasks
-      .filter((task) => task.project_id === currentProjectId && !task.archived_at)
-      .map((task) => ({
-        task_id: task.task_id,
-        title: task.title,
-        state: task.state,
-        running: runsAreCurrent
-          && runs.some((run) => run.task_id === task.task_id && run.state === "running"),
-      }));
-  }, [tasks, runs, currentProjectId, staleOrigins]);
+  // Its own read for the reason `listActiveRuns` records: whether a run is active cannot
+  // be inferred from a page of recent history. Project-scoped so the plan learns it for
+  // every step in one moment rather than one request per row.
+  useEffect(() => {
+    if (currentProjectId === null) {
+      setProjectActiveRuns([]);
+      setProjectActiveReach("pending");
+      return;
+    }
+    const ctrl = new AbortController();
+    let alive = true;
+    void readPage(MAX_PAGE, (limit) => listActiveProjectRuns(currentProjectId, limit, ctrl.signal))
+      .then((page) => {
+        if (!alive) return;
+        setProjectActiveRuns([...page.items]);
+        setProjectActiveReach(page.truncated ? "capped" : "complete");
+      })
+      .catch(() => {
+        if (!alive || ctrl.signal.aborted) return;
+        // Deliberately not cleared to an empty list: empty would read as "nothing is
+        // running", which is precisely the claim this read exists to support.
+        setProjectActiveReach("unreadable");
+      });
+    return () => { alive = false; ctrl.abort(); };
+  }, [currentProjectId, refreshNonce]);
+
+  /**
+   * This project's tasks, and only this project's — **in the order the board returned
+   * them**. `listTasks` reads `priority DESC, created_at DESC`, which is the development
+   * order the kickoff adoption wrote; filtering preserves it and nothing here re-sorts.
+   * A second ordering judgment beside the board's own is how the placement dialog and
+   * the plan would start naming different steps by the same number.
+   */
+  const projectTasks = useMemo(
+    () => (currentProjectId === null
+      ? []
+      : tasks.filter((task) => task.project_id === currentProjectId && !task.archived_at)),
+    [tasks, currentProjectId],
+  );
+
 
   // Each resource's capability. Every one of these is a sentence about what can be said,
   // and the three with no read behind them each say which kind of nothing they are.
   const navCapabilities = useMemo(() => {
     const failedOr = (failed: boolean, cap: NavCapability): NavCapability =>
       failed ? navReadFailed() : cap;
+    // Only while the reads in hand are *this* project's — the same test the gate below
+    // makes, for the same reason. Switching projects leaves the previous project's
+    // dashboard and decisions in state until the new requests settle, and counting them
+    // under the new project's name prints one project's change requests and decisions as
+    // another's. Before the switcher this window was rare; it is now a routine gesture.
+    const dashboardIsMine = navDashboard !== null && navDashboard.project_id === currentProjectId;
+    const decisionsIsMine = navDecisions !== null && navDecisions.project_id === currentProjectId;
     const runsCap: NavCapability = currentProjectId === null
       ? NAV_UNREPORTED
       : { kind: "count", value: projectTasks.length === 0 ? 0 : runs.filter(
@@ -407,11 +466,11 @@ export default function WorkspacePage() {
       // field there means this server did not report one — not that the project keeps none.
       changeRequests: failedOr(
         navReadFailures.dashboard,
-        navFromCRLog(crLogViewOf(navDashboard?.cr_log)),
+        dashboardIsMine ? navFromCRLog(crLogViewOf(navDashboard.cr_log)) : NAV_UNREPORTED,
       ),
       decisions: failedOr(
         navReadFailures.decisions,
-        navDecisions === null ? NAV_UNREPORTED : navFromDecisions(navDecisions),
+        decisionsIsMine ? navFromDecisions(navDecisions) : NAV_UNREPORTED,
       ),
       defects: NAV_DEFECTS_NO_SOURCE,
       skills: NAV_SKILLS_UNBUILT,
@@ -435,6 +494,32 @@ export default function WorkspacePage() {
           : mine ? "landed" : "pending",
     );
   }, [navDashboard, navReadFailures.dashboard, currentProjectId]);
+
+  /**
+   * The plan the page opens on. `runsAreCurrent` is decided in one place rather than per
+   * render site: when a sibling read failed, `runs` is stale, and both "this step is
+   * running" and "no run is active, go ahead" would be claims this refresh cannot make.
+   */
+  const planRows = useMemo(() => {
+    // One source, and it is the read that was actually asked this question. Judging it
+    // from the completeness of *all* run history was worse than wrong: that page is
+    // truncated forever once the control plane has held 500 runs, so "cannot vouch"
+    // became "Continue is never offered again, on any step".
+    const runsAreCurrent = projectActiveReach === "complete";
+    return planRowsOf({
+      tasks: projectTasks,
+      attention,
+      attentionReach,
+      // Queued counts. A run waiting to start is work already dispatched; treating only
+      // "running" as active offered Continue on a task that had one queued, and reported
+      // it as nothing in flight.
+      runningTaskIds: new Set(projectActiveRuns.map((run) => run.task_id)),
+      runsAreCurrent,
+      projectGate: gate.kind,
+    });
+  }, [projectTasks, attention, attentionReach, projectActiveRuns, projectActiveReach, gate.kind]);
+
+  const planHeadline = useMemo(() => planHeadlineOf(planRows, taskReach), [planRows, taskReach]);
 
   // Drop a selection the project filter now excludes, so the main view never
   // shows a task hidden from the rail (notes would post to the wrong project).
@@ -479,17 +564,23 @@ export default function WorkspacePage() {
       <div className="flex min-h-0 flex-1 overflow-hidden">
       <ProjectNav
         projectId={currentProjectId}
-        projectName={navDashboard?.name ?? currentProjectId}
+        // Only this project's name. The dashboard in state is the previous project's
+        // until the new read lands, and printing its name over the new project's page is
+        // how someone settles a goal for B under A's heading. Guarding the counts alone
+        // (the round before) left exactly this one uncovered.
+        projectName={
+          navDashboard !== null && navDashboard.project_id === currentProjectId
+            ? navDashboard.name
+            : currentProjectId
+        }
         // The dashboard does not report the project's root, so this stays null rather
         // than guessing one from the id.
         projectRoot={null}
         capabilities={navCapabilities}
-        tasks={projectTasks}
-        selectedTaskId={selectedTaskId}
-        onSelectTask={(taskId) => {
-          const task = tasks.find((candidate) => candidate.task_id === taskId);
-          if (task) selectTask(task);
-        }}
+        projects={projects}
+        // Entering a project drops the task selection, so the page opens on that
+        // project's plan rather than on a task belonging to the one just left.
+        onSwitchProject={openProject}
         gate={gate}
         // The goal is settled in the middle column, so "settle it" is closing the task
         // that is covering it — and pinning the project first, because the project may
@@ -529,6 +620,17 @@ export default function WorkspacePage() {
         ))}
         {error && <div className="m-4 shrink-0 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{t("workspace.errors.loadFailed", { error })}</div>}
         {selectedTask ? (
+          <>
+          {/* The way back. The left column used to be it — pick another task, or none.
+              With the plan in the page, back is to the plan, and it is stated rather
+              than left to the browser's own button. */}
+          <button
+            type="button"
+            onClick={() => { if (selectedTask.project_id) openProject(selectedTask.project_id); }}
+            className="mx-4 mt-3 mb-1 shrink-0 self-start text-[12px] text-muted-foreground hover:text-foreground hover:underline"
+          >
+            ← {t("workspace.plan.backToPlan")}
+          </button>
           <TaskWorkspace
             key={selectedTask.task_id}
             refreshNonce={refreshNonce}
@@ -546,10 +648,26 @@ export default function WorkspacePage() {
             railRuns={selectedTaskRuns}
             onTaskMayHaveChanged={load}
           />
+          </>
         ) : (
           currentProjectId !== null ? (
-            // The project's own conversation: it settles the goal when there is none, and
-            // stays open afterwards as the place tasks are proposed (CR-62, CR-63).
+            // The plan first, then the conversation that produces it. Not either/or: the
+            // conversation is where a goal is settled and where a new idea becomes a card
+            // (CR-62, CR-63), and the plan is what those two write. Putting the plan above
+            // it answers "how many steps, which one now" without opening anything, which
+            // is the question the workbench could not answer at all before.
+            // `min-w-0` is load-bearing: a flex child defaults to `min-width: auto`,
+            // so the plan table's own minimum width would size this column instead of
+            // being scrolled inside it, and the page would run off the screen.
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto">
+            <TaskPlan
+              rows={planRows}
+              headline={planHeadline}
+              onOpenStep={(taskId) => {
+                const task = tasks.find((candidate) => candidate.task_id === taskId);
+                if (task) selectTask(task);
+              }}
+            />
             <ProjectChat
               key={currentProjectId}
               projectId={currentProjectId}
@@ -570,6 +688,7 @@ export default function WorkspacePage() {
                 load();
               }}
             />
+            </div>
           ) : (
             <EmptyWorkspace hasTasks={tasks.length > 0} />
           )
