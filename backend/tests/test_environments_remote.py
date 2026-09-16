@@ -20,7 +20,7 @@ import asyncssh
 import pytest
 
 from agora.environments import CommandResult
-from agora.environments_remote import RemoteEnvironment, RemoteProcessHandle
+from agora.environments_remote import RemoteEnvironment, RemoteProcessHandle, RemoteHostKeyError
 
 
 def _run(coro):
@@ -128,12 +128,17 @@ def test_invalid_host_key_mode_is_refused():
         RemoteEnvironment(host="h", user="u", secret_ref="R", host_key_mode="trustme")
 
 
-def test_tofu_fails_closed_not_silently_strict(monkeypatch):
+def test_tofu_requires_known_hosts_path(monkeypatch):
     monkeypatch.setenv("R", "pw")
+    # tofu with no file to pin into must refuse (there is no implicit place to pin).
     env = RemoteEnvironment(host="h", user="u", secret_ref="R", host_key_mode="tofu")
-    # _known_hosts_arg must refuse rather than behave as strict.
-    with pytest.raises(NotImplementedError):
+    with pytest.raises(RemoteHostKeyError):
         env._known_hosts_arg()
+    # tofu with a path verifies against that same file (strict, after pinning).
+    env2 = RemoteEnvironment(
+        host="h", user="u", secret_ref="R", host_key_mode="tofu", known_hosts_path="/etc/kh"
+    )
+    assert env2._known_hosts_arg() == "/etc/kh"
 
 
 def test_strict_known_hosts_defaults_to_empty_tuple_and_preserves_path(monkeypatch):
@@ -343,6 +348,189 @@ def test_connect_never_reads_system_ssh_config(monkeypatch):
     env = RemoteEnvironment(host="h", user="u", secret_ref="R")
     _run(env._connect_once())
     assert "config" in captured and captured["config"] is None
+
+
+# --- trust on first use (CR-6) ---
+#
+# These use REAL asyncssh keys, not stubs: _host_is_pinned() delegates to asyncssh's
+# own read_known_hosts + match_known_hosts, so a fake unparseable line would not
+# exercise the matcher that actually decides "already pinned?".
+
+def _real_key():
+    return asyncssh.generate_private_key("ssh-ed25519")
+
+
+def _kh_line(host_token, key):
+    algo, b64 = key.export_public_key("openssh").decode("ascii").split()[:2]
+    return f"{host_token} {algo} {b64}\n"
+
+
+class _NoKey:
+    """A key whose openssh export has too few fields — drives the format guard."""
+    def export_public_key(self, fmt="openssh"):
+        return b"ssh-ed25519"
+
+
+def _tofu_env(monkeypatch, tmp_path, *, port=22, host="h"):
+    monkeypatch.setenv("R", "pw")
+    kh = tmp_path / "known_hosts"
+    env = RemoteEnvironment(
+        host=host, user="u", secret_ref="R", host_key_mode="tofu",
+        port=port, known_hosts_path=str(kh),
+    )
+    return env, kh
+
+
+def test_tofu_first_connect_pins_key(monkeypatch, tmp_path):
+    env, kh = _tofu_env(monkeypatch, tmp_path)
+    key = _real_key()
+    calls = {"n": 0}
+    async def fake_get(host, port, **kw):
+        calls["n"] += 1
+        return key
+    monkeypatch.setattr(asyncssh, "get_server_host_key", fake_get)
+    _run(env._tofu_pin_if_needed())
+    assert calls["n"] == 1
+    line = kh.read_text(encoding="utf-8").strip()
+    assert line == _kh_line("h", key).strip()   # host prefix + algo + base64, comment dropped
+
+
+def test_tofu_non_default_port_uses_bracket_prefix(monkeypatch, tmp_path):
+    env, kh = _tofu_env(monkeypatch, tmp_path, port=2222)
+    key = _real_key()
+    async def fake_get(host, port, **kw):
+        return key
+    monkeypatch.setattr(asyncssh, "get_server_host_key", fake_get)
+    _run(env._tofu_pin_if_needed())
+    assert kh.read_text(encoding="utf-8").startswith("[h]:2222 ")
+
+
+def test_tofu_does_not_refetch_when_already_pinned(monkeypatch, tmp_path):
+    env, kh = _tofu_env(monkeypatch, tmp_path)
+    key = _real_key()
+    kh.write_text(_kh_line("h", key), encoding="utf-8")   # a real, matchable pin
+    before = kh.read_text(encoding="utf-8")
+    calls = {"n": 0}
+    async def fake_get(host, port, **kw):
+        calls["n"] += 1
+        return _real_key()
+    monkeypatch.setattr(asyncssh, "get_server_host_key", fake_get)
+    _run(env._tofu_pin_if_needed())
+    assert calls["n"] == 0                     # already pinned -> never fetched
+    assert kh.read_text(encoding="utf-8") == before   # untouched
+
+
+def test_tofu_nondefault_port_does_not_repin_when_bare_host_matches(monkeypatch, tmp_path):
+    """Finding 1 (review) regression: with a bare-host entry present and a NON-default
+    port, asyncssh's matcher falls back to the bare host and already trusts the key. The
+    old text-scan looked only for '[h]:port', missed it, and would append the server's
+    (possibly changed) key — trusting two. Now the decision is asyncssh's, so no re-pin."""
+    env, kh = _tofu_env(monkeypatch, tmp_path, port=2222)
+    key = _real_key()
+    kh.write_text(_kh_line("h", key), encoding="utf-8")   # bare host, no port
+    calls = {"n": 0}
+    async def fake_get(host, port, **kw):
+        calls["n"] += 1
+        return _real_key()
+    monkeypatch.setattr(asyncssh, "get_server_host_key", fake_get)
+    _run(env._tofu_pin_if_needed())
+    assert calls["n"] == 0                     # bare-host fallback counts as pinned
+    assert "[h]:2222" not in kh.read_text(encoding="utf-8")   # no second key appended
+
+
+def test_tofu_concurrent_first_connects_pin_once(monkeypatch, tmp_path):
+    """Finding 2 (review) regression: two callers racing the first connect must not both
+    pin. One instance PER RUN, so two concurrent runs to the same host are two DIFFERENT
+    instances pointing at the SAME known_hosts file — a per-instance lock would let both
+    pin. The lock is keyed by file path, so exactly one fetch+append happens."""
+    monkeypatch.setenv("R", "pw")
+    kh = tmp_path / "known_hosts"
+    env_a = RemoteEnvironment(host="h", user="u", secret_ref="R", host_key_mode="tofu",
+                              known_hosts_path=str(kh))
+    env_b = RemoteEnvironment(host="h", user="u", secret_ref="R", host_key_mode="tofu",
+                              known_hosts_path=str(kh))
+    assert env_a is not env_b
+    calls = {"n": 0}
+    async def fake_get(host, port, **kw):
+        calls["n"] += 1
+        await asyncio.sleep(0)                 # yield so the other task can interleave
+        return _real_key()
+    monkeypatch.setattr(asyncssh, "get_server_host_key", fake_get)
+    async def race():
+        await asyncio.gather(env_a._tofu_pin_if_needed(), env_b._tofu_pin_if_needed())
+    _run(race())
+    assert calls["n"] == 1                     # path-keyed lock: only one instance pins
+    assert len(kh.read_text(encoding="utf-8").strip().splitlines()) == 1
+
+
+def test_tofu_lock_key_canonicalizes_alias_paths(monkeypatch, tmp_path):
+    """Finding 1 (re-review) regression: two instances naming the SAME file by different
+    spellings (here: a trailing '.' segment) must share one lock, so aliases cannot both
+    pin. The lock key is resolve()'d, so the spellings collapse to one key."""
+    monkeypatch.setenv("R", "pw")
+    kh = tmp_path / "known_hosts"
+    alias = tmp_path / "." / "known_hosts"     # same file, different spelling
+    env_a = RemoteEnvironment(host="h", user="u", secret_ref="R", host_key_mode="tofu",
+                              known_hosts_path=str(kh))
+    env_b = RemoteEnvironment(host="h", user="u", secret_ref="R", host_key_mode="tofu",
+                              known_hosts_path=str(alias))
+    calls = {"n": 0}
+    async def fake_get(host, port, **kw):
+        calls["n"] += 1
+        await asyncio.sleep(0)
+        return _real_key()
+    monkeypatch.setattr(asyncssh, "get_server_host_key", fake_get)
+    async def race():
+        await asyncio.gather(env_a._tofu_pin_if_needed(), env_b._tofu_pin_if_needed())
+    _run(race())
+    assert calls["n"] == 1                     # aliases share one lock -> pinned once
+    assert len(kh.read_text(encoding="utf-8").strip().splitlines()) == 1
+
+
+def test_tofu_no_server_key_fails_closed(monkeypatch, tmp_path):
+    env, kh = _tofu_env(monkeypatch, tmp_path)
+    async def fake_get(host, port, **kw):
+        return None                            # e.g. GSS kex, nothing to pin
+    monkeypatch.setattr(asyncssh, "get_server_host_key", fake_get)
+    with pytest.raises(RemoteHostKeyError):
+        _run(env._tofu_pin_if_needed())
+    assert not kh.exists()                     # nothing written on a fail-closed
+
+
+def test_tofu_bad_key_export_fails_closed(monkeypatch, tmp_path):
+    env, kh = _tofu_env(monkeypatch, tmp_path)
+    async def fake_get(host, port, **kw):
+        return _NoKey()
+    monkeypatch.setattr(asyncssh, "get_server_host_key", fake_get)
+    with pytest.raises(RemoteHostKeyError):
+        _run(env._tofu_pin_if_needed())
+
+
+def test_tofu_pin_preserves_existing_other_hosts(monkeypatch, tmp_path):
+    env, kh = _tofu_env(monkeypatch, tmp_path)
+    other = _real_key()
+    kh.write_text(_kh_line("other.example", other), encoding="utf-8")
+    mine = _real_key()
+    async def fake_get(host, port, **kw):
+        return mine
+    monkeypatch.setattr(asyncssh, "get_server_host_key", fake_get)
+    _run(env._tofu_pin_if_needed())
+    text = kh.read_text(encoding="utf-8")
+    assert _kh_line("other.example", other).strip() in text   # existing entry kept
+    assert _kh_line("h", mine).strip() in text                 # ours appended
+
+
+def test_strict_mode_never_pins(monkeypatch, tmp_path):
+    monkeypatch.setenv("R", "pw")
+    env = RemoteEnvironment(host="h", user="u", secret_ref="R",
+                            known_hosts_path=str(tmp_path / "kh"))
+    called = {"n": 0}
+    async def fake_get(host, port, **kw):
+        called["n"] += 1
+        return _real_key()
+    monkeypatch.setattr(asyncssh, "get_server_host_key", fake_get)
+    _run(env._tofu_pin_if_needed())            # no-op in strict mode
+    assert called["n"] == 0
 
 
 # --- integration (real host) — skipped by default ---

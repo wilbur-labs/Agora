@@ -22,10 +22,12 @@ What it provides:
 
 Security (never weakened from the frozen contract):
   - host keys are verified — ``strict`` uses asyncssh's native ``known_hosts`` and
-    rejects an unknown/changed key. ``tofu`` is validated but NOT yet implemented
-    (CR-6): it fails closed rather than silently behaving as strict; full first-connect
-    pinning is deferred. Host-key checking is never disabled: no code path passes a
-    null known-hosts value to asyncssh, which is what would turn verification off.
+    rejects an unknown/changed key. ``tofu`` (CR-6) pins the key the server presents on
+    the FIRST connect into ``known_hosts_path`` (atomically), then verifies strict
+    against it on every connect — so a later key change is rejected like any strict
+    mismatch. The first-connect trust window is inherent to trust-on-first-use. Host-key
+    checking is never disabled: no code path passes a null known-hosts value to asyncssh,
+    which is what would turn verification off.
   - credentials come from an env var named by ``secret_ref`` — never inline, never in
     config or logs, and stripped from anything forwarded to the remote.
   - remote commands are argv + ``shlex.quote`` — never a shell string.
@@ -39,6 +41,8 @@ import asyncio
 import os
 import shlex
 import stat
+import tempfile
+import weakref
 from collections import deque
 from pathlib import Path, PurePosixPath
 from typing import Mapping, Sequence
@@ -59,6 +63,46 @@ from agora.environments import (
 from agora.fsprobe import PathProbe as _PathProbe  # same type; explicit for constructors
 
 HostKeyMode = str  # "strict" | "tofu"; validated in __init__ (raises on anything else)
+
+
+# Per-known_hosts-file TOFU locks. One instance per run (see RemoteEnvironment), so two
+# concurrent runs to the same host on the SAME event loop are two different instances
+# pointing at the same known_hosts file — a per-instance lock would let both pin. Keying
+# the lock by the CANONICAL file path (resolve() + normcase, so ./ , .. , symlinks and
+# Windows case aliases collapse to one key) makes them share one lock; the
+# check->fetch->write then serializes across instances on that loop.
+#
+# Bounds of this mechanism (honest, not hidden): an asyncio.Lock belongs to the loop it
+# is first awaited on. The locks are stored under a WeakKeyDictionary keyed by the loop
+# OBJECT, so a lock never leaks across loops (which would raise at await time) and entries
+# vanish when their loop is gc'd. Two first-connects on DIFFERENT event loops (e.g.
+# separate asyncio.run() / separate processes) are therefore NOT serialized by this
+# in-memory lock; that case is out of scope for CR-6 option B and is covered instead by
+# the real-host integration step. Within one loop, exactly-once pinning holds.
+_PIN_LOCKS: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, dict[str, asyncio.Lock]]" = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _pin_lock_for(known_hosts_path: str) -> asyncio.Lock:
+    # Canonicalize so path aliases (relative/absolute, .., symlink, and — via normcase —
+    # Windows case) that name the same file share one lock. strict=False: the file may
+    # not exist yet (first pin); normcase folds case on Windows, no-op on POSIX.
+    path_key = os.path.normcase(str(Path(known_hosts_path).expanduser().resolve(strict=False)))
+    # Key the outer map by the loop OBJECT (weakly), not id(loop): a dead loop's id can be
+    # reused by a later loop, which would hand back the dead loop's lock. A WeakKeyDictionary
+    # drops the entry when the loop is gc'd, which also bounds growth.
+    loop = asyncio.get_running_loop()
+    per_path = _PIN_LOCKS.get(loop)
+    if per_path is None:
+        per_path = {}
+        _PIN_LOCKS[loop] = per_path
+    lock = per_path.get(path_key)
+    if lock is None:
+        # No await between get and set: atomic across asyncio tasks on this one loop.
+        lock = asyncio.Lock()
+        per_path[path_key] = lock
+    return lock
 
 
 class RemoteHostKeyError(Exception):
@@ -174,23 +218,131 @@ class RemoteEnvironment:
         default ~/.ssh/known_hosts via ``()``) — an unknown or changed host key is
         rejected. This is the default and the safe posture (NFR-1).
 
-        tofu: NOT IMPLEMENTED this cycle (CR-6). Full trust-on-first-use — capture the
-        server key on first connect, atomically pin it, then verify strict — carries a
-        first-connect trust window and a concurrent-atomic-write concern, and cannot be
-        validated against a real SSH server on this machine. Rather than let 'tofu'
-        silently behave as strict (a contract it does not honor), fail closed here so
-        the gap is loud, not hidden. Deferred until a real host can validate it."""
+        tofu: trust on first use (CR-6). The pinning itself happens in ``_connect_once``
+        before the verified connect; by the time we build connect kwargs the key is
+        already in ``known_hosts_path``, so tofu verifies against that same file exactly
+        like strict. A changed key is then rejected like any strict mismatch — that is
+        the whole point of pinning. ``known_hosts_path`` is REQUIRED for tofu: there must
+        be a definite file to pin into, so refuse rather than pin somewhere implicit."""
         if self._host_key_mode == "tofu":
-            raise NotImplementedError(
-                "host_key_mode 'tofu' is not implemented yet (CR-6): first-connect key "
-                "pinning is deferred. Use 'strict' with a known_hosts entry for now."
-            )
+            if self._known_hosts_path is None:
+                raise RemoteHostKeyError(
+                    "host_key_mode 'tofu' requires known_hosts_path: there must be a "
+                    "definite file to pin the first-seen key into; refusing to connect."
+                )
+            return self._known_hosts_path
         # strict:
         if self._known_hosts_path is not None:
             return self._known_hosts_path
         return ()  # asyncssh: () means "use the default known_hosts files" (strict)
 
+    # --- trust on first use (CR-6) ---
+    #
+    # Scope (deliberately narrow — CR-6 chose option B). TOFU here supports the real
+    # need: connecting to a small set of fixed hosts, pinning the first-seen key into a
+    # known_hosts file that Agora owns, from a single process. It is NOT a general
+    # OpenSSH known_hosts manager. The "already pinned?" decision is delegated to
+    # asyncssh's own match_known_hosts, so it uses the SAME matching the verified connect
+    # will use (comma lists, hashed entries, CA markers, non-default-port bare-host
+    # fallback are all asyncssh's to judge, not ours) — that is what keeps a changed key
+    # from slipping in via a matcher that disagrees with the verifier. Cross-process
+    # sharing of one known_hosts file is out of scope: a single asyncio lock serializes
+    # this process; concurrent Agora processes writing the same file are not supported.
+
+    def _host_key_line_prefix(self) -> str:
+        """The leading token to WRITE for a newly pinned host. asyncssh writes a
+        non-default port as ``[host]:port`` and a default-port host bare. Used only when
+        appending a new pin — the pinned/not-pinned decision is match_known_hosts', not
+        this string's."""
+        return self._host if self._port == 22 else f"[{self._host}]:{self._port}"
+
+    def _host_is_pinned(self) -> bool:
+        """True if known_hosts_path already trusts a key for this host, decided by
+        asyncssh's own matcher (the one the verified connect uses). A missing file is
+        'not pinned'. A file we cannot read/parse is NOT silently treated as empty —
+        the error propagates, because overwriting an unreadable trust store is exactly
+        the failure this mode must not cause."""
+        path = Path(self._known_hosts_path).expanduser()
+        if not path.is_file():
+            return False
+        known = asyncssh.read_known_hosts(str(path))
+        port = None if self._port == 22 else self._port
+        # addr="" — we match on hostname + port only. asyncssh treats addr as an IP and
+        # would call ip_address() on it; passing the (possibly non-IP) host there raises.
+        # At connect time asyncssh fills addr with the resolved peer IP; here, pre-connect,
+        # we only have the host, and matching a pin by host is what TOFU needs.
+        result = asyncssh.match_known_hosts(known, self._host, "", port)
+        host_keys, ca_keys = result[0], result[1]  # (host_keys, ca_keys, revoked, ...)
+        # A trusted host key OR a CA that would sign this host's key both count as pinned:
+        # in either case the verified connect has something to trust, so TOFU must not
+        # append a second key (which asyncssh would then ALSO trust).
+        return bool(host_keys) or bool(ca_keys)
+
+    def _known_hosts_line(self, key: "asyncssh.SSHKey") -> str:
+        """Build one known_hosts line: ``<host-prefix> <algorithm> <base64>``. The
+        openssh public-key export is ``algorithm base64 [comment]``; we keep only the
+        first two fields (a comment does not belong in known_hosts)."""
+        exported = key.export_public_key("openssh").decode("ascii").split()
+        if len(exported) < 2:
+            raise RemoteHostKeyError(
+                f"could not format host key for {self._host}: unexpected export shape"
+            )
+        algo, b64 = exported[0], exported[1]
+        return f"{self._host_key_line_prefix()} {algo} {b64}\n"
+
+    def _append_known_host_atomically(self, new_line: str) -> None:
+        """Append one line to known_hosts_path via write-temp-then-os.replace, so a
+        crash or a concurrent reader never sees a torn file. Durability across an OS/power
+        crash is NOT guaranteed (no fsync): a lost pin just means the next connect pins
+        again, and known_hosts is reconstructible — not worth the fsync cost/complexity.
+        Cross-process concurrent writers of the same file are out of scope (see the scope
+        note above); within this process the pin lock serializes callers."""
+        path = Path(self._known_hosts_path).expanduser()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        existing = path.read_text(encoding="utf-8") if path.is_file() else ""
+        if existing and not existing.endswith("\n"):
+            existing += "\n"
+        fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".known_hosts.", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(existing + new_line)
+            os.replace(tmp, str(path))
+        except BaseException:
+            # Never leave the temp file behind on any failure (including cancellation).
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+
+    async def _tofu_pin_if_needed(self) -> None:
+        """Trust on first use: if this host is not yet pinned, fetch the key the server
+        presents and pin it, so the subsequent verified connect (strict against the same
+        file) succeeds. The first-connect trust window is inherent to TOFU. A host whose
+        key later CHANGES is not re-pinned (it stays pinned to the first key), so the
+        verified connect rejects it like any strict mismatch — the whole value of pinning.
+
+        The check->fetch->write runs under a lock and RE-checks inside it, so two callers
+        racing the first connect cannot both pin (which would leave asyncssh trusting two
+        keys for the host)."""
+        if self._host_key_mode != "tofu" or self._host_is_pinned():
+            return
+        async with _pin_lock_for(self._known_hosts_path):
+            if self._host_is_pinned():   # re-check: another caller may have pinned first
+                return
+            key = await asyncssh.get_server_host_key(
+                self._host, self._port, config=None  # config=None: CR-21, never read system ssh config
+            )
+            if key is None:
+                # A handshake with no server host key (e.g. GSS kex) cannot be pinned;
+                # under tofu that means nothing to trust — fail closed rather than proceed.
+                raise RemoteHostKeyError(
+                    f"server {self._host} presented no host key to pin (tofu); refusing."
+                )
+            self._append_known_host_atomically(self._known_hosts_line(key))
+
     async def _connect_once(self) -> "asyncssh.SSHClientConnection":
+        await self._tofu_pin_if_needed()
         kwargs = {
             "host": self._host,
             "port": self._port,
