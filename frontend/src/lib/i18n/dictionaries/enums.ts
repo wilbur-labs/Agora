@@ -6,6 +6,8 @@
 export const enums = {
   en: {
     runState: { queued: "queued", running: "running", succeeded: "succeeded", failed: "failed", timed_out: "timed out", cancelled: "cancelled", abandoned: "abandoned" },
+    adapter: { codex: "Codex", claude: "Claude Code", kiro: "Kiro" },
+    responseAction: { approve: "approved", reject: "rejected", answer: "answered" },
     workflowState: { draft: "draft", active: "active", completed: "completed", failed: "failed", cancelled: "cancelled" },
     stepState: { pending: "pending", ready: "ready", running: "running", succeeded: "succeeded", failed: "failed", cancelled: "cancelled" },
     taskState: { backlog: "backlog", requirements: "requirements", design: "design", planned: "planned", running: "running", blocked: "blocked", review: "review", verified: "verified", done: "done", failed: "failed", cancelled: "cancelled" },
@@ -23,6 +25,8 @@ export const enums = {
   },
   zh: {
     runState: { queued: "排队中", running: "运行中", succeeded: "成功", failed: "失败", timed_out: "超时", cancelled: "已取消", abandoned: "已放弃" },
+    adapter: { codex: "Codex", claude: "Claude Code", kiro: "Kiro" },
+    responseAction: { approve: "已批准", reject: "已拒绝", answer: "已答复" },
     workflowState: { draft: "草稿", active: "运行中", completed: "已完成", failed: "失败", cancelled: "已取消" },
     stepState: { pending: "待处理", ready: "就绪", running: "运行中", succeeded: "成功", failed: "失败", cancelled: "已取消" },
     taskState: { backlog: "待办", requirements: "需求", design: "设计", planned: "已计划", running: "运行中", blocked: "受阻", review: "评审", verified: "已验证", done: "已完成", failed: "失败", cancelled: "已取消" },

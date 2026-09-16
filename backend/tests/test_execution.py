@@ -97,6 +97,12 @@ def _config(tmp_path, command: list[str]) -> dict:
             "projects": {
                 "alpha": {
                     "name": "Alpha",
+                    # Explicit, not the registry default: these tests were written against
+                    # a codex worker reviewed by claude, and the product default moved to
+                    # claude reviewed by codex (2026-09-17). A fixture that leaned on the
+                    # default changed meaning the day the default did.
+                    "worker_agent": "codex",
+                    "reviewer_agent": "claude",
                     "root": str(tmp_path / "alpha"),
                     "workspaces": {
                         "codex": str(workspace),

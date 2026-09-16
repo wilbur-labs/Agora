@@ -96,7 +96,19 @@ export interface ProjectNavProps {
    *  part of this project, and it predates this column's design. */
   otherWorkspaces: React.ReactNode;
   header: React.ReactNode;
+  /**
+   * Which of the project's views the centre is showing (W12). Rows open a view in the
+   * centre of this window — not another page — and the open one is marked.
+   */
+  view?: string;
+  onSelectView?: (view: string) => void;
 }
+
+/** Row → the centre view it opens. Rows without one state their count and stop. */
+const ROW_VIEW: Partial<Record<keyof typeof RESOURCE_ICONS, string>> = {
+  overview: "chat", runs: "runs", goals: "goal", changeRequests: "changeRequests",
+  decisions: "decisions", defects: "defects", files: "files",
+};
 
 const RESOURCE_ICONS = {
   overview: LayoutDashboard,
@@ -114,11 +126,13 @@ function NavRow({
   capability,
   href,
   onClick,
+  active = false,
 }: {
   itemKey: keyof typeof RESOURCE_ICONS;
   capability?: NavCapability;
   href?: string;
   onClick?: () => void;
+  active?: boolean;
 }) {
   const { t } = useI18n();
   const Icon = RESOURCE_ICONS[itemKey];
@@ -129,8 +143,10 @@ function NavRow({
       {capability && <CapabilitySlot capability={capability} />}
     </>
   );
-  const className =
-    "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[13px] hover:bg-accent";
+  const className = cn(
+    "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[13px] hover:bg-accent",
+    active && "bg-accent font-medium",
+  );
 
   if (href) {
     return (
@@ -162,6 +178,8 @@ export function ProjectNav({
   onSettleGoal,
   otherWorkspaces,
   header,
+  view,
+  onSelectView,
 }: ProjectNavProps) {
   const { t } = useI18n();
   const [otherOpen, setOtherOpen] = useState(false);
@@ -184,11 +202,33 @@ export function ProjectNav({
         </div>
         {projectId ? (
           <>
-            <div className="truncate text-sm font-semibold" title={projectName ?? projectId}>
-              {projectName ?? projectId}
+            {/* One box, as the design draws it: the project's name with "換項目" as the
+                caret. A native select — the list is only there while you are choosing,
+                and the person's rule is fewer things on screen. When the projects read
+                failed the list holds only the project in context, so the box still names
+                it and offers nothing it cannot vouch for. */}
+            <div className="relative mt-1">
+              <select
+                id="project-switcher"
+                value={projectId}
+                onChange={(e) => { if (e.target.value !== projectId) onSwitchProject(e.target.value); }}
+                aria-label={t("workspace.nav.switchProject")}
+                className="w-full appearance-none truncate rounded-lg border bg-background py-1.5 pl-2.5 pr-20 text-sm font-semibold outline-none focus:border-ring"
+                title={projectName ?? projectId}
+              >
+                {(projects.some((project) => project.project_id === projectId)
+                  ? projects
+                  : [{ project_id: projectId, name: projectName ?? projectId, worker_agent: "", reviewer_agent: "" }, ...projects]
+                ).map((project) => (
+                  <option key={project.project_id} value={project.project_id}>{project.name}</option>
+                ))}
+              </select>
+              <span className="pointer-events-none absolute inset-y-0 right-2.5 flex items-center text-[11px] text-muted-foreground">
+                ▾ {t("workspace.nav.switchProject")}
+              </span>
             </div>
             {projectRoot && (
-              <div className="truncate text-[11px] text-muted-foreground" title={projectRoot}>
+              <div className="mt-1 truncate text-[11px] text-muted-foreground" title={projectRoot}>
                 {projectRoot}
               </div>
             )}
@@ -197,28 +237,6 @@ export function ProjectNav({
           <p className="text-[11px] leading-snug text-muted-foreground">
             {t("workspace.nav.noProject")}
           </p>
-        )}
-        {projects.length > 1 && (
-          <ul className="mt-2 space-y-0.5" aria-label={t("workspace.nav.switchProject")}>
-            {projects.map((project) => (
-              <li key={project.project_id}>
-                <button
-                  type="button"
-                  onClick={() => onSwitchProject(project.project_id)}
-                  aria-current={project.project_id === projectId ? "true" : undefined}
-                  className={cn(
-                    "w-full truncate rounded-lg px-2 py-1 text-left text-[12px] transition-colors",
-                    project.project_id === projectId
-                      ? "bg-primary/10 font-medium ring-1 ring-primary/30"
-                      : "hover:bg-accent",
-                  )}
-                  title={project.name}
-                >
-                  {project.name}
-                </button>
-              </li>
-            ))}
-          </ul>
         )}
       </div>
 
@@ -230,14 +248,19 @@ export function ProjectNav({
                 project has; they do not throw you onto another page — which is what
                 they did, and what "到处跳转" was about. The panels they will open live
                 in this window, and until they exist a row states its count and stops. */}
-            <NavRow itemKey="overview" />
-            <NavRow itemKey="runs" capability={capabilities.runs} />
-            <NavRow itemKey="goals" />
-            <NavRow itemKey="changeRequests" capability={capabilities.changeRequests} />
-            <NavRow itemKey="decisions" capability={capabilities.decisions} />
-            <NavRow itemKey="defects" capability={capabilities.defects} />
-            <NavRow itemKey="skills" capability={capabilities.skills} />
-            <NavRow itemKey="files" capability={capabilities.files} />
+            {(["overview", "runs", "goals", "changeRequests", "decisions", "defects", "skills", "files"] as const).map((key) => {
+              const target = ROW_VIEW[key];
+              const capability = key === "overview" || key === "goals" ? undefined : capabilities[key];
+              return (
+                <NavRow
+                  key={key}
+                  itemKey={key}
+                  capability={capability}
+                  onClick={target !== undefined && onSelectView ? () => onSelectView(target) : undefined}
+                  active={target !== undefined && view === target}
+                />
+              );
+            })}
           </nav>
         )}
 

@@ -1,108 +1,122 @@
 "use client";
 
 /**
- * The workbench's right-hand column, as the design draws it: one column, always there,
- * whatever the centre is showing.
+ * The workbench's right-hand column (W12, mockup v4): four short cards that answer
+ * two questions — what is the goal, and where does it stand — plus what is running
+ * now and whether anything waits on the person. Everything longer than a line is
+ * behind the left column's rows, which open in the centre.
  *
- * Three blocks, in this order (mockup v3.4, `renderSide`):
+ * While the goal is still being settled the column shows the kickoff draft instead
+ * (the `draft` slot, owned by the conversation that grows it).
  *
- *   1. **目标草稿 · 边聊边长** — the kickoff draft, which grows a field at a time while
- *      the goal is being settled. Its state belongs to the conversation, so the chat
- *      hands it up rather than drawing it: an aside owned by the chat disappears the
- *      moment the centre switches to a step, and this column must not.
- *   2. **开发顺序 · N 个** — the adopted plan. Clicking one **selects it in place**; it
- *      is not a link, and nothing here navigates. That was the whole complaint about the
- *      version this replaces: a table that threw you onto another page and left you to
- *      find your way back.
- *   3. **这一步会写什么** — what has actually been written into the project, and what has
- *      not. Before adoption it says nothing has been; after, it names what was.
- *
- * What it must not do: claim a count it cannot support. The plan's headline already
- * carries that verdict (`PlanHeadline.totalKnown`), and the heading repeats it rather
- * than printing a number over an incomplete read.
+ * What it must not do: claim a count it cannot support. The headline carries that
+ * verdict (`PlanHeadline.totalKnown`); a run read that failed says so instead of
+ * "nothing running"; an attention read that failed says so instead of "nothing".
  */
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n";
 import type { PlanHeadline, PlanRow } from "@/lib/task-plan";
 
+export interface SideRunLike { adapter: string; task_id: string }
+
 export interface ProjectSideProps {
-  rows: PlanRow[];
+  /** `settling`: the draft slot; `adopted`: the four cards. */
+  mode: "settling" | "adopted";
+  rows: readonly PlanRow[];
   headline: PlanHeadline;
-  /** The step the centre is showing, if it is showing one. */
-  selectedTaskId: string | null;
-  /** Selects a step **in this window**. Never a navigation. */
-  onSelectStep: (taskId: string) => void;
-  /**
-   * The draft block, lifted out of the conversation so it survives a step being open.
-   * Takes the order as a slot because the design puts the order *between* the draft and
-   * "what this writes", and those two are one component — asking for a slot is how the
-   * order lands there without a second copy of a block that already exists.
-   */
+  /** The goal's first lines, or why there is none to show. */
+  goal: { kind: "text"; text: string } | { kind: "none" } | { kind: "unreadable" } | { kind: "loading" };
+  /** Unsettled runs in this project; `null` when that read failed. */
+  activeRuns: readonly SideRunLike[] | null;
+  /** Open items waiting on the person; `null` when that read failed. */
+  openGates: number | null;
+  onSelectView: (view: string) => void;
+  /** The kickoff draft, lifted out of the conversation so it survives view changes. */
   draft: (order: React.ReactNode) => React.ReactNode;
-  /**
-   * Whether the centre is showing a step. The design's `renderTask` gives this column
-   * to the step then — 任务 / Run, then 目标 — and draws no order, because the order is
-   * the card list in the centre. The step's blocks are the step's own (their reads live
-   * with it), so the column only offers the element they render into.
-   */
-  taskOpen: boolean;
-  hostRef: (el: HTMLElement | null) => void;
 }
 
-export function ProjectSide({
-  rows, headline, selectedTaskId, onSelectStep, draft, taskOpen, hostRef,
-}: ProjectSideProps) {
-  const { t } = useI18n();
+export function ProjectSide({ mode, rows, headline, goal, activeRuns, openGates, onSelectView, draft }: ProjectSideProps) {
+  const { t, te } = useI18n();
+  const done = rows.filter((row) => row.standing === "done").length;
+  const running = rows.filter((row) => row.running).length;
+  const stepOf = (taskId: string) => rows.find((row) => row.task_id === taskId)?.step ?? null;
 
-  // `hidden lg:flex`, and never `w-full`. The shell is a horizontal flex row that does
-  // not wrap, so a full-width, non-shrinking column here does not stack below the centre
-  // — it takes the whole row, pushes the centre out of view, and the row's
-  // `overflow-hidden` clips what is left. Below `lg` the column is dropped instead.
   const order = rows.length === 0 ? null : (
-    <section className="min-w-0">
-      <h5 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-        {/* The count is only a count when the read covered the board. */}
-        {t(headline.totalKnown ? "workspace.side.order" : "workspace.side.orderNotWhole",
-          { count: headline.total })}
-      </h5>
-      <ol className="grid gap-1.5 rounded-lg border p-3">
-        {rows.map((row) => (
-          <li key={row.task_id} className="flex min-w-0 items-baseline gap-2 text-[12px]">
-            <span className="shrink-0 tabular-nums text-muted-foreground">{row.step}</span>
-            <span className="shrink-0 rounded border px-1 text-[10px] uppercase tracking-wide text-muted-foreground">
-              {row.kind}
-            </span>
-            <button
-              type="button"
-              onClick={() => onSelectStep(row.task_id)}
-              className={cn(
-                "min-w-0 flex-1 text-left underline decoration-dotted underline-offset-2 hover:text-foreground",
-                row.task_id === selectedTaskId ? "font-medium text-foreground" : "text-muted-foreground",
-              )}
-            >
-              {row.title}
-            </button>
-            {row.waiting.kind === "open" && (
-              <span className="shrink-0 text-[10px] text-amber-700 dark:text-amber-400">
-                {t("workspace.side.needsYou")}
-              </span>
-            )}
-            {row.running && (
-              <span className="shrink-0 text-[10px] text-emerald-600 dark:text-emerald-400">
-                {t("workspace.plan.running")}
-              </span>
-            )}
-          </li>
-        ))}
-      </ol>
-    </section>
+    <ol className="grid gap-1 rounded-lg border p-3">
+      {rows.map((row) => (
+        <li key={row.task_id} className={cn("grid grid-cols-[14px_1.4em_1fr] items-baseline gap-1.5 text-[12px]",
+          row.standing === "done" ? "text-muted-foreground line-through decoration-border" : row.running ? "font-medium text-foreground" : "text-muted-foreground")}>
+          <span className={cn("font-mono text-[11px]", row.standing === "done" ? "text-emerald-600 dark:text-emerald-400" : row.running ? "text-primary" : "")}>{row.standing === "done" ? "✓" : row.running ? "▶" : "○"}</span>
+          <span className="font-mono text-[11px] text-muted-foreground">{row.step}</span>
+          <span className="min-w-0 truncate">{row.title}</span>
+        </li>
+      ))}
+    </ol>
+  );
+
+  const heading = (label: string, action?: { label: string; view: string }) => (
+    <h5 className="mb-1.5 flex items-baseline justify-between text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+      <span>{label}</span>
+      {action && <button type="button" onClick={() => onSelectView(action.view)} className="text-[11px] font-medium normal-case tracking-normal text-primary hover:underline">{action.label}</button>}
+    </h5>
   );
 
   return (
     <aside className="hidden h-full min-h-0 w-80 min-w-0 shrink-0 flex-col gap-4 overflow-y-auto border-l px-4 py-4 lg:flex">
-      {taskOpen
-        ? <div ref={hostRef} className="flex min-w-0 flex-col gap-4" />
-        : draft(order)}
+      {mode === "settling" ? draft(order) : (
+        <>
+          <section className="min-w-0">
+            {heading(t("workspace.side.goal"), { label: t("workspace.side.goalFull"), view: "goal" })}
+            <div className="rounded-lg border p-3 text-[12px] leading-relaxed">
+              {goal.kind === "text" && <p className="line-clamp-4 whitespace-pre-wrap">{goal.text}</p>}
+              {goal.kind === "none" && <p className="text-muted-foreground">{t("workspace.side.goalNone")}</p>}
+              {goal.kind === "unreadable" && <p className="text-muted-foreground">{t("workspace.side.goalUnreadable")}</p>}
+              {goal.kind === "loading" && <p className="text-muted-foreground">—</p>}
+            </div>
+          </section>
+
+          <section className="min-w-0">
+            {heading(t("workspace.side.progress"), { label: t("workspace.side.progressDetail"), view: "order" })}
+            <div className="rounded-lg border p-3">
+              <div className="flex items-baseline justify-between text-[12px]">
+                <span>{t(headline.totalKnown ? "workspace.side.progressLine" : "workspace.side.progressLineNotWhole", { total: headline.total, done })}{running > 0 ? t("workspace.side.progressRunning", { running }) : ""}</span>
+                {headline.totalKnown && headline.total > 0 && <span className="font-mono text-[11px] text-muted-foreground">{Math.round((done / headline.total) * 100)}%</span>}
+              </div>
+              {headline.totalKnown && headline.total > 0 && (
+                <div className="my-2 flex h-1.5 overflow-hidden rounded-full bg-muted">
+                  <i className="block h-full bg-emerald-500" style={{ width: `${(done / headline.total) * 100}%` }} />
+                  <i className="block h-full bg-primary/50" style={{ width: `${(running / headline.total) * 100}%` }} />
+                </div>
+              )}
+              {order ?? <p className="text-[12px] text-muted-foreground">{t("workspace.detail.order.none")}</p>}
+            </div>
+          </section>
+
+          <section className="min-w-0">
+            {heading(t("workspace.side.now"))}
+            <div className="rounded-lg border p-3 text-[12px]">
+              {activeRuns === null && <p className="text-muted-foreground">{t("workspace.side.nowUnknown")}</p>}
+              {activeRuns !== null && activeRuns.length === 0 && <p className="text-muted-foreground">{t("workspace.side.nowNone")}</p>}
+              {activeRuns !== null && activeRuns.map((run, index) => (
+                <div key={`${run.task_id}-${index}`} className="grid gap-0.5">
+                  <div className="flex justify-between gap-2 border-b border-dashed py-0.5"><span>{te("adapter", run.adapter)}</span><span className="font-mono text-[11px] text-muted-foreground">{stepOf(run.task_id) === null ? t("workspace.stream.run.stepUnknown") : t("workspace.stream.run.step", { step: stepOf(run.task_id)! })}</span></div>
+                  <div className="flex justify-between gap-2 border-b border-dashed py-0.5"><span>{t("workspace.side.nowEnv")}</span><span className="font-mono text-[11px] text-muted-foreground">{t("workspace.stream.compose.envLocal")}</span></div>
+                  <div className="flex justify-between gap-2 py-0.5"><span>{t("workspace.side.nowAfter")}</span><span className="font-mono text-[11px] text-muted-foreground">{t("workspace.side.nowAfterAuto")}</span></div>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <section className="min-w-0">
+            {heading(t("workspace.side.waiting"))}
+            <div className="rounded-lg border p-3 text-[12px]">
+              {openGates === null && <p className="text-muted-foreground">{t("workspace.side.waitingUnknown")}</p>}
+              {openGates === 0 && <p className="text-muted-foreground">{t("workspace.side.waitingNone")}</p>}
+              {openGates !== null && openGates > 0 && <p><span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 font-mono text-[10px] text-amber-700 dark:text-amber-400">{openGates}</span> <button type="button" onClick={() => onSelectView("chat")} className="text-primary hover:underline">{t("workspace.side.waitingCount", { count: openGates })}</button></p>}
+            </div>
+          </section>
+        </>
+      )}
     </aside>
   );
 }

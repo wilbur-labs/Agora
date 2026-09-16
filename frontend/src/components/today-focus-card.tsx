@@ -178,7 +178,9 @@ export function TodayFocusCard({
           <>
         {continueTask !== null && (
           <Link
-            href={`/workspace?task=${encodeURIComponent(continueTask.task_id)}`}
+            // The project's conversation, not a task page (W12): the step to continue is
+            // the one the conversation's box already points at.
+            href={workbenchHref}
             title={t("today.card.actions.continueTitle", { title: continueTask.title })}
             className={cn(buttonVariants({ size: "lg" }))}
           >

@@ -16,7 +16,7 @@ export type TranslateFn = (key: string, vars?: Record<string, string | number>) 
  * at dispatch time is a later slice; pinning the value here keeps that decision
  * explicit and greppable instead of implied by a default somewhere.
  */
-export const CONTINUE_ADAPTER = "codex";
+export const CONTINUE_ADAPTER = "claude";
 
 /**
  * Mirrors CreateRunRequest.prompt (max_length=16_000) in execution/models.py.

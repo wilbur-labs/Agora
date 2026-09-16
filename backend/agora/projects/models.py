@@ -12,8 +12,8 @@ from typing import Any
 
 # Default cross-review pairing: an implementer works, a different agent reviews.
 # codex declares code_change; claude declares correctness/safety review.
-DEFAULT_WORKER_AGENT = "codex"
-DEFAULT_REVIEWER_AGENT = "claude"
+DEFAULT_WORKER_AGENT = "claude"
+DEFAULT_REVIEWER_AGENT = "codex"
 KNOWN_AGENTS = ("codex", "claude", "kiro")
 
 

@@ -747,7 +747,9 @@ function Row({
       : `${te("attentionKind", row.detail.itemKind)} · ${t("today.needsYou.orphanState")}`;
   return (
     <Link
-      href={`/workspace?task=${encodeURIComponent(row.task_id)}`}
+      // Into the project's conversation, where the item waits with its buttons (W12);
+      // a task page is no longer a place this product sends anyone.
+      href={`/workspace?project=${encodeURIComponent(row.project_id)}`}
       className="flex items-center gap-3 border-b px-4 py-2.5 last:border-b-0 hover:bg-accent/50"
     >
       <CircleDot className={cn("size-3.5 shrink-0", BUCKET_TONE[row.bucket])} />

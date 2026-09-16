@@ -38,6 +38,7 @@ import {
 import {
   createRun,
   listActiveRuns,
+  type ExecutionAdapter,
   type ExecutionRun,
 } from "@/lib/execution";
 import { getWorkspaceStatus, provisionWorkspace, type WorkspaceStatus } from "@/lib/workspaces";
@@ -55,8 +56,15 @@ export function ContinueAction({
   onCreated,
   onTaskMayHaveChanged,
   initiallyOpen = false,
+  adapter = CONTINUE_ADAPTER,
 }: {
   task: TaskManifest;
+  /**
+   * The executor this task's project names as its worker. The constant is only the
+   * fallback for a project whose record could not be read: a project that says
+   * `codex` keeps dispatching to codex whatever the product default is.
+   */
+  adapter?: ExecutionAdapter;
   /**
    * Open with the seed showing. Set when the page arrived here on its own after the
    * previous step was approved (CR-70): the prompt is in view, one click starts it.
@@ -158,7 +166,7 @@ export function ContinueAction({
     const controller = new AbortController();
     let timer: number | undefined;
     const read = () => {
-      getWorkspaceStatus(task.project_id, CONTINUE_ADAPTER, controller.signal)
+      getWorkspaceStatus(task.project_id, adapter, controller.signal)
         .then((value) => {
           if (controller.signal.aborted) return;
           setStatus(value);
@@ -172,7 +180,7 @@ export function ContinueAction({
     };
     read();
     return () => { controller.abort(); if (timer !== undefined) window.clearTimeout(timer); };
-  }, [open, task.project_id]);
+  }, [open, task.project_id, adapter]);
 
   const readiness = workspaceReadiness({
     // "No answer yet" is carried by `status === null`; the panel resets both
@@ -219,7 +227,7 @@ export function ContinueAction({
     if (decision.needsProvision) {
       setBusy("provisioning");
       try {
-        const result = await provisionWorkspace(task.project_id, CONTINUE_ADAPTER);
+        const result = await provisionWorkspace(task.project_id, adapter);
         if (!mounted.current) return;
         setStatus(result.status);
         setStatusError(null);
@@ -244,7 +252,7 @@ export function ContinueAction({
     try {
       const run = await createRun({
         task_id: task.task_id,
-        adapter: CONTINUE_ADAPTER,
+        adapter,
         prompt: prompt.trim(),
         timeout_seconds: CONTINUE_TIMEOUT_SECONDS,
         // From the manifest actually in hand, so a task that moved underneath

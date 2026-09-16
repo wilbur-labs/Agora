@@ -49,6 +49,7 @@ import {
   listRuns,
   TERMINAL_RUN_STATES,
   type RunDeliverables,
+  type ExecutionAdapter,
   type ExecutionRun,
   type RunState,
   type RunSummary,
@@ -60,6 +61,8 @@ import { listAttention, type AttentionItem as FullAttentionItem } from "@/lib/at
 import { CONTINUE_ADAPTER, CONTINUE_TIMEOUT_SECONDS, mergeRunUpdates, type ContinueSeedFacts } from "@/lib/continue-run";
 import { nextStepAfter, noNextStepIsCertain, reviewFixPrompt } from "@/lib/auto-advance";
 import type { GateOutcome } from "@/components/inline-gate";
+import { ProjectStream } from "@/components/project-stream";
+import { ProjectDetail, type ProjectView } from "@/components/project-detail";
 import {
   RAIL_ATTENTION_NOTICE_KEY,
   RAIL_STALE_NOTICE_KEY,
@@ -228,12 +231,21 @@ export default function WorkspacePage() {
   // (the run, the outcome, the requirements, the goal) keep their state inside
   // `TaskWorkspace` and are portalled here — handing React nodes up through state
   // would re-run on every render, which is the loop `onDraftState` just had.
-  const [sideHost, setSideHost] = useState<HTMLElement | null>(null);
+  // W12: the right-hand column is the project's (four cards), so a step opened by URL
+  // draws its side blocks inline instead — there is no host to portal into any more.
+  const sideHost: HTMLElement | null = null;
   // What the page did on its own after an approval (CR-70): which step it moved to and
   // what to say there. Shown on the step it names, and that step's Continue opens with
   // the seed in view, so the next action is one click — the person's rule: what can be
   // automatic is, show more, click less.
   const [advance, setAdvance] = useState<AdvanceNotice | null>(null);
+  // Which of the project's views the centre shows (W12): the conversation, or one of the
+  // left column's rows opened in place. Never a route.
+  const [view, setView] = useState<ProjectView>("chat");
+  // The project's runs for the "runs" view — its own read, asked for only while that
+  // view is open; the rail's read is the active ones across every project.
+  const [detailRuns, setDetailRuns] = useState<RunSummary[] | null>(null);
+  const [detailRunsFailed, setDetailRunsFailed] = useState(false);
 
   // The project resources the left column reports on. Their own reads, keyed to the
   // project in context — the column may not show a count it never fetched, and a failed
@@ -569,6 +581,39 @@ export default function WorkspacePage() {
     window.history.replaceState(null, "", `${window.location.pathname}?${params}`);
   }, []);
 
+  // Opening one of the project's views (W12). It closes a step opened by URL — the
+  // view takes the centre — and keeps the view asked for; `openProject` would reset it
+  // to the conversation, which is why this does not go through it.
+  const showView = useCallback((next: string) => {
+    setSelectedTaskId(null);
+    setAdvance(null);
+    if (selectedTaskId !== null) {
+      const params = new URLSearchParams(window.location.search);
+      params.delete("task");
+      window.history.replaceState(null, "", `${window.location.pathname}?${params}`);
+    }
+    setView(next as ProjectView);
+  }, [selectedTaskId]);
+
+  // The "runs" view's own read (W12). Asked only while that view is open for a project;
+  // a failed read is said as such, and a change of project drops the previous answer.
+  // One more than the page shows, so "there is more" is measured rather than assumed.
+  const [detailRunsTruncated, setDetailRunsTruncated] = useState(false);
+  useEffect(() => {
+    if (view !== "runs" || currentProjectId === null) return;
+    const ctrl = new AbortController();
+    setDetailRuns(null);
+    setDetailRunsFailed(false);
+    listRuns({ project_id: currentProjectId, limit: DETAIL_RUNS_LIMIT + 1 }, ctrl.signal)
+      .then((items) => {
+        if (ctrl.signal.aborted) return;
+        setDetailRunsTruncated(items.length > DETAIL_RUNS_LIMIT);
+        setDetailRuns(items.slice(0, DETAIL_RUNS_LIMIT));
+      })
+      .catch(() => { if (!ctrl.signal.aborted) setDetailRunsFailed(true); });
+    return () => ctrl.abort();
+  }, [view, currentProjectId]);
+
   // After a step is handed off on approval (CR-70): say so, and move to the next planned
   // step with its Continue open. "No next step" is only claimed over a whole read.
   const onStepDone = useCallback((done: { taskId: string; commit: string | null; committed: boolean }) => {
@@ -606,6 +651,7 @@ export default function WorkspacePage() {
   const openProject = useCallback((projectId: string) => {
     setProjectFilter(projectId);
     setAdvance(null);
+    setView("chat");
     // Opening a project must not leave a task from a different project named in the URL:
     // the click claims the project-only `href`, so the URL it produces must match it.
     // Clear the selection and drop the `task` param, or a copied/reloaded URL would
@@ -653,6 +699,8 @@ export default function WorkspacePage() {
         header={
           <RailHeader onRefresh={() => { void load(); void loadWorkspaceSources(); }} loading={loading} />
         }
+        view={view}
+        onSelectView={showView}
         otherWorkspaces={
           <WorkspaceTasksPanel
             sources={workspaceSources}
@@ -711,6 +759,7 @@ export default function WorkspacePage() {
               advance={advance}
               onStepDone={onStepDone}
               onAdvanceConsumed={() => setAdvance(null)}
+              workerAdapter={projects.find((project) => project.project_id === selectedTask.project_id)?.worker_agent ?? null}
               task={selectedTask}
               projectGate={gate.kind}
               railAttention={selectedTaskAttention}
@@ -720,20 +769,8 @@ export default function WorkspacePage() {
           </>
         ) : (
           currentProjectId !== null ? (
-            <>
-              {/* Below `lg` the right-hand column — and with it the order — is hidden,
-                  and this list is then the only way to open a step. Same rows, same
-                  in-place selection; CSS decides which of the two is on screen. */}
-              <div className="lg:hidden">
-                <TaskCards
-                  rows={planRows}
-                  selectedTaskId={null}
-                  onSelectStep={(taskId) => {
-                    const task = tasks.find((candidate) => candidate.task_id === taskId);
-                    if (task) selectTask(task);
-                  }}
-                />
-              </div>
+            gate.kind !== "open" ? (
+              /* The goal is still being settled: the kickoff conversation, as before. */
               <ProjectChat
                 key={currentProjectId}
               projectId={currentProjectId}
@@ -750,7 +787,34 @@ export default function WorkspacePage() {
                 load();
               }}
             />
-            </>
+            ) : view === "chat" ? (
+              /* One window per project (W12): every run and gate of every step, one box. */
+              <ProjectStream
+                key={currentProjectId}
+                projectId={currentProjectId}
+                projectName={navDashboard !== null && navDashboard.project_id === currentProjectId ? navDashboard.name : currentProjectId}
+                tasks={projectTasks}
+                rows={planRows}
+                rowsWhole={planHeadline.totalKnown}
+                workerAdapter={projects.find((project) => project.project_id === currentProjectId)?.worker_agent ?? null}
+                onChanged={() => { void load(); }}
+              />
+            ) : (
+              <ProjectDetail
+                view={view}
+                dashboard={navDashboard !== null && navDashboard.project_id === currentProjectId ? navDashboard : null}
+                dashboardFailed={navReadFailures.dashboard}
+                decisions={navDecisions !== null && navDecisions.project_id === currentProjectId ? navDecisions : null}
+                decisionsFailed={navReadFailures.decisions}
+                tasks={projectTasks}
+                rows={planRows}
+                headline={planHeadline}
+                runs={detailRuns}
+                runsFailed={detailRunsFailed}
+                runsTruncated={detailRunsTruncated}
+                onBack={() => setView("chat")}
+              />
+            )
           ) : (
             <EmptyWorkspace hasTasks={tasks.length > 0} />
           )
@@ -759,20 +823,21 @@ export default function WorkspacePage() {
 
       {currentProjectId !== null && (
         <ProjectSide
+          mode={gate.kind === "open" ? "adopted" : "settling"}
           rows={planRows}
           headline={planHeadline}
-          selectedTaskId={selectedTaskId}
-          // In place. The column is how you move between steps, and moving between them
-          // must not move you off the project's window.
-          onSelectStep={(taskId) => {
-            const task = tasks.find((candidate) => candidate.task_id === taskId);
-            if (task) selectTask(task);
-          }}
-          // With a step open the column is that step's (the design's `renderTask`
-          // draws 任务 / Run and 目标 there, and no order — the order is the card list
-          // in the centre). The step's blocks arrive through the host below.
-          taskOpen={selectedTask !== null}
-          hostRef={setSideHost}
+          goal={
+            navReadFailures.dashboard ? { kind: "unreadable" }
+              : navDashboard === null || navDashboard.project_id !== currentProjectId ? { kind: "loading" }
+              : navDashboard.charter.goal.trim() === "" ? { kind: "none" }
+              : { kind: "text", text: navDashboard.charter.goal }
+          }
+          // The project's own active-run read, and only when it is whole: a pending or
+          // capped read cannot say "nothing running". Same for the gates — zero is a
+          // claim only a complete attention read may make.
+          activeRuns={projectActiveReach === "complete" ? projectActiveRuns : null}
+          openGates={attentionReach === "complete" ? attention.filter((item) => item.project_id === currentProjectId && item.state === "open").length : null}
+          onSelectView={showView}
           draft={(order) => (draftState !== null
             ? <DraftPanel step={draftState.step} record={draftState.record} freshKey={draftState.freshKey} t={t} middle={order} />
             : order)}
@@ -1156,6 +1221,8 @@ const FOLLOW_UP_WINDOW_MS = 30_000;
 // comes back full, it may have been cut off, and a cut-off page cannot say "no
 // gate is open".
 const TASK_ATTENTION_LIMIT = MAX_PAGE;
+/** The "runs" view's page (W12). One more is fetched so a full page is known to be cut. */
+const DETAIL_RUNS_LIMIT = 200;
 
 // How many of ONE run's attention items to ask for when checking whether the review
 // path has raised its gate for it. A run will never have this many, which is the
@@ -1212,8 +1279,10 @@ function useWideLayout(): boolean {
   return wide;
 }
 
-function TaskWorkspace({ task, projectGate, refreshNonce, sideHost, advance, onStepDone, onAdvanceConsumed, railAttention, railRuns, onTaskMayHaveChanged }: { task: TaskManifest; projectGate: ProjectGate["kind"]; refreshNonce: number; sideHost: HTMLElement | null; advance: AdvanceNotice | null; onStepDone: (done: { taskId: string; commit: string | null; committed: boolean }) => void; onAdvanceConsumed: () => void; railAttention: readonly AttentionItem[]; railRuns: readonly RunSummary[]; onTaskMayHaveChanged: () => void }) {
+function TaskWorkspace({ task, projectGate, refreshNonce, sideHost, advance, onStepDone, onAdvanceConsumed, workerAdapter, railAttention, railRuns, onTaskMayHaveChanged }: { task: TaskManifest; projectGate: ProjectGate["kind"]; refreshNonce: number; sideHost: HTMLElement | null; advance: AdvanceNotice | null; onStepDone: (done: { taskId: string; commit: string | null; committed: boolean }) => void; onAdvanceConsumed: () => void; workerAdapter: string | null; railAttention: readonly AttentionItem[]; railRuns: readonly RunSummary[]; onTaskMayHaveChanged: () => void }) {
   const wide = useWideLayout();
+  // The project's worker, or the fallback when the projects read did not name one.
+  const worker = (workerAdapter as ExecutionAdapter | null) ?? CONTINUE_ADAPTER;
   const { t, te } = useI18n();
   const [dashboard, setDashboard] = useState<ProjectDashboard | null>(null);
   const [dashError, setDashError] = useState(false);
@@ -1883,7 +1952,7 @@ function TaskWorkspace({ task, projectGate, refreshNonce, sideHost, advance, onS
         const reviewed = runs?.find((run) => run.run_id === outcome.item.run_id);
         await createRun({
           task_id: task.task_id,
-          adapter: reviewed?.adapter ?? CONTINUE_ADAPTER,
+          adapter: reviewed?.adapter ?? worker,
           prompt: reviewFixPrompt({ reviewTitle: outcome.item.title, reviewBody: outcome.item.body, reason: outcome.response }),
           timeout_seconds: CONTINUE_TIMEOUT_SECONDS,
           expected_task_version: planned.version,
@@ -1948,6 +2017,7 @@ function TaskWorkspace({ task, projectGate, refreshNonce, sideHost, advance, onS
         <ResumeBrief recap={recap} recapError={recapError} t={t} te={te} />
         <ContinueAction
           initiallyOpen={advanceHere?.continueOpen ?? false}
+          adapter={worker}
           task={task}
           projectGate={projectGate}
           seed={continueSeed}
@@ -2007,7 +2077,9 @@ function TaskWorkspace({ task, projectGate, refreshNonce, sideHost, advance, onS
           into an element nobody can see. */}
       {wide && sideHost !== null
         ? createPortal(side, sideHost)
-        : <div className="flex shrink-0 flex-col gap-4 border-t px-4 py-4 lg:hidden">{side}</div>}
+        /* Bounded and scrollable: these blocks can outgrow the column, and the page
+           clips what a fixed-height flex row overflows. */
+        : <div className="flex max-h-[45%] min-h-0 shrink-0 flex-col gap-4 overflow-y-auto border-t px-4 py-4">{side}</div>}
     </div>
   );
 }
