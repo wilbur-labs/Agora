@@ -536,13 +536,63 @@ def test_strict_mode_never_pins(monkeypatch, tmp_path):
 # --- integration (real host) — skipped by default ---
 
 @pytest.mark.integration
-def test_real_remote_roundtrip():
-    """Placeholder for the real connect+run against a live host. It always skips today —
-    it does not yet read the environment or open a connection; the real round trip lands
-    in the Build & Test stage.
+def test_real_remote_roundtrip(tmp_path):
+    """Real connect+run against a live host, proving CR-21 (config=None: no system ssh
+    config read, no cp932 crash) and CR-6 (TOFU: fetch the host key, pin it, strict-verify)
+    end to end. Skips unless the host is configured — the target is on a private network
+    and this suite runs on many machines.
 
-    When implemented it will take its target from AGORA_SSH_TEST_HOST rather than a
-    literal here: the host is on a private network and this repository is public. It will
-    also need AGORA_SSH_KEY_<name> / AGORA_SSH_PASSWORD_<name> and a known_hosts entry
-    for that host, since strict host-key checking is the default."""
-    pytest.skip("integration: not implemented yet — real host round trip lands in Build & Test")
+    Config (all from the environment, never inlined here):
+      AGORA_SSH_TEST_HOST   — host/IP of the test box
+      AGORA_SSH_TEST_USER   — ssh user
+      AGORA_SSH_TEST_PORT   — optional, default 22
+      AGORA_SSH_PASSWORD_test | AGORA_SSH_KEY_test — credential, named by secret_ref
+    The known_hosts file is a fresh tmp file, so this exercises the real first-connect
+    TOFU pin, not a pre-seeded entry."""
+    host = os.environ.get("AGORA_SSH_TEST_HOST")
+    user = os.environ.get("AGORA_SSH_TEST_USER")
+    secret_ref = "AGORA_SSH_KEY_test" if os.environ.get("AGORA_SSH_KEY_test") else "AGORA_SSH_PASSWORD_test"
+    if not (host and user and os.environ.get(secret_ref)):
+        pytest.skip(
+            "integration: set AGORA_SSH_TEST_HOST / AGORA_SSH_TEST_USER / "
+            "AGORA_SSH_PASSWORD_test (or AGORA_SSH_KEY_test) to run against a real host"
+        )
+    port = int(os.environ.get("AGORA_SSH_TEST_PORT", "22"))
+    kh = tmp_path / "known_hosts"
+
+    def _env():
+        return RemoteEnvironment(
+            host=host, port=port, user=user, secret_ref=secret_ref,
+            host_key_mode="tofu", known_hosts_path=str(kh),
+        )
+
+    async def scenario():
+        env = _env()
+        try:
+            # First connect: TOFU pins the server key (asyncssh fetches it — the OS
+            # ssh-keyscan cannot for this host's KEX), then strict-verifies against it.
+            r = await env.run(["uname", "-s"], timeout=30, read_only=True)
+            assert r.outcome == "completed" and r.returncode == 0
+            assert r.stdout.strip() == "Linux"
+            pinned = kh.read_text(encoding="utf-8").strip()
+            assert pinned and pinned.split()[0] in (host, f"[{host}]:{port}")
+        finally:
+            await env.aclose()
+
+        # A fresh instance sees the host already pinned: it must NOT re-fetch the key.
+        # Replace get_server_host_key with a stub that fails if called, so a broken
+        # _host_is_pinned() (which would re-fetch every time) makes this test fail rather
+        # than silently pass.
+        env2 = _env()
+        orig_get = asyncssh.get_server_host_key
+        async def _must_not_fetch(*a, **k):
+            raise AssertionError("already pinned: get_server_host_key must not be called")
+        asyncssh.get_server_host_key = _must_not_fetch
+        try:
+            r2 = await env2.run(["true"], timeout=30, read_only=True)
+            assert r2.outcome == "completed" and r2.returncode == 0
+        finally:
+            asyncssh.get_server_host_key = orig_get
+            await env2.aclose()
+
+    asyncio.run(scenario())
