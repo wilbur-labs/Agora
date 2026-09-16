@@ -327,6 +327,24 @@ def test_read_only_retry_is_bounded_and_ends_unstartable(monkeypatch):
     assert r.outcome == "unstartable"               # gave up after the bound
 
 
+# --- connect kwargs (CR-21) ---
+
+def test_connect_never_reads_system_ssh_config(monkeypatch):
+    """asyncssh.connect must be called with config=None, so it never reads the system
+    ssh config (CR-21). Two reasons: every parameter is supplied explicitly, and on a
+    Japanese Windows (cp932) asyncssh decoding ~/.ssh/config raises UnicodeDecodeError
+    before the handshake. This drives the real _connect_once, not a _ensure_conn stub."""
+    monkeypatch.setenv("R", "some-password")   # not a file path -> password credential
+    captured = {}
+    async def fake_connect(**kwargs):
+        captured.update(kwargs)
+        return _FakeConn()
+    monkeypatch.setattr(asyncssh, "connect", fake_connect)
+    env = RemoteEnvironment(host="h", user="u", secret_ref="R")
+    _run(env._connect_once())
+    assert "config" in captured and captured["config"] is None
+
+
 # --- integration (real host) — skipped by default ---
 
 @pytest.mark.integration

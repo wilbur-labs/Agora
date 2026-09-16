@@ -199,6 +199,13 @@ class RemoteEnvironment:
             "connect_timeout": CONNECT_TIMEOUT,
             "keepalive_interval": KEEPALIVE_INTERVAL,
             "keepalive_count_max": KEEPALIVE_MAX_MISSED,
+            # config=None: never read the system ssh config (CR-21). Every connection
+            # parameter is supplied explicitly from RemoteAdapterConfig, so a user's
+            # ~/.ssh/config must not silently influence an Agora connection. It also
+            # avoids asyncssh decoding that file with the platform locale — on a
+            # Japanese Windows (cp932) that raises UnicodeDecodeError before the
+            # handshake even starts.
+            "config": None,
             **self._credentials(),
         }
         try:
