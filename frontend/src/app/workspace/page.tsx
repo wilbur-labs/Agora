@@ -242,6 +242,8 @@ export default function WorkspacePage() {
   // Which of the project's views the centre shows (W12): the conversation, or one of the
   // left column's rows opened in place. Never a route.
   const [view, setView] = useState<ProjectView>("chat");
+  /** A `?task=` from the URL, held until the tasks read can name its project. */
+  const [pendingTaskId, setPendingTaskId] = useState<string | null>(null);
   // The project's runs for the "runs" view — its own read, asked for only while that
   // view is open; the rail's read is the active ones across every project.
   const [detailRuns, setDetailRuns] = useState<RunSummary[] | null>(null);
@@ -315,6 +317,11 @@ export default function WorkspacePage() {
       if (tasksRead.status === "fulfilled") setTasks([...tasksRead.value.items]);
       setTaskReach(taskInventoryReachOf(tasksRead));
       if (projectsRead.status === "fulfilled") {
+        // No project in context yet (nothing in the URL, nothing remembered): the
+        // control plane's current project is the one. A functional update, so a
+        // project the URL or storage named meanwhile is not overwritten.
+        const fallback = projectsRead.value.current;
+        if (fallback) setProjectFilter((held) => (held === "all" ? fallback : held));
         setProjects(projectsRead.value.items.map(
           (project) => ({
             project_id: project.project_id,
@@ -371,9 +378,24 @@ export default function WorkspacePage() {
     const params = new URLSearchParams(window.location.search);
     const task = params.get("task");
     const project = params.get("project");
-    if (project) setProjectFilter(project);
-    if (task) setSelectedTaskId(task);
+    if (project) { setProjectFilter(project); return; }
+    // A task named in the URL (an older link) opens its project's conversation once the
+    // tasks are read — the task page is not a place this product sends anyone (W12).
+    if (task) { setPendingTaskId(task); return; }
+    // Arrived with no project named — the top bar's tab does that. The page used to
+    // land on an empty centre with no right-hand column, which read as the layout
+    // having broken. Come back to the project last worked in instead; `load` falls
+    // back to the control plane's current project when nothing was remembered.
+    try {
+      const remembered = window.localStorage.getItem(LAST_PROJECT_KEY);
+      if (remembered) {
+        setProjectFilter(remembered);
+        params.set("project", remembered);
+        window.history.replaceState(null, "", `${window.location.pathname}?${params}`);
+      }
+    } catch { /* storage unavailable: the fallback below still names a project */ }
   }, []);
+
 
   const selectedTask = useMemo(
     () => tasks.find((task) => task.task_id === selectedTaskId) ?? null,
@@ -409,6 +431,12 @@ export default function WorkspacePage() {
     () => selectedTask?.project_id ?? (projectFilter !== "all" ? projectFilter : null),
     [selectedTask, projectFilter],
   );
+
+  // Remember the project in context, for the next arrival without one in the URL.
+  useEffect(() => {
+    if (currentProjectId === null) return;
+    try { window.localStorage.setItem(LAST_PROJECT_KEY, currentProjectId); } catch { /* per-viewer convenience only */ }
+  }, [currentProjectId]);
 
   // The left column's own reads. Kept apart from the selected task's dashboard read
   // (which lives in TaskWorkspace): this one is keyed to the project, survives task
@@ -662,6 +690,18 @@ export default function WorkspacePage() {
     params.delete("task");
     window.history.replaceState(null, "", `${window.location.pathname}?${params}`);
   }, []);
+
+  // A task named in the URL resolves to its project once the tasks are read. Unknown
+  // id: the param is dropped and the fallbacks above decide the project.
+  useEffect(() => {
+    if (pendingTaskId === null || tasks.length === 0) return;
+    const task = tasks.find((candidate) => candidate.task_id === pendingTaskId);
+    setPendingTaskId(null);
+    if (task) { openProject(task.project_id); return; }
+    const params = new URLSearchParams(window.location.search);
+    params.delete("task");
+    window.history.replaceState(null, "", `${window.location.pathname}${params.size ? `?${params}` : ""}`);
+  }, [pendingTaskId, tasks, openProject]);
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-muted/20">
@@ -1221,6 +1261,8 @@ const FOLLOW_UP_WINDOW_MS = 30_000;
 // comes back full, it may have been cut off, and a cut-off page cannot say "no
 // gate is open".
 const TASK_ATTENTION_LIMIT = MAX_PAGE;
+/** Per-viewer convenience: the project the workbench last showed (localStorage). */
+const LAST_PROJECT_KEY = "agora.workspace.project";
 /** The "runs" view's page (W12). One more is fetched so a full page is known to be cut. */
 const DETAIL_RUNS_LIMIT = 200;
 
