@@ -15,7 +15,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Play, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { ApiError, type TaskManifest } from "@/lib/control-plane";
+import { ApiError, handoffTask, transitionTask, type TaskManifest } from "@/lib/control-plane";
 import {
   CONTINUE_ADAPTER,
   CONTINUE_BLOCK_KEY,
@@ -54,8 +54,14 @@ export function ContinueAction({
   followUpArmed,
   onCreated,
   onTaskMayHaveChanged,
+  initiallyOpen = false,
 }: {
   task: TaskManifest;
+  /**
+   * Open with the seed showing. Set when the page arrived here on its own after the
+   * previous step was approved (CR-70): the prompt is in view, one click starts it.
+   */
+  initiallyOpen?: boolean;
   /** Whether this task's project may be given work at all (CR-61); "unknown" does not
    *  block, because a charter read that failed says nothing about the project. */
   projectGate: "open" | "noCharter" | "unknown";
@@ -77,7 +83,7 @@ export function ContinueAction({
   onTaskMayHaveChanged: () => void;
 }) {
   const { t, te } = useI18n();
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(initiallyOpen);
   const [prompt, setPrompt] = useState("");
   const [busy, setBusy] = useState<"provisioning" | "dispatching" | null>(null);
   const [failure, setFailure] = useState<DispatchFailure | null>(null);
@@ -88,6 +94,54 @@ export function ContinueAction({
   // that may already exist and hold work. `status === null` with no error is the
   // third state — no answer yet.
   const [statusError, setStatusError] = useState<string | null>(null);
+  // Lifting a block: `blocked -> planned`, which the control plane's transition table
+  // allows and which no page offered. A rejected cross-review puts the task here, and
+  // without this the conversation refuses every message with no way on.
+  const [unblocking, setUnblocking] = useState(false);
+  const [unblockError, setUnblockError] = useState<string | null>(null);
+  const canUnblock = task.state === "blocked" && activeRunCount === 0;
+  const unblock = async () => {
+    setUnblocking(true);
+    setUnblockError(null);
+    try {
+      await transitionTask(task, "planned");
+      if (!mounted.current) return;
+      onTaskMayHaveChanged();
+    } catch (err) {
+      if (!mounted.current) return;
+      setUnblockError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (mounted.current) setUnblocking(false);
+    }
+  };
+  // Marking done: `verified -> done` through the handoff, which commits whatever the
+  // worker's worktree still holds and binds the commit to the task. The dashboard names
+  // this as the task's next action ("mark_done"); until now only the Projects page had
+  // the button — the same kind of gap as the block above.
+  const [markingDone, setMarkingDone] = useState(false);
+  const [markDoneError, setMarkDoneError] = useState<string | null>(null);
+  const [markDoneNote, setMarkDoneNote] = useState<string | null>(null);
+  const canMarkDone = task.state === "verified" && activeRunCount === 0;
+  const markDone = async () => {
+    setMarkingDone(true);
+    setMarkDoneError(null);
+    setMarkDoneNote(null);
+    try {
+      const result = await handoffTask(task);
+      if (!mounted.current) return;
+      // Say what the handoff actually did to the tree — a commit with N files, or
+      // nothing to commit — rather than a bare "done".
+      setMarkDoneNote(result.committed && result.commit
+        ? t("workspace.continue.markDoneCommitted", { commit: result.commit.slice(0, 7), count: result.files.length })
+        : t("workspace.continue.markDoneNothingToCommit"));
+      onTaskMayHaveChanged();
+    } catch (err) {
+      if (!mounted.current) return;
+      setMarkDoneError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (mounted.current) setMarkingDone(false);
+    }
+  };
   const mounted = useRef(true);
 
   useEffect(() => {
@@ -262,6 +316,35 @@ export function ContinueAction({
         {entry.block && (
           <span className="text-xs text-muted-foreground">
             {t(CONTINUE_BLOCK_KEY[entry.block], { state: te("taskState", task.state) })}
+          </span>
+        )}
+        {entry.block === "taskNotRunnable" && canUnblock && (
+          <>
+            <Button size="sm" variant="outline" onClick={() => void unblock()} disabled={unblocking}>
+              {unblocking ? <RefreshCw className="size-3.5 animate-spin" /> : null}
+              {t("workspace.continue.unblock")}
+            </Button>
+            <span className="text-xs text-muted-foreground">{t("workspace.continue.unblockHint")}</span>
+          </>
+        )}
+        {unblockError && (
+          <span className="text-xs text-destructive" role="alert">
+            {t("workspace.continue.unblockFailed", { reason: unblockError })}
+          </span>
+        )}
+        {entry.block === "taskNotRunnable" && canMarkDone && (
+          <>
+            <Button size="sm" variant="outline" onClick={() => void markDone()} disabled={markingDone}>
+              {markingDone ? <RefreshCw className="size-3.5 animate-spin" /> : null}
+              {t("workspace.continue.markDone")}
+            </Button>
+            <span className="text-xs text-muted-foreground">{t("workspace.continue.markDoneHint")}</span>
+          </>
+        )}
+        {markDoneNote && <span className="text-xs text-muted-foreground" aria-live="polite">{markDoneNote}</span>}
+        {markDoneError && (
+          <span className="text-xs text-destructive" role="alert">
+            {t("workspace.continue.markDoneFailed", { reason: markDoneError })}
           </span>
         )}
         {failure && (

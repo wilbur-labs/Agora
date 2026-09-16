@@ -16,6 +16,9 @@ import { ChevronDown } from "lucide-react";
 
 import type { Translate, TranslateEnum } from "@/lib/i18n";
 import type { RequirementSpec, TaskEvent } from "@/lib/control-plane";
+import type { AttentionItem } from "@/lib/attention";
+import type { InlineGate } from "@/lib/inline-gate";
+import { InlineGateBlock, type GateOutcome } from "@/components/inline-gate";
 import { ATTENTION_TIMELINE_EVENT_KEY } from "@/lib/timeline";
 import { cn } from "@/lib/utils";
 
@@ -83,19 +86,34 @@ export function specForEvent(event: TaskEvent, specsById: ReadonlyMap<string, Re
   return specsById.get(id) ?? null;
 }
 
-export function TimelineEntry({ event, spec, t, te }: { event: TaskEvent; spec: RequirementSpec | null; t: Translate; te: TranslateEnum }) {
+export function TimelineEntry({ event, spec, gate, onGateAnswered, t, te }: {
+  event: TaskEvent;
+  spec: RequirementSpec | null;
+  /**
+   * For an event that raised an attention item: the item and whether it still waits
+   * (CR-74). The conversation decides this from its task-scoped attention read; a caller
+   * without that read passes nothing and gets the two-word entry it always had.
+   */
+  gate?: InlineGate<AttentionItem>;
+  onGateAnswered?: (outcome: GateOutcome) => void;
+  t: Translate;
+  te: TranslateEnum;
+}) {
   const view = timelineView(event, t, te);
   const isYou = view.who === "you";
+  const open = gate?.kind === "open";
   return (
     <div className={cn("flex gap-2.5", isYou && "flex-row-reverse")}>
       <span className={cn("mt-1.5 size-2 shrink-0 rounded-full", WHO_DOT[view.who])} />
-      <div className={cn("max-w-[85%] rounded-xl border px-3 py-2", isYou ? "bg-primary/5" : "bg-card")}>
+      {/* An open item carries a verdict and a form, so it takes the width a turn does. */}
+      <div className={cn("rounded-xl border px-3 py-2", open ? "min-w-0 flex-1" : "max-w-[85%]", isYou ? "bg-primary/5" : "bg-card")}>
         <div className={cn("flex items-baseline gap-2", isYou && "flex-row-reverse")}>
           <span className="text-xs font-semibold">{view.title}</span>
           <span className="text-[10px] text-muted-foreground">{relTime(event.created_at, t)}</span>
         </div>
         {view.detail && <p className={cn("mt-0.5 whitespace-pre-wrap text-sm leading-relaxed", isYou && "text-right")}>{view.detail}</p>}
         {spec && <SpecBlock spec={spec} t={t} />}
+        {gate && onGateAnswered && <InlineGateBlock gate={gate} t={t} te={te} onAnswered={onGateAnswered} />}
       </div>
     </div>
   );

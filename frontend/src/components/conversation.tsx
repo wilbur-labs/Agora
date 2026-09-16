@@ -31,6 +31,10 @@ import { Loader2, PenLine, RotateCcw, Send, Square } from "lucide-react";
 
 import { DeliverablesBlock, type DeliverablesRead } from "@/components/run-deliverables";
 import { TimelineEntry, relTime, specForEvent } from "@/components/timeline-entry";
+import type { AttentionItem } from "@/lib/attention";
+import type { GateOutcome } from "@/components/inline-gate";
+import { inlineGateOf } from "@/lib/inline-gate";
+import type { TaskAttentionView } from "@/lib/task-attention";
 import { useI18n } from "@/lib/i18n";
 import {
   appendTaskEvent,
@@ -124,12 +128,23 @@ export function Conversation({
   eventsBehind,
   specs,
   knownActiveRuns = null,
+  attention,
+  onGateAnswered,
   onHistoryMayHaveChanged,
   onPosted,
   onTurnSettled,
   onTaskMayHaveChanged,
 }: {
   task: TaskLike;
+  /**
+   * The task's open attention items as the page read them, with the read's verdict —
+   * what a "needs you" event in the stream is matched against so the item can be
+   * answered in place (CR-74). Absent when the page has no such read.
+   */
+  attention?: TaskAttentionView<AttentionItem>;
+  /** Told what was answered here, so the page re-reads and carries on (approve → done and
+   *  the next step; reject → the fix turn). */
+  onGateAnswered?: (outcome: GateOutcome) => void;
   /** Whether this task's project may be given work at all (CR-61). */
   projectGate: "open" | "noCharter" | "unknown";
   /**
@@ -731,7 +746,18 @@ export function Conversation({
             )}
             <div className="space-y-4">
               {streamVerdict.items.map((item) => item.kind === "event" ? (
-                <TimelineEntry key={item.key} event={item.event} spec={specForEvent(item.event, specsById)} t={t} te={te} />
+                <TimelineEntry
+                  key={item.key}
+                  event={item.event}
+                  spec={specForEvent(item.event, specsById)}
+                  // The item behind a "needs you" event, answered here (CR-74). Decided
+                  // from the page's task-scoped attention read; without that read the
+                  // entry stays the sentence it was.
+                  gate={attention ? inlineGateOf(item.event, attention) : undefined}
+                  onGateAnswered={onGateAnswered}
+                  t={t}
+                  te={te}
+                />
               ) : item.kind === "unit" ? (
                 <TurnCard key={item.key} unit={item.unit} {...cardProps} />
               ) : (
@@ -753,7 +779,12 @@ export function Conversation({
         )}
       </div>
 
-      <div className="border-t bg-muted/30 px-5 py-3">
+      {/* `shrink-0`: this is a flex item beside a `flex-1` scroll area, and a flex
+          item shrinks by default. Without it the browser takes the space back from
+          the box you type in — the textarea keeps its top edge and the send button
+          below it is clipped away. The project conversation's composer has carried
+          this since it was written; this one did not. */}
+      <div className="shrink-0 border-t bg-muted/30 px-5 py-3">
         {sendError && <Notice tone="error">{t("conversation.errors.sendFailed", { reason: sendError })}</Notice>}
         {projectUnread && seeding && (
           <Notice tone="warn">{t("conversation.errors.projectUnread")}</Notice>

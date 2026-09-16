@@ -59,6 +59,10 @@ import type { ProjectGate } from "@/lib/project-chat";
 export interface ProjectNavProject {
   project_id: string;
   name: string;
+  /** Who runs the work and who reviews it. Both come from the projects read, so both
+   *  are facts rather than defaults this column invented. */
+  worker_agent: string;
+  reviewer_agent: string;
 }
 
 export interface ProjectNavProps {
@@ -135,11 +139,16 @@ function NavRow({
       </Link>
     );
   }
-  return (
-    <button type="button" onClick={onClick} className={className}>
-      {body}
-    </button>
-  );
+  if (onClick) {
+    return (
+      <button type="button" onClick={onClick} className={className}>
+        {body}
+      </button>
+    );
+  }
+  // Neither: a row that states a count and does nothing else. Rendered as text rather
+  // than a dead button, so nothing invites a click that goes nowhere.
+  return <div className={cn(className, "cursor-default")}>{body}</div>;
 }
 
 export function ProjectNav({
@@ -156,9 +165,13 @@ export function ProjectNav({
 }: ProjectNavProps) {
   const { t } = useI18n();
   const [otherOpen, setOtherOpen] = useState(false);
+  const current = projects.find((project) => project.project_id === projectId);
 
+  // `h-full`, not `h-screen`: this row's height is the viewport minus the top bar, and a
+  // full-viewport child stretches the row past it. The parent clips, and what it clips is
+  // the bottom of the centre column — the message box.
   return (
-    <aside className="flex h-screen w-72 shrink-0 flex-col border-r bg-sidebar lg:w-80">
+    <aside className="flex h-full min-h-0 w-72 shrink-0 flex-col border-r bg-sidebar lg:w-80">
       {header}
 
       {/* 1. The projects. The one in context is named first and stays named; the others
@@ -213,26 +226,50 @@ export function ProjectNav({
         {/* 2. The project's resources. This is what could only be reached by URL before. */}
         {projectId && (
           <nav className="space-y-0.5">
-            <NavRow itemKey="overview" href={`/workspace?project=${projectId}`} />
-            <NavRow itemKey="runs" capability={capabilities.runs} href="/runs" />
-            <NavRow itemKey="goals" href={`/portfolio?project=${projectId}`} />
-            <NavRow
-              itemKey="changeRequests"
-              capability={capabilities.changeRequests}
-              href={`/portfolio?project=${projectId}#cr-log`}
-            />
-            <NavRow
-              itemKey="decisions"
-              capability={capabilities.decisions}
-              href={`/portfolio?project=${projectId}#decisions`}
-            />
-            <NavRow itemKey="defects" capability={capabilities.defects} href="/portfolio" />
-            <NavRow itemKey="skills" capability={capabilities.skills} href="/skills" />
-            <NavRow itemKey="files" capability={capabilities.files} href="/environments" />
+            {/* Counts, not doors. In the design these rows say how much of each the
+                project has; they do not throw you onto another page — which is what
+                they did, and what "到处跳转" was about. The panels they will open live
+                in this window, and until they exist a row states its count and stops. */}
+            <NavRow itemKey="overview" />
+            <NavRow itemKey="runs" capability={capabilities.runs} />
+            <NavRow itemKey="goals" />
+            <NavRow itemKey="changeRequests" capability={capabilities.changeRequests} />
+            <NavRow itemKey="decisions" capability={capabilities.decisions} />
+            <NavRow itemKey="defects" capability={capabilities.defects} />
+            <NavRow itemKey="skills" capability={capabilities.skills} />
+            <NavRow itemKey="files" capability={capabilities.files} />
           </nav>
         )}
 
-        {/* 3. What stands in the way of work, said once. It is project-level — a project
+        {/* 3. Who runs it and where. The design keeps both beside the project's
+               resources, because they are the two facts that decide what "continue"
+               actually does. The executor pair is read from the control plane; the
+               environment has no per-project source yet (there is no environment
+               registry — W3-a/W5), so the row says that rather than naming this
+               machine and implying the project is pinned to it. */}
+        {current !== undefined && (
+          <>
+            <div className="px-4 pb-1 pt-4 text-[10px] uppercase tracking-wide text-muted-foreground">
+              {t("workspace.nav.executor")}
+            </div>
+            <div className="flex justify-between px-4 py-1 text-[12px] text-muted-foreground">
+              <span>{current.worker_agent}</span>
+              <b className="font-medium text-foreground">{t("workspace.nav.asWorker")}</b>
+            </div>
+            <div className="flex justify-between px-4 py-1 text-[12px] text-muted-foreground">
+              <span>{current.reviewer_agent}</span>
+              <b className="font-medium text-foreground">{t("workspace.nav.asReviewer")}</b>
+            </div>
+            <div className="px-4 pb-1 pt-3 text-[10px] uppercase tracking-wide text-muted-foreground">
+              {t("workspace.nav.environment")}
+            </div>
+            <p className="px-4 pb-1 text-[11px] leading-snug text-muted-foreground">
+              {t("workspace.nav.environmentUnknown")}
+            </p>
+          </>
+        )}
+
+        {/* 4. What stands in the way of work, said once. It is project-level — a project
                with no settled goal may not be given work at all (CR-61) — so it outlived
                the task list it used to sit above. "This project has no goal" is a claim,
                so the unknown case says the charter could not be read rather than making

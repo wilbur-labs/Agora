@@ -79,11 +79,16 @@ export function ProjectChat({
   projectId,
   onAdopted,
   onOpenTask,
+  onDraftState,
 }: {
   projectId: string;
   /** The charter and the board changed: the page re-reads both. */
   onAdopted: () => void;
   onOpenTask: (taskId: string) => void;
+  /** The draft's inputs, lifted so the page can keep it in the one right-hand column
+   *  the design has — it is drawn beside an open step too, and an aside owned by this
+   *  component would vanish the moment the centre switched to one. */
+  onDraftState?: (state: { step: KickoffStep; record: KickoffRecordLike | null; freshKey: string | null }) => void;
 }) {
   const { t } = useI18n();
   const [read, setRead] = useState<KickoffPayload | null>(null);
@@ -119,9 +124,16 @@ export function ProjectChat({
     return () => ctrl.abort();
   }, [load]);
 
-  const step = kickoffStepOf(read, readFailed);
+  // Memoised on purpose: the effect below hands `step` up to the page, which stores it and
+  // re-renders us. A fresh object per render would make that effect fire every render.
+  const step = useMemo(() => kickoffStepOf(read, readFailed), [read, readFailed]);
   const mode = composeModeOf(step);
   const record = "record" in step ? step.record : null;
+
+  // Handed up rather than rendered here: the right-hand column outlives this component.
+  useEffect(() => {
+    onDraftState?.({ step, record, freshKey });
+  }, [onDraftState, step, record, freshKey]);
 
   useEffect(() => {
     // The newest turn is what the person is looking at.
@@ -261,7 +273,7 @@ export function ProjectChat({
           </p>
         )}
 
-        <div ref={streamRef} className="flex min-h-0 flex-1 flex-col gap-3.5 overflow-y-auto px-5 py-4">
+        <div ref={streamRef} className="flex min-h-0 min-w-0 flex-1 flex-col gap-3.5 overflow-y-auto px-5 py-4">
           {step.kind === "loading" && <Muted>{t("projectChat.closed.loading")}</Muted>}
           {step.kind === "readFailed" && <Muted tone="warn">{t("projectChat.closed.readFailed")}</Muted>}
           {step.kind === "unreadable" && (
@@ -357,9 +369,6 @@ export function ProjectChat({
         />
       </section>
 
-      <aside className="hidden w-80 shrink-0 flex-col gap-4 overflow-y-auto border-l px-4 py-4 xl:flex">
-        <DraftPanel step={step} record={record} freshKey={freshKey} t={t} />
-      </aside>
     </div>
   );
 }
@@ -383,7 +392,7 @@ function Bubble({
   const mine = who === "you";
   return (
     <div className={cn(
-      "max-w-[62ch] rounded-xl border px-3.5 py-3 text-sm leading-relaxed",
+      "max-w-full break-words rounded-xl border px-3.5 py-3 text-sm leading-relaxed sm:max-w-[62ch]",
       mine ? "self-end border-transparent bg-primary/10" : "bg-muted/40",
     )}>
       <p className="mb-1.5 flex flex-wrap items-baseline gap-2 font-mono text-[11px] text-muted-foreground">
@@ -497,7 +506,7 @@ function RecordStream(props: {
             {answer.length > 0 && (
               <>
                 <Bubble who="you" t={t}><p className="whitespace-pre-wrap">{answer}</p></Bubble>
-                <div className="max-w-[62ch] border-l-2 border-primary/60 pl-3 text-xs text-muted-foreground">
+                <div className="max-w-full break-words border-l-2 border-primary/60 pl-3 text-xs text-muted-foreground sm:max-w-[62ch]">
                   <p>
                     <span className="font-medium text-foreground">
                       {t("projectChat.recorded.line", { answer })}
@@ -960,13 +969,17 @@ function Compose({
   );
 }
 
-function DraftPanel({
-  step, record, freshKey, t,
+export function DraftPanel({
+  step, record, freshKey, t, middle,
 }: {
   step: KickoffStep;
   record: KickoffRecordLike | null;
   freshKey: string | null;
   t: (key: string, vars?: Record<string, string | number>) => string;
+  /** Rendered between the draft and what it will write — where the design puts the
+   *  development order. A slot rather than a second "what this writes" block: that one
+   *  already exists here, and two of them is what the page showed for one round. */
+  middle?: React.ReactNode;
 }) {
   const fields = useMemo(
     () => (record === null ? [] : draftFieldsOf(record, freshKey)),
@@ -998,6 +1011,8 @@ function DraftPanel({
           ))}
         </div>
       </section>
+
+      {middle}
 
       <section>
         <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">

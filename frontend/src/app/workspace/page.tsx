@@ -1,15 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import Link from "next/link";
 import {
   AlertTriangle,
-  ArrowRight,
   ChevronDown,
   CircleCheck,
   ExternalLink,
   FolderOpen,
-  Network,
   RefreshCw,
   Target,
 } from "lucide-react";
@@ -36,9 +35,13 @@ import {
   type RequirementSpec,
   type TaskEvent,
   type TaskManifest,
+  getTask,
+  handoffTask,
+  transitionTask,
 } from "@/lib/control-plane";
 import {
   asRunSummary,
+  createRun,
   getRun,
   getRunDeliverables,
   listActiveProjectRuns,
@@ -53,8 +56,10 @@ import {
 import { ContinueAction } from "@/components/continue-action";
 import { ProjectChat } from "@/components/project-chat";
 import { projectGateOf, type ProjectGate } from "@/lib/project-chat";
-import { listAttention } from "@/lib/attention";
-import { mergeRunUpdates, type ContinueSeedFacts } from "@/lib/continue-run";
+import { listAttention, type AttentionItem as FullAttentionItem } from "@/lib/attention";
+import { CONTINUE_ADAPTER, CONTINUE_TIMEOUT_SECONDS, mergeRunUpdates, type ContinueSeedFacts } from "@/lib/continue-run";
+import { nextStepAfter, noNextStepIsCertain, reviewFixPrompt } from "@/lib/auto-advance";
+import type { GateOutcome } from "@/components/inline-gate";
 import {
   RAIL_ATTENTION_NOTICE_KEY,
   RAIL_STALE_NOTICE_KEY,
@@ -70,7 +75,9 @@ import { ProjectNav, type ProjectNavProject } from "@/components/project-nav";
 // The plan is the page's opening view (W11): the project's tasks as an ordered whole.
 // Every judgment behind it — step numbers, what a step waits on, whether it may be
 // continued — is in lib/task-plan.ts, which is testable without a browser (CR-18).
-import { TaskPlan } from "@/components/task-plan";
+import { ProjectSide } from "@/components/project-side";
+import { TaskCards } from "@/components/task-cards";
+import { DraftPanel } from "@/components/project-chat";
 import { planHeadlineOf, planRowsOf, type PlanTotalReach } from "@/lib/task-plan";
 import {
   NAV_DEFECTS_NO_SOURCE,
@@ -103,6 +110,7 @@ import {
   runColumnOf,
   runRole,
   ROLE_WORKER,
+  REVIEW_REQUESTER,
   type DeliveredResult,
   type GateVerdict,
   type ReviewStanding,
@@ -114,13 +122,10 @@ import {
   eventsLackKnown,
   runsLackKnown,
 } from "@/lib/timeline";
-import { progressBarOf, type ProgressBar } from "@/lib/progress-snapshot";
-// The same two decisions the portfolio cockpit takes, imported rather than
-// restated. One rule, one implementation: a second copy is a second thing to
-// forget to fix, which is how this page came to disagree with that one.
-import { taskTrustLineOf, workspaceProjectStripOf,
-  type TaskTrustLine, type WorkspaceProjectStrip } from "@/lib/portfolio-bucket";
-import { ProgressSnapshotBar } from "@/components/progress-snapshot-bar";
+// The same decision the portfolio cockpit takes, imported rather than restated. One
+// rule, one implementation: a second copy is a second thing to forget to fix, which is
+// how this page came to disagree with that one.
+import { taskTrustLineOf, type TaskTrustLine } from "@/lib/portfolio-bucket";
 // The tasks a registered workspace directory already holds (W7), read live. All
 // judgement — the board's three-answer honesty, a source's verdict, a task's
 // progress and its way onward — lives in lib/workspace-sources.ts with node tests;
@@ -214,6 +219,22 @@ export default function WorkspacePage() {
   // for the project because `TaskWorkspace` further down holds a task-scoped one.
   const [projectActiveRuns, setProjectActiveRuns] = useState<RunSummary[]>([]);
   const [projectActiveReach, setProjectActiveReach] = useState<PlanTotalReach>("pending");
+  // The kickoff draft, handed up by the conversation so the right-hand column can keep
+  // drawing it while the centre is showing a step. Cleared when the project changes:
+  // one project's draft beside another's plan is the carry-over the column guards
+  // against everywhere else.
+  const [draftState, setDraftState] = useState<Parameters<NonNullable<React.ComponentProps<typeof ProjectChat>["onDraftState"]>>[0] | null>(null);
+  // The right-hand column's host element while a step is open. The step's own blocks
+  // (the run, the outcome, the requirements, the goal) keep their state inside
+  // `TaskWorkspace` and are portalled here — handing React nodes up through state
+  // would re-run on every render, which is the loop `onDraftState` just had.
+  const [sideHost, setSideHost] = useState<HTMLElement | null>(null);
+  // What the page did on its own after an approval (CR-70): which step it moved to and
+  // what to say there. Shown on the step it names, and that step's Continue opens with
+  // the seed in view, so the next action is one click — the person's rule: what can be
+  // automatic is, show more, click less.
+  const [advance, setAdvance] = useState<AdvanceNotice | null>(null);
+
   // The project resources the left column reports on. Their own reads, keyed to the
   // project in context — the column may not show a count it never fetched, and a failed
   // fetch has to stay distinguishable from a project that keeps none.
@@ -283,7 +304,12 @@ export default function WorkspacePage() {
       setTaskReach(taskInventoryReachOf(tasksRead));
       if (projectsRead.status === "fulfilled") {
         setProjects(projectsRead.value.items.map(
-          (project) => ({ project_id: project.project_id, name: project.name }),
+          (project) => ({
+            project_id: project.project_id,
+            name: project.name,
+            worker_agent: project.worker_agent,
+            reviewer_agent: project.reviewer_agent,
+          }),
         ));
       }
       if (attentionRead.status === "fulfilled") setAttention(attentionRead.value.items);
@@ -401,6 +427,9 @@ export default function WorkspacePage() {
       });
     return () => { alive = false; ctrl.abort(); };
   }, [currentProjectId, refreshNonce]);
+
+  // One project's draft must never be drawn beside another's plan.
+  useEffect(() => { setDraftState(null); }, [currentProjectId]);
 
   // Its own read for the reason `listActiveRuns` records: whether a run is active cannot
   // be inferred from a page of recent history. Project-scoped so the plan learns it for
@@ -531,11 +560,40 @@ export default function WorkspacePage() {
 
   const selectTask = useCallback((task: TaskManifest) => {
     setSelectedTaskId(task.task_id);
+    // A move clears what the last automatic move said; the automatic path sets its
+    // own notice right after calling this, in the same batch.
+    setAdvance(null);
     const params = new URLSearchParams(window.location.search);
     params.set("project", task.project_id);
     params.set("task", task.task_id);
     window.history.replaceState(null, "", `${window.location.pathname}?${params}`);
   }, []);
+
+  // After a step is handed off on approval (CR-70): say so, and move to the next planned
+  // step with its Continue open. "No next step" is only claimed over a whole read.
+  const onStepDone = useCallback((done: { taskId: string; commit: string | null; committed: boolean }) => {
+    const row = planRows.find((candidate) => candidate.task_id === done.taskId);
+    const completed = {
+      key: done.committed && done.commit
+        ? "workspace.continue.advance.completed"
+        : "workspace.continue.advance.completedNothingToCommit",
+      vars: { step: row?.step ?? "?", title: row?.title ?? done.taskId, commit: done.commit?.slice(0, 7) ?? "" },
+    };
+    const next = nextStepAfter(planRows, done.taskId);
+    if (next === null) {
+      setAdvance({
+        showOn: done.taskId,
+        lines: [completed, { key: noNextStepIsCertain(planHeadline.totalKnown, next)
+          ? "workspace.continue.advance.noNext" : "workspace.continue.advance.noNextUncertain" }],
+        continueOpen: false,
+      });
+      return;
+    }
+    const target = tasks.find((candidate) => candidate.task_id === next.task_id);
+    if (target) selectTask(target); else setSelectedTaskId(next.task_id);
+    setAdvance({ showOn: next.task_id, lines: [completed, { key: "workspace.continue.advance.nextHere" }], continueOpen: true });
+    load();
+  }, [planRows, planHeadline.totalKnown, tasks, selectTask, load]);
 
   // The way onward from a workspace-task row. Its target is this very page
   // (`/workspace?project=X`), and a `next/link` to the page you are already on is a
@@ -547,6 +605,7 @@ export default function WorkspacePage() {
   // real-navigation fallback; this handler is what actually changes the state on click.
   const openProject = useCallback((projectId: string) => {
     setProjectFilter(projectId);
+    setAdvance(null);
     // Opening a project must not leave a task from a different project named in the URL:
     // the click claims the project-only `href`, so the URL it produces must match it.
     // Clear the selection and drop the `task` param, or a copied/reloaded URL would
@@ -619,64 +678,67 @@ export default function WorkspacePage() {
           </p>
         ))}
         {error && <div className="m-4 shrink-0 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{t("workspace.errors.loadFailed", { error })}</div>}
+        {/* One window per project. The centre is the project's conversation, and a step
+            opens *in it* — never on another page. The crumb is the way back, exactly as
+            the design draws it: `← 项目对话`. */}
         {selectedTask ? (
           <>
-          {/* The way back. The left column used to be it — pick another task, or none.
-              With the plan in the page, back is to the plan, and it is stated rather
-              than left to the browser's own button. */}
-          <button
-            type="button"
-            onClick={() => { if (selectedTask.project_id) openProject(selectedTask.project_id); }}
-            className="mx-4 mt-3 mb-1 shrink-0 self-start text-[12px] text-muted-foreground hover:text-foreground hover:underline"
-          >
-            ← {t("workspace.plan.backToPlan")}
-          </button>
-          <TaskWorkspace
-            key={selectedTask.task_id}
-            refreshNonce={refreshNonce}
-            task={selectedTask}
-            // The same gate the rail shows, so a task open in a project with no goal
-            // cannot be dispatched into from here either (CR-61).
-            projectGate={gate.kind}
-            // What this page's own reads have seen of the selected task. The child's
-            // reads and these overlap in time — `load` bumps `refreshNonce` before its
-            // four reads settle — so the rail can learn of a gate or a run before the
-            // child's reads do, and used to render "Needs you" beside a timeline
-            // claiming to be complete without that event. Passed as evidence of
-            // existence only; absence from a capped global page says nothing.
-            railAttention={selectedTaskAttention}
-            railRuns={selectedTaskRuns}
-            onTaskMayHaveChanged={load}
-          />
-          </>
-        ) : (
-          currentProjectId !== null ? (
-            // The plan first, then the conversation that produces it. Not either/or: the
-            // conversation is where a goal is settled and where a new idea becomes a card
-            // (CR-62, CR-63), and the plan is what those two write. Putting the plan above
-            // it answers "how many steps, which one now" without opening anything, which
-            // is the question the workbench could not answer at all before.
-            // `min-w-0` is load-bearing: a flex child defaults to `min-width: auto`,
-            // so the plan table's own minimum width would size this column instead of
-            // being scrolled inside it, and the page would run off the screen.
-            <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto">
-            <TaskPlan
+            <div className="flex shrink-0 items-center gap-2 border-b px-4 py-3 text-[13px] text-muted-foreground">
+              <button
+                type="button"
+                onClick={() => { if (currentProjectId !== null) openProject(currentProjectId); }}
+                className="rounded-lg border px-2 py-1 text-[12px] hover:bg-accent"
+              >
+                ← {t("workspace.crumb.backToChat")}
+              </button>
+              <span>/</span>
+              <b className="min-w-0 truncate font-medium text-foreground">{selectedTask.title}</b>
+            </div>
+            {/* The whole order, not just the step you clicked — the design draws the list
+                here so a step never becomes a place you have to find your way out of. */}
+            <TaskCards
               rows={planRows}
-              headline={planHeadline}
-              onOpenStep={(taskId) => {
+              selectedTaskId={selectedTaskId}
+              onSelectStep={(taskId) => {
                 const task = tasks.find((candidate) => candidate.task_id === taskId);
                 if (task) selectTask(task);
               }}
             />
-            <ProjectChat
-              key={currentProjectId}
+            <TaskWorkspace
+              key={selectedTask.task_id}
+              refreshNonce={refreshNonce}
+              sideHost={sideHost}
+              advance={advance}
+              onStepDone={onStepDone}
+              onAdvanceConsumed={() => setAdvance(null)}
+              task={selectedTask}
+              projectGate={gate.kind}
+              railAttention={selectedTaskAttention}
+              railRuns={selectedTaskRuns}
+              onTaskMayHaveChanged={load}
+            />
+          </>
+        ) : (
+          currentProjectId !== null ? (
+            <>
+              {/* Below `lg` the right-hand column — and with it the order — is hidden,
+                  and this list is then the only way to open a step. Same rows, same
+                  in-place selection; CSS decides which of the two is on screen. */}
+              <div className="lg:hidden">
+                <TaskCards
+                  rows={planRows}
+                  selectedTaskId={null}
+                  onSelectStep={(taskId) => {
+                    const task = tasks.find((candidate) => candidate.task_id === taskId);
+                    if (task) selectTask(task);
+                  }}
+                />
+              </div>
+              <ProjectChat
+                key={currentProjectId}
               projectId={currentProjectId}
               onAdopted={load}
-              // Through the one selection path, so `?project`/`?task` follow: setting the
-              // state alone left a reload, a copied link or the back button landing on
-              // the project conversation rather than the task that was just opened.
-              // The task may not be in `tasks` yet (it was created seconds ago by the
-              // adoption), so the selection is set either way and the URL with it.
+              onDraftState={setDraftState}
               onOpenTask={(taskId) => {
                 const task = tasks.find((candidate) => candidate.task_id === taskId);
                 if (task) { selectTask(task); return; }
@@ -688,12 +750,34 @@ export default function WorkspacePage() {
                 load();
               }}
             />
-            </div>
+            </>
           ) : (
             <EmptyWorkspace hasTasks={tasks.length > 0} />
           )
         )}
       </main>
+
+      {currentProjectId !== null && (
+        <ProjectSide
+          rows={planRows}
+          headline={planHeadline}
+          selectedTaskId={selectedTaskId}
+          // In place. The column is how you move between steps, and moving between them
+          // must not move you off the project's window.
+          onSelectStep={(taskId) => {
+            const task = tasks.find((candidate) => candidate.task_id === taskId);
+            if (task) selectTask(task);
+          }}
+          // With a step open the column is that step's (the design's `renderTask`
+          // draws 任务 / Run and 目标 there, and no order — the order is the card list
+          // in the centre). The step's blocks arrive through the host below.
+          taskOpen={selectedTask !== null}
+          hostRef={setSideHost}
+          draft={(order) => (draftState !== null
+            ? <DraftPanel step={draftState.step} record={draftState.record} freshKey={draftState.freshKey} t={t} middle={order} />
+            : order)}
+        />
+      )}
       </div>
     </div>
   );
@@ -1103,7 +1187,33 @@ const HANDOFF_FILES_SHOWN = 12;
 // The parent's summary comes from a capped, global run page and cannot make that
 // distinction — it would be the rail's projection standing in for the task's own
 // answer, which is the substitution this file has had to remove twice already.
-function TaskWorkspace({ task, projectGate, refreshNonce, railAttention, railRuns, onTaskMayHaveChanged }: { task: TaskManifest; projectGate: ProjectGate["kind"]; refreshNonce: number; railAttention: readonly AttentionItem[]; railRuns: readonly RunSummary[]; onTaskMayHaveChanged: () => void }) {
+/** See `advance` in the page: what was done on its own, and where to say it. */
+interface AdvanceNotice {
+  showOn: string;
+  lines: { key: string; vars?: Record<string, string | number> }[];
+  continueOpen: boolean;
+}
+
+/**
+ * Whether the page-level right-hand column is on screen (`lg:flex`, Tailwind's 1024px).
+ * Below that the column is `display:none`, and a portal into it would render the step's
+ * blocks into nothing — so they are drawn inline instead. Same breakpoint as the CSS;
+ * measured, not assumed, and re-read on resize.
+ */
+function useWideLayout(): boolean {
+  const [wide, setWide] = useState(() => typeof window !== "undefined" && window.matchMedia("(min-width: 1024px)").matches);
+  useEffect(() => {
+    const query = window.matchMedia("(min-width: 1024px)");
+    const onChange = () => setWide(query.matches);
+    onChange();
+    query.addEventListener("change", onChange);
+    return () => query.removeEventListener("change", onChange);
+  }, []);
+  return wide;
+}
+
+function TaskWorkspace({ task, projectGate, refreshNonce, sideHost, advance, onStepDone, onAdvanceConsumed, railAttention, railRuns, onTaskMayHaveChanged }: { task: TaskManifest; projectGate: ProjectGate["kind"]; refreshNonce: number; sideHost: HTMLElement | null; advance: AdvanceNotice | null; onStepDone: (done: { taskId: string; commit: string | null; committed: boolean }) => void; onAdvanceConsumed: () => void; railAttention: readonly AttentionItem[]; railRuns: readonly RunSummary[]; onTaskMayHaveChanged: () => void }) {
+  const wide = useWideLayout();
   const { t, te } = useI18n();
   const [dashboard, setDashboard] = useState<ProjectDashboard | null>(null);
   const [dashError, setDashError] = useState(false);
@@ -1157,7 +1267,11 @@ function TaskWorkspace({ task, projectGate, refreshNonce, railAttention, railRun
   // and unlock Continue. null = no answer yet or the read failed — the two are
   // told apart by `taskAttentionError`, because a spinner and an error are
   // different things to show (see lib/task-attention.ts).
-  const [taskAttention, setTaskAttention] = useState<AttentionItem[] | null>(null);
+  // Typed as the attention module's item — the one `listAttention` actually returns,
+  // with `body`, `options` and `version` — because the conversation now shows the
+  // item's words and answers it with its version (CR-74). Every other consumer reads
+  // the structural subset it always did.
+  const [taskAttention, setTaskAttention] = useState<FullAttentionItem[] | null>(null);
   // The task-scoped read itself failed. Tracked separately from the null above so
   // the panel can say "unavailable" instead of sitting on a spinner forever — and
   // so it never says "nothing needs you" about a fact it could not read.
@@ -1718,32 +1832,122 @@ function TaskWorkspace({ task, projectGate, refreshNonce, railAttention, railRun
     nextActionUnavailable: dashError || dashTask === null,
   }), [task.title, task.description, task.acceptance, recap, recapError, nextAction, dashError, dashTask, t, te]);
 
-  return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <ProjectStrip
-        name={dashboard?.name ?? null}
-        strip={dashboard ? workspaceProjectStripOf({
-          readFailed: dashError,
-          truncated: dashboard.truncated,
-          done: dashboard.tasks.filter((it) => it.state === "done").length,
-          pageSize: dashboard.tasks.length,
-          action: dashboard.next_action.action,
-          partial: dashboard.next_action.partial,
-          attentionCount: dashboard.next_action.attention_count,
-          attention: dashboard.next_action.attention,
-          title: dashboard.next_action.title,
-        }) : null}
-        bar={progressBarOf({
-          snapshot: dashboard?.progress_snapshot,
-          dashboardLoaded: dashboard !== null,
-          dashboardReadFailed: dashError,
-        })}
-        snapshotSource={dashboard?.progress_snapshot?.source ?? undefined}
+  // The step's side blocks. The design (`renderTask`) gives the right-hand column to the
+  // step while one is open: the run first — "右栏跟着 Run 状态走：跑的时候看它在干什么，
+  // 结束后看改动和门禁" — then the task itself, then the project's goal. They render
+  // into the page-level column through a portal so that the column is one column
+  // (CR-78: a second aside inside the centre made four), while every read behind them
+  // stays here with the task. Nothing about a project's standing is drawn in this mode:
+  // that was the `ProjectStrip` above the task, which the design does not have and
+  // which put project rows in the middle of a step.
+  // What a review answer sets in motion here, without another click (CR-70 / CR-83).
+  // Approve: the step is handed off (committed, bound, done) and the page moves to the
+  // next planned step. Reject: the task is put back to planned and the reviewer's words
+  // plus the person's go to the worker as the next turn — on the adapter that did the
+  // reviewed work, so the fix lands in the worktree that holds the defect. Every read
+  // that can change is asked again either way; nothing about the new state is assumed.
+  const [gateNote, setGateNote] = useState<{ key: string; vars?: Record<string, string> } | null>(null);
+  const alive = useRef(true);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
+  const reloadAfterGate = useCallback(() => {
+    void loadTaskAttention();
+    loadEvents();
+    loadRecap();
+    void loadRuns();
+    void loadActiveRuns();
+    onTaskMayHaveChanged();
+  }, [loadTaskAttention, loadEvents, loadRecap, loadRuns, loadActiveRuns, onTaskMayHaveChanged]);
+  const handleGate = async (outcome: GateOutcome) => {
+    reloadAfterGate();
+    setGateNote(null);
+    // Only Agora's own review gate completes a step or sends a fix turn. A tool or
+    // file approval the agent raised mid-run is also an "approval" item, and answering
+    // it must do nothing but answer it — the task is still running.
+    if (outcome.item.requester !== REVIEW_REQUESTER) return;
+    if (outcome.action === "approve") {
+      try {
+        const result = await handoffTask(task);
+        if (!alive.current) return;
+        onStepDone({ taskId: task.task_id, commit: result.commit, committed: result.committed });
+      } catch (err) {
+        if (!alive.current) return;
+        setGateNote({ key: "workspace.continue.advance.completeFailed", vars: { reason: err instanceof Error ? err.message : String(err) } });
+      }
+      reloadAfterGate();
+      return;
+    }
+    if (outcome.action === "reject") {
+      try {
+        const fresh = await getTask(task.task_id);
+        const planned = fresh.state === "planned" ? fresh : await transitionTask(fresh, "planned");
+        const reviewed = runs?.find((run) => run.run_id === outcome.item.run_id);
+        await createRun({
+          task_id: task.task_id,
+          adapter: reviewed?.adapter ?? CONTINUE_ADAPTER,
+          prompt: reviewFixPrompt({ reviewTitle: outcome.item.title, reviewBody: outcome.item.body, reason: outcome.response }),
+          timeout_seconds: CONTINUE_TIMEOUT_SECONDS,
+          expected_task_version: planned.version,
+          actor: "user",
+        });
+        if (!alive.current) return;
+        setGateNote({ key: "workspace.continue.advance.fixSent" });
+      } catch (err) {
+        if (!alive.current) return;
+        setGateNote({ key: "workspace.continue.advance.fixFailed", vars: { reason: err instanceof Error ? err.message : String(err) } });
+      }
+      reloadAfterGate();
+    }
+  };
+  const advanceHere = advance !== null && advance.showOn === task.task_id ? advance : null;
+
+  const side = (
+    <>
+      <RunColumnPane
+        task={task}
+        column={runColumn}
+        attention={attentionView}
+        review={reviewStanding}
+        verdict={verdict}
+        delivery={delivery}
+        deliveryError={deliveryError}
+        deliveryAsked={task.state === "done"}
       />
+      <OutcomeSummary task={task} trustLine={taskTrustLineOf({ readFailed: dashError, hasTask: dashTask !== null, hasSpec: dashTask?.has_spec ?? false })} next={dashError ? null : dashTask?.next_action ?? null} blocker={blockerClaim} delivery={delivery} deliveryError={deliveryError} deliveryAsked={task.state === "done"} latestSuccess={latestSuccess} />
+      {/* Requirements: the task's contract. The full spec, its state, its revision
+          and its acceptance scenarios are all still here, plus the deep link. */}
+      <RequirementsStrip task={task} specs={specs} error={specsError} />
+      <section className="rounded-lg border px-4 py-3">
+        <h5 className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t("workspace.side.goal")}</h5>
+        {/* Three answers, kept apart: the read failed, it has not landed, the project
+            has no goal. An empty string here would otherwise read as "no goal". */}
+        <p className="text-[12px] leading-relaxed text-muted-foreground">
+          {dashError ? t("workspace.panels.unavailable")
+            : dashboard === null ? "—"
+            : dashboard.charter.goal.trim() === "" ? t("workspace.side.goalNone")
+            : dashboard.charter.goal}
+        </p>
+      </section>
+    </>
+  );
+
+  return (
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      {/* What the page just did on its own, said where it landed. */}
+      {advanceHere && (
+        <p className="mx-4 mt-3 shrink-0 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-[12px] leading-snug text-emerald-700 dark:text-emerald-400" aria-live="polite">
+          {advanceHere.lines.map((line) => t(line.key, line.vars)).join(" ")}
+        </p>
+      )}
+      {gateNote && (
+        <p className="mx-4 mt-3 shrink-0 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[12px] leading-snug text-amber-700 dark:text-amber-400" aria-live="polite">
+          {t(gateNote.key, gateNote.vars)}
+        </p>
+      )}
       {/* The Resume Brief and the action that acts on it, as one block. */}
       <div className="border-b bg-muted/20">
         <ResumeBrief recap={recap} recapError={recapError} t={t} te={te} />
         <ContinueAction
+          initiallyOpen={advanceHere?.continueOpen ?? false}
           task={task}
           projectGate={projectGate}
           seed={continueSeed}
@@ -1751,6 +1955,8 @@ function TaskWorkspace({ task, projectGate, refreshNonce, railAttention, railRun
           openAttentionCount={openAttentionCount}
           followUpArmed={followUpArmed}
           onCreated={(run) => {
+            // The step the notice pointed at has been started; the notice is spent.
+            onAdvanceConsumed();
             if (run === null) {
               // The POST's answer was lost and the re-read found an active run:
               // one exists, but its record is not in hand. Ask for it instead of
@@ -1773,15 +1979,7 @@ function TaskWorkspace({ task, projectGate, refreshNonce, railAttention, railRun
           onTaskMayHaveChanged={onTaskMayHaveChanged}
         />
       </div>
-      <OutcomeSummary task={task} trustLine={taskTrustLineOf({ readFailed: dashError, hasTask: dashTask !== null, hasSpec: dashTask?.has_spec ?? false })} next={dashError ? null : dashTask?.next_action ?? null} blocker={blockerClaim} delivery={delivery} deliveryError={deliveryError} deliveryAsked={task.state === "done"} latestSuccess={latestSuccess} />
-      {/* Requirements: the task's contract, not "what is happening now", so it is
-          NOT in the right column any more. It sits here, directly under the
-          outcome header whose Trust cell scores the very criteria it lists, as a
-          collapsed strip that opens in place. Nothing was dropped — the full spec,
-          its state, its revision and its acceptance scenarios are all still here,
-          plus the deep link to the Requirements page. */}
-      <RequirementsStrip task={task} specs={specs} error={specsError} />
-      <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         {/* Center: the conversation, which is the task's whole stream (W9). The
             conversation is the primitive the user handles (adr/0007); the task's other
             history — notes, spec approvals, stage changes, gates — is interleaved with
@@ -1796,25 +1994,20 @@ function TaskWorkspace({ task, projectGate, refreshNonce, railAttention, railRun
           eventsBehind={eventsGap}
           specs={specs}
           knownActiveRuns={activeRuns}
+          attention={attentionView}
+          onGateAnswered={(outcome) => void handleGate(outcome)}
           onHistoryMayHaveChanged={() => loadEvents()}
           onPosted={(eventId) => { setPostedEventId(eventId); loadEvents(); loadRecap(); }}
           onTurnSettled={() => { void loadRuns(); void loadActiveRuns(); loadEvents(); loadRecap(); }}
           onTaskMayHaveChanged={onTaskMayHaveChanged}
         />
-        {/* Right: the run. While one is unsettled the column IS its output; once it
-            settles the column IS what it changed plus the gate before done. Which
-            of the two is decided by run state alone (lib/run-column.ts). */}
-        <RunColumnPane
-          task={task}
-          column={runColumn}
-          attention={attentionView}
-          review={reviewStanding}
-          verdict={verdict}
-          delivery={delivery}
-          deliveryError={deliveryError}
-          deliveryAsked={task.state === "done"}
-        />
       </div>
+      {/* Right: the page-level column while it is on screen; below `lg` that column is
+          hidden, so the same blocks are drawn here, under the conversation, instead of
+          into an element nobody can see. */}
+      {wide && sideHost !== null
+        ? createPortal(side, sideHost)
+        : <div className="flex shrink-0 flex-col gap-4 border-t px-4 py-4 lg:hidden">{side}</div>}
     </div>
   );
 }
@@ -1836,6 +2029,8 @@ function CenterColumn({
   eventsBehind,
   specs,
   knownActiveRuns,
+  attention,
+  onGateAnswered,
   onHistoryMayHaveChanged,
   onPosted,
   onTurnSettled,
@@ -1848,6 +2043,8 @@ function CenterColumn({
   eventsBehind: boolean;
   specs: RequirementSpec[] | null;
   knownActiveRuns: readonly RunSummary[] | null;
+  attention: TaskAttentionView<FullAttentionItem>;
+  onGateAnswered: (outcome: GateOutcome) => void;
   onHistoryMayHaveChanged: () => void;
   onPosted: (eventId: string) => void;
   onTurnSettled: () => void;
@@ -1863,71 +2060,13 @@ function CenterColumn({
         eventsBehind={eventsBehind}
         specs={specs}
         knownActiveRuns={knownActiveRuns}
+        attention={attention}
+        onGateAnswered={onGateAnswered}
         onHistoryMayHaveChanged={onHistoryMayHaveChanged}
         onPosted={onPosted}
         onTurnSettled={onTurnSettled}
         onTaskMayHaveChanged={onTaskMayHaveChanged}
       />
-    </div>
-  );
-}
-
-// Top strip: project-level orientation, so switching tasks never loses "where
-// is this whole project and what's its next move?".
-// Takes the decided view and the two things that are not decisions -- the project's
-// name and its snapshot bar. **Not the dashboard.** A reviewer's point that no source
-// scan can answer: while the response is in scope, nothing stops a later edit reading
-// a raw count in another branch, and the test can only look for spellings it has
-// thought of. With the response out of scope that bypass is not a thing you can
-// write, which is a different kind of guarantee from a test that looks for it.
-function ProjectStrip(
-  { name, strip, bar, snapshotSource }: {
-    name: string | null;
-    strip: WorkspaceProjectStrip | null;
-    bar: ProgressBar;
-    snapshotSource: string | undefined;
-  },
-) {
-  const { t, te } = useI18n();
-  if (!strip || name === null) {
-    return <div className="border-b bg-muted/30 px-5 py-2 text-xs text-muted-foreground">{bar.kind === "unknown" ? t("workspace.project.unavailable") : "…"}</div>;
-  }
-  return (
-    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b bg-muted/30 px-5 py-2 text-xs">
-      <span className="inline-flex items-center gap-1.5 font-semibold"><Network className="size-3.5 text-primary" />{name}</span>
-      {strip.count.kind === "exact" ? (
-        <span className="text-muted-foreground">{t("workspace.project.strip", { done: strip.count.done, total: strip.count.total })}</span>
-      ) : strip.count.kind === "atLeast" ? (
-        <span className="text-muted-foreground">{t("workspace.project.stripPartial", { done: strip.count.done })}</span>
-      ) : null}
-      {/* The bar replaces the verified percentage that used to be in the line above.
-          That number came from `metrics.verified_pct`, which reads a criterion as
-          verified from any historical successful run of its task — so new criteria
-          added by a requirements change are reported as verified by a run that
-          predates them. Rewording it could not have fixed it; the source had to go. */}
-      <ProgressSnapshotBar bar={bar} source={snapshotSource} compact />
-      <span className="text-muted-foreground/50">·</span>
-      {strip.next.kind === "unknown" ? (
-        <span className="inline-flex items-center gap-1 text-muted-foreground">
-          {t(strip.claim === "stale" ? "workspace.project.nextStale" : "workspace.project.nextPartial")}
-        </span>
-      ) : strip.next.kind === "allClear" ? (
-        <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400"><CircleCheck className="size-3.5" />{t("workspace.project.allDone")}</span>
-      ) : (
-        <span className={cn("inline-flex items-center gap-1", strip.next.attention ? "text-orange-600 dark:text-orange-400" : "text-foreground")}>
-          <ArrowRight className="size-3.5" />
-          <span className="font-medium">{t("workspace.project.next")}:</span> {te("nextAction", strip.next.action)}
-          {strip.next.title && <span className="text-muted-foreground">{t("workspace.project.forTask", { title: strip.next.title })}</span>}
-        </span>
-      )}
-      {strip.attention.kind !== "hidden" && (
-        <span className="ml-auto inline-flex items-center gap-1 rounded-full bg-orange-500/10 px-2 py-0.5 font-medium text-orange-600 dark:text-orange-400">
-          <AlertTriangle className="size-3" />
-          {strip.attention.kind === "atLeast"
-            ? t("workspace.project.attentionAtLeast", { count: strip.attention.count })
-            : t("workspace.project.attention", { count: strip.attention.count })}
-        </span>
-      )}
     </div>
   );
 }
@@ -2113,18 +2252,19 @@ function OutcomeSummary({ task, trustLine, next, blocker, delivery, deliveryErro
   }));
 
   return (
-    <header className="border-b bg-card px-5 py-4">
+    <header className="rounded-lg border bg-card px-4 py-3">
       <div className="flex items-start justify-between gap-3">
-        <h1 className="text-xl font-bold leading-snug">{task.title}</h1>
+        {/* The crumb already carries the title in full; here it is the box's label. */}
+        <h2 className="min-w-0 truncate text-sm font-semibold leading-snug">{task.title}</h2>
         <span className={cn("inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium",
           done ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" : stuck ? "bg-orange-500/10 text-orange-600 dark:text-orange-400" : "bg-muted text-muted-foreground")}>
           {done && <CircleCheck className="size-3.5" />}{te("taskState", task.state)}
         </span>
       </div>
 
-      <div className="mt-3 grid gap-3 md:grid-cols-3">
+      <div className="mt-3 grid gap-3">
         {/* What it did — the concrete outcome, not a log. */}
-        <div className="rounded-xl border bg-muted/30 p-3 md:col-span-2">
+        <div className="rounded-xl border bg-muted/30 p-3">
           <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{t("workspace.summary.did")}</p>
           {outcomeNotice === null ? (
             <div className="mt-1 space-y-1">
@@ -2256,8 +2396,8 @@ function RequirementsStrip({ task, specs, error }: { task: TaskManifest; specs: 
         : t("workspace.panels.requirements.state", { state: te("status", latest.state), rev: latest.revision });
 
   return (
-    <div className="border-b bg-background/60">
-      <div className="flex items-center gap-2 px-5 py-2">
+    <div className="rounded-lg border bg-background/60">
+      <div className="flex items-center gap-2 px-3 py-2">
         <button
           onClick={() => setOpen((v) => !v)}
           aria-expanded={open}
@@ -2280,7 +2420,7 @@ function RequirementsStrip({ task, specs, error }: { task: TaskManifest; specs: 
         </Link>
       </div>
       {open && (
-        <div className="border-t px-5 py-3">
+        <div className="border-t px-3 py-3">
           {error ? (
             <p className="text-sm text-muted-foreground">{t("workspace.panels.unavailable")}</p>
           ) : specs === null ? (
@@ -2347,14 +2487,14 @@ function RunColumnPane({
 }) {
   const { t } = useI18n();
   return (
-    <div className="flex min-h-0 w-full flex-col border-t lg:w-[400px] lg:border-l lg:border-t-0">
-      <div className="flex items-center gap-2 border-b bg-background/90 px-4 py-2">
-        <span className="text-xs font-semibold uppercase tracking-wide">{t(COLUMN_TITLE_KEY[column.kind])}</span>
+    <div className="flex min-h-0 flex-col">
+      <div className="flex items-center gap-2 pb-2">
+        <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t(COLUMN_TITLE_KEY[column.kind])}</span>
         <Link href={`/runs?task=${encodeURIComponent(task.task_id)}`} className="ml-auto inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline">
           {t("workspace.column.openRuns")} <ExternalLink className="size-3" />
         </Link>
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto p-4">
+      <div className="min-h-0 rounded-lg border p-3">
         {column.kind === "loading" && (
           <p className="text-sm text-muted-foreground">{t("workspace.column.loading")}</p>
         )}

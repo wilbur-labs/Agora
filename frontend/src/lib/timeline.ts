@@ -122,6 +122,9 @@ export const ATTENTION_TIMELINE_EVENT_KEY: Record<string, string> = {
 /** Exposed for the test that checks every recorded state also has a sentence. */
 export const ATTENTION_STATE_EVENTS_FOR_TEST = ATTENTION_STATE_EVENTS;
 
+/** The events that open an item — the ones the conversation answers in place (CR-74). */
+export const ATTENTION_RAISE_EVENTS: readonly string[] = ATTENTION_STATE_EVENTS.open;
+
 function attentionItemIdOf(event: TimelineEventLike): string | null {
   const raw = (event.payload ?? {})["item_id"];
   return typeof raw === "string" ? raw : null;

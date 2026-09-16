@@ -380,12 +380,12 @@ test("the rail drops the stale run in one place, not at each render site", async
     new URL("../src/components/project-nav.tsx", import.meta.url), "utf8");
   const columnSource = column.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
   const rendered = await readFile(
-    new URL("../src/components/task-plan.tsx", import.meta.url), "utf8");
+    new URL("../src/components/project-side.tsx", import.meta.url), "utf8");
   const renderedSource = rendered.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
   assert.ok(renderedSource.includes("row.running"),
     "the rendered state must read the gated field");
   assert.ok(!/runs\.some\(|runs\.filter\(|RunSummary/.test(renderedSource),
-    "the plan's renderer must not receive or re-derive runs either");
+    "the order column must not receive or re-derive runs either");
   // `runs: NavCapability` is the resource's capability, not the run data — what must not
   // reach the column is the runs themselves, so match on how they would be consulted and
   // on the type they would arrive as.

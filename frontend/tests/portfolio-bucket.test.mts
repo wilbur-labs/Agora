@@ -654,12 +654,12 @@ test("the workspace page renders these decisions and does not restate them", asy
     new URL("../src/app/workspace/page.tsx", import.meta.url), "utf8");
   const source = file.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
 
+  // The project strip (`workspaceProjectStripOf`) is no longer on this page: the design's
+  // task view has no project-level row — the order is the card list, the project's
+  // standing is the project conversation's. The decision itself still lives in
+  // lib/portfolio-bucket and is exercised above; only its consumer here is gone.
   for (const fragment of [
-    "workspaceProjectStripOf({",
     "taskTrustLineOf({",
-    "strip.count.kind ===",
-    "strip.next.kind ===",
-    "strip.attention.kind !==",
     "trustLine ===",
   ]) {
     assert.ok(source.includes(fragment), `expected the page to contain ${fragment}`);
