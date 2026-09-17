@@ -73,6 +73,27 @@ interface Expanded {
   deliverables: DeliverablesRead | null;
 }
 
+/**
+ * Agent output as it comes: markdown-ish text with fenced code. Fences become code
+ * blocks that scroll sideways on their own; everything else wraps, including paths
+ * and URLs with no spaces in them — the bubble is the box, and nothing runs out of it.
+ * Not a markdown renderer: tables and emphasis stay as typed, which is honest about
+ * what the agent actually wrote.
+ */
+function Prose({ text, className }: { text: string; className?: string }) {
+  const parts = text.split(/```[^\n]*\n?/);
+  return (
+    <div className={cn("min-w-0 space-y-2", className)}>
+      {parts.map((part, index) => {
+        if (part.trim() === "") return null;
+        return index % 2 === 1
+          ? <pre key={index} className="max-w-full overflow-x-auto rounded bg-zinc-950 px-2.5 py-2 font-mono text-[11.5px] leading-relaxed text-zinc-200">{part.replace(/\n$/, "")}</pre>
+          : <p key={index} className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{part.trim()}</p>;
+      })}
+    </div>
+  );
+}
+
 export function ProjectStream({
   projectId, projectName, tasks, rows, rowsWhole, workerAdapter, onChanged,
 }: {
@@ -487,17 +508,17 @@ export function ProjectStream({
             return (
               <div key={item.key} className="space-y-2">
                 {record && record.prompt.trim() !== "" && (
-                  <div className="ml-auto max-w-[56ch] rounded-xl border border-r-4 border-r-primary bg-primary/5 px-3 py-2 text-[14px] leading-relaxed">
+                  <div className="ml-auto w-fit min-w-0 max-w-[56ch] rounded-xl border border-r-4 border-r-primary bg-primary/5 px-3 py-2 text-[14px] leading-relaxed">
                     <div className="mb-1 font-mono text-[10px] text-muted-foreground">{t("workspace.stream.you")} · {relTime(record.queued_at, t)}</div>
-                    <p className="whitespace-pre-wrap">{record.prompt.trim()}</p>
+                    <Prose text={record.prompt} />
                   </div>
                 )}
                 {runCard(item.unit.run, item.step, item.unit.nested)}
                 {record && reply !== "" && (
-                  <div className="max-w-[64ch] rounded-xl border bg-card px-3 py-2 text-[14px] leading-relaxed">
+                  <div className="min-w-0 max-w-[64ch] rounded-xl border bg-card px-3 py-2 text-[14px] leading-relaxed">
                     <div className="mb-1 font-mono text-[10px] text-muted-foreground">{t("workspace.stream.reply", { adapter: adapterLabel(record.adapter) })} · {relTime(record.finished_at ?? record.queued_at, t)}</div>
                     {reply.length > REPLY_FOLD && <p className="mb-1 text-[11px] text-muted-foreground">{t("workspace.stream.replyFolded")}</p>}
-                    <p className="whitespace-pre-wrap">{shown}</p>
+                    <Prose text={shown} />
                   </div>
                 )}
               </div>
@@ -522,22 +543,22 @@ export function ProjectStream({
           }
           if (item.type === "user" || item.type === "note") {
             return (
-              <div key={item.key} className="ml-auto max-w-[56ch] rounded-xl border border-r-4 border-r-primary bg-primary/5 px-3 py-2 text-[14px] leading-relaxed">
+              <div key={item.key} className="ml-auto w-fit min-w-0 max-w-[56ch] rounded-xl border border-r-4 border-r-primary bg-primary/5 px-3 py-2 text-[14px] leading-relaxed">
                 <div className="mb-1 font-mono text-[10px] text-muted-foreground">
                   {t("workspace.stream.you")} · {relTime(item.at, t)}
                   {item.type === "note" && <> · {t("workspace.stream.noteTag")}{item.step !== null ? ` · ${t("workspace.stream.run.step", { step: item.step })}` : ""}</>}
                 </div>
-                <p className="whitespace-pre-wrap">{item.text}</p>
+                <Prose text={item.text} />
               </div>
             );
           }
           if (item.type === "auto") {
-            return <div key={item.key} className={cn("max-w-[64ch] rounded-xl border border-l-4 bg-card px-3 py-2 text-[13px] leading-relaxed", item.tone === "warn" ? "border-l-amber-500" : "border-l-primary")}><div className="mb-1 font-mono text-[10px] text-muted-foreground">{t("workspace.stream.auto")} · {relTime(item.at, t)}</div>{item.text}</div>;
+            return <div key={item.key} className={cn("min-w-0 max-w-[64ch] rounded-xl border border-l-4 bg-card px-3 py-2 text-[13px] leading-relaxed", item.tone === "warn" ? "border-l-amber-500" : "border-l-primary")}><div className="mb-1 font-mono text-[10px] text-muted-foreground">{t("workspace.stream.auto")} · {relTime(item.at, t)}</div><Prose text={item.text} /></div>;
           }
           if (item.type === "idea") {
             const p = item.proposal;
             return (
-              <div key={item.key} className="max-w-[64ch] rounded-xl border border-l-4 border-l-primary bg-card px-3 py-2 text-[13px] leading-relaxed">
+              <div key={item.key} className="min-w-0 max-w-[64ch] rounded-xl border border-l-4 border-l-primary bg-card px-3 py-2 text-[13px] leading-relaxed [overflow-wrap:anywhere]">
                 <div className="mb-1 font-mono text-[10px] text-muted-foreground">{t("workspace.stream.auto")} · {relTime(item.at, t)}</div>
                 {item.busy && p === null && <p className="text-muted-foreground">{t("workspace.stream.idea.thinking")}</p>}
                 {item.error && <p className="text-destructive">{t("workspace.stream.idea.failed", { reason: item.error })}</p>}
@@ -564,7 +585,7 @@ export function ProjectStream({
           }
           if (item.type === "advance") {
             return (
-              <div key={item.key} className="max-w-[64ch] rounded-xl border border-l-4 border-l-emerald-500 bg-card px-3 py-2 text-[13px] leading-relaxed">
+              <div key={item.key} className="min-w-0 max-w-[64ch] rounded-xl border border-l-4 border-l-emerald-500 bg-card px-3 py-2 text-[13px] leading-relaxed [overflow-wrap:anywhere]">
                 <div className="mb-1 font-mono text-[10px] text-muted-foreground">{t("workspace.stream.auto")} · {relTime(item.at, t)}</div>
                 <p>{t(item.committed && item.commit ? "workspace.stream.advance.done" : "workspace.stream.advance.doneNothing", { step: item.doneStep ?? "?", title: item.doneTitle, commit: item.commit?.slice(0, 7) ?? "" })}</p>
                 {item.next === null
@@ -574,7 +595,7 @@ export function ProjectStream({
                       <p className="mt-1.5"><b className="font-medium">{t("workspace.stream.advance.next", { step: item.next.step, title: item.next.title })}</b></p>
                       {item.editing
                         ? <textarea value={item.seed} onChange={(e) => patch(item.key, { seed: e.target.value })} className="mt-1.5 min-h-24 w-full resize-y rounded-lg border bg-background p-2 font-mono text-[12px] leading-relaxed" aria-label={t("workspace.stream.advance.seed")} />
-                        : <pre className="mt-1.5 max-h-40 overflow-auto whitespace-pre-wrap border-l-2 border-primary/50 pl-2.5 font-mono text-[12px] leading-relaxed text-muted-foreground">{item.seed}</pre>}
+                        : <pre className="mt-1.5 max-h-40 overflow-auto whitespace-pre-wrap break-words border-l-2 border-primary/50 pl-2.5 font-mono text-[12px] leading-relaxed text-muted-foreground [overflow-wrap:anywhere]">{item.seed}</pre>}
                       {item.started
                         ? <p className="mt-1.5 text-emerald-700 dark:text-emerald-400">{t("workspace.stream.advance.started")}</p>
                         : (
