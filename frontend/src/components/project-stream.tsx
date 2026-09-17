@@ -42,6 +42,7 @@ import { REVIEW_REQUESTER } from "@/lib/run-column";
 import { formatDuration, turnDurationMs } from "@/lib/conversation";
 import type { PlanRow } from "@/lib/task-plan";
 import { useI18n } from "@/lib/i18n";
+import { workspace as workspaceDictionary } from "@/lib/i18n/dictionaries/workspace";
 import { cn } from "@/lib/utils";
 
 /** The runs page. Full means "the last N", and the stream says so. */
@@ -55,6 +56,11 @@ const POLL_MS = 4000;
 const RECENT_REPLIES = 8;
 /** A reply longer than this is shown from its end; the whole is under "expand". */
 const REPLY_FOLD = 1600;
+/** The read-only preamble a question carries, in every language it was ever sent in. */
+const ASK_PREAMBLES: readonly string[] = [
+  workspaceDictionary.zh.stream.compose.askPreamble,
+  workspaceDictionary.en.stream.compose.askPreamble,
+];
 
 type LocalItem =
   /** `runId`: the run this echo announced — once that run is on record the echo goes. */
@@ -263,7 +269,16 @@ export function ProjectStream({
   /** The line the person typed, when the run carried a preamble or a drafted seed; else the prompt. */
   const displayPromptOf = (run: ExecutionRun): string => {
     const shown = run.result_metadata?.display_prompt;
-    return typeof shown === "string" && shown.trim() !== "" ? shown.trim() : run.prompt.trim();
+    if (typeof shown === "string" && shown.trim() !== "") return shown.trim();
+    // A question recorded before `display_prompt` existed: the read-only preamble is
+    // the agent's instruction, not the person's words — peel it off, in either language.
+    let text = run.prompt.trim();
+    if (run.role === "chat") {
+      for (const preamble of ASK_PREAMBLES) {
+        if (text.startsWith(preamble)) { text = text.slice(preamble.length).trim(); break; }
+      }
+    }
+    return text;
   };
   const seedFor = (row: PlanRow): string => {
     const task = taskOf(row.task_id);
