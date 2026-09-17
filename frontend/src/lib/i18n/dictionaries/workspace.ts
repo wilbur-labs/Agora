@@ -288,6 +288,8 @@ export const workspace = {
       runsCapped: "Only the last {limit} runs are shown.",
       gatesCapped: "More than {limit} items exist; the ones beyond that are not shown here — check under Needs you.",
       noteTag: "note",
+      reply: "{adapter} replied",
+      replyFolded: "Showing the end of a long reply; the whole is under \"expand\" on the card.",
       status: {
         running: "{adapter} · step {step} running",
         waiting: "{count} waiting on you",
@@ -1154,6 +1156,8 @@ export const workspace = {
       runsCapped: "只显示最近 {limit} 次运行。",
       gatesCapped: "事项超过 {limit} 条，多出的这里没显示——去「待你处理」里确认。",
       noteTag: "备注",
+      reply: "{adapter} 的回复",
+      replyFolded: "回复较长，只显示末尾；全文在卡片「展开」里。",
       status: {
         running: "{adapter} · 第 {step} 步 运行中",
         waiting: "{count} 条等你",

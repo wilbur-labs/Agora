@@ -51,6 +51,10 @@ const GATES_LIMIT = 200;
  *  running now once the project has more runs than the page holds. */
 const ACTIVE_LIMIT = 100;
 const POLL_MS = 4000;
+/** How many recent worker runs are read in full so what they said shows in the stream. */
+const RECENT_REPLIES = 8;
+/** A reply longer than this is shown from its end; the whole is under "expand". */
+const REPLY_FOLD = 1600;
 
 type LocalItem =
   | { type: "user"; key: string; at: string; text: string }
@@ -94,6 +98,10 @@ export function ProjectStream({
   const [activeFailed, setActiveFailed] = useState(false);
   const [notes, setNotes] = useState<Extract<LocalItem, { type: "note" }>[]>([]);
   const [local, setLocal] = useState<LocalItem[]>([]);
+  // Full records of the most recent worker runs, read on their own: the summary has
+  // neither the line that started the run nor what the agent said back, and both are
+  // the conversation — the person asked a question and saw only a folded card.
+  const [details, setDetails] = useState<Record<string, ExecutionRun | "failed">>({});
   const [expanded, setExpanded] = useState<Record<string, Expanded>>({});
   const [adapters, setAdapters] = useState<AdapterCapability[] | null>(null);
   const [adapter, setAdapter] = useState<ExecutionAdapter>((workerAdapter as ExecutionAdapter | null) ?? CONTINUE_ADAPTER);
@@ -155,6 +163,28 @@ export function ProjectStream({
     return () => ctrl.abort();
   }, [projectId, rows.length, loadNotes]);
 
+  // The recent worker runs' full records: the line that started each and what came
+  // back. Settled runs only — a running one changes until it ends — and only the
+  // last few; older ones open on demand.
+  useEffect(() => {
+    if (runs === null) return;
+    const wanted = runs
+      .filter((run) => run.role !== "review" && run.state !== "queued" && run.state !== "running")
+      .sort((a, b) => (a.queued_at < b.queued_at ? 1 : -1))
+      .slice(0, RECENT_REPLIES)
+      .filter((run) => details[run.run_id] === undefined);
+    if (wanted.length === 0) return;
+    const ctrl = new AbortController();
+    for (const run of wanted) {
+      getRun(run.run_id, ctrl.signal)
+        .then((full) => { if (!ctrl.signal.aborted && alive.current) setDetails((all) => ({ ...all, [run.run_id]: full })); })
+        .catch(() => { if (!ctrl.signal.aborted && alive.current) setDetails((all) => ({ ...all, [run.run_id]: "failed" })); });
+    }
+    return () => ctrl.abort();
+    // `details` is read to skip what is already held; adding it would refetch on each answer.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runs]);
+
   useEffect(() => {
     const ctrl = new AbortController();
     void load(ctrl.signal);
@@ -168,10 +198,12 @@ export function ProjectStream({
   const merged = useMemo(() => {
     // A note already on record is not repeated by the local echo of the send that made it.
     const noteKeys = new Set(notes.map((note) => note.at.slice(0, 16) + note.text));
-    const echoes = local.filter((item) => !(item.type === "user" && noteKeys.has(item.at.slice(0, 16) + item.text)));
+    // Nor is the line that started a run repeated once that run's record is in hand.
+    const prompts = new Set(Object.values(details).filter((d): d is ExecutionRun => d !== "failed").map((d) => d.prompt.trim()));
+    const echoes = local.filter((item) => !(item.type === "user" && (noteKeys.has(item.at.slice(0, 16) + item.text) || prompts.has(item.text.trim()))));
     const all: (StreamItem<RunSummary, AttentionItem> | LocalItem)[] = [...items, ...notes, ...echoes];
     return all.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
-  }, [items, notes, local]);
+  }, [items, notes, local, details]);
   const openGates = gates === null ? null : gates.filter((item) => item.state === "open").length;
   // What is running now comes from the dedicated active-run read, never inferred from
   // the history page: an old run still running can be pushed out of that page.
@@ -444,7 +476,33 @@ export function ProjectStream({
         {runs === null && !runsFailed && <p className="text-[12px] text-muted-foreground">{t("workspace.stream.loading")}</p>}
         {runs !== null && merged.length === 0 && <p className="text-[13px] text-muted-foreground">{t("workspace.stream.empty")}</p>}
         {merged.map((item) => {
-          if (item.type === "run") return runCard(item.unit.run, item.step, item.unit.nested);
+          if (item.type === "run") {
+            // The exchange around the run: what the person said (its prompt) above the
+            // card, what the agent said back (its output) below — the conversation, not
+            // a folded record of it. Only for recent worker runs whose record is in hand.
+            const full = details[item.unit.run.run_id];
+            const record = full !== undefined && full !== "failed" ? full : null;
+            const reply = record?.stdout_tail.trim() ?? "";
+            const shown = reply.length > REPLY_FOLD ? reply.slice(reply.length - REPLY_FOLD) : reply;
+            return (
+              <div key={item.key} className="space-y-2">
+                {record && record.prompt.trim() !== "" && (
+                  <div className="ml-auto max-w-[56ch] rounded-xl border border-r-4 border-r-primary bg-primary/5 px-3 py-2 text-[14px] leading-relaxed">
+                    <div className="mb-1 font-mono text-[10px] text-muted-foreground">{t("workspace.stream.you")} · {relTime(record.queued_at, t)}</div>
+                    <p className="whitespace-pre-wrap">{record.prompt.trim()}</p>
+                  </div>
+                )}
+                {runCard(item.unit.run, item.step, item.unit.nested)}
+                {record && reply !== "" && (
+                  <div className="max-w-[64ch] rounded-xl border bg-card px-3 py-2 text-[14px] leading-relaxed">
+                    <div className="mb-1 font-mono text-[10px] text-muted-foreground">{t("workspace.stream.reply", { adapter: adapterLabel(record.adapter) })} · {relTime(record.finished_at ?? record.queued_at, t)}</div>
+                    {reply.length > REPLY_FOLD && <p className="mb-1 text-[11px] text-muted-foreground">{t("workspace.stream.replyFolded")}</p>}
+                    <p className="whitespace-pre-wrap">{shown}</p>
+                  </div>
+                )}
+              </div>
+            );
+          }
           if (item.type === "unplaced") return runCard(item.run, item.step, [], item.because);
           if (item.type === "gate") {
             const responded = item.item.state !== "open";
