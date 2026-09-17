@@ -290,6 +290,7 @@ export const workspace = {
       noteTag: "note",
       reply: "{adapter} replied",
       reviewReply: "{adapter} reviewed",
+      promptSummary: "The prompt for step {step} (open to read it)",
       seedVerify: "When done, end with: which files changed, how to start or verify it (commands, URL), and where any screenshots are. The person verifies from the conversation, not from a log.",
       replyFolded: "Showing the end of a long reply; the whole is under \"expand\" on the card.",
       status: {
@@ -1166,6 +1167,7 @@ export const workspace = {
       noteTag: "备注",
       reply: "{adapter} 的回复",
       reviewReply: "{adapter} 的复核",
+      promptSummary: "开始第 {step} 步的提示词（点开看全文）",
       seedVerify: "做完后请在最后写清：改了哪些文件；怎么启动或验证（命令、地址）；截图放在哪。我在对话里看结果，不看日志。",
       replyFolded: "回复较长，只显示末尾；全文在卡片「展开」里。",
       status: {

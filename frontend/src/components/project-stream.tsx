@@ -57,10 +57,11 @@ const RECENT_REPLIES = 8;
 const REPLY_FOLD = 1600;
 
 type LocalItem =
-  | { type: "user"; key: string; at: string; text: string }
+  /** `runId`: the run this echo announced — once that run is on record the echo goes. */
+  | { type: "user"; key: string; at: string; text: string; runId?: string }
   /** A note on record (a `user_message` task event) — survives a reload. */
   | { type: "note"; key: string; at: string; text: string; step: number | null }
-  | { type: "auto"; key: string; at: string; text: string; tone?: "ok" | "warn" }
+  | { type: "auto"; key: string; at: string; text: string; tone?: "ok" | "warn"; runId?: string }
   | { type: "idea"; key: string; at: string; idea: string; proposal: IdeaProposal | null; error: string | null; placed: string | null; busy: boolean }
   | {
       type: "advance"; key: string; at: string;
@@ -231,11 +232,16 @@ export function ProjectStream({
     // A note already on record is not repeated by the local echo of the send that made it.
     const noteKeys = new Set(notes.map((note) => note.at.slice(0, 16) + note.text));
     // Nor is the line that started a run repeated once that run's record is in hand.
-    const prompts = new Set(Object.values(details).filter((d): d is ExecutionRun => d !== "failed").map((d) => d.prompt.trim()));
-    const echoes = local.filter((item) => !(item.type === "user" && (noteKeys.has(item.at.slice(0, 16) + item.text) || prompts.has(item.text.trim()))));
+    // And an echo that announced a run — the line, and "sent to…" — goes the moment that
+    // run is on record: the record is drawn in its place, at the server's time.
+    const onRecord = new Set((runs ?? []).map((run) => run.run_id));
+    const echoes = local.filter((item) => {
+      if ((item.type === "user" || item.type === "auto") && item.runId !== undefined && onRecord.has(item.runId)) return false;
+      return !(item.type === "user" && noteKeys.has(item.at.slice(0, 16) + item.text));
+    });
     const all: (StreamItem<RunSummary, AttentionItem> | LocalItem)[] = [...items, ...notes, ...echoes];
     return all.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
-  }, [items, notes, local, details]);
+  }, [items, notes, local, runs]);
   const openGates = gates === null ? null : gates.filter((item) => item.state === "open").length;
   // What is running now comes from the dedicated active-run read, never inferred from
   // the history page: an old run still running can be pushed out of that page.
@@ -254,6 +260,11 @@ export function ProjectStream({
     setLocal((current) => current.map((item) => (item.key === key ? ({ ...item, ...change } as LocalItem) : item)));
 
   const taskOf = (taskId: string) => tasks.find((task) => task.task_id === taskId) ?? null;
+  /** The line the person typed, when the run carried a preamble or a drafted seed; else the prompt. */
+  const displayPromptOf = (run: ExecutionRun): string => {
+    const shown = run.result_metadata?.display_prompt;
+    return typeof shown === "string" && shown.trim() !== "" ? shown.trim() : run.prompt.trim();
+  };
   const seedFor = (row: PlanRow): string => {
     const task = taskOf(row.task_id);
     const seed = seedContinuePrompt({
@@ -334,10 +345,11 @@ export function ProjectStream({
       const stop = await ensureWorkspace(adapter);
       if (stop !== null) throw new Error(stop);
       const fresh = await getTask(row.task_id);
-      await createRun({ task_id: row.task_id, adapter, prompt: seed, timeout_seconds: CONTINUE_TIMEOUT_SECONDS, expected_task_version: fresh.version, actor: "user" });
+      const at = now();
+      const run = await createRun({ task_id: row.task_id, adapter, kind: "work", prompt: seed, metadata: { display_prompt: t("workspace.stream.promptSummary", { step: row.step }) }, timeout_seconds: CONTINUE_TIMEOUT_SECONDS, expected_task_version: fresh.version, actor: "user" });
       if (!alive.current) return;
       patch(key, { started: true, editing: false });
-      push({ type: "auto", key: `k${Date.now()}`, at: now(), text: t("workspace.stream.compose.sent", { adapter: adapterLabel(adapter), step: row.step }) });
+      push({ type: "auto", key: `k${Date.now()}`, at, text: t("workspace.stream.compose.sent", { adapter: adapterLabel(adapter), step: row.step }), runId: run.run_id });
     } catch (err) {
       if (!alive.current) return;
       patch(key, { error: err instanceof Error ? err.message : String(err) });
@@ -388,14 +400,17 @@ export function ProjectStream({
         const stop = await ensureWorkspace(adapter);
         if (stop !== null) { setNotice({ text: stop, tone: "bad" }); return; }
         const fresh = await getTask(target.step.task_id);
-        await createRun({
+        const at = now();
+        const run = await createRun({
           task_id: target.step.task_id, adapter, kind: "chat",
+          // The preamble is for the agent; what the person typed is what the stream shows.
           prompt: `${t("workspace.stream.compose.askPreamble")}\n\n${intent.text}`,
+          metadata: { display_prompt: intent.text },
           timeout_seconds: CONTINUE_TIMEOUT_SECONDS, expected_task_version: fresh.version, actor: "user",
         });
         if (!alive.current) return;
-        push({ type: "user", key: `u${Date.now()}`, at: now(), text: echo });
-        push({ type: "auto", key: `k${Date.now()}`, at: now(), text: t("workspace.stream.compose.asked", { adapter: adapterLabel(adapter) }) });
+        push({ type: "user", key: `u${Date.now()}`, at, text: echo, runId: run.run_id });
+        push({ type: "auto", key: `k${Date.now()}`, at, text: t("workspace.stream.compose.asked", { adapter: adapterLabel(adapter) }), runId: run.run_id });
         setDraft("");
         void load();
         return;
@@ -411,10 +426,11 @@ export function ProjectStream({
       const stop = await ensureWorkspace(adapter);
       if (stop !== null) { setNotice({ text: stop, tone: "bad" }); return; }
       const fresh = await getTask(target.step.task_id);
-      await createRun({ task_id: target.step.task_id, adapter, kind: "work", prompt: intent.text, timeout_seconds: CONTINUE_TIMEOUT_SECONDS, expected_task_version: fresh.version, actor: "user" });
+      const at = now();
+      const run = await createRun({ task_id: target.step.task_id, adapter, kind: "work", prompt: intent.text, timeout_seconds: CONTINUE_TIMEOUT_SECONDS, expected_task_version: fresh.version, actor: "user" });
       if (!alive.current) return;
-      push({ type: "user", key: `u${Date.now()}`, at: now(), text: echo });
-      push({ type: "auto", key: `k${Date.now()}`, at: now(), text: t("workspace.stream.compose.sent", { adapter: adapterLabel(adapter), step: target.step.step }) });
+      push({ type: "user", key: `u${Date.now()}`, at, text: echo, runId: run.run_id });
+      push({ type: "auto", key: `k${Date.now()}`, at, text: t("workspace.stream.compose.sent", { adapter: adapterLabel(adapter), step: target.step.step }), runId: run.run_id });
       setDraft("");
       void load(); onChanged();
     } catch (err) {
@@ -545,7 +561,16 @@ export function ProjectStream({
                 {record && record.prompt.trim() !== "" && (
                   <div className="ml-auto w-fit min-w-0 max-w-[56ch] rounded-xl border border-r-4 border-r-primary bg-primary/5 px-3 py-2 text-[14px] leading-relaxed">
                     <div className="mb-1 font-mono text-[10px] text-muted-foreground">{t("workspace.stream.you")} · {relTime(record.queued_at, t)}</div>
-                    <Prose text={record.prompt} />
+                    {displayPromptOf(record) === record.prompt.trim()
+                      ? <Prose text={record.prompt} />
+                      : (
+                        /* What the person typed (or "the prompt for step N"); the text the
+                           agent actually received is one fold away, not hidden. */
+                        <details>
+                          <summary className="cursor-pointer">{displayPromptOf(record)}</summary>
+                          <div className="mt-2 text-[12px] text-muted-foreground"><Prose text={record.prompt} /></div>
+                        </details>
+                      )}
                   </div>
                 )}
                 {runCard(item.unit.run, item.step, item.unit.nested)}
