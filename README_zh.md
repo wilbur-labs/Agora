@@ -43,6 +43,15 @@ $env:AGORA_CONTROL_PLANE_TOKEN = "请替换为足够长的随机密钥"
 uv run uvicorn agora.api.app:app --host 127.0.0.1 --port 8000
 ```
 
+之后每天只需要一步（后端单进程托管已构建的前端，不用再起 `pnpm dev`）：
+
+```powershell
+.\agora.ps1 up          # 起后端、等 /health、打开浏览器；已在跑则只开浏览器
+.\agora.ps1 down        # 停掉；端口被别的程序占着时不会误杀
+.\agora.ps1 status      # 在不在跑、前端构建是否落后于源码
+.\agora.ps1 shortcut    # 在桌面放一个「Agora」快捷方式，双击即 up
+```
+
 打开 `http://127.0.0.1:8000/portfolio` 看关注优先看板，或 `http://127.0.0.1:8000/control-plane` 看已鉴权的任务控制台。填项目 `agora` 和同一个 bearer token。从这里你可以新建项目（它会得到自己的文件夹和隔离的 agent 工作区）、指定它的开发与评审 agent、并运行任务。
 
 不调用任何 AI provider、也不碰配置的数据库，验证完整的正式控制路径：

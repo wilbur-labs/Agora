@@ -188,6 +188,7 @@ UI 直接读得到）；验收线按用户决定不复制，见 `W9-mockup-align
 2. 装依赖（都不入库）：`cd backend && uv sync --frozen --all-extras`；
    `cd frontend && corepack pnpm install --frozen-lockfile`。
 3. 起服务：`backend/.venv/Scripts/uvicorn.exe agora.api.app:app --host 127.0.0.1 --port 8000`
+   —— 日常直接 `.\agora.ps1 up`（同一件事，外加等 /health 与开浏览器；`down` / `status` / `logs` / `shortcut` 见脚本头注释）
    （后端已挂载前端 build 产物，所以先 `pnpm build` 后直接开 `http://127.0.0.1:8000` 就能看界面）。
 4. 从「一、W9 剩余」的第 1 项开始 —— 先花 10 分钟核实 Today 大卡的字段可读性，再动手。
 5. 每一刀收口：窄范围测试 → `pnpm lint` + `tsc` + `build` → **独立评审** → triage → commit → push →

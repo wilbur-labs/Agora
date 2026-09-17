@@ -69,6 +69,16 @@ $env:AGORA_CONTROL_PLANE_TOKEN = "replace-with-a-long-random-secret"
 uv run uvicorn agora.api.app:app --host 127.0.0.1 --port 8000
 ```
 
+On Windows, day-to-day use is one command (the backend serves the built frontend, so
+no `pnpm dev` is needed):
+
+```powershell
+.\agora.ps1 up          # start the backend, wait for /health, open the browser
+.\agora.ps1 down        # stop it (never kills a non-Agora process on the port)
+.\agora.ps1 status      # running? is frontend/out older than frontend/src?
+.\agora.ps1 shortcut    # put an "Agora" shortcut on the Desktop that runs up
+```
+
 Open `http://127.0.0.1:8000/portfolio` for the attention-first board, or
 `http://127.0.0.1:8000/control-plane` for the authenticated task console. Use
 project `agora` and the same bearer token. From there you can create a project

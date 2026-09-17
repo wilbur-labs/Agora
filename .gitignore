@@ -41,6 +41,9 @@ agora-workspace/
 nohup.out
 *.log
 
+# agora.ps1 launcher state (pid file, backend logs)
+.agora/launcher/
+
 # Runtime project workspaces (created under projects_base, e.g. <repo>/projects).
 # Anchored to the repo root so it never matches source dirs like backend/agora/projects.
 /projects/
