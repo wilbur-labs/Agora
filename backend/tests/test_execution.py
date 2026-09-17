@@ -355,6 +355,7 @@ def test_execution_adapter_capability_api(monkeypatch, tmp_path):
             "supports_tool_approval": True,
             "supports_user_questions": False,
             "detail": "Stable command and file approvals are delivered through Codex app-server; user questions remain experimental.",
+            "remote": None,  # runs on this machine (W3-a U5: a remote adapter names its host here)
         }]
     finally:
         app.dependency_overrides.clear()

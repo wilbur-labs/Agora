@@ -102,6 +102,9 @@ export interface ProjectNavProps {
    */
   view?: string;
   onSelectView?: (view: string) => void;
+  /** Where each executor runs, from the adapters read; `null` target = this machine.
+   *  Absent or empty when that read has not landed or failed. */
+  environments?: readonly { adapter: string; target: string | null }[];
 }
 
 /** Row → the centre view it opens. Rows without one state their count and stop. */
@@ -180,6 +183,7 @@ export function ProjectNav({
   header,
   view,
   onSelectView,
+  environments,
 }: ProjectNavProps) {
   const { t } = useI18n();
   const [otherOpen, setOtherOpen] = useState(false);
@@ -286,9 +290,27 @@ export function ProjectNav({
             <div className="px-4 pb-1 pt-3 text-[10px] uppercase tracking-wide text-muted-foreground">
               {t("workspace.nav.environment")}
             </div>
-            <p className="px-4 pb-1 text-[11px] leading-snug text-muted-foreground">
-              {t("workspace.nav.environmentUnknown")}
-            </p>
+            {/* Where each executor runs, read from its configuration (W3-a U5): a remote
+                adapter names its host, a local one says this machine. No registry of
+                environments exists yet, and when the list could not be read the column
+                says that rather than "local". */}
+            {environments && environments.length > 0 ? (
+              <>
+                <p className="px-4 pb-1 text-[11px] leading-snug text-muted-foreground">{t("workspace.nav.environmentByAdapter")}</p>
+                {environments.map((row) => (
+                  <div key={row.adapter} className="flex justify-between gap-2 px-4 py-1 text-[12px] text-muted-foreground">
+                    <span>{row.adapter}</span>
+                    <b className="min-w-0 truncate font-mono text-[11px] font-medium text-foreground" title={row.target ?? undefined}>
+                      {row.target ?? t("workspace.nav.environmentLocal")}
+                    </b>
+                  </div>
+                ))}
+              </>
+            ) : (
+              <p className="px-4 pb-1 text-[11px] leading-snug text-muted-foreground">
+                {t("workspace.nav.environmentUnknown")}
+              </p>
+            )}
           </>
         )}
 

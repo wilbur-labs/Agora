@@ -7,7 +7,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from .models import AdapterCapability
+from .models import AdapterCapability, RemoteTarget
 
 
 #: SSH host-key verification mode (contract config-and-tests.py). ``strict`` is the
@@ -145,6 +145,17 @@ class ExecutionAdapter:
         return workspaces[self.workspace_key].expanduser().resolve()
 
     def capability(self) -> AdapterCapability:
+        """What this adapter can do, and where it runs (W3-a U5): a remote adapter
+        names its host, account and project root — never the credential reference."""
+        base = self._capability_base()
+        if self.remote is None:
+            return base
+        return base.model_copy(update={"remote": RemoteTarget(
+            host=self.remote.ssh_host, port=self.remote.ssh_port, user=self.remote.ssh_user,
+            project_root=self.remote.remote_project_root,
+        )})
+
+    def _capability_base(self) -> AdapterCapability:
         if self.bridge_mode == "codex_app_server":
             return AdapterCapability(
                 name=self.name, execution_mode=self.bridge_mode, attention_mode="bidirectional",

@@ -69,3 +69,6 @@ backend/.pytest-*
 # and pointing that at the real database is the hazard backend/tests/conftest.py
 # describes.
 .live-test-tmp/
+
+# Claude Code's per-machine permission grants: never the repository's (AGENTS.md).
+.claude/settings.local.json

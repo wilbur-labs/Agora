@@ -28,6 +28,7 @@ import {
 } from "@/lib/control-plane";
 import {
   createRun, getRun, getRunDeliverables, listActiveProjectRuns, listExecutionAdapters, listRuns,
+  remoteTargetLabel,
   type AdapterCapability, type ExecutionAdapter, type ExecutionRun, type RunSummary,
 } from "@/lib/execution";
 import { CONTINUE_ADAPTER, CONTINUE_TIMEOUT_SECONDS, provisionResultGate, seedContinuePrompt } from "@/lib/continue-run";
@@ -374,6 +375,11 @@ export function ProjectStream({
 
   // --- the box ---------------------------------------------------------------------
   const adapterLabel = (name: string) => te("adapter", name);
+  /** Where an adapter runs (W3-a U5): the host from its configuration, or this machine. */
+  const envLabel = (name: string): string => {
+    const target = remoteTargetLabel(adapters?.find((item) => item.name === name)?.remote);
+    return target ? t("workspace.stream.compose.envRemote", { target }) : t("workspace.stream.compose.envLocal");
+  };
   const target = dispatchTargetOf(steps, busyTasks, rowsWhole);
   const send = async () => {
     const intent = composeIntentOf(draft);
@@ -508,6 +514,8 @@ export function ProjectStream({
           <span>{step === null ? t("workspace.stream.run.stepUnknown") : t("workspace.stream.run.step", { step })}</span>
           {run.role === "review" && <span className="rounded border px-1 text-[10px] uppercase tracking-wide">{t("workspace.stream.run.review")}</span>}
           {run.role === "chat" && <span className="rounded border px-1 text-[10px] uppercase tracking-wide">{t("workspace.stream.run.chat")}</span>}
+          {/* Where THIS run ran, from its record — not where its adapter points today. */}
+          {remoteTargetLabel(run.remote) && <span className="rounded border px-1 font-mono text-[10px]" title={run.remote?.workspace ?? undefined}>{remoteTargetLabel(run.remote)}</span>}
           {statePill(run)}
           {nested.length > 0 && <span className="text-[11px]">{t("workspace.stream.run.nested", { count: nested.length })}</span>}
           {because && <span className="text-[11px] italic">{t(`workspace.stream.run.unplaced.${because}`)}</span>}
@@ -741,7 +749,7 @@ export function ProjectStream({
           >
             {(adapters ?? [{ name: adapter } as AdapterCapability]).map((item) => <option key={item.name} value={item.name}>{adapterLabel(item.name)}</option>)}
           </select>
-          <span className="rounded-md border px-2 py-1">{t("workspace.stream.compose.envLocal")}</span>
+          <span className="rounded-md border px-2 py-1" title={t("workspace.stream.compose.envTitle")}>{adapters === null ? "—" : envLabel(adapter)}</span>
           <span className="min-w-0 flex-1 truncate">
             {composeIntentOf(draft)?.kind === "dispatch"
               ? (target.kind === "step" ? t("workspace.stream.compose.to", { step: target.step.step, title: target.step.title })

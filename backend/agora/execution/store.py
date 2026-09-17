@@ -24,6 +24,7 @@ from .models import (
     REVIEWS_RUN_KEY,
     ROLE_CHAT,
     ROLE_KEY,
+    remote_target_public,
     ROLE_REVIEW,
     ROLE_WORKER,
     RunState,
@@ -1097,7 +1098,7 @@ class ExecutionStore:
         run_id: str,
         *,
         expected_version: int,
-        pid: int,
+        pid: int | None,
         command: list[str] | None = None,
     ) -> ExecutionRun:
         """Record the process behind a RUNNING run.
@@ -2121,4 +2122,5 @@ class ExecutionStore:
             finished_at=row["finished_at"], exit_code=row["exit_code"],
             role=role_of(metadata),
             reviews_run_id=_reviews_link(row["result_metadata"]),
+            remote=remote_target_public(metadata),
         )

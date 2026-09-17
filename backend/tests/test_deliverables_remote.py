@@ -335,3 +335,65 @@ def test_handoff_git_failure_raises():
     d = RemoteDeliverables(env, _FakeFS())
     with pytest.raises(OSError):
         _run(d.handoff_commit(Path(WS), "m"))
+
+
+
+# --- W3-a U5 review round (kiro): identity, HEAD, renames, dirty-then-committed ---------
+
+def _sha(path_and_digest: dict) -> CommandResult:
+    lines = "".join(f"{digest}  {path}\n" for path, digest in path_and_digest.items())
+    return CommandResult("completed", returncode=0, stdout=lines, stderr="")
+
+
+def test_baseline_without_a_readable_head_is_no_baseline():
+    env = _FakeEnv(git={
+        ("status", "--porcelain=v1", "-z", "--untracked-files=all"): _status(""),
+        ("rev-parse", "HEAD"): CommandResult("completed", returncode=128, stdout="", stderr="fatal"),
+    })
+    d = RemoteDeliverables(env, _FakeFS())
+    assert _run(d.baseline_state(Path(WS))) is None
+
+
+def test_a_dirty_file_the_run_committed_is_recorded_as_committed_not_as_no_longer_differs():
+    env = _FakeEnv(git={
+        ("status", "--porcelain=v1", "-z", "--untracked-files=all"): _status(""),  # clean now
+        ("rev-parse", "HEAD"): CommandResult("completed", returncode=0, stdout="h2\n", stderr=""),
+        ("diff", "--name-status", "-z", "h1..h2"): CommandResult("completed", returncode=0, stdout="M\x00a.py\x00", stderr=""),
+        ("sha256sum", "--", f"{WS}/a.py"): _sha({f"{WS}/a.py": "b" * 64}),
+    })
+    d = RemoteDeliverables(env, _FakeFS())
+    baseline = ({"a.py": {"status": "modified", "sha256": "a" * 64}}, True, "h1")
+    snapshot = _run(d.snapshot_changes(Path(WS), baseline))
+    assert [(f["path"], f["status"], f.get("committed_during_run"), f["sha256"]) for f in snapshot["files"]] == [
+        ("a.py", "modified", True, "b" * 64),
+    ]
+
+
+def test_a_committed_rename_records_the_old_path_as_deleted():
+    env = _FakeEnv(git={
+        ("status", "--porcelain=v1", "-z", "--untracked-files=all"): _status(""),
+        ("rev-parse", "HEAD"): CommandResult("completed", returncode=0, stdout="h2\n", stderr=""),
+        ("diff", "--name-status", "-z", "h1..h2"): CommandResult("completed", returncode=0, stdout="R100\x00old.json\x00new.json\x00", stderr=""),
+        ("sha256sum", "--", f"{WS}/new.json"): _sha({f"{WS}/new.json": "c" * 64}),
+    })
+    d = RemoteDeliverables(env, _FakeFS())
+    snapshot = _run(d.snapshot_changes(Path(WS), ({}, True, "h1")))
+    assert [(f["path"], f["status"]) for f in snapshot["files"]] == [("new.json", "renamed"), ("old.json", "deleted")]
+
+
+def test_digests_fail_closed_when_a_hashed_line_does_not_map_back():
+    env = _FakeEnv(git={
+        ("sha256sum", "--", f"{WS}/a.py", f"{WS}/b.py"): CommandResult(
+            "completed", returncode=0, stdout=f"{'d' * 64}  {WS}/a.py\ngarbage line\n", stderr="",
+        ),
+    })
+    d = RemoteDeliverables(env, _FakeFS())
+    assert _run(d._digests(Path(WS), ["a.py", "b.py"])) is None
+    # A GNU-escaped name is unescaped back to git's spelling.
+    env2 = _FakeEnv(git={
+        ("sha256sum", "--", f"{WS}/we\\ird.py"): CommandResult(
+            "completed", returncode=0, stdout=f"\\{'e' * 64}  {WS}/we\\\\ird.py\n", stderr="",
+        ),
+    })
+    d2 = RemoteDeliverables(env2, _FakeFS())
+    assert _run(d2._digests(Path(WS), ["we\\ird.py"])) == {"we\\ird.py": "e" * 64}

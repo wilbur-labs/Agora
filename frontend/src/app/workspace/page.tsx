@@ -46,7 +46,10 @@ import {
   getRunDeliverables,
   listActiveProjectRuns,
   listActiveRuns,
+  listExecutionAdapters,
   listRuns,
+  remoteTargetLabel,
+  type AdapterCapability,
   TERMINAL_RUN_STATES,
   type RunDeliverables,
   type ExecutionAdapter,
@@ -242,6 +245,25 @@ export default function WorkspacePage() {
   // Which of the project's views the centre shows (W12): the conversation, or one of the
   // left column's rows opened in place. Never a route.
   const [view, setView] = useState<ProjectView>("chat");
+  // Where each executor runs (W3-a U5), from the adapters read: a remote adapter names
+  // its host, a local one this machine. `null` until read; a failed read stays null, so
+  // the columns say nothing rather than "local".
+  const [adapterCaps, setAdapterCaps] = useState<AdapterCapability[] | null>(null);
+  useEffect(() => {
+    const ctrl = new AbortController();
+    listExecutionAdapters(ctrl.signal)
+      .then((items) => { if (!ctrl.signal.aborted) setAdapterCaps(items); })
+      .catch(() => {});
+    return () => ctrl.abort();
+  }, []);
+  const environments = useMemo(
+    () => adapterCaps?.map((item) => ({ adapter: item.name, target: remoteTargetLabel(item.remote) })) ?? [],
+    [adapterCaps],
+  );
+  const envOf = useMemo(() => {
+    if (adapterCaps === null) return undefined;
+    return (name: string) => remoteTargetLabel(adapterCaps.find((item) => item.name === name)?.remote) ?? t("workspace.nav.environmentLocal");
+  }, [adapterCaps, t]);
   /** A `?task=` from the URL, held until the tasks read can name its project. */
   const [pendingTaskId, setPendingTaskId] = useState<string | null>(null);
   // The project's runs for the "runs" view — its own read, asked for only while that
@@ -741,6 +763,7 @@ export default function WorkspacePage() {
         }
         view={view}
         onSelectView={showView}
+        environments={environments}
         otherWorkspaces={
           <WorkspaceTasksPanel
             sources={workspaceSources}
@@ -878,6 +901,7 @@ export default function WorkspacePage() {
           activeRuns={projectActiveReach === "complete" ? projectActiveRuns : null}
           openGates={attentionReach === "complete" ? attention.filter((item) => item.project_id === currentProjectId && item.state === "open").length : null}
           onSelectView={showView}
+          envOf={envOf}
           draft={(order) => (draftState !== null
             ? <DraftPanel step={draftState.step} record={draftState.record} freshKey={draftState.freshKey} t={t} middle={order} />
             : order)}

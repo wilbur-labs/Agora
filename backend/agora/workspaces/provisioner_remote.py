@@ -252,6 +252,13 @@ class RemoteWorkspaceProvisioner:
             finally:
                 self._active.discard(key)
 
+    async def status(self, project_id: str, adapter: str) -> WorkspaceStatus:
+        """The remote worktree's state for one adapter — the async counterpart of the
+        local provisioner's ``status``, asked on the host. Raises ``KeyError`` for an
+        unknown project or adapter, like the local one."""
+        project, workspace = await self._resolve(project_id, adapter)
+        return await self._inspect(project, adapter, workspace)
+
     async def is_ready_worktree(
         self, workspace: Path, project_root: Path, expected_branch: str
     ) -> bool:

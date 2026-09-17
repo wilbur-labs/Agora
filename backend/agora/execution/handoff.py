@@ -13,6 +13,8 @@ commit (if any) the workspace already has.
 """
 from __future__ import annotations
 
+import asyncio
+
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -26,6 +28,7 @@ from agora.workspaces.naming import worktree_branch
 
 from .deliverables import _GIT, list_changes, provisioned_worktree_check, ready_worktree_check
 from .dispatcher import ROLE_KEY, ROLE_WORKER
+from .remote_wiring import RemoteTargetMismatch, adapter_for_recorded_target, remote_components_for, remote_target_of
 from .models import RunState
 from .store import ExecutionStore
 
@@ -61,6 +64,66 @@ def _latest_worker_run(exec_store: ExecutionStore, task_id: str):
 
 def _run_git(env: Environment, workspace: Path, *args: str) -> CommandResult:
     return env.run([_GIT, "-C", str(workspace), *args], timeout=_GIT_TIMEOUT)
+
+
+async def _remote_handoff(adapter, projects: ProjectRegistry, worker, message: str):
+    """Commit a remote worker's worktree on its host: (commit, committed, files, note).
+    Nothing is committed unless the worktree is confirmed to be this run's provisioned
+    worktree there, and a worktree with nothing to commit says so rather than binding
+    an empty commit."""
+    components = remote_components_for(adapter, projects)
+    try:
+        ws_path = Path(worker.workspace)
+        expected_branch = worktree_branch(worker.project_id, worker.adapter)
+        try:
+            ready = await components.provisioner.is_ready_worktree(
+                ws_path, Path(components.config.remote_project_root), expected_branch,
+            )
+        except Exception as exc:  # noqa: BLE001 - reported, not raised: the task still moves on
+            return None, False, [], f"could not check the remote worker workspace: {type(exc).__name__}; nothing committed"
+        if not ready:
+            return None, False, [], (
+                "remote worker workspace could not be confirmed as this run's provisioned "
+                "worktree; nothing committed"
+            )
+        status = await components.deliverables.status_entries(ws_path)
+        if status is None:
+            # "Could not read" is not "clean": nothing is committed and nothing is bound.
+            return None, False, [], "could not read the remote worktree's status; nothing committed"
+        pending, truncated = status
+        if not pending:
+            # Clean — the run committed its own work, or changed nothing. The commit the
+            # worktree already has is what the task is bound to, as the local path does.
+            head = await components.deliverables.head_commit(ws_path)
+            note = "remote worktree was clean; bound the commit it already had" if head else (
+                "remote worktree was clean and its HEAD could not be read; nothing bound"
+            )
+            commit, committed, files = head, False, []
+        elif truncated:
+            return None, False, [], (
+                f"remote worktree has more than {MAX_FILES} changes; refusing to bind a handoff "
+                "whose file list would be incomplete"
+            )
+        else:
+            try:
+                result = await components.deliverables.handoff_commit(ws_path, message)
+            except Exception as exc:  # noqa: BLE001
+                return None, False, pending, f"remote commit failed: {type(exc).__name__}: {exc}"
+            files = [{"path": path, "status": "committed", "size": None} for path in result.get("files", [])]
+            commit, committed, note = result.get("commit"), True, None
+        if components.config.cleanup_worktree:
+            # Q5=C: the adapter asked for the worktree to go once handed off. Ownership is
+            # verified inside teardown; a failure is said in the note, never raised — the
+            # handoff itself has happened.
+            try:
+                await components.provisioner.teardown_worktree(worker.project_id, worker.adapter)
+            except Exception as exc:  # noqa: BLE001
+                note = f"{note + '; ' if note else ''}worktree cleanup failed: {type(exc).__name__}"
+            else:
+                note = f"{note + '; ' if note else ''}worktree removed after handoff (cleanup_worktree)"
+        return commit, committed, files, note
+    finally:
+        await components.aclose()
 
 
 def _commit_workspace(
@@ -140,6 +203,7 @@ def hand_off(
     task_id: str,
     *,
     actor: str,
+    adapters: dict | None = None,
 ) -> HandoffResult:
     """Commit the deliverable, bind the commit to the task, and mark it done."""
     task = task_store.get(task_id)
@@ -154,7 +218,23 @@ def hand_off(
     run_id = workspace_str = commit = note = None
     committed = False
     files: list[dict] = []
-    if worker is not None:
+    remote_target = remote_target_of(worker) if worker is not None else None
+    if worker is not None and remote_target is not None:
+        # The worker ran on another host (W3-a U5): the worktree to commit is there —
+        # the place the run recorded, not where its adapter points today. A fresh remote
+        # environment on a fresh loop: this function is synchronous and runs in a worker
+        # thread, and the remote collaborators hold one connection on one loop (CR-4).
+        run_id = worker.run_id
+        workspace_str = worker.workspace
+        try:
+            pinned = adapter_for_recorded_target((adapters or {}).get(worker.adapter), remote_target)
+        except RemoteTargetMismatch as exc:
+            commit, committed, files, note = None, False, [], f"{exc}; nothing committed"
+        else:
+            commit, committed, files, note = asyncio.run(_remote_handoff(
+                pinned, projects, worker, f"Deliver: {task.title}"[:500],
+            ))
+    elif worker is not None:
         run_id = worker.run_id
         workspace = Path(worker.workspace).expanduser().resolve()
         workspace_str = str(workspace)

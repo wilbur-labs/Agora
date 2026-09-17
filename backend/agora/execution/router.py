@@ -1,10 +1,13 @@
 """REST API for durable delivery execution runs."""
 from __future__ import annotations
 
+import asyncio
+import hashlib
+
 import mimetypes
 
 from functools import lru_cache
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Path as PathParam, Query, status
@@ -36,7 +39,9 @@ from .deliverables import (
     read_file,
     resolve_confined,
 )
+from . import deliverables as _deliverables_module
 from .dispatcher import ExecutionDispatcher, workspace_unavailable_reason
+from .remote_wiring import RemoteTargetMismatch, adapter_for_recorded_target, remote_components_for, remote_target_of
 from .handoff import HandoffError, hand_off
 from .models import (
     ACTIVE_RUN_STATES,
@@ -527,6 +532,9 @@ def run_deliverables(
         run = store.require(run_id)
     except RunNotFoundError:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Run not found") from None
+    remote_adapter = _remote_adapter_of(dispatcher, run)
+    if remote_adapter is not None:
+        return asyncio.run(_remote_run_deliverables(dispatcher, store, run, remote_adapter))
     workspace = Path(run.workspace).expanduser().resolve()
     if not dispatcher.is_workspace_readable(run.project_id, workspace):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Workspace is not readable")
@@ -586,6 +594,9 @@ def run_deliverable_content(
         run = store.require(run_id)
     except RunNotFoundError:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Run not found") from None
+    remote_adapter = _remote_adapter_of(dispatcher, run)
+    if remote_adapter is not None:
+        return asyncio.run(_remote_content(dispatcher, store, run, remote_adapter, path))
     workspace = Path(run.workspace).expanduser().resolve()
     if not dispatcher.is_workspace_readable(run.project_id, workspace):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Workspace is not readable")
@@ -616,6 +627,14 @@ def run_deliverable_raw(
         run = store.require(run_id)
     except RunNotFoundError:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Run not found") from None
+    remote_adapter = _remote_adapter_of(dispatcher, run)
+    if remote_adapter is not None:
+        raw = asyncio.run(_remote_raw(dispatcher, store, run, remote_adapter, path))
+        media_type = mimetypes.guess_type(path)[0] or "application/octet-stream"
+        return Response(content=raw, media_type=media_type, headers={
+            "Content-Security-Policy": "sandbox allow-scripts allow-forms allow-popups allow-modals;",
+            "X-Content-Type-Options": "nosniff",
+        })
     workspace = Path(run.workspace).expanduser().resolve()
     if not dispatcher.is_workspace_readable(run.project_id, workspace):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Workspace is not readable")
@@ -673,11 +692,13 @@ async def handoff_task(
     store: ExecutionStore = Depends(get_execution_store),
     task_store: TaskStore = Depends(get_task_store),
     registry: ProjectRegistry = Depends(get_project_registry),
+    dispatcher: ExecutionDispatcher = Depends(get_execution_dispatcher),
 ):
     """Commit a verified task's deliverable, bind the commit, and mark it done."""
     try:
         result = await run_in_threadpool(
             hand_off, task_store, store, registry, task_id, actor=actor,
+            adapters=dispatcher.adapters,
         )
     except HandoffError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from None
@@ -690,3 +711,107 @@ async def handoff_task(
         commit=result.commit, committed=result.committed, files=result.files,
         note=result.note,
     )
+
+
+# --- deliverables of a run that executed on another host (W3-a U5) ----------------------
+#
+# Read there, on a fresh remote environment per request (these endpoints are synchronous
+# and run in a worker thread; the remote collaborators hold one connection on one loop).
+# The local confinement checks (`is_workspace_readable`, `_require_ready_worktree`) read
+# this machine's filesystem and say nothing about a remote path; their remote
+# counterparts are asked on the host.
+
+def _remote_adapter_of(dispatcher: ExecutionDispatcher, run: ExecutionRun):
+    """The adapter, pinned to the place this run's own record says it executed — or
+    None for a run that executed here. An adapter that no longer reaches that place
+    is a 409, never a read from wherever it points today."""
+    target = remote_target_of(run)
+    if target is None:
+        return None
+    try:
+        return adapter_for_recorded_target(dispatcher.adapters.get(run.adapter), target)
+    except RemoteTargetMismatch as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from None
+
+
+async def _remote_ready(components, run: ExecutionRun) -> bool:
+    try:
+        return await components.provisioner.is_ready_worktree(
+            Path(run.workspace), Path(components.config.remote_project_root),
+            worktree_branch(run.project_id, run.adapter),
+        )
+    except Exception:  # noqa: BLE001 - "could not check" reads as not available, never as ready
+        return False
+
+
+async def _remote_run_deliverables(dispatcher: ExecutionDispatcher, store: ExecutionStore, run: ExecutionRun, adapter) -> dict:
+    base = {"run_id": run.run_id, "workspace": run.workspace}
+    snapshot = store.deliverable_snapshot(run.run_id)
+    if snapshot is None and run.state in TERMINAL_RUN_STATES:
+        return {
+            **base, "files": [], "source": "none",
+            "unavailable": "this run ended without a deliverable snapshot; its files are not recoverable",
+        }
+    components = remote_components_for(adapter, dispatcher.projects)
+    try:
+        ready = await _remote_ready(components, run)
+        if snapshot is not None:
+            return {
+                **base,
+                "files": snapshot.get("files") or [],
+                "truncated": bool(snapshot.get("truncated")),
+                "source": "snapshot",
+                "captured_at": run.finished_at,
+                "content_available": ready,
+            }
+        if not ready:
+            return {**base, "files": [], "source": "live", "unavailable": "remote workspace is not a provisioned worktree"}
+        return {**base, "files": await components.deliverables.list_changes(Path(run.workspace)), "source": "live"}
+    finally:
+        await components.aclose()
+
+
+async def _remote_content(dispatcher: ExecutionDispatcher, store: ExecutionStore, run: ExecutionRun, adapter, path: str) -> dict:
+    return preview_of(path, await _remote_raw(dispatcher, store, run, adapter, path))
+
+
+async def _remote_raw(dispatcher: ExecutionDispatcher, store: ExecutionStore, run: ExecutionRun, adapter, path: str) -> bytes:
+    """The bytes of one delivered file on the host, proven to be the run's.
+
+    A settled run's entry carries the content digest frozen at its snapshot; the file is
+    read once and served only if it still hashes to that — a later run in the same
+    worktree that rewrote the path gets a 409, never its bytes under the old run's card.
+    An entry with no digest (a deletion, "no longer differs", a directory) has nothing
+    to prove against and is not served. Only an *active* run, which has no snapshot
+    yet, is read live.
+    """
+    entry = _delivered_entry(store, run, path)
+    if entry is None and run.state in TERMINAL_RUN_STATES:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Deliverable not found")
+    expected = entry.get("sha256") if entry is not None else None
+    if entry is not None and not expected:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            "This entry recorded no content to serve (deleted, or not a file the run left behind)",
+        )
+    components = remote_components_for(adapter, dispatcher.projects)
+    try:
+        if not await _remote_ready(components, run):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Deliverable not found")
+        fs = components.filesystem
+        try:
+            base = PurePosixPath(Path(str(await fs.realpath(Path(run.workspace)))).as_posix())
+            target = PurePosixPath(Path(str(await fs.realpath(Path(run.workspace) / path))).as_posix())
+            if base != target and base not in target.parents:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "Deliverable not found")
+            raw = await fs.read_file(Path(str(target)), max_bytes=_deliverables_module.MAX_FILE_BYTES)
+        except (FileNotFoundError, PermissionError, OSError):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Deliverable not found") from None
+        if expected is not None and hashlib.sha256(raw).hexdigest() != str(expected):
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "This file changed after the run ended, so it no longer holds what the run delivered",
+            )
+        return raw
+    finally:
+        await components.aclose()

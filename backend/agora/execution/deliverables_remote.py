@@ -20,6 +20,7 @@ skips it).
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path, PurePosixPath
 
 from agora.environments import AsyncExecutionEnvironment, AsyncFilesystem
@@ -33,6 +34,7 @@ from agora.execution.security import redact_text
 
 _GIT = "git"
 _GIT_TIMEOUT = 10
+_HEX64 = re.compile(r"[0-9a-f]{64}")
 
 
 def _as_posix(path) -> str:
@@ -62,8 +64,99 @@ class RemoteDeliverables:
         entries, _truncated = result  # a best-effort view drops the truncation flag
         return entries
 
+    async def status_entries(self, workspace: Path) -> "tuple[list[dict], bool] | None":
+        """``git status`` on the remote as ``(entries, truncated)``, or ``None`` when git
+        could not answer — kept apart from ``[]`` so a caller can say "could not read"
+        instead of "clean"."""
+        return await self._status_entries(workspace)
+
+    async def head_commit(self, workspace: Path) -> str | None:
+        """``HEAD`` of the remote worktree, or ``None`` when git would not say."""
+        cwd = PurePosixPath(_as_posix(workspace))
+        result = await self.env.run(
+            [_GIT, "-C", str(cwd), "rev-parse", "HEAD"], timeout=_GIT_TIMEOUT, read_only=True,
+        )
+        if not result.ok:
+            return None
+        head = (result.stdout or "").strip()
+        return head or None
+
+    async def _digests(self, workspace: Path, paths: list[str]) -> "dict[str, str] | None":
+        """Content digests of ``paths`` in one round trip (``sha256sum`` on the host).
+        ``None`` when the command would not run at all; a path that could not be hashed
+        (deleted, a directory) is simply absent from the map."""
+        if not paths:
+            return {}
+        cwd = PurePosixPath(_as_posix(workspace))
+        result = await self.env.run(
+            ["sha256sum", "--", *[str(cwd / path) for path in paths]],
+            timeout=_GIT_TIMEOUT, read_only=True,
+        )
+        # Semantic success, not "the process ran": a timeout, a missing file or a
+        # partial read leaves ``sha256sum`` non-zero, and an incomplete map would let a
+        # file this run rewrote pass as unchanged. All or nothing.
+        if not result.ok:
+            return None
+        digests: dict[str, str] = {}
+        prefix = str(cwd).rstrip("/") + "/"
+        stdout = result.stdout or ""
+        for line in stdout.splitlines():
+            # GNU coreutils escapes a name holding a newline or backslash and marks the
+            # line with a leading backslash; undo that so the path matches git's.
+            escaped = line.startswith("\\")
+            if escaped:
+                line = line[1:]
+            if len(line) < 66:
+                continue
+            digest, _sep, name = line[:64], line[64:66], line[66:]
+            if not _HEX64.fullmatch(digest):
+                continue
+            name = name[1:] if name.startswith("*") else name
+            if escaped:
+                name = name.replace("\\n", "\n").replace("\\\\", "\\")
+            if name.startswith(prefix):
+                name = name[len(prefix):]
+            if name:
+                digests[name] = digest
+        # All or nothing once the tool answered: a line that did not parse back to a
+        # requested path is a digest we do not have, and an identity compared without
+        # it would let a rewritten file pass as unchanged.
+        if stdout.strip() and any(path not in digests for path in paths):
+            return None
+        return digests
+
+    @staticmethod
+    def _identity(item: dict, digests: dict[str, str]) -> dict:
+        """A comparable identity for one entry: its status and content digest. Without
+        a digest (a deletion, a directory) the status alone — the same fallback shape
+        the local ``_identity`` takes when it has nothing stronger."""
+        digest = digests.get(item["path"])
+        return {"status": item["status"], "sha256": digest} if digest else {"status": item["status"]}
+
+    async def baseline_state(self, workspace: Path) -> "tuple[dict[str, dict], bool, str | None] | None":
+        """The remote worktree *before* a run starts: ``path -> identity`` (status and
+        content digest), whether the read was whole, and ``HEAD``. ``None`` when the
+        worktree or the digests cannot be read — then the run's snapshot is ``None``
+        too, "could not establish", never "changed nothing". Mirrors the local
+        ``baseline_state``: a file modified before the run and modified again by it
+        differs by digest, and a run that commits is found by the moved HEAD."""
+        result = await self._status_entries(workspace)
+        if result is None:
+            return None
+        entries, truncated = result
+        digests = await self._digests(workspace, [e["path"] for e in entries if e["status"] != "deleted"])
+        if digests is None:
+            return None
+        before = {item["path"]: self._identity(item, digests) for item in entries}
+        head = await self.head_commit(workspace)
+        if head is None:
+            # Without the starting commit, a run that commits its work would later read
+            # as "changed nothing" from a clean tree. Not a baseline — fail closed.
+            return None
+        return (before, not truncated, head)
+
     async def snapshot_changes(
-        self, workspace: Path, baseline: "tuple[dict, bool] | None"
+        self, workspace: Path, baseline: "tuple | None"
     ) -> "dict | None":
         """Freeze what THIS run delivered, subtracting a pre-run ``baseline``.
 
@@ -74,45 +167,55 @@ class RemoteDeliverables:
         when more than ``MAX_FILES`` files changed: the list is then "at least these",
         and a path absent from it is UNKNOWN, not known-not-delivered.
 
-        ``baseline``'s three shapes are three distinct answers, as local:
-          - ``(before, complete=True)`` — subtract it; entries unchanged since then
-            belong to an earlier run.
-          - ``(before, complete=False)`` — the pre-run state itself hit MAX_FILES and
-            cannot be subtracted reliably → ``None`` (not ``[]``: we cannot prove what
-            this run owns, which is different from proving it owns nothing).
-          - ``None`` — pre-run state unreadable (git error/timeout); a reused worktree
-            may hold an earlier run's files, indistinguishable without the baseline →
-            ``None``.
-
-        Identity is (path, status): the remote content digest is U4's read path, not
-        recomputed per entry over SSH for every snapshot."""
+        ``baseline``'s shapes are distinct answers, as local: ``(before, complete=True,
+        head)`` — subtract it, and files committed since ``head`` are this run's too;
+        ``complete=False`` — the pre-run state itself hit MAX_FILES → ``None``;
+        ``None`` — pre-run state unreadable → ``None``. Each delivered entry carries its
+        content digest so the file can later be proven to be what the run left.
+        """
         if baseline is None:
             return None
-        before, complete = baseline[0], baseline[1]
+        before, complete, *recorded = baseline
+        head_before = recorded[0] if recorded else None
         if not complete:
             return None
         result = await self._status_entries(workspace)
         if result is None:
             return None
         entries, truncated = result
+        # What the run committed is its delivery as much as what it left uncommitted,
+        # and it is asked first: a path that was dirty before the run and is clean now
+        # because the run committed it is a committed file, not "no longer differs".
+        committed: list[dict] = []
+        if head_before is not None:
+            head_now = await self.head_commit(workspace)
+            if head_now is None:
+                return None  # cannot tell whether history moved — not "it did not"
+            if head_now != head_before:
+                found = await self._committed_between(workspace, head_before, head_now)
+                if found is None:
+                    return None
+                committed = found
+        committed_paths = {item["path"] for item in committed}
+        to_hash = [e["path"] for e in entries if e["status"] != "deleted"]
+        to_hash += [c["path"] for c in committed if c["status"] != "deleted" and c["path"] not in to_hash]
+        digests = await self._digests(workspace, to_hash)
+        if digests is None:
+            return None
         delivered: list[dict] = []
         for item in entries:
-            if before.get(item["path"]) == item["status"]:
+            identity = self._identity(item, digests)
+            prior = before.get(item["path"])
+            # A baseline written before identities carried digests holds the bare status
+            # string; it is compared as it was recorded, not treated as "changed".
+            unchanged = prior == item["status"] if isinstance(prior, str) else prior == identity
+            if unchanged:
                 continue  # unchanged since before this run started
-            delivered.append(item)
-        # A path the baseline held and the final list does not is a change too — but
-        # WHY it left the list decides what the row says, exactly as local
-        # snapshot_changes: the run may have deleted it, or put it back the way HEAD
-        # has it (reverted/committed) so it still exists but no longer differs, or it
-        # may be unreadable. Calling a still-present file "deleted" would tell review
-        # and any restore step a file that is sitting right there should be gone. A
-        # remote probe (SFTP lstat, three-state) distinguishes the three. Skipped when
-        # truncated: an absent path may just be one that did not fit, and inventing a
-        # deletion is worse than silence.
+            delivered.append({**item, "sha256": identity.get("sha256")})
         if not truncated:
             present = {item["path"] for item in entries}
             for path in sorted(before):
-                if path in present:
+                if path in present or path in committed_paths:
                     continue
                 probe = await self.env.probe(PurePosixPath(_as_posix(workspace)) / path)
                 if probe.unknown:
@@ -121,9 +224,50 @@ class RemoteDeliverables:
                     status = "deleted"
                 else:
                     status = "no longer differs"
-                delivered.append({"path": path, "status": status})
+                delivered.append({"path": path, "status": status, "sha256": None})
+        listed = {item["path"] for item in delivered}
+        for item in committed:
+            if item["path"] in listed:
+                continue  # still dirty too: the live entry, with its current digest, stands
+            delivered.append({**item, "sha256": digests.get(item["path"]) if item["status"] != "deleted" else None})
         delivered.sort(key=lambda item: item["path"])
         return {"files": delivered, "truncated": truncated}
+
+    async def _committed_between(self, workspace: Path, before: str, now: str) -> "list[dict] | None":
+        """Files whose committed content changed between two commits, labelled as
+        committed during the run. ``None`` when git would not compare them."""
+        cwd = PurePosixPath(_as_posix(workspace))
+        result = await self.env.run(
+            [_GIT, "-C", str(cwd), "diff", "--name-status", "-z", f"{before}..{now}"],
+            timeout=_GIT_TIMEOUT, read_only=True,
+        )
+        if not result.ok:
+            return None
+        fields = [field for field in (result.stdout or "").split("\0") if field]
+        committed: list[dict] = []
+        index = 0
+        while index + 1 < len(fields):
+            status, path = fields[index][:1], fields[index + 1]
+            index += 2
+            if status in ("R", "C") and index < len(fields):
+                old_path, path = path, fields[index]
+                index += 1
+                if status == "R":
+                    # A rename is a deletion of the old path as much as an arrival at
+                    # the new one; a reader who only sees the new name never learns
+                    # the old file is gone.
+                    committed.append({
+                        "path": old_path, "status": "deleted", "size": None, "sha256": None,
+                        "committed_during_run": True,
+                    })
+            committed.append({
+                "path": path,
+                "status": _STATUS_LABELS.get(status, status or "changed"),
+                "size": None,
+                "sha256": None,
+                "committed_during_run": True,
+            })
+        return committed
 
     async def read_file(self, workspace: Path, path: str) -> dict:
         """A bounded, redacted UTF-8 preview of one file confined to the remote

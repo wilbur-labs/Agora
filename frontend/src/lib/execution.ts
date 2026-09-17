@@ -18,6 +18,16 @@ export type RunState =
 
 export type ExecutionAdapter = "codex" | "claude" | "kiro";
 
+/** Where a remote adapter runs (W3-a U5): host, account and project root there. */
+export interface RemoteTarget {
+  host: string;
+  port: number;
+  user: string;
+  project_root: string;
+  /** The worktree there, for a run's record; absent on an adapter's capability. */
+  workspace?: string | null;
+}
+
 export interface AdapterCapability {
   name: ExecutionAdapter;
   execution_mode: string;
@@ -25,6 +35,14 @@ export interface AdapterCapability {
   supports_tool_approval: boolean;
   supports_user_questions: boolean;
   detail: string;
+  /** `null` (or absent, from an older server) for an adapter that runs on this machine. */
+  remote?: RemoteTarget | null;
+}
+
+/** The one line that says where an adapter runs: "this machine" or user@host[:port]. */
+export function remoteTargetLabel(target: RemoteTarget | null | undefined): string | null {
+  if (!target) return null;
+  return `${target.user}@${target.host}${target.port !== 22 ? `:${target.port}` : ""}`;
 }
 
 export const TERMINAL_RUN_STATES: ReadonlySet<RunState> = SETTLED_RUN_STATES as ReadonlySet<RunState>;
@@ -47,6 +65,8 @@ export interface RunSummary {
    */
   role: string;
   reviews_run_id: string | null;
+  /** Where the run executed, from its own record; `null`/absent for a local run. */
+  remote?: RemoteTarget | null;
 }
 
 export interface ExecutionRun extends RunSummary {

@@ -46,6 +46,12 @@ ROLE_REVIEW = "review"
 #: mean this — ``role_of`` still reads absence as ``worker``, the role that gates.
 ROLE_CHAT = "chat"
 REVIEWS_RUN_KEY = "reviews_run_id"
+#: Where a remote run executed — host, account, worktree, project root — written by
+#: ``queue`` from the adapter's configuration at that moment and never again (W3-a U5).
+#: Every later read of the run (deliverables, handoff) routes by THIS, not by whatever
+#: the adapter is configured to today: a host or path changed after the fact must not
+#: make an old run's files be read from a new place, or a remote path be read locally.
+REMOTE_TARGET_KEY = "agora_remote"
 
 #: Fixed title of the "no cross-review conclusion is on record" blocker raised by
 #: ``ExecutionDispatcher._block_review_owed``. Fixed on purpose: it is the
@@ -114,7 +120,7 @@ TASK_VERSION_KEY = "task_version"
 #:   *worker* run, the derived predicate concluded no review was owed, and the next
 #:   worker run walked straight past the review gate. A gate defeated by a field
 #:   being cleared somewhere else entirely.
-IDENTITY_METADATA_KEYS = frozenset({ROLE_KEY, REVIEWS_RUN_KEY, TASK_VERSION_KEY})
+IDENTITY_METADATA_KEYS = frozenset({ROLE_KEY, REVIEWS_RUN_KEY, TASK_VERSION_KEY, REMOTE_TARGET_KEY})
 
 #: Metadata keys the control plane owns, refused in client input. The same set as
 #: ``IDENTITY_METADATA_KEYS`` **by construction, not by coincidence**: a key is
@@ -250,6 +256,32 @@ class ExecutionRun(BaseModel):
     reviews_run_id: str | None = None
 
 
+class RemoteTarget(BaseModel):
+    """Where a remote adapter runs, or where a run ran, as the UI may show it: the host,
+    the account, the project root and (for a run) the worktree there. Never the
+    credential reference or the known-hosts path."""
+    host: str
+    port: int
+    user: str
+    project_root: str
+    workspace: str | None = None
+
+
+def remote_target_public(metadata: dict[str, Any] | None) -> "RemoteTarget | None":
+    """The place a stored run executed, from its identity metadata (``REMOTE_TARGET_KEY``),
+    in the public shape; ``None`` for a local run or a record this build cannot read."""
+    raw = (metadata or {}).get(REMOTE_TARGET_KEY)
+    if not isinstance(raw, dict):
+        return None
+    try:
+        return RemoteTarget(
+            host=str(raw["host"]), port=int(raw.get("port", 22)), user=str(raw["user"]),
+            project_root=str(raw["project_root"]), workspace=str(raw.get("workspace")) if raw.get("workspace") else None,
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 class RunSummary(BaseModel):
     run_id: str
     task_id: str
@@ -271,6 +303,10 @@ class RunSummary(BaseModel):
     #: implementation work, and no reviewed-run link means it reviews nothing.
     role: str = ROLE_WORKER
     reviews_run_id: str | None = None
+    #: Where the run executed, from its own record (W3-a U5); ``None`` for a run on this
+    #: machine. Carried on the summary so a card states the host the run actually ran
+    #: on, not the host its adapter is configured for today.
+    remote: RemoteTarget | None = None
 
 
 class AdapterCapability(BaseModel):
@@ -280,3 +316,5 @@ class AdapterCapability(BaseModel):
     supports_tool_approval: bool
     supports_user_questions: bool
     detail: str
+    #: ``None`` for an adapter that runs on this machine (W3-a U5).
+    remote: RemoteTarget | None = None

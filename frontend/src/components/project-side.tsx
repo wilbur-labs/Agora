@@ -17,7 +17,7 @@ import { cn } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n";
 import type { PlanHeadline, PlanRow } from "@/lib/task-plan";
 
-export interface SideRunLike { adapter: string; task_id: string }
+export interface SideRunLike { adapter: string; task_id: string; remote?: { host: string; port: number; user: string } | null }
 
 export interface ProjectSideProps {
   /** `settling`: the draft slot; `adopted`: the four cards. */
@@ -33,9 +33,11 @@ export interface ProjectSideProps {
   onSelectView: (view: string) => void;
   /** The kickoff draft, lifted out of the conversation so it survives view changes. */
   draft: (order: React.ReactNode) => React.ReactNode;
+  /** Where an adapter runs, for the "now" card; absent when the adapters read has not landed. */
+  envOf?: (adapter: string) => string;
 }
 
-export function ProjectSide({ mode, rows, headline, goal, activeRuns, openGates, onSelectView, draft }: ProjectSideProps) {
+export function ProjectSide({ mode, rows, headline, goal, activeRuns, openGates, onSelectView, draft, envOf }: ProjectSideProps) {
   const { t, te } = useI18n();
   const done = rows.filter((row) => row.standing === "done").length;
   const running = rows.filter((row) => row.running).length;
@@ -100,7 +102,7 @@ export function ProjectSide({ mode, rows, headline, goal, activeRuns, openGates,
               {activeRuns !== null && activeRuns.map((run, index) => (
                 <div key={`${run.task_id}-${index}`} className="grid gap-0.5">
                   <div className="flex justify-between gap-2 border-b border-dashed py-0.5"><span>{te("adapter", run.adapter)}</span><span className="font-mono text-[11px] text-muted-foreground">{stepOf(run.task_id) === null ? t("workspace.stream.run.stepUnknown") : t("workspace.stream.run.step", { step: stepOf(run.task_id)! })}</span></div>
-                  <div className="flex justify-between gap-2 border-b border-dashed py-0.5"><span>{t("workspace.side.nowEnv")}</span><span className="font-mono text-[11px] text-muted-foreground">{t("workspace.stream.compose.envLocal")}</span></div>
+                  <div className="flex justify-between gap-2 border-b border-dashed py-0.5"><span>{t("workspace.side.nowEnv")}</span><span className="min-w-0 truncate font-mono text-[11px] text-muted-foreground">{run.remote ? `${run.remote.user}@${run.remote.host}${run.remote.port !== 22 ? `:${run.remote.port}` : ""}` : envOf ? envOf(run.adapter) : "—"}</span></div>
                   <div className="flex justify-between gap-2 py-0.5"><span>{t("workspace.side.nowAfter")}</span><span className="font-mono text-[11px] text-muted-foreground">{t("workspace.side.nowAfterAuto")}</span></div>
                 </div>
               ))}

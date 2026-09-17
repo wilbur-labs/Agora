@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import os
 from collections import defaultdict
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from agora.projects import ProjectRegistry
+from agora.environments import ProcessHandle
 from agora.fsprobe import PathProbe, probe_path
 from agora.orchestration.runtime import RuntimeLaunchError, resolve_runtime_command
 from agora.orchestration.provider_usage import RuntimeResultFormat, normalize_native_output
@@ -26,6 +28,10 @@ from .adapters import (
     SESSION_ID_CALLER,
     ExecutionAdapter,
 )
+from .remote_wiring import (
+    adapter_for_recorded_target, describe_target, is_remote, remote_components_for,
+    remote_target_of, remote_target_record, remote_workspace_of, same_remote_host,
+)
 from .runlog import RunLogStore
 from .sessions import (
     MODE_RESUME,
@@ -41,6 +47,7 @@ from .deliverables import (
     snapshot_changes,
 )
 from .models import (
+    REMOTE_TARGET_KEY,
     CancelRunRequest,
     CreateRunRequest,
     ExecutionRun,
@@ -216,6 +223,9 @@ class ExecutionDispatcher:
         # A missing or None entry means the baseline was never established, which
         # snapshot_changes reads as "attribution unknown" — the correct answer.
         self._baselines: dict[str, tuple[dict[str, dict], bool] | None] = {}
+        #: Remote runs' pre-run state, kept apart: it is read on the host, and the
+        #: cancel path must freeze the run's files there, not on this machine.
+        self._remote_baselines: dict[str, tuple | None] = {}
         # Startup recovery bookkeeping, read by ``resume_queued``'s ordering guard
         # and by ``start_recovery``'s receipt. ``_reviews_owed_reconciled`` is "the
         # reconciliation step ran in this process", which is true even when it
@@ -306,12 +316,25 @@ class ExecutionDispatcher:
             raise RunValidationError(f"Unknown or disabled execution adapter: {request.adapter}")
         try:
             project = self.projects.get(task.project_id)
-            workspace = adapter.workspace(project.workspaces)
+            if is_remote(adapter):
+                # A remote adapter's worktree is a path on *its* host (W3-a U5). It is
+                # neither resolved nor confined here — both would read this machine's
+                # filesystem; the remote provisioner confines it under the configured
+                # remote project root on the host when the run executes.
+                workspace: Path | PurePosixPath = remote_workspace_of(adapter, project)
+                # Where it executes, fixed now: every later read of this run routes by
+                # this record, not by what the adapter is configured to then.
+                request = request.model_copy(update={
+                    "metadata": {**request.metadata, REMOTE_TARGET_KEY: remote_target_record(adapter.remote)},  # type: ignore[arg-type]
+                })
+            else:
+                workspace = adapter.workspace(project.workspaces)
         except KeyError as exc:
             raise RunValidationError(str(exc)) from None
-        workspace = workspace.resolve()
-        if not self._workspace_is_allowed(workspace, project.root):
-            raise RunValidationError("Execution workspace is outside the configured allowed roots")
+        if not is_remote(adapter):
+            workspace = workspace.resolve()
+            if not self._workspace_is_allowed(workspace, project.root):
+                raise RunValidationError("Execution workspace is outside the configured allowed roots")
         return self.store.create(
             request,
             project_id=project.project_id,
@@ -422,6 +445,33 @@ class ExecutionDispatcher:
             self.schedule(run_id)
         return refused
 
+    async def _freeze_after_stop(self, current: ExecutionRun) -> dict | None:
+        """The delivery of a run stopped from outside its own path (a dispatcher stop,
+        an unhandled error), frozen where the run executed. A remote run's worktree is
+        on its host: asking this machine's filesystem about a POSIX path answers
+        nothing, and would settle files that sit on the host as "could not establish" —
+        after which the next run's baseline absorbs them and nobody owns them."""
+        recorded = remote_target_of(current)
+        if recorded is None:
+            return await asyncio.to_thread(
+                snapshot_changes,
+                Path(current.workspace).expanduser().resolve(),
+                self._baselines.get(current.run_id),
+            )
+        try:
+            pinned = adapter_for_recorded_target(self.adapters.get(current.adapter), recorded)
+            components = remote_components_for(pinned, self.projects)
+        except Exception:  # noqa: BLE001 - the host cannot be reached as recorded: unknown, not empty
+            return None
+        try:
+            return await components.deliverables.snapshot_changes(
+                Path(current.workspace), self._remote_baselines.get(current.run_id),
+            )
+        except Exception:  # noqa: BLE001
+            return None
+        finally:
+            await components.aclose()
+
     async def _execute_guarded(self, run_id: str) -> ExecutionRun:
         try:
             return await self.execute(run_id)
@@ -435,11 +485,7 @@ class ExecutionDispatcher:
                 # them before the terminal transition, or its record would read
                 # "unknown" for work that is sitting right there on disk. The
                 # process is already stopped, so nothing else is writing.
-                delivered = await asyncio.to_thread(
-                    snapshot_changes,
-                    Path(current.workspace).expanduser().resolve(),
-                    self._baselines.get(run_id),
-                )
+                delivered = await self._freeze_after_stop(current)
                 self.store.abandon(
                     run_id,
                     expected_version=current.version,
@@ -457,7 +503,9 @@ class ExecutionDispatcher:
             raise
         except Exception as exc:
             current = self.store.require(run_id)
-            if current.state == RunState.CANCELLED and self._baselines.get(run_id) is not None:
+            if current.state == RunState.CANCELLED and (
+                self._baselines.get(run_id) is not None or self._remote_baselines.get(run_id) is not None
+            ):
                 # Cancelled, and then something failed on the way out — a locked
                 # database, a full disk, anything `_settle_session` can raise.
                 # Returning the row here dropped the snapshot *and* the baseline,
@@ -465,11 +513,7 @@ class ExecutionDispatcher:
                 # next run's baseline and attributed to nobody. The cancel path
                 # freezes them; so does this one.
                 try:
-                    delivered = await asyncio.to_thread(
-                        snapshot_changes,
-                        Path(current.workspace).expanduser().resolve(),
-                        self._baselines.get(run_id),
-                    )
+                    delivered = await self._freeze_after_stop(current)
                     current = self.store.require(run_id)
                     return self.store.record_cancelled_output(
                         run_id,
@@ -494,11 +538,7 @@ class ExecutionDispatcher:
                 delivered = None
                 if current.state == RunState.RUNNING:
                     try:
-                        delivered = await asyncio.to_thread(
-                            snapshot_changes,
-                            Path(current.workspace).expanduser().resolve(),
-                            self._baselines.get(run_id),
-                        )
+                        delivered = await self._freeze_after_stop(current)
                     except Exception:
                         # A file removed between `is_file()` and `stat()`, a
                         # thread pool refusing work during shutdown. Escaping
@@ -648,6 +688,14 @@ class ExecutionDispatcher:
             role = role_of(run.result_metadata)
             reviews_run_id = (run.result_metadata or {}).get(REVIEWS_RUN_KEY)
             adapter = self.adapters.get(run.adapter)
+            if remote_target_of(run) is not None:
+                # Where this run executes was fixed when it was queued (REMOTE_TARGET_KEY),
+                # and that — not the adapter's configuration today — picks the path.
+                # Everything below asks this machine's filesystem and process tree; a
+                # remote run asks its recorded host instead, or is refused if the adapter
+                # no longer reaches it (W3-a U5). A run with no record was queued as a
+                # local run and runs locally, whatever the adapter has since become.
+                return await self._execute_remote(run, adapter, role, reviews_run_id)
             workspace = Path(run.workspace).expanduser().resolve()
             if adapter is None:
                 return self.store.finish(
@@ -1168,6 +1216,355 @@ class ExecutionDispatcher:
                 # makes the frozen deliverables disagree with the disk, and the
                 # next run enters that worktree.
                 self._release_process_tree(self._jobs.pop(run_id, None))
+
+
+    async def _execute_remote(
+        self, run: ExecutionRun, adapter: ExecutionAdapter | None, role: str, reviews_run_id: str | None,
+    ) -> ExecutionRun:
+        """The remote counterpart of the local path (W3-a U5).
+
+        The same questions in the same order — is the worktree ready, what was there
+        before, launch, stream, wait, stop, snapshot, settle — each asked of the
+        adapter's host instead of this machine. Its own path rather than branches
+        threaded through the local one: that path is built on this machine's
+        filesystem and process tree (probe_path, job objects, taskkill), none of
+        which mean anything over SSH, and a branch at each of those points would be a
+        second copy of the flow written between the lines of the first.
+
+        What it does not do, said plainly: the cancel path in ``_execute_guarded``
+        snapshots the *local* path named by the run, which for a remote run is not a
+        worktree — so a run abandoned by a dispatcher stop records its delivery as
+        "could not establish", never as a list.
+        """
+        run_id = run.run_id
+        try:
+            # The place recorded at queue time, if the run has one; an adapter whose host
+            # changed since then is a refusal, not a run on the new host.
+            recorded = remote_target_of(run)
+            if recorded is None:
+                raise RuntimeError("this run carries no recorded remote target")
+            pinned = adapter_for_recorded_target(adapter, recorded)
+            components = remote_components_for(
+                pinned, self.projects, allowed_workspace_roots=self.allowed_workspace_roots,
+            )
+        except Exception as exc:  # a misconfigured adapter is a run that cannot start
+            return self.store.finish(
+                run_id, RunState.FAILED, expected_version=run.version, exit_code=None,
+                stdout_tail="", stderr_tail="",
+                error_message=redact_text(f"remote adapter is misconfigured: {type(exc).__name__}: {exc}"),
+            )
+        remote = components.config
+        adapter = pinned
+        workspace = PurePosixPath(run.workspace)
+        # The session's identity binds the host too: the same worktree string on another
+        # host is another worktree, and a provider session id recorded there must not be
+        # resumed here. The session store compares this as a string.
+        session_scope = PurePosixPath(f"{remote.ssh_user}@{remote.ssh_host}:{remote.ssh_port}{workspace}")
+        # `Path` here is the type the remote collaborators take; on Windows it is a
+        # WindowsPath whose `.as_posix()` is the remote path unchanged, and that is the
+        # only way they read it.
+        ws_path = Path(str(workspace))
+        remote_root = Path(remote.remote_project_root)
+        try:
+            running = self.store.start(run_id, expected_version=run.version)
+        except RunConflictError:
+            await components.aclose()
+            return self.store.require(run_id)
+        env = components.environment
+        try:
+            expected_branch = worktree_branch(run.project_id, run.adapter)
+            try:
+                ready = await components.provisioner.is_ready_worktree(ws_path, remote_root, expected_branch)
+            except Exception as exc:
+                return self.store.finish(
+                    run_id, RunState.FAILED, expected_version=running.version, exit_code=None,
+                    stdout_tail="", stderr_tail="",
+                    error_message=redact_text(
+                        f"remote worktree could not be checked on {describe_target(remote)}: "
+                        f"{type(exc).__name__}: {exc}"
+                    ),
+                )
+            if not ready:
+                return self.store.finish(
+                    run_id, RunState.FAILED, expected_version=running.version, exit_code=None,
+                    stdout_tail="", stderr_tail="",
+                    error_message=(
+                        f"remote workspace on {describe_target(remote)} is not a provisioned "
+                        "worktree for this project/adapter; provision it before running"
+                    ),
+                )
+            try:
+                baseline = await components.deliverables.baseline_state(ws_path)
+            except Exception:
+                baseline = None
+            self._remote_baselines[run_id] = baseline
+            decision = self.sessions.decide(
+                task_id=run.task_id,
+                adapter=run.adapter,
+                workspace=session_scope,  # type: ignore[arg-type]
+                can_resume=adapter.can_resume(),
+                caller_chooses_id=adapter.session_id_source == SESSION_ID_CALLER,
+                role=role,
+            )
+            if decision.refused:
+                if decision.condition_based:
+                    self.sessions.mark_unreadable(
+                        task_id=run.task_id, adapter=run.adapter, role=role,
+                        reason=decision.refusal or "",
+                    )
+                return self.store.finish(
+                    run_id, RunState.FAILED, expected_version=running.version, exit_code=None,
+                    stdout_tail="", stderr_tail="", error_message=decision.refusal,
+                )
+            resuming = decision.mode == MODE_RESUME
+            # Not resolved against this machine's PATH: the CLI lives on the host.
+            try:
+                command = list(adapter.build_command(
+                    run.prompt, session_id=decision.session_id, resume=resuming,
+                ))
+            except ValueError as exc:
+                return self.store.finish(
+                    run_id, RunState.FAILED, expected_version=running.version, exit_code=None,
+                    stdout_tail="", stderr_tail="",
+                    error_message=redact_text(f"process start failed: {exc}"),
+                )
+            self.run_logs.append(run_id, _prompt_echo(run.prompt, resuming))
+            self.run_logs.append(
+                run_id, f"· 在远端 {describe_target(remote)} 的工作树 {workspace} 里执行。\n",
+            )
+            try:
+                handle = await env.launch(
+                    command,
+                    cwd=ws_path,
+                    env={
+                        "AGORA_TASK_ID": run.task_id,
+                        "AGORA_RUN_ID": run.run_id,
+                        "AGORA_PROJECT_ID": run.project_id,
+                    },
+                )
+            except Exception as exc:
+                reason = redact_text(
+                    f"remote process start failed on {describe_target(remote)}: {type(exc).__name__}: {exc}"
+                )
+                self.run_logs.append(run_id, _failure_note(reason, ""))
+                return self.store.finish(
+                    run_id, RunState.FAILED, expected_version=running.version, exit_code=None,
+                    stdout_tail="", stderr_tail="", error_message=reason,
+                )
+            self._active[run_id] = handle  # type: ignore[assignment]  # a ProcessHandle; _stop takes both
+            try:
+                self.sessions.record_launch(
+                    run_id=run_id, task_id=run.task_id, adapter=run.adapter,
+                    workspace=session_scope, session_id=decision.session_id,  # type: ignore[arg-type]
+                    mode=decision.mode, role=role,
+                    confirmed=resuming,
+                    expected_clear_seq=decision.clear_seq,
+                )
+                try:
+                    running = self.store.attach_pid(
+                        run_id, expected_version=running.version, pid=handle.pid,
+                        command=adapter.stored_command(resume=resuming),
+                    )
+                except RunConflictError:
+                    # Cancelled between start and attach. Stop it and record what the
+                    # channel had already carried, as the local path does.
+                    await self._stop(handle)
+                    out_task = asyncio.create_task(self._read_tail(handle.stdout))
+                    err_task = asyncio.create_task(self._read_tail(handle.stderr))
+                    done, _pending = await asyncio.wait({out_task, err_task}, timeout=_DRAIN_TIMEOUT_SECONDS)
+                    out_bytes = out_task.result() if out_task in done else b""
+                    err_bytes = err_task.result() if err_task in done else b""
+                    current = self.store.require(run_id)
+                    if current.state != RunState.CANCELLED:
+                        return current
+                    try:
+                        delivered = await components.deliverables.snapshot_changes(ws_path, baseline)
+                    except Exception:
+                        delivered = None
+                    try:
+                        return self.store.record_cancelled_output(
+                            run_id,
+                            expected_version=current.version,
+                            stdout_tail=redact_text(out_bytes.decode("utf-8", errors="replace"))[-OUTPUT_TAIL_LIMIT:],
+                            stderr_tail=redact_text(err_bytes.decode("utf-8", errors="replace"))[-OUTPUT_TAIL_LIMIT:],
+                            exit_code=None,
+                            deliverables=delivered,
+                        )
+                    except RunConflictError:
+                        return self.store.require(run_id)
+                timed_out = False
+                transcript = reader_for(adapter.event_format)
+                gate = _ReaderGate()
+                stdout_reader = asyncio.create_task(
+                    self._read_streaming(
+                        handle.stdout, run, ws_path, transcript, role,
+                        decision.session_id if resuming else None, gate,
+                    )
+                )
+                stderr_reader = asyncio.create_task(self._read_tail(handle.stderr))
+                try:
+                    code = await handle.wait(timeout=running.timeout_seconds)
+                    if code is None:
+                        timed_out = True
+                        await self._stop(handle)
+                except asyncio.CancelledError:
+                    await self._stop(handle)
+                    _done, still_reading = await asyncio.wait(
+                        {stdout_reader, stderr_reader}, timeout=_DRAIN_TIMEOUT_SECONDS,
+                    )
+                    if still_reading:
+                        gate.close()
+                    raise
+                done, pending = await asyncio.wait(
+                    {stdout_reader, stderr_reader}, timeout=_DRAIN_TIMEOUT_SECONDS,
+                )
+                if pending:
+                    stdout, stdout_truncated = (
+                        stdout_reader.result() if stdout_reader in done else (b"", True)
+                    )
+                    stderr = stderr_reader.result() if stderr_reader in done else b""
+                    self.run_logs.append(
+                        run_id,
+                        "\n· 这一轮的输出没能读完：远端进程已经结束，但通道上还有东西没读到"
+                        f"（等了 {_DRAIN_TIMEOUT_SECONDS} 秒）。上面显示的是已经读到的部分。\n",
+                    )
+                    gate.close()
+                else:
+                    (stdout, stdout_truncated), stderr = (
+                        stdout_reader.result(), stderr_reader.result(),
+                    )
+                self.run_logs.append(run_id, redact_text(transcript.finish()))
+                self._settle_session(
+                    run_id=run_id,
+                    task_id=run.task_id,
+                    adapter=run.adapter,
+                    workspace=session_scope,  # type: ignore[arg-type]
+                    transcript=transcript,
+                    resuming=resuming,
+                    exit_code=handle.returncode,
+                    role=role,
+                    requested=decision.session_id,
+                    killed=timed_out or self.store.require(run_id).state == RunState.CANCELLED,
+                )
+                settled_stdout, prefix_truncated = _settlement_stdout(
+                    stdout.decode("utf-8", errors="replace"), stdout_truncated, transcript,
+                )
+                semantic, usage_metadata = self._observe_usage(
+                    adapter, settled_stdout, run_id, run.prompt,
+                    stdout_prefix_truncated=prefix_truncated,
+                )
+                out = redact_text(semantic)
+                err = redact_text(stderr.decode("utf-8", errors="replace"))
+                try:
+                    delivered = await components.deliverables.snapshot_changes(ws_path, baseline)
+                except Exception:
+                    delivered = None  # could not establish — never an empty list
+                current = self.store.require(run_id)
+                if current.state == RunState.CANCELLED:
+                    return self.store.record_cancelled_output(
+                        run_id,
+                        expected_version=current.version,
+                        stdout_tail=out[-OUTPUT_TAIL_LIMIT:],
+                        stderr_tail=err[-OUTPUT_TAIL_LIMIT:],
+                        exit_code=handle.returncode,
+                        deliverables=delivered,
+                    )
+                target = RunState.TIMED_OUT if timed_out else (
+                    RunState.SUCCEEDED if handle.returncode == 0 else RunState.FAILED
+                )
+                error = (
+                    f"timeout after {running.timeout_seconds}s" if timed_out
+                    else (None if handle.returncode == 0 else "process exited with a non-zero status")
+                )
+                if target is not RunState.SUCCEEDED:
+                    self.run_logs.append(run_id, _failure_note(error, err))
+                finished = self.store.finish(
+                    run_id,
+                    target,
+                    expected_version=current.version,
+                    exit_code=handle.returncode,
+                    stdout_tail=out[-OUTPUT_TAIL_LIMIT:],
+                    stderr_tail=err[-OUTPUT_TAIL_LIMIT:],
+                    error_message=error,
+                    result_metadata=usage_metadata,
+                    deliverables=delivered,
+                )
+                await self._after_run(finished, role, reviews_run_id)
+                return finished
+            except BaseException:
+                await self._stop(handle)
+                raise
+            finally:
+                self._active.pop(run_id, None)
+                self._session_noted.pop(run_id, None)
+                self._remote_baselines.pop(run_id, None)
+        finally:
+            await components.aclose()
+
+    def _reviewable_files(self, worker_run: ExecutionRun, live: list[dict]) -> tuple[list[dict], str | None]:
+        """The files a review must look at: the run's frozen snapshot when it has one —
+        that is what the run delivered, including what it committed during the run,
+        which a live ``git status`` afterwards no longer shows — else the live list.
+        A cut snapshot says so, so the reviewer knows the list is "at least these"."""
+        snapshot = self.store.deliverable_snapshot(worker_run.run_id)
+        if snapshot is None:
+            return live, None
+        # A deletion is a change the reviewer must see; only the two non-answers
+        # ("no longer differs", "unreadable") are left out.
+        files = [
+            entry for entry in (snapshot.get("files") or [])
+            if entry.get("status") not in ("no longer differs", "unreadable")
+        ]
+        note = (
+            "\n(The run's file list was cut at the limit: more changed than is shown here.)"
+            if snapshot.get("truncated") else None
+        )
+        return files, note
+
+    async def _review_prompt_remote(self, worker_run: ExecutionRun, adapter: ExecutionAdapter) -> str:
+        """``_review_prompt``, read on the worker's host: readiness, changed files and
+        their contents come from the remote provisioner and deliverables reader."""
+        components = remote_components_for(
+            adapter, self.projects, allowed_workspace_roots=self.allowed_workspace_roots,
+        )
+        try:
+            ws_path = Path(worker_run.workspace)
+            parts = [
+                "You are an independent code reviewer. A developer agent produced the "
+                "changes below. Review them for correctness, edge cases, and safety. "
+                "List concrete findings (file + issue); if everything looks correct, say so clearly.",
+                f"\n## Developer's own summary\n{worker_run.stdout_tail[:_REVIEW_FILE_CHARS]}",
+            ]
+            budget = _REVIEW_PROMPT_BUDGET
+            expected_branch = worktree_branch(worker_run.project_id, worker_run.adapter)
+            ready = await components.provisioner.is_ready_worktree(
+                ws_path, Path(components.config.remote_project_root), expected_branch,
+            )
+            files, note = (
+                self._reviewable_files(worker_run, await components.deliverables.list_changes(ws_path))
+                if ready else ([], None)
+            )
+            if note:
+                parts.append(note)
+            if not files:
+                parts.append("\n## Changes\n(No changed files detected in the workspace.)")
+            for entry in files:
+                if entry.get("status") == "deleted":
+                    parts.append(f"\n## FILE: {entry['path']} (deleted)")
+                    continue
+                try:
+                    content = (await components.deliverables.read_file(ws_path, entry["path"]))["content"]
+                except (FileNotFoundError, PermissionError, OSError):
+                    continue
+                block = f"\n## FILE: {entry['path']} ({entry['status']})\n{content[:_REVIEW_FILE_CHARS]}"
+                if len(block) > budget:
+                    parts.append("\n[additional files omitted for length]")
+                    break
+                parts.append(block)
+                budget -= len(block)
+            return "\n".join(parts)[:15_900]
+        finally:
+            await components.aclose()
 
     async def _execute_codex_app_server(
         self, running: ExecutionRun, adapter: ExecutionAdapter, workspace: Path,
@@ -1744,10 +2141,32 @@ class ExecutionDispatcher:
             # task row it hangs on. The run's own record is the only trace left, and
             # that is the honest end of this path.
             return
+        worker_adapter = self.adapters.get(worker_run.adapter)
+        reviewer_adapter = self.adapters[reviewer]
+        if is_remote(worker_adapter) or is_remote(reviewer_adapter):
+            # A review reads the worker's worktree, so the two must be on the same
+            # account of the same host (W3-a U5). Not a substitution to make quietly —
+            # the task is blocked with the two places named.
+            compatible = (
+                is_remote(worker_adapter) and is_remote(reviewer_adapter)
+                and same_remote_host(worker_adapter.remote, reviewer_adapter.remote)  # type: ignore[arg-type]
+            )
+            if not compatible:
+                self._block_review_owed(
+                    task_id=worker_run.task_id, run_id=worker_run.run_id,
+                    reason=(
+                        f"评审代理与开发代理不在同一台主机上：开发 {worker_run.adapter!r} 在 "
+                        f"{describe_target(worker_adapter.remote if worker_adapter else None)}，评审 {reviewer!r} 在 "
+                        f"{describe_target(reviewer_adapter.remote)}。复核要读开发的工作树，两者必须配置在同一台主机。"
+                    ),
+                )
+                return
         try:
-            # The prompt build shells out to git (readiness + list_changes + reads);
-            # keep it off the event loop.
-            prompt = await asyncio.to_thread(self._review_prompt, worker_run)
+            prompt = (
+                await self._review_prompt_remote(worker_run, worker_adapter)  # type: ignore[arg-type]
+                if is_remote(worker_adapter)
+                else await asyncio.to_thread(self._review_prompt, worker_run)
+            )
             request = CreateRunRequest(
                 task_id=worker_run.task_id,
                 adapter=reviewer,
@@ -1789,10 +2208,17 @@ class ExecutionDispatcher:
             project_root = None
         expected_branch = worktree_branch(worker_run.project_id, worker_run.adapter)
         ready = project_root is not None and is_ready_worktree(workspace, project_root, expected_branch)
-        files = list_changes(workspace) if ready else []
+        # A workspace that is not this run's provisioned worktree is not read at all —
+        # not even through the snapshot's paths — so an unready one contributes nothing.
+        files, note = self._reviewable_files(worker_run, list_changes(workspace)) if ready else ([], None)
+        if note:
+            parts.append(note)
         if not files:
             parts.append("\n## Changes\n(No changed files detected in the workspace.)")
         for entry in files:
+            if entry.get("status") == "deleted":
+                parts.append(f"\n## FILE: {entry['path']} (deleted)")
+                continue
             try:
                 content = read_file(workspace, entry["path"])["content"]
             except (FileNotFoundError, PermissionError, OSError):
@@ -1989,7 +2415,7 @@ class ExecutionDispatcher:
 
     @staticmethod
     async def _stop(
-        proc: asyncio.subprocess.Process, job: object | None = None
+        proc: "asyncio.subprocess.Process | ProcessHandle", job: object | None = None
     ) -> None:
         """Stop a run's process — and on Windows, the tree under it.
 
@@ -2016,6 +2442,11 @@ class ExecutionDispatcher:
         # behind used to reach the early return below and keep writing the
         # worktree while Agora froze the snapshot and released the lock.
         ExecutionDispatcher._kill_process_tree(job)
+        if _is_handle(proc):
+            # An environment-launched process (U1): remote, or any handle. Signals go
+            # over the handle; there is no local tree to walk.
+            await _stop_handle(proc)  # type: ignore[arg-type]
+            return
         if proc.returncode is not None:
             return
         pid = getattr(proc, "pid", None)
@@ -2671,3 +3102,21 @@ def _prompt_echo(prompt: str, resuming: bool) -> str:
     marker = "››" if resuming else "›"
     lines = prompt.strip().splitlines() or [""]
     return redact_text("".join(f"{marker} {line}\n" for line in lines))
+
+
+def _is_handle(proc: object) -> bool:
+    """Whether ``proc`` is a :class:`ProcessHandle` (U1) rather than a raw asyncio
+    subprocess: the handle's ``terminate``/``kill`` are coroutines, the subprocess's
+    are not. Asked of the object, not of a type, so any conforming handle qualifies."""
+    return inspect.iscoroutinefunction(getattr(proc, "terminate", None))
+
+
+async def _stop_handle(handle: ProcessHandle) -> None:
+    """Stop an environment-launched process over its handle: terminate, wait
+    ``GRACE`` seconds, kill. Idempotent for an exited process, like ``_stop``."""
+    if handle.returncode is not None:
+        return
+    await handle.terminate()
+    if await handle.wait(timeout=5) is None:
+        await handle.kill()
+        await handle.wait(timeout=5)
