@@ -27,6 +27,7 @@ from agora.execution.models import (
     CancelRunRequest,
     CreateRunRequest,
     REVIEWS_RUN_KEY,
+    ROLE_CHAT,
     ROLE_KEY,
     ROLE_REVIEW,
     ROLE_WORKER,
@@ -4254,3 +4255,32 @@ def test_a_failure_after_a_cancel_still_freezes_what_the_run_wrote(tmp_path, mon
     delivered = store.deliverable_snapshot(queued.run_id)
     assert delivered is not None, "a cancelled run's files must not be dropped by a later failure"
     assert "written-then-cancelled.txt" in json.dumps(delivered, ensure_ascii=False)
+
+
+def test_a_question_is_answered_but_neither_reviewed_nor_counted_as_work(tmp_path):
+    """CR-75: "还给 mockup 页面的链接" was dispatched as step 2's implementation, reviewed,
+    approved, and step 2 was marked done with nothing built. A question is its own role:
+    it runs in the task's worktree, triggers no cross-review, leaves the task where it
+    was (state and version), and owes nothing — the worker run after it is accepted.
+    """
+    tasks, store, dispatcher = _system(
+        tmp_path, [sys.executable, "-c", "print('the answer')"], auto_review=True,
+    )
+    task = _planned_task(tasks)
+
+    question = dispatcher.queue(_request(task.task_id), role=ROLE_CHAT)
+    assert question.role == ROLE_CHAT
+    after_queue = tasks.get(task.task_id)
+    assert after_queue.state == TaskState.PLANNED      # not started by a question
+    assert after_queue.version == task.version         # so the next request's version still matches
+
+    finished = asyncio.run(dispatcher.execute(question.run_id))
+    assert finished.state == RunState.SUCCEEDED
+    # No review was dispatched for it: the task's runs are the question alone.
+    assert [run.run_id for run in store.list(task_id=task.task_id)] == [question.run_id]
+    assert store.reviews_owed(task_id=task.task_id) == []
+
+    # Work still goes through, with the version the question left untouched.
+    worker = dispatcher.queue(_request(task.task_id))
+    assert worker.role == ROLE_WORKER
+    assert tasks.get(task.task_id).state == TaskState.RUNNING

@@ -189,17 +189,28 @@ export function ProjectStream({
   // last few; older ones open on demand.
   useEffect(() => {
     if (runs === null) return;
-    const wanted = runs
-      .filter((run) => run.role !== "review" && run.state !== "queued" && run.state !== "running")
+    const settled = runs.filter((run) => run.state !== "queued" && run.state !== "running");
+    const recentWorkers = settled
+      .filter((run) => run.role !== "review")
       .sort((a, b) => (a.queued_at < b.queued_at ? 1 : -1))
-      .slice(0, RECENT_REPLIES)
-      .filter((run) => details[run.run_id] === undefined);
+      .slice(0, RECENT_REPLIES);
+    const recentIds = new Set(recentWorkers.map((run) => run.run_id));
+    // The reviews of those runs too: the reviewer's verdict is the result the person
+    // asked to see, and it must not live only behind "expand".
+    const reviews = settled.filter((run) => run.role === "review" && run.reviews_run_id !== null && recentIds.has(run.reviews_run_id));
+    const wanted = [...recentWorkers, ...reviews].filter((run) => details[run.run_id] === undefined);
     if (wanted.length === 0) return;
     const ctrl = new AbortController();
     for (const run of wanted) {
       getRun(run.run_id, ctrl.signal)
         .then((full) => { if (!ctrl.signal.aborted && alive.current) setDetails((all) => ({ ...all, [run.run_id]: full })); })
         .catch(() => { if (!ctrl.signal.aborted && alive.current) setDetails((all) => ({ ...all, [run.run_id]: "failed" })); });
+      if (run.role !== "review") {
+        // What it changed, listed under the reply without a click.
+        getRunDeliverables(run.run_id, ctrl.signal)
+          .then((files) => { if (!ctrl.signal.aborted && alive.current) setExpanded((all) => ({ ...all, [run.run_id]: { run: all[run.run_id]?.run ?? null, deliverables: files } })); })
+          .catch(() => { if (!ctrl.signal.aborted && alive.current) setExpanded((all) => ({ ...all, [run.run_id]: { run: all[run.run_id]?.run ?? null, deliverables: "failed" } })); });
+      }
     }
     return () => ctrl.abort();
     // `details` is read to skip what is already held; adding it would refetch on each answer.
@@ -245,11 +256,14 @@ export function ProjectStream({
   const taskOf = (taskId: string) => tasks.find((task) => task.task_id === taskId) ?? null;
   const seedFor = (row: PlanRow): string => {
     const task = taskOf(row.task_id);
-    return seedContinuePrompt({
+    const seed = seedContinuePrompt({
       title: row.title, description: task?.description ?? "", acceptance: task?.acceptance ?? [],
       recapHeading: null, recapLines: [], recapMore: 0, recapPartial: false, recapUnavailable: false,
       nextAction: null, nextActionUnavailable: false,
     }, t);
+    // The person verifies from the conversation, so the agent is asked to end with what
+    // there is to verify and how — the answer lands in the reply bubble, not in a log.
+    return `${seed}\n\n${t("workspace.stream.seedVerify")}`;
   };
 
   // The worktree the run would execute in, checked and — when it does not exist yet —
@@ -366,6 +380,26 @@ export function ProjectStream({
         }
         return;
       }
+      if (intent.kind === "ask") {
+        // A question, not work (CR-75): a chat run on the current step — answered in the
+        // step's worktree, never reviewed, the task untouched. Allowed while a worker run
+        // is going, because asking is how the person follows what it is doing.
+        if (target.kind === "none") { setNotice({ text: t(`workspace.stream.compose.${target.reason}`), tone: "warn" }); return; }
+        const stop = await ensureWorkspace(adapter);
+        if (stop !== null) { setNotice({ text: stop, tone: "bad" }); return; }
+        const fresh = await getTask(target.step.task_id);
+        await createRun({
+          task_id: target.step.task_id, adapter, kind: "chat",
+          prompt: `${t("workspace.stream.compose.askPreamble")}\n\n${intent.text}`,
+          timeout_seconds: CONTINUE_TIMEOUT_SECONDS, expected_task_version: fresh.version, actor: "user",
+        });
+        if (!alive.current) return;
+        push({ type: "user", key: `u${Date.now()}`, at: now(), text: echo });
+        push({ type: "auto", key: `k${Date.now()}`, at: now(), text: t("workspace.stream.compose.asked", { adapter: adapterLabel(adapter) }) });
+        setDraft("");
+        void load();
+        return;
+      }
       if (target.kind === "busy") {
         setNotice({ text: t("workspace.stream.compose.busy", { adapter: adapterLabel(activeRunsOf(runs).find((run) => run.task_id === target.step.task_id)?.adapter ?? adapter), step: target.step.step }), tone: "warn" });
         return;
@@ -377,7 +411,7 @@ export function ProjectStream({
       const stop = await ensureWorkspace(adapter);
       if (stop !== null) { setNotice({ text: stop, tone: "bad" }); return; }
       const fresh = await getTask(target.step.task_id);
-      await createRun({ task_id: target.step.task_id, adapter, prompt: intent.text, timeout_seconds: CONTINUE_TIMEOUT_SECONDS, expected_task_version: fresh.version, actor: "user" });
+      await createRun({ task_id: target.step.task_id, adapter, kind: "work", prompt: intent.text, timeout_seconds: CONTINUE_TIMEOUT_SECONDS, expected_task_version: fresh.version, actor: "user" });
       if (!alive.current) return;
       push({ type: "user", key: `u${Date.now()}`, at: now(), text: echo });
       push({ type: "auto", key: `k${Date.now()}`, at: now(), text: t("workspace.stream.compose.sent", { adapter: adapterLabel(adapter), step: target.step.step }) });
@@ -442,6 +476,7 @@ export function ProjectStream({
           <span className="font-mono text-[11px]">{run.run_id.slice(0, 12)}</span>
           <span>{step === null ? t("workspace.stream.run.stepUnknown") : t("workspace.stream.run.step", { step })}</span>
           {run.role === "review" && <span className="rounded border px-1 text-[10px] uppercase tracking-wide">{t("workspace.stream.run.review")}</span>}
+          {run.role === "chat" && <span className="rounded border px-1 text-[10px] uppercase tracking-wide">{t("workspace.stream.run.chat")}</span>}
           {statePill(run)}
           {nested.length > 0 && <span className="text-[11px]">{t("workspace.stream.run.nested", { count: nested.length })}</span>}
           {because && <span className="text-[11px] italic">{t(`workspace.stream.run.unplaced.${because}`)}</span>}
@@ -519,8 +554,28 @@ export function ProjectStream({
                     <div className="mb-1 font-mono text-[10px] text-muted-foreground">{t("workspace.stream.reply", { adapter: adapterLabel(record.adapter) })} · {relTime(record.finished_at ?? record.queued_at, t)}</div>
                     {reply.length > REPLY_FOLD && <p className="mb-1 text-[11px] text-muted-foreground">{t("workspace.stream.replyFolded")}</p>}
                     <Prose text={shown} />
+                    {/* What the run changed — the result to look at, right here. Not
+                        for a question: it was told not to change anything. */}
+                    {item.unit.run.role !== "chat" && expanded[item.unit.run.run_id]?.deliverables !== undefined && expanded[item.unit.run.run_id]?.deliverables !== null && (
+                      <div className="mt-2 border-t pt-2 text-[12px]">
+                        <DeliverablesBlock runId={item.unit.run.run_id} delivered={expanded[item.unit.run.run_id].deliverables} t={t} compact />
+                      </div>
+                    )}
                   </div>
                 )}
+                {item.unit.nested.map((review) => {
+                  const rec = details[review.run_id];
+                  const verdict = rec !== undefined && rec !== "failed" ? rec.stdout_tail.trim() : "";
+                  if (verdict === "") return null;
+                  const cut = verdict.length > REPLY_FOLD ? verdict.slice(verdict.length - REPLY_FOLD) : verdict;
+                  return (
+                    <div key={review.run_id} className="min-w-0 max-w-[64ch] rounded-xl border border-l-4 border-l-amber-500 bg-card px-3 py-2 text-[14px] leading-relaxed">
+                      <div className="mb-1 font-mono text-[10px] text-muted-foreground">{t("workspace.stream.reviewReply", { adapter: adapterLabel(review.adapter) })} · {relTime(review.finished_at ?? review.queued_at, t)}</div>
+                      {verdict.length > REPLY_FOLD && <p className="mb-1 text-[11px] text-muted-foreground">{t("workspace.stream.replyFolded")}</p>}
+                      <Prose text={cut} />
+                    </div>
+                  );
+                })}
               </div>
             );
           }
@@ -536,7 +591,12 @@ export function ProjectStream({
                   {responded && item.item.response_action && <span className="rounded-full border px-2 py-0.5 font-mono text-[10px]">{te("responseAction", item.item.response_action)}</span>}
                 </div>
                 {responded
-                  ? <p className="mt-1 text-[13px]">{item.item.title}{item.item.response ? <span className="text-muted-foreground"> · {item.item.response}</span> : null}</p>
+                  ? (
+                    <details className="mt-1 text-[13px]">
+                      <summary className="cursor-pointer">{item.item.title}{item.item.response ? <span className="text-muted-foreground"> · {item.item.response}</span> : null}</summary>
+                      <div className="mt-2 text-[12px] text-muted-foreground"><Prose text={item.item.body} /></div>
+                    </details>
+                  )
                   : <InlineGateBlock gate={{ kind: "open", item: item.item }} t={t} te={te} onAnswered={(outcome) => void handleGate(outcome)} />}
               </div>
             );
@@ -643,9 +703,13 @@ export function ProjectStream({
           </select>
           <span className="rounded-md border px-2 py-1">{t("workspace.stream.compose.envLocal")}</span>
           <span className="min-w-0 flex-1 truncate">
-            {target.kind === "step" && t("workspace.stream.compose.to", { step: target.step.step, title: target.step.title })}
-            {target.kind === "busy" && t("workspace.stream.compose.busyShort", { step: target.step.step })}
-            {target.kind === "none" && t(`workspace.stream.compose.${target.reason}`)}
+            {composeIntentOf(draft)?.kind === "dispatch"
+              ? (target.kind === "step" ? t("workspace.stream.compose.to", { step: target.step.step, title: target.step.title })
+                : target.kind === "busy" ? t("workspace.stream.compose.busyShort", { step: target.step.step })
+                : t(`workspace.stream.compose.${target.reason}`))
+              : composeIntentOf(draft)?.kind === "note" ? t("workspace.stream.compose.noteHint")
+              : composeIntentOf(draft)?.kind === "idea" ? t("workspace.stream.compose.ideaHint")
+              : (target.kind === "none" ? t(`workspace.stream.compose.${target.reason}`) : t("workspace.stream.compose.askHint", { step: target.step.step }))}
           </span>
           <Button size="sm" onClick={() => void send()} disabled={sending || composeIntentOf(draft) === null}>
             {sending ? <RefreshCw className="size-3.5 animate-spin" /> : <Send className="size-3.5" />}{t("workspace.stream.compose.send")}

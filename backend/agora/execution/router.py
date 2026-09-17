@@ -40,6 +40,7 @@ from .dispatcher import ExecutionDispatcher, workspace_unavailable_reason
 from .handoff import HandoffError, hand_off
 from .models import (
     ACTIVE_RUN_STATES,
+    ROLE_CHAT,
     ROLE_WORKER,
     AdapterCapability,
     CancelRunRequest,
@@ -201,7 +202,10 @@ async def create_run(
     dispatcher: ExecutionDispatcher = Depends(get_execution_dispatcher),
 ):
     try:
-        run = await run_in_threadpool(dispatcher.queue, request)
+        # `kind` is the client's word; the role is the server's. A question is filed as
+        # ROLE_CHAT so nothing downstream reviews it, hands it off, or counts it as owed.
+        role = ROLE_CHAT if request.kind == "chat" else ROLE_WORKER
+        run = await run_in_threadpool(dispatcher.queue, request, role=role)
         dispatcher.schedule(run.run_id)
         return run
     except (TaskNotFoundError, RunNotFoundError) as exc:

@@ -70,6 +70,13 @@ export interface CreateRunInput {
   expected_task_version: number;
   actor?: string;
   metadata?: Record<string, unknown>;
+  /**
+   * `work` (the default) is a worker run: it starts the task, is cross-reviewed, and its
+   * result is what gets handed off. `chat` is a question to the agent about the task:
+   * answered in the same worktree, never reviewed, and the task's state is untouched
+   * (CR-75). The server stores it as its own role.
+   */
+  kind?: "work" | "chat";
 }
 
 export interface CancelRunInput {

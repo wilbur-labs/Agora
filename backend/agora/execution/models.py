@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -41,6 +41,10 @@ OUTPUT_TAIL_LIMIT = 64 * 1024
 ROLE_KEY = "agora_role"
 ROLE_WORKER = "worker"
 ROLE_REVIEW = "review"
+#: A question to the agent about the task (CR-75): answered in the task's worktree,
+#: never cross-reviewed, and the task's state is untouched by it. Untagged rows never
+#: mean this — ``role_of`` still reads absence as ``worker``, the role that gates.
+ROLE_CHAT = "chat"
 REVIEWS_RUN_KEY = "reviews_run_id"
 
 #: Fixed title of the "no cross-review conclusion is on record" blocker raised by
@@ -178,6 +182,9 @@ class CreateRunRequest(BaseModel):
     actor: str = Field(default="user", min_length=1, max_length=128)
     expected_task_version: int = Field(ge=1)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    #: ``work`` (default) is a worker run; ``chat`` is a question (CR-75) — the server
+    #: files it under ``ROLE_CHAT``: no cross-review, no hand-off, the task not moved.
+    kind: Literal["work", "chat"] = "work"
 
     @field_validator("prompt")
     @classmethod

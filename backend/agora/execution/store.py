@@ -22,6 +22,7 @@ from .models import (
     ExecutionRun,
     IDENTITY_METADATA_KEYS,
     REVIEWS_RUN_KEY,
+    ROLE_CHAT,
     ROLE_KEY,
     ROLE_REVIEW,
     ROLE_WORKER,
@@ -252,7 +253,7 @@ class ExecutionStore:
         owe one; ``ExecutionDispatcher.queue`` is the only production caller and
         always passes its own value.
         """
-        if role not in {ROLE_WORKER, ROLE_REVIEW}:
+        if role not in {ROLE_WORKER, ROLE_REVIEW, ROLE_CHAT}:
             raise RunValidationError(f"Unknown run role: {role}")
         now = utc_now()
         run_id = f"run_{uuid.uuid4().hex}"
@@ -302,7 +303,9 @@ class ExecutionStore:
             # part of creating this run, so it is not a change the run must be
             # refused for.
             validated_task_version = current_version
-            if state == TaskState.PLANNED:
+            # A question (ROLE_CHAT) does not start the work: the task stays where it is,
+            # its version untouched, so the worker run that follows still matches (CR-75).
+            if role != ROLE_CHAT and state == TaskState.PLANNED:
                 next_version = current_version + 1
                 validated_task_version = next_version
                 cursor = db.execute(
@@ -1633,7 +1636,7 @@ class ExecutionStore:
         takes it — the flag, never a precomputed verdict — because the last question
         below is only asked when reviews are dispatched at all.
         """
-        if role not in {ROLE_WORKER, ROLE_REVIEW}:
+        if role not in {ROLE_WORKER, ROLE_REVIEW, ROLE_CHAT}:
             # A role this build does not know cannot be gate-checked, and admitting
             # it would walk past every check above. Fail closed.
             return f"its recorded role ({role!r}) is not one this build can schedule"
@@ -1648,8 +1651,10 @@ class ExecutionStore:
             return task_reason
         if (task_id, role) in held:
             return f"another {role} run ({held[(task_id, role)]}) on this task is unsettled"
-        if role == ROLE_REVIEW:
-            return None  # a review run is how a gate gets something to decide
+        if role in {ROLE_REVIEW, ROLE_CHAT}:
+            # A review run is how a gate gets something to decide; a question (ROLE_CHAT)
+            # is not work and is gated by none of the worker-only checks below.
+            return None
         if (task_id, ROLE_REVIEW) in held:
             return f"this task's review run ({held[(task_id, ROLE_REVIEW)]}) has not settled"
         rows = cls._open_gate_items(

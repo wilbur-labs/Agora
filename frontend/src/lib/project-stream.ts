@@ -71,31 +71,42 @@ export function streamItemsOf<R extends StreamRunLike, G extends StreamGateLike>
     .map(({ item }) => item);
 }
 
-/** What a typed line is for. A prefix decides; there is no second button. */
+/**
+ * What a typed line is for. A prefix decides; there is no second button.
+ *
+ * The default is a **question** (CR-75): the line goes to the agent as a chat run —
+ * answered, not reviewed, and it moves no task. Work is what the "start step N" button
+ * dispatches, or a line that says so with 做：. The failure this replaces: "还给
+ * mockup 页面的链接" was dispatched as step 2's work, reviewed, approved, and step 2 was
+ * marked done with nothing built.
+ */
 export type ComposeIntent =
   | { kind: "note"; text: string }
   | { kind: "idea"; text: string }
+  | { kind: "ask"; text: string }
   | { kind: "dispatch"; text: string };
 
 const NOTE_PREFIXES = ["备注：", "备注:", "note:", "Note:"];
 const IDEA_PREFIXES = ["点子：", "点子:", "idea:", "Idea:"];
+const WORK_PREFIXES = ["做：", "做:", "do:", "Do:"];
+
+function stripPrefix(text: string, prefixes: readonly string[]): string | null {
+  for (const prefix of prefixes) {
+    if (text.startsWith(prefix)) return text.slice(prefix.length).trim();
+  }
+  return null;
+}
 
 export function composeIntentOf(raw: string): ComposeIntent | null {
   const text = raw.trim();
   if (text === "") return null;
-  for (const prefix of NOTE_PREFIXES) {
-    if (text.startsWith(prefix)) {
-      const rest = text.slice(prefix.length).trim();
-      return rest === "" ? null : { kind: "note", text: rest };
-    }
-  }
-  for (const prefix of IDEA_PREFIXES) {
-    if (text.startsWith(prefix)) {
-      const rest = text.slice(prefix.length).trim();
-      return rest === "" ? null : { kind: "idea", text: rest };
-    }
-  }
-  return { kind: "dispatch", text };
+  const note = stripPrefix(text, NOTE_PREFIXES);
+  if (note !== null) return note === "" ? null : { kind: "note", text: note };
+  const idea = stripPrefix(text, IDEA_PREFIXES);
+  if (idea !== null) return idea === "" ? null : { kind: "idea", text: idea };
+  const work = stripPrefix(text, WORK_PREFIXES);
+  if (work !== null) return work === "" ? null : { kind: "dispatch", text: work };
+  return { kind: "ask", text };
 }
 
 /**

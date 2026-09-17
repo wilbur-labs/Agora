@@ -46,13 +46,18 @@ test("a null read contributes nothing and does not throw", () => {
   assert.deepEqual(streamItemsOf(null, null, steps), []);
 });
 
-test("a typed line is a note, an idea, or work — by prefix, and never on an empty rest", () => {
+test("a typed line is a question by default; a note, an idea or work by prefix; never on an empty rest", () => {
   assert.deepEqual(composeIntentOf("备注：先记一下"), { kind: "note", text: "先记一下" });
   assert.deepEqual(composeIntentOf("note: remember"), { kind: "note", text: "remember" });
   assert.deepEqual(composeIntentOf("点子: 加一个语气判断"), { kind: "idea", text: "加一个语气判断" });
-  assert.deepEqual(composeIntentOf("  把骨架搭起来 "), { kind: "dispatch", text: "把骨架搭起来" });
+  assert.deepEqual(composeIntentOf("做：把骨架搭起来"), { kind: "dispatch", text: "把骨架搭起来" });
+  assert.deepEqual(composeIntentOf("do: scaffold it"), { kind: "dispatch", text: "scaffold it" });
+  // CR-75: a plain line is a question, not work — "还给mockup页面的链接" must never
+  // become step 2's implementation again.
+  assert.deepEqual(composeIntentOf("  还给mockup页面的链接 "), { kind: "ask", text: "还给mockup页面的链接" });
   assert.equal(composeIntentOf("   "), null);
   assert.equal(composeIntentOf("备注："), null);
+  assert.equal(composeIntentOf("做："), null);
 });
 
 test("work goes to the running step, or the first planned one", () => {
