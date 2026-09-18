@@ -434,9 +434,11 @@ function Do-Status {
         $built = (Get-Item $OutIndex).LastWriteTime
         Write-Step "Frontend build: $($built.ToString('yyyy-MM-dd HH:mm'))."
         # Everything the build reads (src, public, next.config, package.json ...)
-        # minus what it writes and installs. A deleted source file leaves no
-        # timestamp behind, so this can only say "stale", never "fresh".
-        $skip = '\\node_modules\\|\\out\\|\\\.next\\'
+        # minus what it writes and installs, and minus tsc's incremental cache
+        # (`tsconfig.tsbuildinfo`): `tsc --noEmit` rewrites it on every type-check,
+        # which is not a change the build would pick up. A deleted source file
+        # leaves no timestamp behind, so this can only say "stale", never "fresh".
+        $skip = '\\node_modules\\|\\out\\|\\\.next\\|\.tsbuildinfo$'
         $newer = Get-ChildItem $Frontend -Recurse -File |
             Where-Object { $_.FullName -notmatch $skip -and $_.LastWriteTime -gt $built } |
             Select-Object -First 1

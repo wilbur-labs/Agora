@@ -599,6 +599,8 @@ def _system(tmp_path, *, total_cost_budget_usd=12):
                         "name": "Alpha",
                         "root": str(root),
                         "workspaces": {},
+                        # Tasks are created against a settled goal (CR-61).
+                        "charter": {"goal": "preview the migration", "non_goals": [], "success_criteria": []},
                     }
                 },
             }

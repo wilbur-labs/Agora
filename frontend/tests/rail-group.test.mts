@@ -13,7 +13,6 @@ import {
   railSubtitleOf,
   settleRead,
   type RailGroup,
-  railRunIsCurrent,
 } from "../src/lib/rail-group.ts";
 import { workspace as workspaceDictionary } from "../src/lib/i18n/dictionaries/workspace.ts";
 
@@ -304,33 +303,13 @@ test("each stale-read notice speaks for its own read, in every locale", () => {
 });
 
 // --- CR-17: a run kept from before a failed refresh is not the current one ----
-
-test("a run the rail is holding is current only while the runs read succeeds", () => {
-  assert.equal(railRunIsCurrent([]), true);
-  assert.equal(railRunIsCurrent(["tasks"]), true);
-  assert.equal(railRunIsCurrent(["projects"]), true);
-});
-
-test("a failed runs read disqualifies the run in hand", () => {
-  // The page keeps its previous page of runs when the read is rejected, which is
-  // right -- blanking the rail on every failed refresh would be its own dishonesty.
-  // But the run in hand is then from before the failure and may have finished since,
-  // and the rail was rendering it as the current state dot, folding its timestamps
-  // into the activity time, and ordering by it.
-  assert.equal(railRunIsCurrent(["runs"]), false);
-  assert.equal(railRunIsCurrent(["tasks", "runs"]), false);
-  assert.equal(railRunIsCurrent(RAIL_STALE_ORDER), false);
-});
-
-test("the rail's rule is narrower than the portfolio card's, on purpose", () => {
-  // Only a *rejected* read disqualifies. A capped one does not, because the rail
-  // makes no claim from absence: it renders nothing when it holds no run for a task,
-  // rather than "no runs yet". Its sibling on the board does make that claim, which
-  // is why that one has to care about the cap and this one does not. `staleOrigins`
-  // carries rejections only, and that is the whole input here.
-  assert.deepEqual([...RAIL_STALE_ORDER], ["tasks", "projects", "runs"]);
-  assert.equal(railRunIsCurrent(["projects", "tasks"]), true);
-});
+//
+// `railRunIsCurrent` and its three unit tests used to sit here. W9 replaced the task
+// rail with a project-level column and W11 moved the task list out of the column, so
+// the question "can the run in hand be vouched for" is now answered by the narrow
+// active-runs read (`projectActiveReach`), which the structural test below follows.
+// The helper had no caller left (CR-77) and was removed rather than kept as an unused
+// export that the compiler would never flag.
 
 test("the rail drops the stale run in one place, not at each render site", async () => {
   // Structural, and the same honest limit as its counterpart on the portfolio board:

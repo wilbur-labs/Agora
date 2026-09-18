@@ -149,6 +149,8 @@ def _config(tmp_path: Path) -> dict:
                         "claude": str(workspaces / "claude"),
                         "kiro": str(workspaces / "kiro"),
                     },
+                    # Tasks are created against a settled goal (CR-61).
+                    "charter": {"goal": "resume loop", "non_goals": [], "success_criteria": []},
                 }
             },
         },

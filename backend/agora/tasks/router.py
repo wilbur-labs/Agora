@@ -12,6 +12,7 @@ from . import clarify
 from agora.config.settings import get_config, resolve_control_plane_db_path
 from agora.projects import ProjectRegistry
 
+from .charter_gate import ProjectHasNoCharter, require_charter
 from .models import (
     AppendEventRequest,
     CreateTaskRequest,
@@ -47,6 +48,16 @@ def create_task(
 ):
     if request.project_id not in projects.list_projects():
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Unknown project_id")
+    try:
+        # CR-61: no goal, no task — the same gate the orchestration CLI asks, see
+        # `tasks/charter_gate.py`. Answered with the conversation's own code and wording
+        # so a client tells "no goal yet" from every other 409; that wording lives in the
+        # kickoff router, which imports this module, hence the deferred import.
+        require_charter(projects.get(request.project_id))
+    except ProjectHasNoCharter as exc:
+        from agora.api.kickoff_router import _detail
+
+        raise HTTPException(status.HTTP_409_CONFLICT, _detail(exc.code)) from None
     return store.create(request)
 
 

@@ -13,6 +13,10 @@ from agora.tasks.store import (
 )
 
 
+#: Tasks are created against a charter (CR-61); the projects that receive tasks carry one.
+_CHARTER = {"goal": "ship it", "non_goals": [], "success_criteria": ["it ships"]}
+
+
 def _projects(tmp_path) -> ProjectRegistry:
     return ProjectRegistry(
         {
@@ -24,15 +28,24 @@ def _projects(tmp_path) -> ProjectRegistry:
                         "name": "Alpha",
                         "root": str(tmp_path / "alpha"),
                         "workspaces": {},
+                        "charter": dict(_CHARTER),
                     },
                     "beta": {
                         "name": "Beta",
                         "root": str(tmp_path / "beta"),
                         "workspaces": {},
+                        "charter": dict(_CHARTER),
                     },
                     "alpha-team": {
                         "name": "Alpha Team",
                         "root": str(tmp_path / "alpha-team"),
+                        "workspaces": {},
+                        "charter": dict(_CHARTER),
+                    },
+                    # No goal yet: the kickoff has not happened. Tasks are refused here.
+                    "blank": {
+                        "name": "Blank",
+                        "root": str(tmp_path / "blank"),
                         "workspaces": {},
                     },
                 },
@@ -182,6 +195,18 @@ def test_task_api_lifecycle_and_validation(tmp_path):
 
         unknown = client.post("/api/tasks", json=_request("missing").model_dump(mode="json"))
         assert unknown.status_code == 422
+
+        # CR-61: a project whose goal is not settled takes no tasks through this door.
+        # The refusal carries the same code as the conversation's, so a client can tell
+        # "no goal yet" from a malformed request or an unknown project.
+        no_goal = client.post("/api/tasks", json=_request("blank").model_dump(mode="json"))
+        assert no_goal.status_code == 409, no_goal.text
+        assert no_goal.json()["detail"]["code"] == "project_has_no_charter"
+        assert store.list(project_id="blank") == []
+        # Settling the goal opens it; nothing about the request had to change.
+        projects.set_charter("blank", goal="a goal", non_goals=[], success_criteria=[])
+        opened = client.post("/api/tasks", json=_request("blank").model_dump(mode="json"))
+        assert opened.status_code == 201, opened.text
     finally:
         app.dependency_overrides.clear()
 

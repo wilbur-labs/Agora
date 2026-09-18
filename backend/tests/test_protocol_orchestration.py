@@ -226,6 +226,8 @@ def _system(
                         "name": "Alpha",
                         "root": str(root),
                         "workspaces": {},
+                        # Tasks are created against a settled goal (CR-61).
+                        "charter": {"goal": "run the protocol", "non_goals": [], "success_criteria": []},
                     }
                 },
             }

@@ -29,6 +29,7 @@ from agora.control_plane.store import (
     ControlPlaneValidationError,
 )
 from agora.projects import ProjectRegistry
+from agora.tasks.charter_gate import require_charter
 from agora.protocol.agent_adapter import AdapterErrorCode, AgentAdapterResult
 from agora.protocol.hashing import (
     canonical_json_bytes,
@@ -251,7 +252,9 @@ class TaskOrchestrationService:
         actor: str = "user",
         contract: TaskContract | None = None,
     ) -> TaskManifest:
-        self.projects.get(project_id)
+        # CR-61: a project takes tasks only once its goal is set — the same gate the
+        # HTTP route asks, so `agora task start` is not a way around it.
+        require_charter(self.projects.get(project_id))
         self._assert_runtimes_available()
         self.store.validate_plan_inputs(
             self.methodology,

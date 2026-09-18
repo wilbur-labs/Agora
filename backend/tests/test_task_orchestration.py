@@ -92,6 +92,8 @@ def _system(
                 "alpha": {
                     "name": "Alpha",
                     "root": str(root),
+                    # Tasks are created against a settled goal (CR-61).
+                    "charter": {"goal": "plan delivery", "non_goals": [], "success_criteria": []},
                     "workspaces": {
                         "codex": str(root / ".agora" / "workspaces" / "codex"),
                         "claude": str(root / ".agora" / "workspaces" / "claude"),
@@ -124,6 +126,46 @@ def _system(
         total_token_budget=tokens, total_cost_budget_usd=12,
     )
     return tasks, service, runner, task
+
+
+def test_the_cli_create_path_asks_the_same_charter_gate_as_the_route(tmp_path):
+    """CR-61 is one rule, not one route: `agora task start` reaches `service.create`,
+    and a project whose goal is not set is refused there too — before any plan input
+    is validated or a task row exists."""
+    from agora.tasks.charter_gate import ProjectHasNoCharter
+
+    root = tmp_path / "repo"
+    root.mkdir(parents=True)
+    projects = ProjectRegistry(
+        {
+            "projects": {
+                "registry_path": str(tmp_path / "projects.yaml"),
+                "default": "blank",
+                "projects": {"blank": {"name": "Blank", "root": str(root), "workspaces": {}}},
+            }
+        },
+        project_root=tmp_path,
+    )
+    tasks = TaskStore(tmp_path / "agora.db")
+    runtimes = {
+        name: RuntimeCommand(adapter=name, command_template=(sys.executable, "{prompt}"))
+        for name in ("codex", "claude", "kiro")
+    }
+    service = TaskOrchestrationService(tasks, projects, runtimes, runner=FakeRunner([]))
+    with pytest.raises(ProjectHasNoCharter) as refused:
+        service.create(
+            project_id="blank", title="t", description="d",
+            total_token_budget=30_000, total_cost_budget_usd=12,
+        )
+    assert refused.value.code == "project_has_no_charter"
+    assert tasks.list(project_id="blank") == []
+    # Settling the goal opens the same door; nothing about the call had to change.
+    projects.set_charter("blank", goal="a goal", non_goals=[], success_criteria=[])
+    created = service.create(
+        project_id="blank", title="t", description="d",
+        total_token_budget=30_000, total_cost_budget_usd=12,
+    )
+    assert created.project_id == "blank"
 
 
 def test_foundation_method_is_stable_and_explicitly_provisional():

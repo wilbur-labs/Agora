@@ -53,6 +53,8 @@ def _system(tmp_path):
                     "agora": {
                         "name": "Agora",
                         "root": str(root),
+                        # Tasks are created against a settled goal (CR-61).
+                        "charter": {"goal": "dispose of candidates", "non_goals": [], "success_criteria": []},
                         "workspaces": {
                             runtime: str(root / ".agora" / "workspaces" / runtime)
                             for runtime in ("codex", "claude", "kiro")

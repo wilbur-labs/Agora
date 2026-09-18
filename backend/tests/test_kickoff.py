@@ -999,8 +999,11 @@ def test_kickoff_key_scan_is_one_query_not_pages(tmp_path, monkeypatch):
     kickoff_router._tasks_by_kickoff_key(tasks, pid)
     assert len(calls) == 1 and calls[0]["offset"] == 0 and calls[0]["limit"] == kickoff_router._TASK_SCAN_CEILING + 1
     monkeypatch.setattr(kickoff_router, "_TASK_SCAN_CEILING", 1)
+    # The public route takes tasks only against a settled goal (CR-61).
+    registry.set_charter(pid, goal="g", non_goals=[], success_criteria=[])
     for title in ("a", "b"):
-        client.post("/api/tasks", json={"project_id": pid, "title": title, "description": "d"})
+        made = client.post("/api/tasks", json={"project_id": pid, "title": title, "description": "d"})
+        assert made.status_code == 201, made.text
     if len(real_list(project_id=pid, limit=10)) >= 2:
         with pytest.raises(Exception, match="kickoff_task_scan_too_large"):
             kickoff_router._tasks_by_kickoff_key(tasks, pid)
