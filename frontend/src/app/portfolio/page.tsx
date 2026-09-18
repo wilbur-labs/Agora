@@ -842,7 +842,10 @@ function TaskCard({ task, bucket, ask, latestRun, runsReach, dash, onAdvanced, o
 
 function CreateTaskPanel({ projects, onClose, onCreated }: { projects: string[]; onClose: () => void; onCreated: (task: TaskManifest) => void }) {
   const { t, te } = useI18n();
-  const [projectId, setProjectId] = useState(projects[0] ?? "");
+  // CR-51: no default. The first id in alphabetical order was `agora` — this source
+  // tree — so the zero-friction path aimed the agent at the wrong repository. The
+  // person names the project; the submit button stays disabled until they do.
+  const [projectId, setProjectId] = useState("");
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [risk, setRisk] = useState<TaskRisk>("medium");

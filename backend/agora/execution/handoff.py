@@ -7,9 +7,13 @@ advances ``verified -> done``. Binding delivery to an immutable commit — rathe
 than a mutable worktree or an ambiguous cross-repo copy — matches the isolated
 per-workspace git design.
 
-Best-effort on the git side: a missing git binary, a non-repo workspace, or an
-empty worktree never blocks completion; the handoff is recorded with whatever
-commit (if any) the workspace already has.
+A handoff binds a commit or it does not happen (CR-91, 2026-09-19: a completion
+that committed nothing was a defect, not a semantic). When the workspace cannot be
+checked, is not this run's provisioned worktree, or the commit fails — locally or on
+the remote host — the attempt is recorded as ``handoff.refused`` with the reason, the
+task stays ``verified`` so it can be retried once the cause is fixed, and the caller
+gets :class:`HandoffNotCommitted`. A clean worktree is not a refusal: the run committed
+its own work, and the commit it already has is what the task is bound to.
 """
 from __future__ import annotations
 
@@ -26,7 +30,7 @@ from agora.tasks.store import TaskStore
 from agora.projects import ProjectRegistry
 from agora.workspaces.naming import worktree_branch
 
-from .deliverables import _GIT, list_changes, provisioned_worktree_check, ready_worktree_check
+from .deliverables import _GIT, _read_changes, digest_of, provisioned_worktree_check, ready_worktree_check
 from .dispatcher import ROLE_KEY, ROLE_WORKER
 from .remote_wiring import RemoteTargetMismatch, adapter_for_recorded_target, remote_components_for, remote_target_of
 from .models import RunState
@@ -39,6 +43,22 @@ _MAX_RECORDED_FILES = 200
 
 class HandoffError(Exception):
     """A handoff precondition failed (e.g. the task is not verified)."""
+
+
+class HandoffNotCommitted(HandoffError):
+    """The handoff bound no commit, so the task was not completed (CR-91).
+
+    ``note`` is the reason in the words the record carries; the task is still
+    ``verified`` and the same call can be made again once the cause is fixed.
+    """
+
+    code = "handoff_not_committed"
+
+    def __init__(self, note: str, *, run_id: str | None, workspace: str | None) -> None:
+        super().__init__(note)
+        self.note = note
+        self.run_id = run_id
+        self.workspace = workspace
 
 
 @dataclass
@@ -95,7 +115,10 @@ async def _remote_handoff(adapter, projects: ProjectRegistry, worker, message: s
             # Clean — the run committed its own work, or changed nothing. The commit the
             # worktree already has is what the task is bound to, as the local path does.
             head = await components.deliverables.head_commit(ws_path)
-            note = "remote worktree was clean; bound the commit it already had" if head else (
+            note = (
+                "remote worktree was clean; bound the commit it already had (not checked "
+                "against the run's delivery snapshot on the remote host — CR-94)"
+            ) if head else (
                 "remote worktree was clean and its HEAD could not be read; nothing bound"
             )
             commit, committed, files = head, False, []
@@ -111,19 +134,99 @@ async def _remote_handoff(adapter, projects: ProjectRegistry, worker, message: s
                 return None, False, pending, f"remote commit failed: {type(exc).__name__}: {exc}"
             files = [{"path": path, "status": "committed", "size": None} for path in result.get("files", [])]
             commit, committed, note = result.get("commit"), True, None
-        if components.config.cleanup_worktree:
-            # Q5=C: the adapter asked for the worktree to go once handed off. Ownership is
-            # verified inside teardown; a failure is said in the note, never raised — the
-            # handoff itself has happened.
-            try:
-                await components.provisioner.teardown_worktree(worker.project_id, worker.adapter)
-            except Exception as exc:  # noqa: BLE001
-                note = f"{note + '; ' if note else ''}worktree cleanup failed: {type(exc).__name__}"
-            else:
-                note = f"{note + '; ' if note else ''}worktree removed after handoff (cleanup_worktree)"
         return commit, committed, files, note
     finally:
         await components.aclose()
+
+
+async def _remote_cleanup(adapter, projects: ProjectRegistry, worker) -> str | None:
+    """Q5=C: the adapter asked for the worktree to go once handed off. Called only after
+    the task is DONE — before that the worktree is the retry: a handoff whose record or
+    transition failed after a teardown left a verified task with nothing to hand off
+    again (review, 2026-09-19). Ownership is verified inside teardown; a failure is said
+    in the note, never raised, because the handoff itself has happened."""
+    components = remote_components_for(adapter, projects)
+    try:
+        if not components.config.cleanup_worktree:
+            return None
+        try:
+            await components.provisioner.teardown_worktree(worker.project_id, worker.adapter)
+        except Exception as exc:  # noqa: BLE001
+            return f"worktree cleanup failed: {type(exc).__name__}"
+        return "worktree removed after handoff (cleanup_worktree)"
+    finally:
+        await components.aclose()
+
+
+def _no_delivery_reason(exec_store: ExecutionStore, run_id: str) -> str | None:
+    """Why binding the worktree's existing commit would bind nothing of this run's.
+
+    A clean worktree has two stories: the run committed its own work, or the run
+    changed nothing and HEAD is still the commit provisioning left there. The commit
+    alone cannot tell them apart; the run's frozen delivery snapshot can. None means
+    the run is known to have delivered something (or more than could be listed); a
+    string is the refusal.
+    """
+    snapshot = exec_store.deliverable_snapshot(run_id)
+    if snapshot is None:
+        return (
+            "the worktree is clean but the run has no delivery snapshot, so whether it "
+            "changed anything could not be established; nothing bound — run the step "
+            "again to produce a fresh snapshot"
+        )
+    if snapshot.get("files") or snapshot.get("truncated"):
+        return None
+    if snapshot.get("commits_unread"):
+        # The snapshot could not compare commit history, so "no files" is not "changed
+        # nothing": the run may have committed work the list does not show. Unknown,
+        # said as unknown — and the snapshot is frozen, so the way out is a new run.
+        return (
+            "the worktree is clean and the run's snapshot lists no files, but its commit "
+            "history could not be read when it ended, so whether it delivered anything "
+            "is unknown; nothing bound — run the step again to produce a fresh snapshot"
+        )
+    return "the run changed nothing (its delivery snapshot is empty); nothing to hand off"
+
+
+def _delivery_gone_reason(workspace: Path, snapshot: dict) -> str | None:
+    """Why the clean worktree no longer holds what the run delivered, or None.
+
+    A non-empty snapshot says what the run delivered *when it ended*; the worktree may
+    have been reset or reverted since (review, 2026-09-19), and binding its HEAD then
+    binds a commit without the work. Each snapshot row is checked as far as the row
+    allows: a row with a digest must hash to it now; a row the run deleted must still
+    be absent; a row the run committed itself (no digest recorded) must at least still
+    be there. What this does not catch is said in CR-94: a reset to some *other* commit
+    that happens to hold the same paths.
+    """
+    for row in snapshot.get("files") or []:
+        path = str(row.get("path") or "")
+        if not path:
+            continue
+        expected = row.get("sha256")
+        if expected:
+            if digest_of(workspace, path) != expected:
+                return f"the worktree no longer holds what the run delivered ({path} differs or is gone); nothing bound"
+            continue
+        # Two ways a row says "the run removed this": the baseline path that stopped
+        # being reported (`gone_since_baseline`), and a deletion the run committed
+        # itself (status "deleted", no digest — review round 3: demanding presence
+        # there refused a legitimate handoff on every retry).
+        gone_by_run = (
+            (bool(row.get("gone_since_baseline")) and row.get("exists") is False)
+            or str(row.get("status") or "") == "deleted"
+        )
+        try:
+            present = (workspace / path).lstat() is not None
+        except FileNotFoundError:
+            present = False
+        except OSError:
+            return f"the worktree could not be checked against the run's delivery ({path} unreadable); nothing bound"
+        if gone_by_run and present:
+            return f"the worktree no longer matches the run's delivery ({path} is back); nothing bound"
+        if not gone_by_run and not present:
+            return f"the worktree no longer holds what the run delivered ({path} is gone); nothing bound"
+    return None
 
 
 def _commit_workspace(
@@ -219,6 +322,7 @@ def hand_off(
     committed = False
     files: list[dict] = []
     remote_target = remote_target_of(worker) if worker is not None else None
+    pinned = None
     if worker is not None and remote_target is not None:
         # The worker ran on another host (W3-a U5): the worktree to commit is there —
         # the place the run recorded, not where its adapter points today. A fresh remote
@@ -260,9 +364,18 @@ def hand_off(
                 "be checked; nothing committed"
             )
         elif ready:
-            files = list_changes(workspace)
+            # The record's file list is read with its failure kept apart from "no
+            # changes" (review round 3: the best-effort reader returned [] on a
+            # transient error and the record then said the commit held no files).
+            read = _read_changes(workspace, LocalEnvironment())
+            files = read[0] if read is not None else []
             message = f"Deliver: {task.title}"[:500]
             commit, committed, note = _commit_workspace(workspace, message, actor)
+            if read is None and commit is not None:
+                note = (
+                    f"{note + '; ' if note else ''}the file list could not be read before "
+                    "committing, so this record lists no files; the commit itself holds them"
+                )
         elif unavailable is not None:
             # git could not run or could not finish. The old wording here said the
             # workspace is not a provisioned worktree, which is a verdict about the
@@ -277,20 +390,48 @@ def hand_off(
     else:
         note = "no succeeded worker run; nothing to commit"
 
-    task_store.append_event(task_id, AppendEventRequest(
-        event_type="handoff.completed",
-        actor=actor,
-        payload={
-            "run_id": run_id,
-            "workspace": workspace_str,
-            "commit": commit,
-            "committed": committed,
-            "file_count": len(files),
-            "files": [f["path"] for f in files][:_MAX_RECORDED_FILES],
-            "note": note,
-        },
-    ))
+    if commit is not None and not committed and worker is not None:
+        # Binding a commit that was already there is a delivery only if this run put
+        # something in it (or committed it itself). A run that changed nothing would
+        # otherwise be handed off on provisioning's seed commit — DONE with nothing
+        # delivered, the very thing CR-91 refuses.
+        reason = _no_delivery_reason(exec_store, worker.run_id)
+        if reason is None and remote_target is None:
+            # And the delivery must still be *in* the worktree whose HEAD is bound.
+            # Local only: the remote host has no digest reader yet (CR-94, `defer`).
+            reason = _delivery_gone_reason(
+                Path(workspace_str), exec_store.deliverable_snapshot(worker.run_id) or {},
+            )
+        if reason is not None:
+            commit, note = None, reason
 
+    payload = {
+        "run_id": run_id,
+        "workspace": workspace_str,
+        "commit": commit,
+        "committed": committed,
+        "file_count": len(files),
+        "files": [f["path"] for f in files][:_MAX_RECORDED_FILES],
+        "note": note,
+    }
+    if commit is None:
+        # Nothing bound, so nothing completed (CR-91). The attempt and its reason go on
+        # the record — a person reading the task later must see that a handoff was
+        # tried and why it did not take — but the task stays verified, and the caller
+        # is told rather than handed a DONE that delivered nothing.
+        task_store.append_event(task_id, AppendEventRequest(
+            event_type="handoff.refused", actor=actor, payload=payload,
+        ))
+        raise HandoffNotCommitted(
+            note or "nothing committed", run_id=run_id, workspace=workspace_str,
+        )
+
+    # The transition first, the record second. They are two writes, and the one that
+    # can be refused is the transition (a version moved under us): with the record
+    # written first, that refusal left a `handoff.completed` on a task still verified,
+    # and a retry appended a second one. Written this way round, a refused transition
+    # writes nothing; and should the record's insert fail after DONE, the transition's
+    # own reason still names the commit (review, 2026-09-19).
     reason = f"Handoff by {actor}"
     if commit:
         reason += f" (commit {commit[:12]})"
@@ -298,6 +439,22 @@ def hand_off(
         task_id, TaskState.DONE, actor=actor, reason=reason,
         expected_version=task.version,
     )
+    task_store.append_event(task_id, AppendEventRequest(
+        event_type="handoff.completed", actor=actor, payload=payload,
+    ))
+
+    if pinned is not None:
+        # Only now, with the task DONE and the record written, may the remote worktree
+        # go. The outcome travels in the result, not the record: the record is of the
+        # delivery, and the worktree's absence is observable on its own. Nothing from
+        # here may fail the request — the handoff has happened — so the connection's
+        # own errors (opening it, closing it) are caught along with the teardown's.
+        try:
+            cleanup = asyncio.run(_remote_cleanup(pinned, projects, worker))
+        except Exception as exc:  # noqa: BLE001 - reported, not raised
+            cleanup = f"worktree cleanup could not run: {type(exc).__name__}"
+        if cleanup:
+            note = f"{note + '; ' if note else ''}{cleanup}"
 
     return HandoffResult(
         task=done, run_id=run_id, workspace=workspace_str, commit=commit,

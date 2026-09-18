@@ -11,7 +11,7 @@ import pytest
 
 from agora.execution.adapters import build_adapter_registry
 from agora.execution.dispatcher import ExecutionDispatcher
-from agora.execution.handoff import HandoffError, hand_off
+from agora.execution.handoff import HandoffError, HandoffNotCommitted, hand_off
 from agora.execution.models import CreateRunRequest, RunState
 from agora.execution.store import ExecutionStore
 from agora.projects import ProjectRegistry
@@ -133,6 +133,31 @@ def test_handoff_commits_deliverable_and_completes(tmp_path):
     assert events[0].payload["files"] == ["deliver.txt"]
 
 
+def test_a_refused_transition_leaves_no_completed_record(tmp_path, monkeypatch):
+    """The transition is written before the record (review round 2): a version that
+    moved under the handoff refuses the transition, and nothing must then claim the
+    task was handed off."""
+    from agora.tasks.store import StaleTaskVersionError
+
+    tasks, store, projects, task = _verified_task_with_worker(tmp_path)
+    real_transition = tasks.transition
+
+    def stale(*args, **kwargs):
+        raise StaleTaskVersionError("moved")
+
+    monkeypatch.setattr(tasks, "transition", stale)
+    with pytest.raises(StaleTaskVersionError):
+        hand_off(tasks, store, projects, task.task_id, actor="wilbur")
+    assert [e.event_type for e in tasks.events(task.task_id) if e.event_type.startswith("handoff.")] == []
+    assert tasks.get(task.task_id).state == TaskState.VERIFIED
+
+    monkeypatch.setattr(tasks, "transition", real_transition)
+    # Nothing was consumed: the same call now completes and writes exactly one record.
+    result = hand_off(tasks, store, projects, task.task_id, actor="wilbur")
+    assert result.task.state == TaskState.DONE
+    assert [e.event_type for e in tasks.events(task.task_id) if e.event_type.startswith("handoff.")] == ["handoff.completed"]
+
+
 def test_handoff_requires_verified_task(tmp_path):
     tasks, store, projects, task = _verified_task_with_worker(tmp_path)
     hand_off(tasks, store, projects, task.task_id, actor="wilbur")  # now DONE
@@ -141,7 +166,18 @@ def test_handoff_requires_verified_task(tmp_path):
         hand_off(tasks, store, projects, task.task_id, actor="wilbur")
 
 
-def test_handoff_without_worker_run_still_completes(tmp_path):
+def _refused(tasks, task_id: str):
+    """The one `handoff.refused` record a refused attempt leaves, and proof that no
+    `handoff.completed` was written and the task did not move (CR-91)."""
+    events = tasks.events(task_id)
+    assert [e.event_type for e in events if e.event_type.startswith("handoff.")] == ["handoff.refused"]
+    assert tasks.get(task_id).state == TaskState.VERIFIED
+    return next(e for e in events if e.event_type == "handoff.refused")
+
+
+def test_handoff_without_worker_run_is_refused(tmp_path):
+    """Nothing to deliver is nothing to hand off (CR-91): before, this completed the
+    task with a note; a DONE that bound no commit was the defect the CR named."""
     tasks, store, dispatcher = _system(tmp_path, [sys.executable, "-c", "pass"])
     task = tasks.create(CreateTaskRequest(project_id="alpha", title="No runs"))
     # Force straight to verified without any run.
@@ -149,25 +185,138 @@ def test_handoff_without_worker_run_still_completes(tmp_path):
         db.execute("UPDATE tasks SET state = ?, version = 2 WHERE task_id = ?",
                    (TaskState.VERIFIED.value, task.task_id))
 
-    result = hand_off(tasks, store, dispatcher.projects, task.task_id, actor="wilbur")
+    with pytest.raises(HandoffNotCommitted, match="no succeeded worker run") as refused:
+        hand_off(tasks, store, dispatcher.projects, task.task_id, actor="wilbur")
 
-    assert result.task.state == TaskState.DONE
-    assert result.commit is None and result.committed is False
-    assert result.note and "no succeeded worker run" in result.note
+    assert refused.value.code == "handoff_not_committed"
+    record = _refused(tasks, task.task_id)
+    assert record.payload["commit"] is None and record.payload["committed"] is False
 
 
-def test_handoff_skips_commit_when_worker_worktree_is_wrong_branch(tmp_path):
-    """If the worker's workspace is not this project/adapter's provisioned
-    worktree (here: right repo, wrong branch), handoff commits nothing."""
+def test_handoff_refuses_when_worker_worktree_is_wrong_branch(tmp_path):
+    """If the worker's workspace is not this project/adapter's provisioned worktree
+    (here: right repo, wrong branch), nothing is committed — and so nothing is
+    completed. The task stays verified; the same call succeeds once the worktree is
+    put back, with nothing else changed."""
     tasks, store, projects, task = _verified_task_with_worker(tmp_path)
     workspace = projects.get("alpha").workspaces["codex"]
     _git("checkout", "-q", "-b", "some/wrong-branch", cwd=workspace)
 
+    with pytest.raises(HandoffNotCommitted, match="provisioned worktree") as refused:
+        hand_off(tasks, store, projects, task.task_id, actor="wilbur")
+    assert refused.value.workspace == str(Path(workspace).resolve())
+    _refused(tasks, task.task_id)
+
+    _git("checkout", "-q", worktree_branch("alpha", "codex"), cwd=workspace)
+    result = hand_off(tasks, store, projects, task.task_id, actor="wilbur")
+    assert result.task.state == TaskState.DONE and result.committed is True
+
+
+def test_a_clean_worktree_is_bound_not_refused(tmp_path):
+    """The run committed its own work: nothing is left to commit, and that is not a
+    refusal — the commit the worktree already has is what the task is bound to."""
+    tasks, store, projects, task = _verified_task_with_worker(tmp_path)
+    workspace = projects.get("alpha").workspaces["codex"]
+    _git("add", "-A", cwd=workspace)
+    _git("-c", "user.name=t", "-c", "user.email=t@localhost", "commit", "-q", "-m", "own work", cwd=workspace)
+    head = subprocess.run([GIT, "-C", str(workspace), "rev-parse", "HEAD"],
+                          capture_output=True, text=True, check=True).stdout.strip()
+
     result = hand_off(tasks, store, projects, task.task_id, actor="wilbur")
 
     assert result.task.state == TaskState.DONE
-    assert result.commit is None and result.committed is False
-    assert result.note and "provisioned worktree" in result.note
+    assert result.commit == head and result.committed is False
+    events = [e.event_type for e in tasks.events(task.task_id) if e.event_type.startswith("handoff.")]
+    assert events == ["handoff.completed"]
+
+
+def test_a_run_that_changed_nothing_is_refused_not_bound_to_the_seed_commit(tmp_path):
+    """The other clean-worktree story (review, 2026-09-19): the run exited 0 and touched
+    nothing, so HEAD is still the commit provisioning left there. Binding it would be
+    DONE with nothing delivered — the run's frozen snapshot (empty) is what tells the
+    two clean worktrees apart."""
+    tasks, store, dispatcher = _system(tmp_path, [sys.executable, "-c", "pass"])
+    task = _planned_task(tasks)
+    run = dispatcher.queue(CreateRunRequest(
+        task_id=task.task_id, adapter="codex", prompt="do nothing",
+        timeout_seconds=30, expected_task_version=2,
+    ))
+    finished = asyncio.run(dispatcher.execute(run.run_id))
+    assert finished.state == RunState.SUCCEEDED
+    assert store.deliverable_snapshot(run.run_id) == {"files": [], "truncated": False}
+    current = tasks.get(task.task_id)
+    current = tasks.transition(task.task_id, TaskState.REVIEW, actor="t", expected_version=current.version)
+    tasks.transition(task.task_id, TaskState.VERIFIED, actor="t", expected_version=current.version)
+
+    with pytest.raises(HandoffNotCommitted, match="changed nothing"):
+        hand_off(tasks, store, dispatcher.projects, task.task_id, actor="wilbur")
+    record = _refused(tasks, task.task_id)
+    assert record.payload["commit"] is None
+
+
+def test_a_worktree_reset_after_the_run_is_refused_not_bound(tmp_path):
+    """Review, 2026-09-19: the snapshot says what the run delivered *when it ended*.
+    If the worktree was reset in the meantime it is clean, HEAD is the seed commit, and
+    the snapshot is still non-empty — binding that HEAD would hand off work that is no
+    longer there. The rows are checked against the tree before the bind."""
+    tasks, store, projects, task = _verified_task_with_worker(tmp_path)
+    workspace = projects.get("alpha").workspaces["codex"]
+    _git("clean", "-fdq", cwd=workspace)  # deliver.txt was untracked: gone, tree clean
+
+    with pytest.raises(HandoffNotCommitted, match="no longer holds") as refused:
+        hand_off(tasks, store, projects, task.task_id, actor="wilbur")
+    assert "deliver.txt" in str(refused.value)
+    _refused(tasks, task.task_id)
+
+
+def test_a_snapshot_whose_commit_history_was_unread_is_unknown_not_nothing(tmp_path, monkeypatch):
+    """`commits_unread` means the run may have committed work the list does not show;
+    an empty list under it is not "changed nothing" (review round 2)."""
+    tasks, store, projects, task = _verified_task_with_worker(tmp_path)
+    workspace = projects.get("alpha").workspaces["codex"]
+    _git("add", "-A", cwd=workspace)
+    _git("-c", "user.name=t", "-c", "user.email=t@localhost", "commit", "-q", "-m", "own work", cwd=workspace)
+    monkeypatch.setattr(
+        store, "deliverable_snapshot",
+        lambda run_id: {"files": [], "truncated": False, "commits_unread": True},
+    )
+
+    with pytest.raises(HandoffNotCommitted, match="could not be read") as refused:
+        hand_off(tasks, store, projects, task.task_id, actor="wilbur")
+    assert "changed nothing" not in str(refused.value)
+    _refused(tasks, task.task_id)
+
+
+def test_a_deletion_the_run_committed_is_not_a_missing_delivery(tmp_path, monkeypatch):
+    """Review round 3: a run that `git rm`s a file and commits leaves a snapshot row
+    `status=deleted, sha256=None` with no `gone_since_baseline`. The path is absent by
+    design; demanding its presence refused the handoff on every retry."""
+    tasks, store, projects, task = _verified_task_with_worker(tmp_path)
+    workspace = projects.get("alpha").workspaces["codex"]
+    _git("rm", "-q", "seed.txt", cwd=workspace)
+    _git("add", "-A", cwd=workspace)
+    _git("-c", "user.name=t", "-c", "user.email=t@localhost", "commit", "-q", "-m", "own work", cwd=workspace)
+    monkeypatch.setattr(store, "deliverable_snapshot", lambda run_id: {
+        "files": [{"path": "seed.txt", "status": "deleted", "sha256": None, "committed_during_run": True}],
+        "truncated": False,
+    })
+
+    result = hand_off(tasks, store, projects, task.task_id, actor="wilbur")
+    assert result.task.state == TaskState.DONE and result.committed is False
+
+
+def test_a_clean_worktree_without_a_snapshot_is_refused_as_unknown(tmp_path, monkeypatch):
+    """No snapshot is "we do not know what this run delivered", not "nothing" and not
+    "something": the handoff says so instead of guessing either way."""
+    tasks, store, projects, task = _verified_task_with_worker(tmp_path)
+    workspace = projects.get("alpha").workspaces["codex"]
+    _git("add", "-A", cwd=workspace)
+    _git("-c", "user.name=t", "-c", "user.email=t@localhost", "commit", "-q", "-m", "own work", cwd=workspace)
+    monkeypatch.setattr(store, "deliverable_snapshot", lambda run_id: None)
+
+    with pytest.raises(HandoffNotCommitted, match="could not be established"):
+        hand_off(tasks, store, projects, task.task_id, actor="wilbur")
+    _refused(tasks, task.task_id)
 
 
 def test_commit_workspace_never_touches_a_repo_root(tmp_path):
@@ -243,13 +392,14 @@ def test_the_production_path_does_not_record_a_git_failure_as_a_workspace_verdic
         lambda *a, **kw: (False, "git is not available (FileNotFoundError)"),
     )
 
-    result = hand_off(tasks, store, projects, task.task_id, actor="wilbur")
+    with pytest.raises(HandoffNotCommitted):
+        hand_off(tasks, store, projects, task.task_id, actor="wilbur")
 
-    events = [e for e in tasks.events(task.task_id) if e.event_type == "handoff.completed"]
-    note = events[-1].payload["note"]
+    # The wording matters even more now that the record is a refusal the person has
+    # to act on: it must send them to git, not to their workspace.
+    note = _refused(tasks, task.task_id).payload["note"]
     assert "git is not available" in note
     assert "is not a provisioned worktree" not in note
-    assert result.committed is False
 
 
 def test_a_workspace_that_really_is_not_a_worktree_is_still_said_carefully(
@@ -262,10 +412,10 @@ def test_a_workspace_that_really_is_not_a_worktree_is_still_said_carefully(
     tasks, store, projects, task = _verified_task_with_worker(tmp_path)
     monkeypatch.setattr(handoff_module, "ready_worktree_check", lambda *a, **kw: (False, None))
 
-    hand_off(tasks, store, projects, task.task_id, actor="wilbur")
+    with pytest.raises(HandoffNotCommitted):
+        hand_off(tasks, store, projects, task.task_id, actor="wilbur")
 
-    events = [e for e in tasks.events(task.task_id) if e.event_type == "handoff.completed"]
-    assert "could not be confirmed" in events[-1].payload["note"]
+    assert "could not be confirmed" in _refused(tasks, task.task_id).payload["note"]
 
 
 def test_a_head_that_cannot_be_read_is_not_recorded_as_having_no_commits(tmp_path):
@@ -390,10 +540,10 @@ def test_a_deleted_project_says_so_rather_than_pointing_at_the_workspace(
         raise KeyError(project_id)
 
     monkeypatch.setattr(projects, "get", gone)
-    hand_off(tasks, store, projects, task.task_id, actor="wilbur")
+    with pytest.raises(HandoffNotCommitted):
+        hand_off(tasks, store, projects, task.task_id, actor="wilbur")
 
-    events = [e for e in tasks.events(task.task_id) if e.event_type == "handoff.completed"]
-    note = events[-1].payload["note"]
+    note = _refused(tasks, task.task_id).payload["note"]
     assert "no longer registered" in note
     assert "could not be confirmed" not in note
 

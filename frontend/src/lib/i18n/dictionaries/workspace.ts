@@ -700,6 +700,7 @@ export const workspace = {
         // something that never existed.
         attentionDeliveryFailed: "Delivery failed",
         handoff: "Handed off",
+        handoffRefused: "Handoff refused — no commit bound, task still verified",
         note: "Note",
       },
       spec: {
@@ -1473,6 +1474,7 @@ export const workspace = {
         attentionDelivered: "回应已送达",
         attentionDeliveryFailed: "送达失败",
         handoff: "已交付",
+        handoffRefused: "交付被拒——没有绑定到提交，任务仍是已验证",
         note: "说明",
       },
       spec: {

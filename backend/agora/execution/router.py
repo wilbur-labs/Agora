@@ -42,7 +42,7 @@ from .deliverables import (
 from . import deliverables as _deliverables_module
 from .dispatcher import ExecutionDispatcher, workspace_unavailable_reason
 from .remote_wiring import RemoteTargetMismatch, adapter_for_recorded_target, remote_components_for, remote_target_of
-from .handoff import HandoffError, hand_off
+from .handoff import HandoffError, HandoffNotCommitted, hand_off
 from .models import (
     ACTIVE_RUN_STATES,
     ROLE_CHAT,
@@ -700,6 +700,13 @@ async def handoff_task(
             hand_off, task_store, store, registry, task_id, actor=actor,
             adapters=dispatcher.adapters,
         )
+    except HandoffNotCommitted as exc:
+        # CR-91: nothing was bound, so the task is still verified. A coded detail, so a
+        # client can tell "retry once the workspace is fixed" from the other 409s here.
+        raise HTTPException(status.HTTP_409_CONFLICT, {
+            "code": exc.code, "message": exc.note,
+            "run_id": exc.run_id, "workspace": exc.workspace,
+        }) from None
     except HandoffError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from None
     except TaskNotFoundError:

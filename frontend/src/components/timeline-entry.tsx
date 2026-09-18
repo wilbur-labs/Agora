@@ -72,6 +72,9 @@ export function timelineView(
     const key = ATTENTION_TIMELINE_EVENT_KEY[type];
     if (key !== undefined) return { who: "system", title: t(key), detail: p.title ? String(p.title) : null };
   }
+  // A refused handoff (CR-91: nothing was bound, the task stayed verified) is its own
+  // line with the reason, never read as "handed off" with an empty commit.
+  if (type === "handoff.refused") return { who: "system", title: t("workspace.timeline.events.handoffRefused"), detail: p.note ? String(p.note) : null };
   if (type.startsWith("handoff.")) return { who: "system", title: t("workspace.timeline.events.handoff"), detail: p.commit ? String(p.commit).slice(0, 8) : null };
   // Fallback: humanized type.
   return { who: "system", title: type.replaceAll(".", " ").replaceAll("_", " "), detail: null };
