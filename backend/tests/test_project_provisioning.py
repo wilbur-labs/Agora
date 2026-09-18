@@ -629,3 +629,49 @@ def test_decisions_route_404s_for_an_unknown_project(tmp_path):
         assert client.get("/api/projects/nope/decisions").status_code == 404
     finally:
         app.dependency_overrides.clear()
+
+
+def test_defects_have_their_own_route_and_report_open_count(tmp_path):
+    """Parallel to /decisions: its own route, and the count it exposes is the open
+    count, never a total that hides how many are already fixed."""
+    from agora.projects.defects import DEFECTS_RELATIVE_PATH
+    from agora.tasks.router import get_project_registry
+
+    registry = _registry(tmp_path)
+    app.dependency_overrides[get_project_registry] = lambda: registry
+    client = TestClient(app)
+    try:
+        # No defects.yaml yet: absent, said as absence, not "no defects".
+        body = client.get("/api/projects/agora/defects").json()
+        assert body["project_id"] == "agora"
+        assert (body["available"], body["reason"]) == (False, "absent")
+        assert body["records"] is None
+        assert body["open_count"] is None
+
+        path = registry.get("agora").root / DEFECTS_RELATIVE_PATH
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "defects:\n"
+            "  - id: D-1\n    title: fixed one\n    status: fixed\n"
+            "  - id: D-2\n    title: open one\n    status: open\n",
+            encoding="utf-8",
+        )
+        body = client.get("/api/projects/agora/defects").json()
+        assert body["available"] is True
+        assert len(body["records"]) == 2
+        # open count is the owed count: the fixed one is listed but not counted.
+        assert body["open_count"] == 1
+        assert body["unrecognised_count"] == 0
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_defects_route_404s_for_an_unknown_project(tmp_path):
+    from agora.tasks.router import get_project_registry
+
+    app.dependency_overrides[get_project_registry] = lambda: _registry(tmp_path)
+    client = TestClient(app)
+    try:
+        assert client.get("/api/projects/nope/defects").status_code == 404
+    finally:
+        app.dependency_overrides.clear()

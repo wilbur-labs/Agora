@@ -12,15 +12,16 @@
 import { Button } from "@/components/ui/button";
 import { relTime } from "@/components/timeline-entry";
 import { crLogViewOf } from "@/lib/cr-log";
-import type { ProjectDashboard, ProjectDecisions, TaskManifest } from "@/lib/control-plane";
+import type { ProjectDashboard, ProjectDecisions, ProjectDefects, TaskManifest } from "@/lib/control-plane";
 import type { RunSummary } from "@/lib/execution";
 import type { PlanHeadline, PlanRow } from "@/lib/task-plan";
 import { useI18n } from "@/lib/i18n";
+import { cn } from "@/lib/utils";
 
 export type ProjectView = "chat" | "goal" | "order" | "runs" | "decisions" | "changeRequests" | "defects" | "files";
 
 export function ProjectDetail({
-  view, dashboard, dashboardFailed, decisions, decisionsFailed, tasks, rows, headline, runs, runsFailed, runsTruncated, onBack,
+  view, dashboard, dashboardFailed, decisions, decisionsFailed, defects, defectsFailed, tasks, rows, headline, runs, runsFailed, runsTruncated, onBack,
 }: {
   view: Exclude<ProjectView, "chat">;
   dashboard: ProjectDashboard | null;
@@ -28,6 +29,9 @@ export function ProjectDetail({
   decisions: ProjectDecisions | null;
   /** The decisions read itself failed — told apart from "not landed yet". */
   decisionsFailed: boolean;
+  defects: ProjectDefects | null;
+  /** The defects read itself failed — told apart from "not landed yet". */
+  defectsFailed: boolean;
   tasks: readonly TaskManifest[];
   rows: readonly PlanRow[];
   headline: PlanHeadline;
@@ -145,7 +149,45 @@ export function ProjectDetail({
         </div>
       );
   } else if (view === "defects") {
-    body = <p className="text-[13px] text-muted-foreground">{t("workspace.detail.defects.noSource")}</p>;
+    // The three answers are kept apart the same way the reader and navFromDefects keep
+    // them: "absent" is a settled nothing (no source registered), any other unavailable
+    // is a read that did not land, and an available payload whose required counts are
+    // null contradicts its own contract — that is a failed read, never rendered as zero.
+    // `ready` is the payload once every required field is known non-null; only it may
+    // render the list and the counted footer.
+    const ready = defects !== null && defects.available && defects.records !== null
+      && defects.open_count !== null && defects.unrecognised_count !== null
+      && defects.unreadable_count !== null
+      ? { ...defects, records: defects.records, open_count: defects.open_count,
+          unrecognised_count: defects.unrecognised_count, unreadable_count: defects.unreadable_count }
+      : null;
+    body = defectsFailed ? <p className="text-[13px] text-muted-foreground">{t("workspace.detail.defects.unavailable", { reason: t("workspace.panels.unavailable") })}</p>
+      : defects === null ? <p className="text-[13px] text-muted-foreground">{t("workspace.stream.loading")}</p>
+      : (!defects.available && defects.reason === "absent") ? <p className="text-[13px] text-muted-foreground">{t("workspace.detail.defects.noSource")}</p>
+      : ready === null ? <p className="text-[13px] text-muted-foreground">{t("workspace.detail.defects.unavailable", { reason: defects.reason ?? t("workspace.panels.unavailable") })}</p>
+      : ready.records.length === 0 ? <p className="text-[13px] text-muted-foreground">{t("workspace.detail.defects.none")}</p> : (
+        <div className="space-y-2">
+          {ready.records.map((record, index) => {
+            const fixed = record.status_token === "fixed";
+            return (
+              <div key={record.id ?? `#${index}`} className="rounded-lg border bg-muted/30 px-3 py-2 text-[13px]">
+                <p>
+                  <span className="mr-2 font-mono text-[11px] text-muted-foreground">{record.id ?? "—"}</span>
+                  <b className={cn("font-medium", fixed && "text-muted-foreground line-through")}>{record.title ?? t("workspace.panels.unavailable")}</b>
+                  {record.status && <span className="ml-2 rounded-full border px-2 py-0.5 font-mono text-[10px] text-muted-foreground">{record.status}</span>}
+                </p>
+                {record.summary && <p className={cn("mt-0.5 text-[12px]", fixed ? "text-muted-foreground" : "text-foreground/80")}>{record.summary}</p>}
+                <p className="mt-0.5 font-mono text-[11px] text-muted-foreground">{record.milestone ? record.milestone : ""}{!record.readable ? `${record.milestone ? " · " : ""}${t("workspace.panels.unavailable")}` : ""}</p>
+              </div>
+            );
+          })}
+          <p className="text-[11px] text-muted-foreground">
+            {t("workspace.detail.defects.openCount", { count: ready.open_count })}
+            {ready.unrecognised_count > 0 ? ` · ${t("workspace.detail.defects.unrecognisedCount", { count: ready.unrecognised_count })}` : ""}
+            {ready.unreadable_count > 0 ? ` · ${t("workspace.detail.defects.unreadableCount", { count: ready.unreadable_count })}` : ""}
+          </p>
+        </div>
+      );
   } else {
     body = <p className="text-[13px] text-muted-foreground">{t("workspace.detail.files.noView")}</p>;
   }

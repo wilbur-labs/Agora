@@ -420,7 +420,12 @@ export const workspace = {
       },
       defects: {
         title: "Known defects",
+        unavailable: "The defect list could not be read ({reason}).",
         noSource: "This project has no defect source registered; nothing is guessed.",
+        none: "This project keeps no known defects.",
+        openCount: "{count} open",
+        unrecognisedCount: "{count} unclassified",
+        unreadableCount: "{count} could not be read",
       },
       files: {
         title: "Files",
@@ -1300,7 +1305,12 @@ export const workspace = {
       },
       defects: {
         title: "已知缺陷",
+        unavailable: "读不到缺陷列表（{reason}）。",
         noSource: "这个项目还没有登记缺陷记录的来源；产品不猜。",
+        none: "这个项目没有已知缺陷。",
+        openCount: "{count} 个未修",
+        unrecognisedCount: "{count} 个状态无法识别",
+        unreadableCount: "{count} 个读不到",
       },
       files: {
         title: "文件",

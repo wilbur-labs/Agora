@@ -773,6 +773,29 @@ def project_decisions(
     return {"project_id": project_id, **read_decisions(project.root).payload()}
 
 
+@router.get("/projects/{project_id}/defects")
+def project_defects(
+    project_id: str,
+    registry: ProjectRegistry = Depends(get_project_registry),
+) -> dict[str, Any]:
+    """The project's known defects, read from ``<root>/.agora/defects.yaml``.
+
+    Its own route, parallel to ``/decisions`` and for the same reason: the left column
+    reads each resource on its own, so one resource's read cannot make another look
+    unreadable. The payload always carries either the defects or the reason there are
+    none, so the UI tells "this project keeps no defect list" from "it could not be
+    read" — and the count it shows is the open count, never a total that hides how many
+    are already fixed.
+    """
+    from agora.projects.defects import read_defects
+
+    try:
+        project = registry.get(project_id)
+    except (KeyError, LookupError):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Unknown project: {project_id}") from None
+    return {"project_id": project_id, **read_defects(project.root).payload()}
+
+
 @router.put("/projects/{project_id}/charter")
 def set_project_charter(
     project_id: str,

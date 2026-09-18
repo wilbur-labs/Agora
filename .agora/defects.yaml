@@ -1,0 +1,41 @@
+# 已知缺陷 — 结构化来源（W9 步骤 B）
+#
+# 权威内容的叙事副本在 docs/known-defects.md（每条的根因/修法/为什么暂不修）。
+# 这个文件是它的结构化投影，供 Agora reader 读取（固定路径 .agora/defects.yaml，
+# 见 .agora/decisions/0004 的模式）。状态变化两处都要改。
+#
+# status: open | fixed
+#   open  = 还欠着（进左栏 open 计数）
+#   fixed = 已修（仍列出，UI 划掉态，不进 open 计数）
+
+defects:
+  - id: D-1
+    title: 历史 Run 的「改了哪些文件」是假的
+    status: fixed
+    summary: 文件列表曾是请求时现算 git diff 而非 Run 完成时快照；已在 Run 结束时持久化不可变清单
+    milestone: W0
+  - id: D-2
+    title: 「可信完成度」不绑定当前 spec
+    status: open
+    summary: 扫到任意历史成功 worker/review Run 就置标志，需求变更返工后旧 Run 让新 criteria 显示成已产出
+    milestone: W4
+  - id: D-3
+    title: role 默认值前后不一致
+    status: open
+    summary: dispatcher/handoff 缺 role 当 worker，settings_router 缺 role 当忽略，同一份数据两套解读
+    milestone: W4
+  - id: D-4
+    title: worker 成功过但后续 review 失败不进 Next Action
+    status: open
+    summary: RUNNING 分支用 has_worker_success 而非最近一次终止 Run 的结果；失败已建 BLOCKER attention 未被隐藏
+    milestone: W4
+  - id: D-5
+    title: 无证据 DONE 同时显示 0% verified 和「Done — nothing to do」
+    status: open
+    summary: 指标诚实了但 task_next_action(DONE) 仍返回 none，是指标形态本身不对的症状
+    milestone: W4
+  - id: D-6
+    title: 前端把「加载失败」显示成「尚未产出结果」
+    status: fixed
+    summary: fetchDelivery 吞错后 fileCount 经 ?? 0 变 0，已改为区分「未交付」与「读不到」
+    milestone: W9

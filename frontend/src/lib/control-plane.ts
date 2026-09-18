@@ -800,6 +800,45 @@ export function fetchProjectDecisions(projectId: string, signal?: AbortSignal): 
   return request(`/api/projects/${encodeURIComponent(projectId)}/decisions`, { signal });
 }
 
+// The project's known defects. Its own request, parallel to decisions and for the same
+// reason: each left-column resource reads on its own. The count shown from this is the
+// open count, never a total that hides how many are already fixed.
+export interface DefectRecordLike {
+  /** The defect id as written ("D-1"); null only when the entry had none (then
+   *  `readable` is false). */
+  id: string | null;
+  /** True when id / title / status were all present and usable. */
+  readable: boolean;
+  title: string | null;
+  status: string | null;
+  /** "open" | "fixed" | "unrecognised" */
+  status_token: string;
+  summary: string | null;
+  milestone: string | null;
+}
+
+export interface ProjectDefects {
+  project_id: string;
+  available: boolean;
+  /** "absent" | "unreadable" | "too_large" | "malformed" | "duplicate_key" when unavailable. */
+  reason: string | null;
+  /** null — not [] — whenever `available` is false. */
+  records: DefectRecordLike[] | null;
+  /** How many entries read positively as open. null when unavailable. The nav signal;
+   *  fixed and unrecognised are not in it. */
+  open_count: number | null;
+  /** Entries whose status word was outside the vocabulary. Travels with the count so a
+   *  consumer cannot show "N open" as complete while some entries went unclassified. */
+  unrecognised_count: number | null;
+  /** Entries that could not be read (missing a required field, or not a mapping). */
+  unreadable_count: number | null;
+  source: string;
+}
+
+export function fetchProjectDefects(projectId: string, signal?: AbortSignal): Promise<ProjectDefects> {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/defects`, { signal });
+}
+
 // The project cockpit projection: charter, progress vs verified completion, the
 // one deterministic next action, and per-task criteria/next-action.
 export function fetchProjectDashboard(projectId: string, signal?: AbortSignal): Promise<ProjectDashboard> {

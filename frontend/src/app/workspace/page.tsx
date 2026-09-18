@@ -16,6 +16,7 @@ import {
   fetchDelivery,
   fetchProjectDashboard,
   fetchProjectDecisions,
+  fetchProjectDefects,
   fetchTaskRecap,
   listOpenAttention,
   listProjects,
@@ -30,6 +31,7 @@ import {
   type NextAction,
   type ProjectDashboard,
   type ProjectDecisions,
+  type ProjectDefects,
   type RecapItem,
   type TaskRecap,
   type RequirementSpec,
@@ -86,12 +88,12 @@ import { TaskCards } from "@/components/task-cards";
 import { DraftPanel } from "@/components/project-chat";
 import { planHeadlineOf, planRowsOf, type PlanTotalReach } from "@/lib/task-plan";
 import {
-  NAV_DEFECTS_NO_SOURCE,
   NAV_FILES_NO_READER,
   NAV_SKILLS_UNBUILT,
   NAV_UNREPORTED,
   navFromCRLog,
   navFromDecisions,
+  navFromDefects,
   navReadFailed,
   type NavCapability,
 } from "@/lib/nav-capability";
@@ -276,8 +278,9 @@ export default function WorkspacePage() {
   // fetch has to stay distinguishable from a project that keeps none.
   const [navDashboard, setNavDashboard] = useState<ProjectDashboard | null>(null);
   const [navDecisions, setNavDecisions] = useState<ProjectDecisions | null>(null);
-  const [navReadFailures, setNavReadFailures] = useState<{ dashboard: boolean; decisions: boolean }>(
-    { dashboard: false, decisions: false },
+  const [navDefects, setNavDefects] = useState<ProjectDefects | null>(null);
+  const [navReadFailures, setNavReadFailures] = useState<{ dashboard: boolean; decisions: boolean; defects: boolean }>(
+    { dashboard: false, decisions: false, defects: false },
   );
   // Bumped on every explicit refresh so the selected task's own reads (recap,
   // events, dashboard) reload too. Without it a run finishing without changing
@@ -467,12 +470,13 @@ export default function WorkspacePage() {
     if (currentProjectId === null) {
       setNavDashboard(null);
       setNavDecisions(null);
-      setNavReadFailures({ dashboard: false, decisions: false });
+      setNavDefects(null);
+      setNavReadFailures({ dashboard: false, decisions: false, defects: false });
       return;
     }
     const ctrl = new AbortController();
     let alive = true;
-    setNavReadFailures({ dashboard: false, decisions: false });
+    setNavReadFailures({ dashboard: false, decisions: false, defects: false });
     void fetchProjectDashboard(currentProjectId, ctrl.signal)
       .then((payload) => { if (alive) setNavDashboard(payload); })
       .catch(() => {
@@ -486,6 +490,13 @@ export default function WorkspacePage() {
         if (!alive || ctrl.signal.aborted) return;
         setNavDecisions(null);
         setNavReadFailures((prev) => ({ ...prev, decisions: true }));
+      });
+    void fetchProjectDefects(currentProjectId, ctrl.signal)
+      .then((payload) => { if (alive) setNavDefects(payload); })
+      .catch(() => {
+        if (!alive || ctrl.signal.aborted) return;
+        setNavDefects(null);
+        setNavReadFailures((prev) => ({ ...prev, defects: true }));
       });
     return () => { alive = false; ctrl.abort(); };
   }, [currentProjectId, refreshNonce]);
@@ -546,6 +557,7 @@ export default function WorkspacePage() {
     // another's. Before the switcher this window was rare; it is now a routine gesture.
     const dashboardIsMine = navDashboard !== null && navDashboard.project_id === currentProjectId;
     const decisionsIsMine = navDecisions !== null && navDecisions.project_id === currentProjectId;
+    const defectsIsMine = navDefects !== null && navDefects.project_id === currentProjectId;
     const runsCap: NavCapability = currentProjectId === null
       ? NAV_UNREPORTED
       : { kind: "count", value: projectTasks.length === 0 ? 0 : runs.filter(
@@ -563,11 +575,16 @@ export default function WorkspacePage() {
         navReadFailures.decisions,
         decisionsIsMine ? navFromDecisions(navDecisions) : NAV_UNREPORTED,
       ),
-      defects: NAV_DEFECTS_NO_SOURCE,
+      // The open count from `.agora/defects.yaml` (W9 step B). Its own read, so a failed
+      // one is "could not read", never the project having none.
+      defects: failedOr(
+        navReadFailures.defects,
+        defectsIsMine ? navFromDefects(navDefects) : NAV_UNREPORTED,
+      ),
       skills: NAV_SKILLS_UNBUILT,
       files: NAV_FILES_NO_READER,
     };
-  }, [currentProjectId, projectTasks, runs, navDashboard, navDecisions, navReadFailures]);
+  }, [currentProjectId, projectTasks, runs, navDashboard, navDecisions, navDefects, navReadFailures]);
 
   // Whether this project may be given work (CR-61). Three answers, not two: the
   // dashboard read is what carries the charter, and a read that did not land cannot
@@ -869,6 +886,8 @@ export default function WorkspacePage() {
                 dashboardFailed={navReadFailures.dashboard}
                 decisions={navDecisions !== null && navDecisions.project_id === currentProjectId ? navDecisions : null}
                 decisionsFailed={navReadFailures.decisions}
+                defects={navDefects !== null && navDefects.project_id === currentProjectId ? navDefects : null}
+                defectsFailed={navReadFailures.defects}
                 tasks={projectTasks}
                 rows={planRows}
                 headline={planHeadline}

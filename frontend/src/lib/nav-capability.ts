@@ -191,6 +191,75 @@ export function navFromDecisions(payload: DecisionsLike): NavCapability {
 }
 
 /**
+ * The defects payload, restated with only the fields this judgement reads.
+ *
+ * Restated rather than imported from lib/control-plane.ts for the same reason as
+ * DecisionsLike: that module imports through the "@/" alias, which `node --test`
+ * cannot resolve. Keep in step with `ProjectDefects` there. Every field required —
+ * defects are their own request, so there is no "a server older than this UI sends
+ * nothing" case, and an optional field would invite a `?? 0` whose safe reading is
+ * not zero.
+ */
+export interface DefectsLike {
+  available: boolean;
+  /** "absent" | "unreadable" | ... when unavailable; null when the server named no reason. */
+  reason: string | null;
+  /** null — not [] — when unavailable. */
+  records: readonly unknown[] | null;
+  /** How many read positively as open. null when unavailable; the nav signal. */
+  open_count: number | null;
+  /** Entries whose status word was outside the vocabulary. Travels with the count. */
+  unrecognised_count: number | null;
+  /** Entries that could not be read at all (missing a required field, or not a mapping).
+   *  A file of only these is not "no defects" — it is defects the reader could not read. */
+  unreadable_count: number | null;
+}
+
+/**
+ * A defect set's nav capability.
+ *
+ * The count is the **open** count, not the record total: the nav is an action signal
+ * and a fixed defect asks nothing of anyone — the same rule `navFromCRLog` follows for
+ * a closed CR. Entries whose status could not be classified, and entries the reader
+ * could not read at all, ride along as a caveat rather than being counted as open —
+ * they are exactly the reason the open count may not be the whole story.
+ *
+ * `available: false` with reason "absent" is a settled nothing (the project keeps no
+ * defect list); any other unavailable is a read that did not work. Deliberately not
+ * `open_count ?? 0` on a contradictory payload — the safe reading of a missing number
+ * is not zero. And a file whose entries the reader could only fail to read is not a
+ * settled "nothing owed": the reader kept those rows precisely so the UI would not
+ * claim there are none. So `unreadable_count` gates the settled-none answer too, the
+ * same way the decisions reader refuses a total without its unopenable count.
+ */
+export function navFromDefects(payload: DefectsLike): NavCapability {
+  if (!payload.available) {
+    return payload.reason === "absent" ? { kind: "none" } : navReadFailed();
+  }
+  const {
+    records, open_count: open, unrecognised_count: unrecognised,
+    unreadable_count: unreadable,
+  } = payload;
+  // Available, so the contract says these travel together and are non-null. A payload
+  // that contradicts its own contract is a failed read.
+  if (records == null || open == null || unrecognised == null || unreadable == null) {
+    return navReadFailed();
+  }
+  // A settled "nothing owed" requires all three to be zero: no open defect, none
+  // unclassified, and — the case this gate exists for — none the reader could not read.
+  // A file of only-fixed defects is `none`; a file of only-unreadable entries is not.
+  if (open === 0 && unrecognised === 0 && unreadable === 0) return { kind: "none" };
+  // One caveat slot, so surface the more severe qualifier: an entry the reader could
+  // not open at all (unopenable, the word the decisions reader uses) outranks one whose
+  // status word was merely outside the vocabulary (unclassified).
+  const caveat: NavCaveat | null =
+    unreadable > 0 ? { kind: "unopenable", count: unreadable }
+    : unrecognised > 0 ? { kind: "unclassified", count: unrecognised }
+    : null;
+  return { kind: "count", value: open, caveat };
+}
+
+/**
  * Whether this capability may be rendered as a number.
  *
  * The one question a nav row asks before drawing a count. Only `count` may — and
