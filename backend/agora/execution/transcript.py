@@ -262,6 +262,14 @@ class ClaudeStreamJsonReader(TranscriptReader):
 
     silent_kinds = frozenset({"system", "rate_limit_event", "result", "user"})
 
+    def __init__(self) -> None:
+        super().__init__()
+        #: The run's working directory, from the stream's own ``system/init`` event.
+        #: Paths are shown relative to it, as the agent's terminal shows them — a
+        #: worktree path is ~110 characters here, and printing it in full made every
+        #: tool line unreadable while saying nothing the reader did not know.
+        self._cwd: str | None = None
+
     def _keep_settlement(self, event: dict[str, Any], line: str) -> None:
         if str(event.get("type", "")) == "result":
             self.settlement["result"] = line
@@ -269,6 +277,10 @@ class ClaudeStreamJsonReader(TranscriptReader):
     def _read(self, event: dict[str, Any]) -> str:
         kind = str(event.get("type", ""))
         self._remember_session(event.get("session_id"))
+        if kind == "system" and str(event.get("subtype", "")) == "init":
+            cwd = event.get("cwd")
+            if isinstance(cwd, str) and cwd:
+                self._cwd = cwd
         if kind == "stream_event":
             inner = event.get("event")
             return self._read_stream_event(inner) if isinstance(inner, dict) else ""
@@ -303,7 +315,7 @@ class ClaudeStreamJsonReader(TranscriptReader):
                 # written starts on its own line.
                 rendered.append("\n")
             elif block_type == "tool_use":
-                rendered.append(_line(f"$ {_tool_call(block.get('name'), block.get('input'))}"))
+                rendered.append(_line(f"$ {_tool_call(block.get('name'), block.get('input'), cwd=self._cwd)}"))
             elif block_type == "thinking":
                 rendered.append(_line(f"· {_clip(_text_of(block.get('thinking')))}"))
             else:
@@ -422,15 +434,21 @@ def _clip(text: str) -> str:
     return f"{text[:_ECHO_LIMIT]}… (截断，共 {len(text)} 字)"
 
 
-#: A command is the thing worth reading in full; every other tool's input is a
-#: payload, and the transcript names it rather than reprinting it.
-_COMMAND_LIMIT = 600
+#: A command is the one tool input that *is* reading matter — what ran is the whole
+#: point — so it gets the same room the old echo had. Every other tool's input is a
+#: payload the transcript names rather than reprints. A command past this is still
+#: cut, and says so with an ellipsis: unbounded would put a generated script back in
+#: the window, which is the thing this limit exists to keep out.
+_COMMAND_LIMIT = 2_000
 
 #: Which field of a tool's input *is* the call, per tool. The CLI shows a write as
 #: ``Write(path)``, not as the file — printing the payload put whole source files in
 #: the conversation window (user, 2026-09-19: "这啥内容啊 为什么要放到窗口里").
 _TOOL_SUBJECT = {
+    # Both shells appear: `Bash` everywhere, `PowerShell` as the primary shell on
+    # Windows (measured on this machine, 2026-09-19 — a real headless run used it).
     "Bash": ("command", _COMMAND_LIMIT),
+    "PowerShell": ("command", _COMMAND_LIMIT),
     "BashOutput": ("bash_id", 120),
     "Read": ("file_path", 300),
     "Write": ("file_path", 300),
@@ -446,7 +464,39 @@ _TOOL_SUBJECT = {
 }
 
 
-def _tool_call(name: Any, payload: Any) -> str:
+#: Tools whose subject is a path, and so may be shown relative to the run's cwd.
+_PATH_TOOLS = frozenset({"Read", "Write", "Edit", "NotebookEdit"})
+
+
+def _relative_to(path: str, cwd: str | None) -> str:
+    """``path`` as the agent's terminal would print it: relative to ``cwd`` when it
+    is inside it, and untouched otherwise. Purely textual — nothing is resolved on
+    disk, because the run may have executed on another machine (W3-a) and a path is
+    not a claim this module is entitled to check."""
+    if not cwd:
+        return path
+    base = cwd.replace("\\", "/").rstrip("/")
+    candidate = path.replace("\\", "/")
+    # Case-sensitive, except on a Windows path, where the filesystem itself is not.
+    # Folding case everywhere made `/srv/data/archive` look like it sat inside
+    # `/srv/Data` — two different directories on POSIX, and the shortened path would
+    # have named the wrong one (review, 2026-09-19).
+    windows = len(base) > 1 and base[1] == ":" and len(candidate) > 1 and candidate[1] == ":"
+    prefix = f"{base}/"
+    hit = (
+        candidate.lower().startswith(prefix.lower()) if windows
+        else candidate.startswith(prefix)
+    )
+    if hit:
+        # The *original* string is cut, so the path keeps its own separators:
+        # normalising them would be the same rewrite this module refuses elsewhere,
+        # and `replace` does not change a string's length, so the index still lands
+        # on the separator that follows the prefix.
+        return path[len(base) + 1:]
+    return path
+
+
+def _tool_call(name: Any, payload: Any, *, cwd: str | None = None) -> str:
     """One line naming what the agent did, the way its own terminal names it.
 
     The subject is the field that identifies the call — a command, a path, a pattern.
@@ -464,7 +514,10 @@ def _tool_call(name: Any, payload: Any) -> str:
     if field is None:
         return tool
     value = payload.get(field) if isinstance(payload, dict) else None
-    subject = _shorten(_text_of(value), limit) if value is not None else ""
+    text = _text_of(value) if value is not None else ""
+    if text and tool in _PATH_TOOLS:
+        text = _relative_to(text, cwd)
+    subject = _shorten(text, limit) if text else ""
     if tool == "Write" and isinstance(payload, dict):
         # How much is being written is the one number a reader wants here.
         body = _text_of(payload.get("content"))
@@ -474,14 +527,21 @@ def _tool_call(name: Any, payload: Any) -> str:
 
 
 def _shorten(text: str, limit: int) -> str:
-    """At most ``limit`` characters of ``text``, **verbatim**.
+    """At most ``limit`` characters of ``text``, with **one** transformation, stated.
 
-    Nothing inside is rewritten. An earlier version collapsed runs of whitespace to
-    single spaces so the call would fit one line, which made the transcript show a
-    command that was not the one that ran — `A  B.txt` became `A B.txt`, and a
-    multi-line script became one line whose separators meant something else (review,
-    2026-09-19). Continuation lines are indented two spaces instead, which is what
-    keeps them in the terminal block on screen without touching what they say.
+    Nothing inside a line is rewritten: an earlier version collapsed runs of
+    whitespace so the call would fit one line, which made the transcript show a
+    command that was not the one that ran — ``A  B.txt`` became ``A B.txt`` (review,
+    2026-09-19).
+
+    The one thing that *is* done: a transcript is a line-oriented record, and a
+    multi-line command would otherwise be indistinguishable from the agent's own
+    prose on the lines after the first. So continuation lines are quoted with two
+    leading spaces, the way an email quotes. **A multi-line command copied out of the
+    window therefore carries that indent** — which matters for a heredoc or a
+    here-string, where leading whitespace is significant. The alternative, a
+    structured record, is a bigger change than this line-oriented file (workspace
+    CR-101).
     """
     clipped = text if len(text) <= limit else f"{text[:limit]}…"
     first, *rest = clipped.split("\n")

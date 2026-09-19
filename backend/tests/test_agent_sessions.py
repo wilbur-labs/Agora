@@ -3307,3 +3307,92 @@ def test_an_interrupted_rebuild_keeps_both_roles(tmp_path):
     store = AgentSessionStore(db_path)
     assert store.get("t1", "codex", ROLE_WORKER).session_id == "sid-worker"
     assert store.get("t1", "codex", "review").session_id == "sid-review"
+
+
+# --- CR-100: a tool call is named, never reprinted -----------------------------------
+
+def test_a_tool_call_is_named_not_reprinted(tmp_path):
+    """The transcript is what the person reads in the conversation window, and a tool
+    call's payload is not reading matter: a ``Write``'s input *is* the file, so
+    printing it put whole source files between the agent's sentences (user,
+    2026-09-19: "这啥内容啊 为什么要放到窗口里"). The agent's own terminal names the
+    call — ``Write(path)`` — and so does this.
+
+    Shapes here are the ones a real ``claude -p --output-format stream-json`` emitted
+    on this machine (captured 2026-09-19), including ``PowerShell`` as the shell tool,
+    which the first version of the map did not know about and so fell through to the
+    payload.
+    """
+    from agora.execution.transcript import reader_for
+
+    cwd = r"D:\Projects\Agora\projects\demo\.agora\workspaces\claude"
+    secret_body = "from app.config import Settings\n" * 40
+
+    def block(name, payload):
+        return json.dumps({
+            "type": "assistant",
+            "message": {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "toolu_1", "name": name, "input": payload}
+            ]},
+        })
+
+    reader = reader_for(EVENT_FORMAT_CLAUDE_STREAM_JSON)
+    reader.feed(json.dumps({"type": "system", "subtype": "init", "cwd": cwd}))
+    rendered = "".join([
+        reader.feed(block("Read", {"file_path": cwd + r"\backend\app\db.py"})),
+        reader.feed(block("Write", {"file_path": cwd + r"\backend\app\config.py",
+                                    "content": secret_body})),
+        reader.feed(block("Edit", {"file_path": cwd + r"\README.md",
+                                   "old_string": secret_body, "new_string": secret_body})),
+        reader.feed(block("PowerShell", {"command": "Get-ChildItem backend",
+                                         "description": "list the backend"})),
+        reader.feed(block("Bash", {"command": "git status --short",
+                                   "description": "check the tree"})),
+        reader.feed(block("Grep", {"pattern": "def create_app", "output_mode": "content"})),
+        reader.feed(block("SomeNewTool", {"whatever": "x" * 5_000})),
+    ])
+
+    # The payload never reaches the window — not from Write, not from Edit.
+    assert "from app.config import Settings" not in rendered
+    assert len(rendered) < 1_000, rendered
+
+    lines = [line for line in rendered.splitlines() if line.startswith("$ ")]
+    assert lines[:3] == [
+        # Relative to the run's own cwd, as the terminal prints it, and the write
+        # says how much it wrote rather than what.
+        r"$ Read(backend\app\db.py)",
+        r"$ Write(backend\app\config.py) 41 行",
+        r"$ Edit(README.md)",
+    ]
+    # A command is the one payload worth reading in full, from either shell.
+    assert lines[3] == "$ PowerShell(Get-ChildItem backend)"
+    assert lines[4] == "$ Bash(git status --short)"
+    assert lines[5] == "$ Grep(def create_app)"
+    # A tool this build has never heard of stays thin rather than invisible.
+    assert lines[6].startswith("$ SomeNewTool ") and len(lines[6]) < 400
+
+
+def test_a_commands_own_spacing_is_never_rewritten():
+    """What the transcript shows has to be what ran, *inside* a line. Folding
+    whitespace to fit turned ``A  B.txt`` into ``A B.txt`` (review, 2026-09-19).
+
+    The one stated exception is the two-space quote on continuation lines, without
+    which a multi-line command is indistinguishable from the agent's prose in a
+    line-oriented record. It is asserted here so that it stays a decision rather
+    than becoming an accident (workspace CR-101 carries the structured-record fix).
+    """
+    from agora.execution.transcript import reader_for
+
+    command = 'Move-Item "C:\旧資料\A  B.txt" "D:\保存先\A  B.txt"\ngit status --short'
+    reader = reader_for(EVENT_FORMAT_CLAUDE_STREAM_JSON)
+    rendered = reader.feed(json.dumps({
+        "type": "assistant",
+        "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "t", "name": "Bash", "input": {"command": command}}
+        ]},
+    }))
+
+    assert "A  B.txt" in rendered, "the double space is part of the filename"
+    assert "A B.txt" not in rendered
+    # Both lines survive, the second indented so it stays with the first on screen.
+    assert "$ Bash(" in rendered and "\n  git status --short" in rendered

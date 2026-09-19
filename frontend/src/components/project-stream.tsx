@@ -732,7 +732,9 @@ export function ProjectStream({
     if (runs === null) return;
     const isActive = (run: RunSummary) => run.state === "queued" || run.state === "running";
     const workers = runs.filter((run) => run.role !== "review");
-    const liveOnes = workers.filter(isActive);
+    // A live review is followed too: it is an agent working in this conversation, and
+    // drawing nothing for the minutes it takes reads as an idle window (2026-09-19).
+    const liveOnes = runs.filter(isActive);
     const recent = workers.filter((run) => !isActive(run))
       .sort((a, b) => (a.queued_at < b.queued_at ? 1 : -1))
       .slice(0, RECENT_REPLIES);
@@ -908,13 +910,41 @@ export function ProjectStream({
                 {item.unit.nested.map((review) => {
                   const rec = details[review.run_id];
                   const verdict = rec !== undefined && rec !== "failed" ? rec.stdout_tail.trim() : "";
-                  if (verdict === "") return null;
+                  const reviewLive = review.state === "queued" || review.state === "running";
+                  // A review takes minutes, and while it ran this drew nothing at all —
+                  // the conversation looked idle with a reviewer working in it. Running,
+                  // it shows the reviewer's own transcript; settled, its verdict, which
+                  // is the thing to read and is what the gate quotes (2026-09-19).
+                  const reviewFeed = transcripts[review.run_id];
+                  const reviewTurn = transcriptBody(reviewFeed?.text ?? "").trim();
+                  // A review that was stopped or died leaves no verdict. Drawing nothing
+                  // then erased what it had already said and hid that it ended at all,
+                  // so the only silent case is the one that never started (review,
+                  // 2026-09-19).
+                  if (verdict === "" && reviewTurn === "" && !reviewLive && review.state === "succeeded") return null;
                   const cut = verdict.length > REPLY_FOLD ? verdict.slice(verdict.length - REPLY_FOLD) : verdict;
                   return (
                     <div key={review.run_id} className="min-w-0 max-w-[64ch] rounded-xl border border-l-4 border-l-amber-500 bg-card px-3 py-2 text-[14px] leading-relaxed">
-                      <div className="mb-1 font-mono text-[10px] text-muted-foreground">{t("workspace.stream.reviewReply", { adapter: adapterLabel(review.adapter) })} · {relTime(review.finished_at ?? review.queued_at, t)}</div>
-                      {verdict.length > REPLY_FOLD && <p className="mb-1 text-[11px] text-muted-foreground">{t("workspace.stream.replyFolded")}</p>}
-                      <Prose text={cut} />
+                      <div className="mb-1 flex flex-wrap items-center gap-x-2 font-mono text-[10px] text-muted-foreground">
+                        <span>{t("workspace.stream.reviewReply", { adapter: adapterLabel(review.adapter) })}</span>
+                        {reviewLive
+                          ? <><span className="inline-flex items-center gap-1 text-amber-700 dark:text-amber-400"><span className="size-1.5 animate-pulse rounded-full bg-current" />{te("runState", review.state)}</span>
+                              <button type="button" onClick={() => void stopTurn(review)} disabled={stopping.has(review.run_id)} className="underline-offset-2 hover:underline disabled:opacity-50">{t(stopping.has(review.run_id) ? "workspace.stream.stopping" : "workspace.stream.stop")}</button></>
+                          : <span>{review.state === "succeeded" ? "" : `${te("runState", review.state)} · `}{relTime(review.finished_at ?? review.queued_at, t)}</span>}
+                        {/* What the feed cannot vouch for, said here as on a worker turn:
+                            a stalled or unreadable read must not read as a quiet agent. */}
+                        {reviewFeed?.stalled && <span>{t("workspace.stream.transcriptStalled")}</span>}
+                        {reviewFeed?.unreadable && <span className="text-destructive">{t("workspace.stream.transcriptUnreadable")}</span>}
+                        {reviewFeed?.lossy && <span className="text-destructive">{t("workspace.stream.transcriptLossy")}</span>}
+                      </div>
+                      {verdict !== "" && !reviewLive
+                        ? <>
+                            {verdict.length > REPLY_FOLD && <p className="mb-1 text-[11px] text-muted-foreground">{t("workspace.stream.replyFolded")}</p>}
+                            <Prose text={cut} />
+                          </>
+                        : reviewTurn !== ""
+                          ? <TranscriptView text={reviewTurn} />
+                          : <p className="text-[12px] text-muted-foreground">{t(reviewLive ? "workspace.stream.transcriptWaiting" : "workspace.stream.run.noOutput")}</p>}
                     </div>
                   );
                 })}
