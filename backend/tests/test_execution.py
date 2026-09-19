@@ -3312,6 +3312,59 @@ def test_every_terminal_path_preserves_a_runs_identity(tmp_path):
     }
 
 
+def test_what_the_client_sent_at_create_survives_the_settle(tmp_path):
+    """``display_prompt`` — the line the person typed, kept apart from the prompt the
+    agent received — is sent with the create request and is part of the run's record.
+    The settle used to rebuild ``result_metadata`` from the result and the identity
+    alone, so the moment a question finished the workbench had no words of the
+    person's to draw (2026-09-19). The result overlays what the client sent; identity
+    overlays both; nothing the client sent is dropped, on any terminal path.
+    """
+    tasks, store, dispatcher = _system(tmp_path, [sys.executable, "-c", "print('ok')"])
+    dispatcher.schedule = lambda run_id: None  # type: ignore[method-assign]
+
+    def _asked(task_id):
+        # A planned task is at version 2 and this is its first run.
+        return dispatcher.queue(CreateRunRequest(
+            task_id=task_id, adapter="codex", prompt="preamble…\n\n用uv",
+            timeout_seconds=10, expected_task_version=2,
+            metadata={"display_prompt": "用uv"},
+        ))
+
+    first = _planned_task(tasks)
+    run = _asked(first.task_id)
+    assert run.result_metadata["display_prompt"] == "用uv"
+    running = store.start(run.run_id, expected_version=run.version)
+    settled = store.finish(run.run_id, RunState.SUCCEEDED, expected_version=running.version,
+                           exit_code=0, stdout_tail="收到", stderr_tail="",
+                           result_metadata={"usage": {"total": 12}})
+    assert settled.result_metadata["display_prompt"] == "用uv"
+    assert settled.result_metadata["usage"] == {"total": 12}
+    # Queueing moved the task on, so the identity records the version it holds now.
+    assert _identity_of(store, run.run_id) == {"agora_role": ROLE_WORKER, "task_version": 3}
+
+    # A result that carries the same key wins: the result is the later word.
+    second = _planned_task(tasks)
+    run_two = _asked(second.task_id)
+    running_two = store.start(run_two.run_id, expected_version=run_two.version)
+    settled_two = store.finish(run_two.run_id, RunState.SUCCEEDED, expected_version=running_two.version,
+                               exit_code=0, stdout_tail="", stderr_tail="",
+                               result_metadata={"display_prompt": "用 uv"})
+    assert settled_two.result_metadata["display_prompt"] == "用 uv"
+
+    # The no-result settle and the abandon path keep it too.
+    third = _planned_task(tasks)
+    run_three = _asked(third.task_id)
+    store.finish(run_three.run_id, RunState.FAILED, expected_version=run_three.version,
+                 exit_code=None, stdout_tail="", stderr_tail="", error_message="adapter gone")
+    assert store.require(run_three.run_id).result_metadata["display_prompt"] == "用uv"
+    fourth = _planned_task(tasks)
+    run_four = _asked(fourth.task_id)
+    started = store.start(run_four.run_id, expected_version=run_four.version)
+    store.abandon(run_four.run_id, expected_version=started.version, reason="restarted")
+    assert store.require(run_four.run_id).result_metadata["display_prompt"] == "用uv"
+
+
 def test_a_result_write_may_not_carry_identity(tmp_path):
     """A caller that sends identity with a result is refused, loudly.
 

@@ -193,11 +193,15 @@ export function ProjectStream({
   }, [projectId, rows.length, loadNotes]);
 
   // The recent worker runs' full records: the line that started each and what came
-  // back. Settled runs only — a running one changes until it ends — and only the
-  // last few; older ones open on demand.
+  // back. The last few settled ones, fetched once; older ones open on demand. A
+  // running worker run is fetched too — its prompt is fixed from the start and is
+  // the person's own line, which must not vanish for as long as the run takes — and
+  // fetched again once it settles, since its output only then stops changing.
+  const fetchedLive = useRef(new Set<string>());
   useEffect(() => {
     if (runs === null) return;
-    const settled = runs.filter((run) => run.state !== "queued" && run.state !== "running");
+    const isActive = (run: RunSummary) => run.state === "queued" || run.state === "running";
+    const settled = runs.filter((run) => !isActive(run));
     const recentWorkers = settled
       .filter((run) => run.role !== "review")
       .sort((a, b) => (a.queued_at < b.queued_at ? 1 : -1))
@@ -206,13 +210,33 @@ export function ProjectStream({
     // The reviews of those runs too: the reviewer's verdict is the result the person
     // asked to see, and it must not live only behind "expand".
     const reviews = settled.filter((run) => run.role === "review" && run.reviews_run_id !== null && recentIds.has(run.reviews_run_id));
-    const wanted = [...recentWorkers, ...reviews].filter((run) => details[run.run_id] === undefined);
+    const liveWorkers = runs.filter((run) => isActive(run) && run.role !== "review");
+    // A record read while the run was live is not its final record: whatever settled
+    // run was ever fetched live is fetched again, whether or not it is still among the
+    // recent few — and a live read that failed is tried again on the next poll, so a
+    // transient error does not leave the reply missing for good (review, 2026-09-19).
+    const fetchedLiveSettled = settled.filter((run) => fetchedLive.current.has(run.run_id));
+    const seen = new Set<string>();
+    const wanted = [
+      ...[...recentWorkers, ...reviews].filter((run) => details[run.run_id] === undefined),
+      ...fetchedLiveSettled,
+      ...liveWorkers.filter((run) => details[run.run_id] === undefined || details[run.run_id] === "failed"),
+    ].filter((run) => !seen.has(run.run_id) && seen.add(run.run_id));
     if (wanted.length === 0) return;
     const ctrl = new AbortController();
     for (const run of wanted) {
+      const live = isActive(run);
+      // Marked before the read, not after: a live read that fails must still be
+      // followed by the settled read.
+      if (live) fetchedLive.current.add(run.run_id);
       getRun(run.run_id, ctrl.signal)
-        .then((full) => { if (!ctrl.signal.aborted && alive.current) setDetails((all) => ({ ...all, [run.run_id]: full })); })
+        .then((full) => {
+          if (ctrl.signal.aborted || !alive.current) return;
+          if (!live) fetchedLive.current.delete(run.run_id);
+          setDetails((all) => ({ ...all, [run.run_id]: full }));
+        })
         .catch(() => { if (!ctrl.signal.aborted && alive.current) setDetails((all) => ({ ...all, [run.run_id]: "failed" })); });
+      if (live) continue; // its files and reply come once it has settled
       if (run.role !== "review") {
         // What it changed, listed under the reply without a click.
         getRunDeliverables(run.run_id, ctrl.signal)
@@ -239,16 +263,21 @@ export function ProjectStream({
     // A note already on record is not repeated by the local echo of the send that made it.
     const noteKeys = new Set(notes.map((note) => note.at.slice(0, 16) + note.text));
     // Nor is the line that started a run repeated once that run's record is in hand.
-    // And an echo that announced a run — the line, and "sent to…" — goes the moment that
-    // run is on record: the record is drawn in its place, at the server's time.
+    // The "sent to…" line goes the moment the run is on record (the card is drawn in
+    // its place); the person's own line stays until the run's *full* record is here,
+    // because only that record carries the words to draw — dropping the echo on the
+    // summary alone left the message invisible for as long as the run took (user,
+    // 2026-09-19: "我说的内容不显示").
     const onRecord = new Set((runs ?? []).map((run) => run.run_id));
+    const inHand = (runId: string) => details[runId] !== undefined && details[runId] !== "failed";
     const echoes = local.filter((item) => {
-      if ((item.type === "user" || item.type === "auto") && item.runId !== undefined && onRecord.has(item.runId)) return false;
+      if (item.type === "auto" && item.runId !== undefined && onRecord.has(item.runId)) return false;
+      if (item.type === "user" && item.runId !== undefined && onRecord.has(item.runId) && inHand(item.runId)) return false;
       return !(item.type === "user" && noteKeys.has(item.at.slice(0, 16) + item.text));
     });
     const all: (StreamItem<RunSummary, AttentionItem> | LocalItem)[] = [...items, ...notes, ...echoes];
     return all.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
-  }, [items, notes, local, runs]);
+  }, [items, notes, local, runs, details]);
   const openGates = gates === null ? null : gates.filter((item) => item.state === "open").length;
   // What is running now comes from the dedicated active-run read, never inferred from
   // the history page: an old run still running can be pushed out of that page.
@@ -597,7 +626,9 @@ export function ProjectStream({
                   </div>
                 )}
                 {runCard(item.unit.run, item.step, item.unit.nested)}
-                {record && reply !== "" && (
+                {/* The reply is what came back, so only once the run has settled — a
+                    record fetched while it runs carries the prompt, not the answer. */}
+                {record && reply !== "" && item.unit.run.state !== "queued" && item.unit.run.state !== "running" && (
                   <div className="min-w-0 max-w-[64ch] rounded-xl border bg-card px-3 py-2 text-[14px] leading-relaxed">
                     <div className="mb-1 font-mono text-[10px] text-muted-foreground">{t("workspace.stream.reply", { adapter: adapterLabel(record.adapter) })} · {relTime(record.finished_at ?? record.queued_at, t)}</div>
                     {reply.length > REPLY_FOLD && <p className="mb-1 text-[11px] text-muted-foreground">{t("workspace.stream.replyFolded")}</p>}

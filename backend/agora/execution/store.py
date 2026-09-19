@@ -1838,9 +1838,19 @@ class ExecutionStore:
             existing = json.loads(stored) if stored else {}
         except (TypeError, ValueError):
             existing = {}
+        if not isinstance(existing, dict):
+            existing = {}
+        # Three layers, lowest first. What the client sent at create (``display_prompt``:
+        # the line the person typed, kept apart from the prompt the agent received) is
+        # part of the run's record, not of its result, and used to be dropped here the
+        # moment the run settled — the workbench then had no words of the person's to
+        # draw and fell back to peeling the agent's preamble off the prompt (user, 2026-
+        # 09-19: "我说的内容不显示"). The result overlays it; identity overlays both.
+        client_sent = {k: v for k, v in existing.items() if k not in IDENTITY_METADATA_KEYS}
         return {
+            **client_sent,
             **result,
-            **identity_metadata(existing if isinstance(existing, dict) else {}),
+            **identity_metadata(existing),
         }
 
     def _transition(
