@@ -98,11 +98,20 @@ export function DeliverablesBlock({
           )}
         </p>
       )}
-      <ul className="space-y-0.5 text-xs">
+      {/* A turn that scaffolded a project delivered forty files, and forty rows filled
+          the whole conversation (user, 2026-09-20). The list keeps its own scroll
+          instead: every row is still there, none of them is the page. */}
+      <ul className="max-h-56 space-y-0.5 overflow-y-auto text-xs">
         {delivered.files.map((file) => (
           <FileRow key={file.path} runId={runId} file={file} openable={canOpenDeliverable(delivered, file)} t={t} />
         ))}
       </ul>
+      {/* Only over a whole list: a capped snapshot holds "at least these", and printing
+          its length as the total is the exact-number-from-a-partial-read this file
+          exists to refuse. The cap's own sentence below says what is missing. */}
+      {compact && !delivered.truncated && delivered.files.length > 1 && (
+        <p className="mt-1 text-[11px] text-muted-foreground">{t("workspace.timeline.run.files", { count: delivered.files.length })}</p>
+      )}
       {compact && delivered.source === "live" && (
         <p className="mt-1 text-[11px] text-muted-foreground">{t("workspace.timeline.run.liveFiles")}</p>
       )}
