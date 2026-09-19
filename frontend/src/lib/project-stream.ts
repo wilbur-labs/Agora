@@ -83,7 +83,6 @@ export function streamItemsOf<R extends StreamRunLike, G extends StreamGateLike>
 export type ComposeIntent =
   | { kind: "note"; text: string }
   | { kind: "idea"; text: string }
-  | { kind: "ask"; text: string }
   | { kind: "dispatch"; text: string };
 
 const NOTE_PREFIXES = ["备注：", "备注:", "note:", "Note:"];
@@ -106,7 +105,10 @@ export function composeIntentOf(raw: string): ComposeIntent | null {
   if (idea !== null) return idea === "" ? null : { kind: "idea", text: idea };
   const work = stripPrefix(text, WORK_PREFIXES);
   if (work !== null) return work === "" ? null : { kind: "dispatch", text: work };
-  return { kind: "ask", text };
+  // CR-99 (2026-09-19): a plain line is sent to the agent as it is, like a line typed
+  // into the CLI — it decides whether to answer or to act. The "ask" kind is no longer
+  // produced; "做：" is still accepted and stripped so an old habit costs nothing.
+  return { kind: "dispatch", text };
 }
 
 /**

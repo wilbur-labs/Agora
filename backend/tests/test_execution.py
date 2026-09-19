@@ -558,7 +558,7 @@ def test_auto_review_dispatches_review_run_after_worker(tmp_path):
     subprocess.run([GIT, "-C", str(root), "worktree", "add", "-q", "-b",
                     worktree_branch("alpha", "claude"), str(claude_ws), "HEAD"],
                    check=True, timeout=15)
-    ok = [sys.executable, "-c", "print('ok')", "{prompt}"]
+    ok = [sys.executable, "-c", "open('worked.txt', 'w').write('ok'); print('ok')", "{prompt}"]
     config = {
         "projects": {"registry_path": str(tmp_path / "projects.yaml"), "default": "alpha", "projects": {
             "alpha": {"name": "Alpha", "root": str(root), "worker_agent": "codex", "reviewer_agent": "claude",
@@ -1860,7 +1860,7 @@ def test_a_missing_reviewer_runtime_blocks_the_task_instead_of_erasing_the_revie
     # alpha's default reviewer_agent is "claude", and claude is disabled in this
     # registry — the ordinary "the reviewer is not installed / not configured" shape.
     tasks, store, dispatcher = _system(
-        tmp_path, [sys.executable, "-c", "print('ok')"], auto_review=True,
+        tmp_path, [sys.executable, "-c", "open('worked.txt', 'w').write('ok'); print('ok')"], auto_review=True,
     )
     attention = AttentionStore(tasks)
     task = _planned_task(tasks)
@@ -1910,7 +1910,7 @@ def test_the_review_owed_blocker_is_not_duplicated_behind_a_crowd_of_gates(tmp_p
     insert's own transaction (``AttentionStore.create_once``).
     """
     tasks, store, dispatcher = _system(
-        tmp_path, [sys.executable, "-c", "print('ok')"], auto_review=True,
+        tmp_path, [sys.executable, "-c", "open('worked.txt', 'w').write('ok'); print('ok')"], auto_review=True,
     )
     attention = AttentionStore(tasks)
     task = _planned_task(tasks)
@@ -1979,7 +1979,7 @@ def test_every_cross_review_dispatch_failure_is_recorded_as_a_blocker(tmp_path):
         ("project-gone", _project_gone),
     ):
         tasks, store, dispatcher = _system(
-            tmp_path / name, [sys.executable, "-c", "print('ok')"], auto_review=True,
+            tmp_path / name, [sys.executable, "-c", "open('worked.txt', 'w').write('ok'); print('ok')"], auto_review=True,
         )
         # Make the reviewer resolvable, so the failure under test is the one
         # reached rather than the missing-runtime one.
@@ -2256,6 +2256,40 @@ def test_no_review_is_owed_when_auto_review_is_off(tmp_path):
     assert AttentionStore(tasks).list(task_id=task.task_id) == []
 
 
+def test_a_turn_that_verifiably_changed_nothing_owes_no_review(tmp_path):
+    """CR-99: every line in the conversation is one turn of the same agent. A turn that
+    only answered — its frozen delivery says so, with nothing left open — sends no
+    reviewer after it and does not block the next turn; a turn whose delivery is
+    unknown (no snapshot, or commit history unread) is still reviewed, because unknown
+    is not nothing. One predicate on both sides: ``ExecutionStore.delivered_nothing``.
+    """
+    tasks, store, dispatcher = _system(
+        tmp_path, [sys.executable, "-c", "print('ok')"], auto_review=True,
+    )
+    assert store.delivered_nothing({"files": [], "truncated": False}) is True
+    assert store.delivered_nothing({"files": [], "truncated": True}) is False
+    assert store.delivered_nothing({"files": [], "truncated": False, "commits_unread": True}) is False
+    assert store.delivered_nothing({"files": [{"path": "a.py"}], "truncated": False}) is False
+    assert store.delivered_nothing(None) is False
+
+    # Verifiably nothing: no review owed, the next turn is accepted at once.
+    task = _planned_task(tasks)
+    run = dispatcher.queue(_request(task.task_id))
+    running = store.start(run.run_id, expected_version=run.version)
+    store.finish(run.run_id, RunState.SUCCEEDED, expected_version=running.version,
+                 exit_code=0, stdout_tail="just an answer", stderr_tail="",
+                 deliverables={"files": [], "truncated": False})
+    assert store.run_delivered_nothing(run.run_id) is True
+    assert store.reviews_owed(task_id=task.task_id) == []
+    assert dispatcher.queue(_request(task.task_id, version=3)).state == RunState.QUEUED
+
+    # Unknown: the helper the other tests use finishes with no snapshot — still owed.
+    other = _planned_task(tasks)
+    unknown = _settled_worker_run(dispatcher, store, other.task_id)
+    assert store.run_delivered_nothing(unknown.run_id) is False
+    assert [entry["run_id"] for entry in store.reviews_owed(task_id=other.task_id)] == [unknown.run_id]
+
+
 def test_an_unsuccessful_worker_run_owes_no_review(tmp_path):
     """Matched to ``_dispatch_review``'s own trigger: ``_after_run`` dispatches a
     review only for a worker run that SUCCEEDED. A predicate that claimed a review
@@ -2481,7 +2515,7 @@ def test_a_failed_review_dispatch_does_not_double_gate_with_the_derived_refusal(
     that item is in.
     """
     tasks, store, dispatcher = _system(
-        tmp_path, [sys.executable, "-c", "print('ok')"], auto_review=True,
+        tmp_path, [sys.executable, "-c", "open('worked.txt', 'w').write('ok'); print('ok')"], auto_review=True,
     )
     attention = AttentionStore(tasks)
     task = _planned_task(tasks)

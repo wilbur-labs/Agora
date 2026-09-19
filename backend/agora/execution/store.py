@@ -783,6 +783,12 @@ class ExecutionStore:
                 continue
             if cls._has_review_gate_item(db, task_id=owner, run_id=run_id):
                 continue
+            if cls._delivered_nothing(db, run_id=run_id):
+                # A run that verifiably changed nothing — an answer, not work — has
+                # nothing a reviewer could review, and ``_after_run`` dispatches none
+                # for it (CR-99). One predicate, both sides: the same reading that
+                # skips the dispatch releases the obligation here.
+                continue
             owed.append({
                 "task_id": owner,
                 "run_id": run_id,
@@ -851,6 +857,41 @@ class ExecutionStore:
             "this refusal.",
             items=[{"run_id": run_id, "state": RunState.SUCCEEDED.value}],
         )
+
+    @staticmethod
+    def delivered_nothing(snapshot: dict[str, Any] | None) -> bool:
+        """Whether a run's frozen delivery says, with nothing left open, that it changed
+        nothing: an empty file list that was not cut short and whose commit history
+        was read. ``None`` (never captured) and ``commits_unread`` are *unknown*, and
+        unknown is not "nothing" — those runs keep owing a review (CR-99, 2026-09-19:
+        every line in the conversation is one turn of the same agent; the ones that
+        only answered must not send a reviewer after them, and the ones that did work
+        must)."""
+        if not isinstance(snapshot, dict) or not isinstance(snapshot.get("files"), list):
+            return False
+        return (
+            not snapshot["files"]
+            and not snapshot.get("truncated")
+            and not snapshot.get("commits_unread")
+        )
+
+    @classmethod
+    def _delivered_nothing(cls, db: sqlite3.Connection, *, run_id: str) -> bool:
+        row = db.execute(
+            "SELECT deliverable_snapshot FROM execution_runs WHERE run_id = ?", (run_id,)
+        ).fetchone()
+        if row is None or row["deliverable_snapshot"] is None:
+            return False
+        try:
+            value = json.loads(row["deliverable_snapshot"])
+        except (TypeError, ValueError):
+            return False
+        return cls.delivered_nothing(value)
+
+    def run_delivered_nothing(self, run_id: str) -> bool:
+        """``delivered_nothing`` for a stored run — the dispatcher's side of the one
+        predicate ``_reviews_owed`` applies (see there)."""
+        return self.delivered_nothing(self.deliverable_snapshot(run_id))
 
     def reviews_owed(self, *, task_id: str | None = None) -> list[dict[str, str]]:
         """Every worker run that owes a cross-review — across all tasks, or one.

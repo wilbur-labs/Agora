@@ -27,7 +27,7 @@ import {
   type IdeaProposal, type TaskManifest,
 } from "@/lib/control-plane";
 import {
-  createRun, getRun, getRunDeliverables, listActiveProjectRuns, listExecutionAdapters, listRuns,
+  createRun, getRun, getRunDeliverables, getRunOutput, listActiveProjectRuns, listExecutionAdapters, listRuns,
   remoteTargetLabel,
   type AdapterCapability, type ExecutionAdapter, type ExecutionRun, type RunSummary,
 } from "@/lib/execution";
@@ -40,7 +40,7 @@ import {
   type StreamItem,
 } from "@/lib/project-stream";
 import { REVIEW_REQUESTER } from "@/lib/run-column";
-import { formatDuration, turnDurationMs } from "@/lib/conversation";
+import { EMPTY_TRANSCRIPT, formatDuration, mergeTranscript, turnDurationMs, type Transcript } from "@/lib/conversation";
 import type { PlanRow } from "@/lib/task-plan";
 import { useI18n } from "@/lib/i18n";
 import { workspace as workspaceDictionary } from "@/lib/i18n/dictionaries/workspace";
@@ -53,6 +53,8 @@ const GATES_LIMIT = 200;
  *  running now once the project has more runs than the page holds. */
 const ACTIVE_LIMIT = 100;
 const POLL_MS = 4000;
+/** How often a live run's transcript is read — the terminal's own cadence, near enough. */
+const TRANSCRIPT_POLL_MS = 1000;
 /** How many recent worker runs are read in full so what they said shows in the stream. */
 const RECENT_REPLIES = 8;
 /** A reply longer than this is shown from its end; the whole is under "expand". */
@@ -455,29 +457,9 @@ export function ProjectStream({
         }
         return;
       }
-      if (intent.kind === "ask") {
-        // A question, not work (CR-75): a chat run on the current step — answered in the
-        // step's worktree, never reviewed, the task untouched. Allowed while a worker run
-        // is going, because asking is how the person follows what it is doing.
-        if (target.kind === "none") { setNotice({ text: t(`workspace.stream.compose.${target.reason}`), tone: "warn" }); return; }
-        const echoKey = show();
-        const stop = await ensureWorkspace(adapter);
-        if (stop !== null) { undo.current?.(); setNotice({ text: stop, tone: "bad" }); return; }
-        const fresh = await getTask(target.step.task_id);
-        const run = await createRun({
-          task_id: target.step.task_id, adapter, kind: "chat",
-          // The preamble is for the agent; what the person typed is what the stream shows.
-          prompt: `${t("workspace.stream.compose.askPreamble")}\n\n${intent.text}`,
-          metadata: { display_prompt: intent.text },
-          timeout_seconds: CONTINUE_TIMEOUT_SECONDS, expected_task_version: fresh.version, actor: "user",
-        });
-        if (!alive.current) return;
-        undo.current = null;
-        patch(echoKey, { runId: run.run_id });
-        push({ type: "auto", key: `k${Date.now()}`, at: now(), text: t("workspace.stream.compose.asked", { adapter: adapterLabel(adapter) }), runId: run.run_id });
-        void load();
-        return;
-      }
+      // CR-99: no separate "question" path. Every plain line is one turn of the same
+      // agent on the current step, sent as typed; it answers or acts, and a turn that
+      // changed nothing draws no reviewer (the control plane reads the delivery).
       if (target.kind === "busy") {
         setNotice({ text: t("workspace.stream.compose.busy", { adapter: adapterLabel(activeRunsOf(runs).find((run) => run.task_id === target.step.task_id)?.adapter ?? adapter), step: target.step.step }), tone: "warn" });
         return;
@@ -635,6 +617,57 @@ export function ProjectStream({
       </div>
     );
   };
+  // --- the transcript: the agent's turn as it comes, like the terminal (CR-99) -------------
+  // Each worker run's rendered stream — text, `$ tool …` lines, results — read from the
+  // control plane by byte offset while the run is live and once more when it settles.
+  // The same feed the task page used since W8; the project conversation never wired it
+  // and showed a run only once it had ended (user, 2026-09-19: "为什么不是流式输出").
+  const [transcripts, setTranscripts] = useState<Record<string, Transcript>>({});
+  const transcriptsRef = useRef(transcripts);
+  useEffect(() => { transcriptsRef.current = transcripts; }, [transcripts]);
+  const pull = useCallback(async (runId: string) => {
+    const current = transcriptsRef.current[runId] ?? EMPTY_TRANSCRIPT;
+    // Done only when the run has settled, the last read did not stop at its size cap
+    // (a long transcript comes in more than one slice), and that read actually landed —
+    // a stalled or unreadable read keeps `complete` from the slice before it and must
+    // not close the feed (review, 2026-09-19).
+    if (current.complete && !current.more && !current.stalled && !current.unreadable) return;
+    try {
+      const slice = await getRunOutput(runId, current.offset);
+      if (!alive.current) return;
+      setTranscripts((prev) => ({ ...prev, [runId]: mergeTranscript(prev[runId] ?? EMPTY_TRANSCRIPT, slice) }));
+    } catch {
+      if (!alive.current) return;
+      // A read that did not come back is a stall, not a hole: the offset has not
+      // moved, so the next read that lands returns everything since.
+      setTranscripts((prev) => ({
+        ...prev,
+        [runId]: mergeTranscript(prev[runId] ?? EMPTY_TRANSCRIPT, {
+          text: "", offset: current.offset, next_offset: current.offset, reachable: true, failed: true,
+        }),
+      }));
+    }
+  }, []);
+  // Turns the person opened by hand (older than the recent few): read on the same
+  // cadence as the recent ones until their transcript is whole, so a long one is not
+  // cut at its first slice and a failed read is tried again (review, 2026-09-19).
+  const [opened, setOpened] = useState<ReadonlySet<string>>(new Set());
+  useEffect(() => {
+    if (runs === null) return;
+    const isActive = (run: RunSummary) => run.state === "queued" || run.state === "running";
+    const workers = runs.filter((run) => run.role !== "review");
+    const liveOnes = workers.filter(isActive);
+    const recent = workers.filter((run) => !isActive(run))
+      .sort((a, b) => (a.queued_at < b.queued_at ? 1 : -1))
+      .slice(0, RECENT_REPLIES);
+    const byHand = workers.filter((run) => !isActive(run) && opened.has(run.run_id));
+    const tick = () => { for (const run of [...liveOnes, ...recent, ...byHand]) void pull(run.run_id); };
+    tick();
+    if (liveOnes.length === 0) return;
+    const timer = window.setInterval(tick, TRANSCRIPT_POLL_MS);
+    return () => window.clearInterval(timer);
+  }, [runs, pull, opened]);
+
   const chatLine = (run: RunSummary, held: ExecutionRun | "failed" | undefined) => {
     const quiet = "text-[12px] text-muted-foreground";
     if (run.state === "queued" || run.state === "running") {
@@ -691,12 +724,12 @@ export function ProjectStream({
             const full = details[item.unit.run.run_id];
             const record = full !== undefined && full !== "failed" ? full : null;
             const reply = record?.stdout_tail.trim() ?? "";
-            // A question's answer has no card to unfold from, so it is not folded here — what
-            // is shown is the tail the record keeps, all of it; a work run's output is
-            // folded, with the card holding the rest of that tail.
+            // A question (an older chat run) draws its answer from the record, whole. A
+            // worker turn draws the transcript below, as the terminal shows it.
             const chat = item.unit.run.role === "chat";
-            const folded = !chat && reply.length > REPLY_FOLD;
-            const shown = folded ? reply.slice(reply.length - REPLY_FOLD) : reply;
+            const live = item.unit.run.state === "queued" || item.unit.run.state === "running";
+            const transcript = transcripts[item.unit.run.run_id];
+            const turnText = (transcript?.text ?? "").trim() || reply;
             return (
               <div key={item.key} className="space-y-2">
                 {record && record.prompt.trim() !== "" && (
@@ -714,21 +747,49 @@ export function ProjectStream({
                       )}
                   </div>
                 )}
-                {item.unit.run.role === "chat" ? chatLine(item.unit.run, full) : runCard(item.unit.run, item.step, item.unit.nested)}
-                {/* The reply is what came back, so only once the run has settled — a
-                    record fetched while it runs carries the prompt, not the answer. */}
-                {record && reply !== "" && item.unit.run.state !== "queued" && item.unit.run.state !== "running" && (
-                  <div className="min-w-0 max-w-[64ch] rounded-xl border bg-card px-3 py-2 text-[14px] leading-relaxed">
-                    <div className="mb-1 font-mono text-[10px] text-muted-foreground">{t("workspace.stream.reply", { adapter: adapterLabel(record.adapter) })} · {relTime(record.finished_at ?? record.queued_at, t)}</div>
-                    {folded && <p className="mb-1 text-[11px] text-muted-foreground">{t("workspace.stream.replyFolded")}</p>}
-                    <Prose text={shown} />
-                    {/* What the run changed — the result to look at, right here. Not
-                        for a question: it was told not to change anything. */}
-                    {!chat && expanded[item.unit.run.run_id]?.deliverables !== undefined && expanded[item.unit.run.run_id]?.deliverables !== null && (
+                {chat && chatLine(item.unit.run, full)}
+                {/* The agent's turn, as the terminal shows it: its text, the commands it
+                    ran, what came back — growing while it runs, unchanged once it has
+                    ended. No card, no summary (CR-99). What could not be read is said. */}
+                {!chat && (
+                  <div className="min-w-0 max-w-[72ch] rounded-xl border bg-card px-3 py-2 text-[13.5px] leading-relaxed">
+                    <div className="mb-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono text-[10px] text-muted-foreground">
+                      <span className="font-medium text-foreground">{adapterLabel(item.unit.run.adapter)}</span>
+                      {item.step !== null && <span>{t("workspace.stream.run.step", { step: item.step })}</span>}
+                      {live
+                        ? <span className="inline-flex items-center gap-1 text-primary"><span className="size-1.5 animate-pulse rounded-full bg-current" />{te("runState", item.unit.run.state)}</span>
+                        : <span>{te("runState", item.unit.run.state)} · {relTime(record?.finished_at ?? item.unit.run.queued_at, t)}</span>}
+                      {transcript?.stalled && <span>{t("workspace.stream.transcriptStalled")}</span>}
+                      {transcript?.unreadable && <span className="text-destructive">{t("workspace.stream.transcriptUnreadable")}</span>}
+                      {transcript?.lossy && <span className="text-destructive">{t("workspace.stream.transcriptLossy")}</span>}
+                    </div>
+                    {turnText !== ""
+                      ? <Prose text={turnText} />
+                      : live
+                        ? <p className="text-[12px] text-muted-foreground">{t("workspace.stream.transcriptWaiting")}</p>
+                        : (transcript === undefined && record === null)
+                          /* Older than the recent few, or a read that failed: nothing was
+                             prefetched, so the turn is opened on demand — its record,
+                             its transcript and its files together. */
+                          ? (reading.has(item.unit.run.run_id)
+                            ? <p className="text-[12px] text-muted-foreground">{t("workspace.stream.loading")}</p>
+                            : <button type="button" onClick={() => { readExchange(item.unit.run); setOpened((held) => new Set(held).add(item.unit.run.run_id)); void pull(item.unit.run.run_id); }} className="text-[12px] text-muted-foreground underline-offset-2 hover:underline">{t(full === "failed" ? "workspace.stream.answerReadFailed" : "workspace.stream.answerRead")}</button>)
+                          : <p className="text-[12px] text-muted-foreground">{t("workspace.stream.run.noOutput")}</p>}
+                    {!live && record?.error_message && <p className="mt-1 text-[12px] text-destructive">{record.error_message}</p>}
+                    {/* What the turn changed — listed once it has ended, as the terminal
+                        would print a diff summary. Nothing listed means nothing changed
+                        only when the read settled as such; the block says the rest. */}
+                    {!live && expanded[item.unit.run.run_id]?.deliverables !== undefined && expanded[item.unit.run.run_id]?.deliverables !== null && (
                       <div className="mt-2 border-t pt-2 text-[12px]">
-                        <DeliverablesBlock runId={item.unit.run.run_id} delivered={expanded[item.unit.run.run_id].deliverables} t={t} compact />
+                        <DeliverablesBlock runId={item.unit.run.run_id} delivered={expanded[item.unit.run.run_id].deliverables} onLoad={() => loadFiles(item.unit.run.run_id)} t={t} compact />
                       </div>
                     )}
+                  </div>
+                )}
+                {chat && record && reply !== "" && !live && (
+                  <div className="min-w-0 max-w-[64ch] rounded-xl border bg-card px-3 py-2 text-[14px] leading-relaxed">
+                    <div className="mb-1 font-mono text-[10px] text-muted-foreground">{t("workspace.stream.reply", { adapter: adapterLabel(record.adapter) })} · {relTime(record.finished_at ?? record.queued_at, t)}</div>
+                    <Prose text={reply} />
                     {chat && (
                       <div className="mt-2 border-t pt-1.5 font-mono text-[10px] text-muted-foreground">
                         {answerMeta(item.unit.run, record)}
@@ -888,7 +949,10 @@ export function ProjectStream({
                 : t(`workspace.stream.compose.${target.reason}`))
               : composeIntentOf(draft)?.kind === "note" ? t("workspace.stream.compose.noteHint")
               : composeIntentOf(draft)?.kind === "idea" ? t("workspace.stream.compose.ideaHint")
-              : (target.kind === "none" ? t(`workspace.stream.compose.${target.reason}`) : t("workspace.stream.compose.askHint", { step: target.step.step }))}
+              /* An empty box: where the next line would go, said the same way as a line. */
+              : (target.kind === "step" ? t("workspace.stream.compose.to", { step: target.step.step, title: target.step.title })
+                : target.kind === "busy" ? t("workspace.stream.compose.busyShort", { step: target.step.step })
+                : t(`workspace.stream.compose.${target.reason}`))}
           </span>
           <Button size="sm" onClick={() => void send()} disabled={sending || composeIntentOf(draft) === null}>
             {sending ? <RefreshCw className="size-3.5 animate-spin" /> : <Send className="size-3.5" />}{t("workspace.stream.compose.send")}

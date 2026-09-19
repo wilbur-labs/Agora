@@ -54,7 +54,8 @@ test("a typed line is a question by default; a note, an idea or work by prefix; 
   assert.deepEqual(composeIntentOf("do: scaffold it"), { kind: "dispatch", text: "scaffold it" });
   // CR-75: a plain line is a question, not work — "还给mockup页面的链接" must never
   // become step 2's implementation again.
-  assert.deepEqual(composeIntentOf("  还给mockup页面的链接 "), { kind: "ask", text: "还给mockup页面的链接" });
+  // CR-99: a plain line goes to the agent as typed — it decides whether to answer or act.
+  assert.deepEqual(composeIntentOf("  还给mockup页面的链接 "), { kind: "dispatch", text: "还给mockup页面的链接" });
   assert.equal(composeIntentOf("   "), null);
   assert.equal(composeIntentOf("备注："), null);
   assert.equal(composeIntentOf("做："), null);

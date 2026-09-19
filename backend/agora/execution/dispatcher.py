@@ -1740,7 +1740,11 @@ class ExecutionDispatcher:
         """Cross-review orchestration. Never let it break the primary run."""
         try:
             if role == ROLE_WORKER and finished.state == RunState.SUCCEEDED:
-                if self.auto_review:
+                # CR-99: a turn that verifiably changed nothing is an answer, not work —
+                # no reviewer is sent after it, and the store's review-owed predicate
+                # releases it on the same reading (``ExecutionStore.delivered_nothing``).
+                # "Unknown" (no snapshot, unread commits) is not "nothing": reviewed.
+                if self.auto_review and not self.store.run_delivered_nothing(finished.run_id):
                     await self._dispatch_review(finished)
             elif role == ROLE_REVIEW and finished.state == RunState.SUCCEEDED:
                 self._raise_review_attention(finished, reviews_run_id, AttentionKind.APPROVAL)

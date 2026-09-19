@@ -291,6 +291,11 @@ export const workspace = {
       gatesCapped: "More than {limit} items exist; the ones beyond that are not shown here — check under Needs you.",
       noteTag: "note",
       reply: "{adapter} replied",
+      // The agent's turn as the terminal shows it (CR-99); what the feed cannot vouch for.
+      transcriptWaiting: "Waiting for the first line…",
+      transcriptStalled: "last read did not come back — retrying",
+      transcriptUnreadable: "transcript could not be read",
+      transcriptLossy: "some output was lost before it could be saved",
       // A question's run is not a card of its own: while it runs, one quiet line under
       // the question; once answered, the run's facts sit in the reply's footer.
       answering: "{adapter} is answering…",
@@ -329,7 +334,7 @@ export const workspace = {
         },
       },
       compose: {
-        placeholder: "Ask anything — a plain line is a question, answered here and never reviewed. Start with \"do:\" to dispatch work on the current step, \"note:\" to only record it, \"idea:\" to have the agent judge whether it becomes a task. Enter sends, Shift+Enter breaks the line.",
+        placeholder: "Talk to the agent as in its terminal — it answers or acts. \"note:\" only records a line; \"idea:\" has the agent judge whether it becomes a task. Enter sends, Shift+Enter breaks the line.",
         askHint: "A question about step {step} — answered, not reviewed; the step does not move",
         noteHint: "Recorded on the timeline only",
         ideaHint: "The agent judges whether this becomes a task",
@@ -348,7 +353,7 @@ export const workspace = {
         unknown: "The order could not be read whole, so which step this goes to cannot be told.",
         noteNoTask: "There is no step to record this on yet.",
         noted: "Recorded on the timeline; nothing was dispatched.",
-        sent: "Sent to {adapter} for step {step}. It is reviewed automatically when it finishes.",
+        sent: "Sent to {adapter} for step {step}. If it changes files, a review follows automatically.",
         sendFailed: "Not sent: {reason}",
         conflict: "The control plane refused it: {detail}",
         worktreeNotReady: "The worktree is not ready: {detail}",
@@ -1186,6 +1191,10 @@ export const workspace = {
       gatesCapped: "事项超过 {limit} 条，多出的这里没显示——去「待你处理」里确认。",
       noteTag: "备注",
       reply: "{adapter} 的回复",
+      transcriptWaiting: "等第一行输出…",
+      transcriptStalled: "上一次读取没回来——重试中",
+      transcriptUnreadable: "读不到 transcript",
+      transcriptLossy: "有一部分输出没来得及保存就丢了",
       answering: "{adapter} 回答中…",
       answerMeta: "{run}{state} · 退出码 {exit} · {elapsed}",
       answerFailed: "{adapter} 没有回答——{state}{detail}",
@@ -1222,7 +1231,7 @@ export const workspace = {
         },
       },
       compose: {
-        placeholder: "直接说就是提问，agent 会回答，不走复核。以「做：」开头才派活到当前步骤；「备注：」只记时间线；「点子：」让 agent 判断要不要加任务。回车发送，Shift+回车换行。",
+        placeholder: "像在终端里一样跟 agent 说话，它自己决定是回答还是动手。「备注：」只记时间线；「点子：」让 agent 判断要不要加任务。回车发送，Shift+回车换行。",
         askHint: "对第 {step} 步的提问——只回答，不复核，步骤不动",
         noteHint: "只记进时间线",
         ideaHint: "让 agent 判断要不要加任务",
@@ -1241,7 +1250,7 @@ export const workspace = {
         unknown: "读不全开发顺序，说不了该派给哪一步。",
         noteNoTask: "还没有可以记在上面的步骤。",
         noted: "记进时间线了，没派活。",
-        sent: "已派给 {adapter}，第 {step} 步。跑完会自动复核。",
+        sent: "已发给 {adapter}，第 {step} 步。它要是改了文件，跑完会自动复核。",
         sendFailed: "没发出去：{reason}",
         conflict: "控制平面拒绝了：{detail}",
         worktreeNotReady: "工作树没准备好：{detail}",
