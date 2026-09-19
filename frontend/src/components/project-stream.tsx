@@ -292,6 +292,7 @@ export function ProjectStream({
 
   const now = () => new Date().toISOString();
   const push = (item: LocalItem) => setLocal((current) => [...current, item]);
+  const drop = (key: string) => setLocal((current) => current.filter((item) => item.key !== key));
   const patch = (key: string, change: Partial<LocalItem>) =>
     setLocal((current) => current.map((item) => (item.key === key ? ({ ...item, ...change } as LocalItem) : item)));
 
@@ -416,6 +417,18 @@ export function ProjectStream({
     setSending(true);
     setNotice(null);
     const echo = draft.trim();
+    // For a question or work, the line goes on screen the moment it is sent — before
+    // the worktree check, the task read and the run's creation, which together take
+    // seconds (user, 2026-09-19: "为什么没有马上显示"). If the send then fails, the
+    // line comes off the screen and back into the box, with the reason beside it.
+    const undo: { current: (() => void) | null } = { current: null };
+    const show = () => {
+      const key = `u${Date.now()}`;
+      push({ type: "user", key, at: now(), text: echo });
+      setDraft("");
+      undo.current = () => { drop(key); setDraft(echo); undo.current = null; };
+      return key;
+    };
     try {
       if (intent.kind === "note") {
         const taskId = target.kind === "none" ? (rows[0]?.task_id ?? null) : target.step.task_id;
@@ -447,10 +460,10 @@ export function ProjectStream({
         // step's worktree, never reviewed, the task untouched. Allowed while a worker run
         // is going, because asking is how the person follows what it is doing.
         if (target.kind === "none") { setNotice({ text: t(`workspace.stream.compose.${target.reason}`), tone: "warn" }); return; }
+        const echoKey = show();
         const stop = await ensureWorkspace(adapter);
-        if (stop !== null) { setNotice({ text: stop, tone: "bad" }); return; }
+        if (stop !== null) { undo.current?.(); setNotice({ text: stop, tone: "bad" }); return; }
         const fresh = await getTask(target.step.task_id);
-        const at = now();
         const run = await createRun({
           task_id: target.step.task_id, adapter, kind: "chat",
           // The preamble is for the agent; what the person typed is what the stream shows.
@@ -459,9 +472,9 @@ export function ProjectStream({
           timeout_seconds: CONTINUE_TIMEOUT_SECONDS, expected_task_version: fresh.version, actor: "user",
         });
         if (!alive.current) return;
-        push({ type: "user", key: `u${Date.now()}`, at, text: echo, runId: run.run_id });
-        push({ type: "auto", key: `k${Date.now()}`, at, text: t("workspace.stream.compose.asked", { adapter: adapterLabel(adapter) }), runId: run.run_id });
-        setDraft("");
+        undo.current = null;
+        patch(echoKey, { runId: run.run_id });
+        push({ type: "auto", key: `k${Date.now()}`, at: now(), text: t("workspace.stream.compose.asked", { adapter: adapterLabel(adapter) }), runId: run.run_id });
         void load();
         return;
       }
@@ -473,20 +486,26 @@ export function ProjectStream({
         setNotice({ text: t(`workspace.stream.compose.${target.reason}`), tone: "warn" });
         return;
       }
+      const echoKey = show();
       const stop = await ensureWorkspace(adapter);
-      if (stop !== null) { setNotice({ text: stop, tone: "bad" }); return; }
+      if (stop !== null) { undo.current?.(); setNotice({ text: stop, tone: "bad" }); return; }
       const fresh = await getTask(target.step.task_id);
-      const at = now();
       const run = await createRun({ task_id: target.step.task_id, adapter, kind: "work", prompt: intent.text, timeout_seconds: CONTINUE_TIMEOUT_SECONDS, expected_task_version: fresh.version, actor: "user" });
       if (!alive.current) return;
-      push({ type: "user", key: `u${Date.now()}`, at, text: echo, runId: run.run_id });
-      push({ type: "auto", key: `k${Date.now()}`, at, text: t("workspace.stream.compose.sent", { adapter: adapterLabel(adapter), step: target.step.step }), runId: run.run_id });
-      setDraft("");
+      undo.current = null;
+      patch(echoKey, { runId: run.run_id });
+      push({ type: "auto", key: `k${Date.now()}`, at: now(), text: t("workspace.stream.compose.sent", { adapter: adapterLabel(adapter), step: target.step.step }), runId: run.run_id });
       void load(); onChanged();
     } catch (err) {
       if (!alive.current) return;
+      undo.current?.();
       const reason = err instanceof ApiError && err.status === 409 ? t("workspace.stream.compose.conflict", { detail: err.message }) : (err instanceof Error ? err.message : String(err));
       setNotice({ text: t("workspace.stream.compose.sendFailed", { reason }), tone: "bad" });
+      // A failure is not proof that nothing was created: a response lost on the way
+      // back leaves a run the server did start. Reading the list now draws it as its
+      // record if it exists, rather than leaving it to the next poll to surface (and
+      // for work, the busy gate refuses a second dispatch onto that step meanwhile).
+      void load();
     } finally {
       if (alive.current) setSending(false);
     }
