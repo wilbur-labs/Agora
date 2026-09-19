@@ -596,6 +596,71 @@ export function ProjectStream({
     );
   };
 
+  // A question is a turn in the conversation, not a card of its own (user, 2026-09-19:
+  // the card between the question and the answer "显示的多余"). While it runs, one quiet
+  // line under the question; once answered, the run's facts sit in the reply's footer
+  // (`answerMeta` below); a run that ended without an answer says so here, since there
+  // is no reply to carry it. What the record cannot say is said as such, not as "no
+  // answer".
+  // An exchange older than the recent few is not prefetched; the card used to be the
+  // way to open it on demand, so the line is that way now — and the way to try again
+  // after a read that failed, which the poll does not retry (review, 2026-09-19).
+  const [reading, setReading] = useState<ReadonlySet<string>>(new Set());
+  const readExchange = (run: RunSummary) => {
+    setReading((held) => new Set(held).add(run.run_id));
+    getRun(run.run_id)
+      .then((full) => { if (alive.current) setDetails((all) => ({ ...all, [run.run_id]: full })); })
+      .catch(() => { if (alive.current) setDetails((all) => ({ ...all, [run.run_id]: "failed" })); })
+      .finally(() => { if (alive.current) setReading((held) => { const next = new Set(held); next.delete(run.run_id); return next; }); });
+    // Its files too — whether a question's run changed any is part of the exchange.
+    getRunDeliverables(run.run_id)
+      .then((files) => { if (alive.current) setExpanded((all) => ({ ...all, [run.run_id]: { run: all[run.run_id]?.run ?? null, deliverables: files } })); })
+      .catch(() => { if (alive.current) setExpanded((all) => ({ ...all, [run.run_id]: { run: all[run.run_id]?.run ?? null, deliverables: "failed" } })); });
+  };
+  // Files a question's run changed anyway — it was told not to, and the prompt is the
+  // only thing holding it to that — or whether it did, when that cannot be told: shown
+  // under the exchange whether or not an answer came back (a run that changed files and
+  // crashed with no output must not hide them). A read that settled as "nothing changed"
+  // is silent. Standing on its own so it does not depend on the reply being there.
+  const chatChanges = (runId: string) => {
+    const del = expanded[runId]?.deliverables;
+    if (del === undefined || del === null || del === "loading") return null;
+    const changed = del !== "failed" && (del.files.length > 0 || Boolean(del.truncated));
+    const unknown = del === "failed" || del.source === "none";
+    if (!changed && !unknown) return null;
+    return (
+      <div className="min-w-0 max-w-[64ch] rounded-xl border bg-card px-3 py-2 text-[12px]">
+        {changed && <p className="mb-1 text-amber-700 dark:text-amber-400">{t("workspace.stream.answerChanged")}</p>}
+        <DeliverablesBlock runId={runId} delivered={del} onLoad={() => loadFiles(runId)} t={t} compact />
+      </div>
+    );
+  };
+  const chatLine = (run: RunSummary, held: ExecutionRun | "failed" | undefined) => {
+    const quiet = "text-[12px] text-muted-foreground";
+    if (run.state === "queued" || run.state === "running") {
+      return <p className={cn(quiet, "inline-flex items-center gap-1.5")}><span className="size-1.5 animate-pulse rounded-full bg-primary" />{t("workspace.stream.answering", { adapter: adapterLabel(run.adapter) })}</p>;
+    }
+    if (reading.has(run.run_id)) return <p className={quiet}>{t("workspace.stream.loading")}</p>;
+    if (held === undefined || held === "failed") {
+      return <button type="button" onClick={() => readExchange(run)} className={cn(quiet, "underline-offset-2 hover:underline")}>{t(held === undefined ? "workspace.stream.answerRead" : "workspace.stream.answerReadFailed")}</button>;
+    }
+    if (held.stdout_tail.trim() !== "") return null; // the reply bubble carries the facts
+    const detail = held.error_message ? `: ${held.error_message}` : "";
+    return <p className={cn(quiet, "text-destructive")}>{t("workspace.stream.answerFailed", { adapter: adapterLabel(run.adapter), state: te("runState", run.state), detail })}</p>;
+  };
+  // The run's facts under a reply. The state is named only when it is not "succeeded":
+  // a reply that ends early because the run timed out or failed is not a whole answer,
+  // and the footer is where that is said (review, 2026-09-19).
+  const answerMeta = (run: RunSummary, held: ExecutionRun) => {
+    const ms = turnDurationMs(held);
+    return t("workspace.stream.answerMeta", {
+      run: held.run_id.slice(0, 12),
+      state: run.state === "succeeded" ? "" : ` · ${te("runState", run.state)}`,
+      exit: held.exit_code === null ? "—" : String(held.exit_code),
+      elapsed: ms === null ? "—" : formatDuration(ms),
+    });
+  };
+
   // --- render -------------------------------------------------------------------------
   const headerPill = status.kind === "running"
     ? <span className="inline-flex items-center gap-1.5 rounded-full border border-primary/50 bg-primary/10 px-2 py-0.5 font-mono text-[10px] text-primary"><span className="size-1.5 animate-pulse rounded-full bg-current" />{t("workspace.stream.status.running", { adapter: adapterLabel(status.run.adapter), step: status.step ?? "?" })}{status.also > 0 ? ` +${status.also}` : ""}</span>
@@ -626,7 +691,12 @@ export function ProjectStream({
             const full = details[item.unit.run.run_id];
             const record = full !== undefined && full !== "failed" ? full : null;
             const reply = record?.stdout_tail.trim() ?? "";
-            const shown = reply.length > REPLY_FOLD ? reply.slice(reply.length - REPLY_FOLD) : reply;
+            // A question's answer has no card to unfold from, so it is not folded here — what
+            // is shown is the tail the record keeps, all of it; a work run's output is
+            // folded, with the card holding the rest of that tail.
+            const chat = item.unit.run.role === "chat";
+            const folded = !chat && reply.length > REPLY_FOLD;
+            const shown = folded ? reply.slice(reply.length - REPLY_FOLD) : reply;
             return (
               <div key={item.key} className="space-y-2">
                 {record && record.prompt.trim() !== "" && (
@@ -644,23 +714,34 @@ export function ProjectStream({
                       )}
                   </div>
                 )}
-                {runCard(item.unit.run, item.step, item.unit.nested)}
+                {item.unit.run.role === "chat" ? chatLine(item.unit.run, full) : runCard(item.unit.run, item.step, item.unit.nested)}
                 {/* The reply is what came back, so only once the run has settled — a
                     record fetched while it runs carries the prompt, not the answer. */}
                 {record && reply !== "" && item.unit.run.state !== "queued" && item.unit.run.state !== "running" && (
                   <div className="min-w-0 max-w-[64ch] rounded-xl border bg-card px-3 py-2 text-[14px] leading-relaxed">
                     <div className="mb-1 font-mono text-[10px] text-muted-foreground">{t("workspace.stream.reply", { adapter: adapterLabel(record.adapter) })} · {relTime(record.finished_at ?? record.queued_at, t)}</div>
-                    {reply.length > REPLY_FOLD && <p className="mb-1 text-[11px] text-muted-foreground">{t("workspace.stream.replyFolded")}</p>}
+                    {folded && <p className="mb-1 text-[11px] text-muted-foreground">{t("workspace.stream.replyFolded")}</p>}
                     <Prose text={shown} />
                     {/* What the run changed — the result to look at, right here. Not
                         for a question: it was told not to change anything. */}
-                    {item.unit.run.role !== "chat" && expanded[item.unit.run.run_id]?.deliverables !== undefined && expanded[item.unit.run.run_id]?.deliverables !== null && (
+                    {!chat && expanded[item.unit.run.run_id]?.deliverables !== undefined && expanded[item.unit.run.run_id]?.deliverables !== null && (
                       <div className="mt-2 border-t pt-2 text-[12px]">
                         <DeliverablesBlock runId={item.unit.run.run_id} delivered={expanded[item.unit.run.run_id].deliverables} t={t} compact />
                       </div>
                     )}
+                    {chat && (
+                      <div className="mt-2 border-t pt-1.5 font-mono text-[10px] text-muted-foreground">
+                        {answerMeta(item.unit.run, record)}
+                        {/* A run that did not end well may still have said something; the
+                            reason it ended lives here, under the partial answer, as the
+                            card used to carry it. */}
+                        {item.unit.run.state !== "succeeded" && record.error_message && <div className="mt-1 text-destructive">{record.error_message}</div>}
+                        {item.unit.run.state !== "succeeded" && record.stderr_tail.trim() !== "" && <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap">{record.stderr_tail.trim()}</pre>}
+                      </div>
+                    )}
                   </div>
                 )}
+                {chat && item.unit.run.state !== "queued" && item.unit.run.state !== "running" && chatChanges(item.unit.run.run_id)}
                 {item.unit.nested.map((review) => {
                   const rec = details[review.run_id];
                   const verdict = rec !== undefined && rec !== "failed" ? rec.stdout_tail.trim() : "";
