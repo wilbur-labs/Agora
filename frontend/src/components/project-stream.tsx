@@ -104,6 +104,66 @@ function Prose({ text, className }: { text: string; className?: string }) {
   );
 }
 
+/**
+ * The lines of a transcript that are the terminal's, not the agent's prose: a tool
+ * call (`$ …`), a thinking note (`· …`), an error (`✖ …`), a file change (`✎ …`), and
+ * the indented rows a command printed back. The leading `›› …` run is the prompt's
+ * own echo, already drawn as the person's bubble, so it is dropped here.
+ */
+const TERMINAL_LINE = /^(\$ |· |✖ |✎ |  )/;
+
+/** A run of terminal lines: dark, monospace, and no taller than a few lines — it
+ * scrolls inside itself and follows its own end as lines arrive (user, 2026-09-19:
+ * the running data as code on a dark ground, pressed into a small window). */
+function TermBlock({ lines }: { lines: string[] }) {
+  const ref = useRef<HTMLPreElement | null>(null);
+  const text = lines.join("\n");
+  useEffect(() => {
+    const el = ref.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [text]);
+  return (
+    <pre ref={ref} className="max-h-44 max-w-full overflow-auto rounded bg-zinc-950 px-2.5 py-2 font-mono text-[11.5px] leading-relaxed text-zinc-200 whitespace-pre-wrap [overflow-wrap:anywhere]">{text}</pre>
+  );
+}
+
+/** The transcript without the prompt's own leading `››` echo — what the turn *said*. */
+function transcriptBody(text: string): string {
+  const lines = text.split("\n");
+  let start = 0;
+  while (start < lines.length && /^››? /.test(lines[start])) start += 1;
+  return lines.slice(start).join("\n");
+}
+
+/** The transcript as the terminal shows it: the agent's own words as text, everything
+ * it ran or noted as dark blocks between them. */
+function TranscriptView({ text }: { text: string }) {
+  const lines = transcriptBody(text).split("\n");
+  const segments: { term: boolean; lines: string[] }[] = [];
+  let fenced = false;
+  for (const line of lines) {
+    // A line inside the agent's own fenced code is its prose whatever it starts with:
+    // a `$ rm …` it quoted as an example is not something it ran (review, 2026-09-19).
+    if (/^```/.test(line)) fenced = !fenced;
+    const term = !fenced && !/^```/.test(line) && TERMINAL_LINE.test(line);
+    const last = segments[segments.length - 1];
+    // A blank line inside a terminal run stays in it; one between prose stays prose.
+    if (last && (last.term === term || (line.trim() === "" && last.term))) last.lines.push(line);
+    else segments.push({ term, lines: [line] });
+  }
+  return (
+    <div className="min-w-0 space-y-2">
+      {segments.map((segment, index) => {
+        const body = segment.lines.join("\n");
+        if (body.trim() === "") return null;
+        return segment.term
+          ? <TermBlock key={index} lines={segment.lines} />
+          : <Prose key={index} text={body} />;
+      })}
+    </div>
+  );
+}
+
 export function ProjectStream({
   projectId, projectName, tasks, rows, rowsWhole, workerAdapter, onChanged,
 }: {
@@ -288,9 +348,19 @@ export function ProjectStream({
   const runsCapped = runs !== null && runs.length >= RUNS_LIMIT;
 
   useEffect(() => {
+    // Only when the person is at the end (or just sent something, which puts them
+    // there): scrolled up to read is a choice no arrival may undo (review, 2026-09-19).
     const el = streamRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
+    if (el && atEnd.current) el.scrollTop = el.scrollHeight;
   }, [merged.length, status.kind]);
+  // And while a turn streams: keep the end in view as it grows — but only when the
+  // person is already at the end. Scrolled up to read something is a choice this
+  // must not undo on every line (user, 2026-09-19: "自动让我看到最下面的消息").
+  const atEnd = useRef(true);
+  const onStreamScroll = () => {
+    const el = streamRef.current;
+    if (el) atEnd.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+  };
 
   const now = () => new Date().toISOString();
   const push = (item: LocalItem) => setLocal((current) => [...current, item]);
@@ -426,6 +496,7 @@ export function ProjectStream({
     const undo: { current: (() => void) | null } = { current: null };
     const show = () => {
       const key = `u${Date.now()}`;
+      atEnd.current = true; // the person's own line takes them to the end
       push({ type: "user", key, at: now(), text: echo });
       setDraft("");
       undo.current = () => { drop(key); setDraft(echo); undo.current = null; };
@@ -625,6 +696,11 @@ export function ProjectStream({
   const [transcripts, setTranscripts] = useState<Record<string, Transcript>>({});
   const transcriptsRef = useRef(transcripts);
   useEffect(() => { transcriptsRef.current = transcripts; }, [transcripts]);
+  // Follow the end while a turn streams, unless the person scrolled up (see `atEnd`).
+  useEffect(() => {
+    const el = streamRef.current;
+    if (el && atEnd.current) el.scrollTop = el.scrollHeight;
+  }, [transcripts]);
   const pull = useCallback(async (runId: string) => {
     const current = transcriptsRef.current[runId] ?? EMPTY_TRANSCRIPT;
     // Done only when the run has settled, the last read did not stop at its size cap
@@ -709,7 +785,7 @@ export function ProjectStream({
         <span className="ml-auto">{headerPill}</span>
       </div>
 
-      <div ref={streamRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-4">
+      <div ref={streamRef} onScroll={onStreamScroll} className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-4">
         {runsFailed && <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[12px] text-amber-700 dark:text-amber-400">{t("workspace.stream.runsUnreadable")}</p>}
         {gatesFailed && <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[12px] text-amber-700 dark:text-amber-400">{t("workspace.stream.gatesUnreadable")}</p>}
         {runsCapped && <p className="text-center text-[11px] text-muted-foreground">{t("workspace.stream.runsCapped", { limit: RUNS_LIMIT })}</p>}
@@ -729,7 +805,9 @@ export function ProjectStream({
             const chat = item.unit.run.role === "chat";
             const live = item.unit.run.state === "queued" || item.unit.run.state === "running";
             const transcript = transcripts[item.unit.run.run_id];
-            const turnText = (transcript?.text ?? "").trim() || reply;
+            // A transcript that holds only the prompt's echo has said nothing yet; the
+            // record's tail is then the answer, not the echo (review, 2026-09-19).
+            const turnText = transcriptBody(transcript?.text ?? "").trim() || reply;
             return (
               <div key={item.key} className="space-y-2">
                 {record && record.prompt.trim() !== "" && (
@@ -764,7 +842,7 @@ export function ProjectStream({
                       {transcript?.lossy && <span className="text-destructive">{t("workspace.stream.transcriptLossy")}</span>}
                     </div>
                     {turnText !== ""
-                      ? <Prose text={turnText} />
+                      ? <TranscriptView text={turnText} />
                       : live
                         ? <p className="text-[12px] text-muted-foreground">{t("workspace.stream.transcriptWaiting")}</p>
                         : (transcript === undefined && record === null)
