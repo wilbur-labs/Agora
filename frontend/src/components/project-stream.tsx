@@ -27,7 +27,7 @@ import {
   type IdeaProposal, type TaskManifest,
 } from "@/lib/control-plane";
 import {
-  createRun, getRun, getRunDeliverables, getRunOutput, listActiveProjectRuns, listExecutionAdapters, listRuns,
+  cancelRun, createRun, getRun, getRunDeliverables, getRunOutput, listActiveProjectRuns, listExecutionAdapters, listRuns,
   remoteTargetLabel,
   type AdapterCapability, type ExecutionAdapter, type ExecutionRun, type RunSummary,
 } from "@/lib/execution";
@@ -744,6 +744,27 @@ export function ProjectStream({
     return () => window.clearInterval(timer);
   }, [runs, pull, opened]);
 
+  // Stopping a turn is the person's, not a clock's: the timeout is only a runaway
+  // guard now (2026-09-19 — a 600s cap killed a turn mid-scaffold), so the way out
+  // has to be a button on the turn itself.
+  const [stopping, setStopping] = useState<ReadonlySet<string>>(new Set());
+  const stopTurn = async (run: RunSummary) => {
+    setStopping((held) => new Set(held).add(run.run_id));
+    try {
+      // The version from the run's own record, not from the list: a run picked up by
+      // the dispatcher between two polls has moved on, and cancelling against the
+      // snapshot's version is refused with a 409 while the process keeps going
+      // (review, 2026-09-19; the task page's conversation already did this).
+      const fresh = await getRun(run.run_id);
+      await cancelRun(run.run_id, { expected_version: fresh.version, actor: "user", reason: "stopped from the conversation" });
+      if (alive.current) void load();
+    } catch (err) {
+      if (alive.current) setNotice({ text: t("workspace.stream.stopFailed", { reason: err instanceof Error ? err.message : String(err) }), tone: "bad" });
+    } finally {
+      if (alive.current) setStopping((held) => { const next = new Set(held); next.delete(run.run_id); return next; });
+    }
+  };
+
   const chatLine = (run: RunSummary, held: ExecutionRun | "failed" | undefined) => {
     const quiet = "text-[12px] text-muted-foreground";
     if (run.state === "queued" || run.state === "running") {
@@ -835,7 +856,10 @@ export function ProjectStream({
                       <span className="font-medium text-foreground">{adapterLabel(item.unit.run.adapter)}</span>
                       {item.step !== null && <span>{t("workspace.stream.run.step", { step: item.step })}</span>}
                       {live
-                        ? <span className="inline-flex items-center gap-1 text-primary"><span className="size-1.5 animate-pulse rounded-full bg-current" />{te("runState", item.unit.run.state)}</span>
+                        ? <>
+                            <span className="inline-flex items-center gap-1 text-primary"><span className="size-1.5 animate-pulse rounded-full bg-current" />{te("runState", item.unit.run.state)}</span>
+                            <button type="button" onClick={() => void stopTurn(item.unit.run)} disabled={stopping.has(item.unit.run.run_id)} className="underline-offset-2 hover:underline disabled:opacity-50">{t(stopping.has(item.unit.run.run_id) ? "workspace.stream.stopping" : "workspace.stream.stop")}</button>
+                          </>
                         : <span>{te("runState", item.unit.run.state)} · {relTime(record?.finished_at ?? item.unit.run.queued_at, t)}</span>}
                       {transcript?.stalled && <span>{t("workspace.stream.transcriptStalled")}</span>}
                       {transcript?.unreadable && <span className="text-destructive">{t("workspace.stream.transcriptUnreadable")}</span>}

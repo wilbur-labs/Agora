@@ -303,7 +303,7 @@ class ClaudeStreamJsonReader(TranscriptReader):
                 # written starts on its own line.
                 rendered.append("\n")
             elif block_type == "tool_use":
-                rendered.append(_line(f"$ {block.get('name', '?')} {_clip(_compact(block.get('input')))}"))
+                rendered.append(_line(f"$ {_tool_call(block.get('name'), block.get('input'))}"))
             elif block_type == "thinking":
                 rendered.append(_line(f"· {_clip(_text_of(block.get('thinking')))}"))
             else:
@@ -420,3 +420,69 @@ def _clip(text: str) -> str:
     if len(text) <= _ECHO_LIMIT:
         return text
     return f"{text[:_ECHO_LIMIT]}… (截断，共 {len(text)} 字)"
+
+
+#: A command is the thing worth reading in full; every other tool's input is a
+#: payload, and the transcript names it rather than reprinting it.
+_COMMAND_LIMIT = 600
+
+#: Which field of a tool's input *is* the call, per tool. The CLI shows a write as
+#: ``Write(path)``, not as the file — printing the payload put whole source files in
+#: the conversation window (user, 2026-09-19: "这啥内容啊 为什么要放到窗口里").
+_TOOL_SUBJECT = {
+    "Bash": ("command", _COMMAND_LIMIT),
+    "BashOutput": ("bash_id", 120),
+    "Read": ("file_path", 300),
+    "Write": ("file_path", 300),
+    "Edit": ("file_path", 300),
+    "NotebookEdit": ("notebook_path", 300),
+    "Glob": ("pattern", 200),
+    "Grep": ("pattern", 200),
+    "WebFetch": ("url", 300),
+    "WebSearch": ("query", 200),
+    "Task": ("description", 200),
+    "Skill": ("skill", 120),
+    "TodoWrite": (None, 0),
+}
+
+
+def _tool_call(name: Any, payload: Any) -> str:
+    """One line naming what the agent did, the way its own terminal names it.
+
+    The subject is the field that identifies the call — a command, a path, a pattern.
+    A write's content, an edit's replacement text and every other bulk field are left
+    out: they are what the *deliverables* list and the file itself are for, and a
+    conversation that reprints them is unreadable. A tool this does not know about
+    falls back to a short clip of its whole input, so a new tool is thin rather than
+    invisible.
+    """
+    tool = str(name or "?")
+    known = _TOOL_SUBJECT.get(tool)
+    if known is None:
+        return f"{tool} {_shorten(_compact(payload), 300)}".rstrip()
+    field, limit = known
+    if field is None:
+        return tool
+    value = payload.get(field) if isinstance(payload, dict) else None
+    subject = _shorten(_text_of(value), limit) if value is not None else ""
+    if tool == "Write" and isinstance(payload, dict):
+        # How much is being written is the one number a reader wants here.
+        body = _text_of(payload.get("content"))
+        if body:
+            return f"{tool}({subject}) {body.count(chr(10)) + 1} 行"
+    return f"{tool}({subject})" if subject else tool
+
+
+def _shorten(text: str, limit: int) -> str:
+    """At most ``limit`` characters of ``text``, **verbatim**.
+
+    Nothing inside is rewritten. An earlier version collapsed runs of whitespace to
+    single spaces so the call would fit one line, which made the transcript show a
+    command that was not the one that ran — `A  B.txt` became `A B.txt`, and a
+    multi-line script became one line whose separators meant something else (review,
+    2026-09-19). Continuation lines are indented two spaces instead, which is what
+    keeps them in the terminal block on screen without touching what they say.
+    """
+    clipped = text if len(text) <= limit else f"{text[:limit]}…"
+    first, *rest = clipped.split("\n")
+    return "\n".join([first, *(f"  {line}" for line in rest)])

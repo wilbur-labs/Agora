@@ -28,8 +28,17 @@ export const CONTINUE_ADAPTER = "claude";
  */
 export const CONTINUE_PROMPT_LIMIT = 16_000;
 
-/** Mirrors CreateRunRequest.timeout_seconds' default in execution/models.py. */
-export const CONTINUE_TIMEOUT_SECONDS = 600;
+/**
+ * What a turn is given before the control plane kills it: the **ceiling** of
+ * CreateRunRequest.timeout_seconds (`le=7200`), not its 600s default.
+ *
+ * A timeout here is a runaway guard, not an estimate of how long work takes. At 600s
+ * it was the second: a turn that scaffolded a backend was killed mid-file with its
+ * work uncommitted and its last words lost (user, 2026-09-19). The terminal this
+ * conversation stands in for has no such cap, so the number is as far out as the
+ * contract allows, and stopping a turn early is the person's button, not a clock's.
+ */
+export const CONTINUE_TIMEOUT_SECONDS = 7_200;
 
 /**
  * Task states ExecutionStore.create accepts a run for. Anything else is refused

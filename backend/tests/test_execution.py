@@ -3854,15 +3854,22 @@ def test_run_gate_conflict_codes_mirrored_by_the_frontend():
 
 def test_run_contract_constants_mirrored_by_the_frontend(tmp_path):
     """frontend/src/lib/continue-run.ts hardcodes these three facts:
-    CONTINUE_PROMPT_LIMIT = 16_000, CONTINUE_TIMEOUT_SECONDS = 600, and
+    CONTINUE_PROMPT_LIMIT = 16_000, CONTINUE_TIMEOUT_SECONDS = 7_200, and
     CONTINUABLE_TASK_STATES = ["planned", "running"]. Nothing at runtime tells it
     when they change, so this test is the alarm: if it fails, that file is what
     has to be updated. Deliberately not solved by shipping the values over the
     API — a UI that must ask the server what its own button says is worse than a
-    test that names the file."""
+    test that names the file.
+
+    The timeout it sends is this field's **ceiling**, not its default: a turn in the
+    conversation is stopped by the person, and the clock is only there to catch a
+    runaway (2026-09-19 — at the 600s default a turn was killed mid-scaffold).
+    """
     prompt = CreateRunRequest.model_fields["prompt"]
     assert [meta.max_length for meta in prompt.metadata if hasattr(meta, "max_length")] == [16_000]
-    assert CreateRunRequest.model_fields["timeout_seconds"].default == 600
+    timeout = CreateRunRequest.model_fields["timeout_seconds"]
+    assert timeout.default == 600
+    assert [meta.le for meta in timeout.metadata if hasattr(meta, "le")] == [7_200]
 
     # The state guard itself, not a copy of it: queue a run against a task in
     # every state and see which states are accepted. One task per state, so the
