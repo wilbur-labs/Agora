@@ -155,6 +155,76 @@ def test_claude_start_uses_a_caller_chosen_id_and_resume_swaps_the_flag():
     assert resumed[resumed.index("--resume") + 1] == "uuid-1"
 
 
+def test_configured_model_is_pinned_on_both_turns():
+    """A pinned model reaches the first turn AND the resume.
+
+    Absent on the resume, turn two would follow the user's own CLI default — the
+    conversation would change model halfway through, which is the surprise pinning
+    exists to prevent.
+    """
+    claude = build_adapter_registry(
+        {"execution": {"adapters": {"claude": {"model": "opus"}}}}
+    )["claude"]
+    start = claude.build_command("hello", session_id="uuid-1")
+    resumed = claude.build_command("again", session_id="uuid-1", resume=True)
+    for command in (start, resumed):
+        assert command[command.index("--model") + 1] == "opus"
+        # Before the prompt flag, which is where the CLI takes it, and with the
+        # executable still first.
+        assert command[0] == "claude"
+        assert command.index("--model") < command.index("-p")
+    # The prompt is still exactly one element and still the one that was passed.
+    assert start[start.index("-p") + 1] == "hello"
+    assert resumed[resumed.index("-p") + 1] == "again"
+
+
+def test_unpinned_model_leaves_the_command_untouched():
+    """No `model` key means no flag — not an empty one, and not a default guess."""
+    claude = build_adapter_registry({})["claude"]
+    assert "--model" not in claude.build_command("hello", session_id="uuid-1")
+    assert "--model" not in claude.build_command("x", session_id="uuid-1", resume=True)
+
+
+def test_model_is_refused_where_no_flag_position_is_verified():
+    """kiro has no declared --model position, so a configured one fails at load.
+
+    Inserting it anyway would either fail at launch or be swallowed as kiro's
+    positional prompt — and the second is silent.
+    """
+    with pytest.raises(ValueError, match="not supported"):
+        build_adapter_registry({"execution": {"adapters": {"kiro": {"model": "opus"}}}})
+
+
+def test_model_is_refused_alongside_a_command_override():
+    """An override describes a different executable; its flag position is unknown."""
+    with pytest.raises(ValueError, match="resume_command override"):
+        build_adapter_registry({
+            "execution": {"adapters": {"claude": {
+                "model": "opus",
+                "command": ["stub", "{prompt}"],
+            }}}
+        })
+
+
+def test_model_is_refused_alongside_a_resume_only_override():
+    """`resume_command` can be overridden on its own, and then turn two is a
+    different program from turn one. Checking only `command` inserted the default
+    CLI's flag position into that wrapper's argv, where it is either rejected or —
+    worse — swallowed as a positional argument. (kiro review, 2026-09-21.)"""
+    with pytest.raises(ValueError, match="resume_command override"):
+        build_adapter_registry({
+            "execution": {"adapters": {"claude": {
+                "model": "opus",
+                "resume_command": ["wrapper", "{session_id}", "{prompt}"],
+            }}}
+        })
+
+
+def test_blank_model_is_refused():
+    with pytest.raises(ValueError, match="non-empty string"):
+        build_adapter_registry({"execution": {"adapters": {"claude": {"model": "  "}}}})
+
+
 def test_kiro_needs_the_v2_engine_for_stream_json():
     kiro = build_adapter_registry({})["kiro"]
     for command in (kiro.build_command("hi"), kiro.build_command("hi", session_id="s", resume=True)):

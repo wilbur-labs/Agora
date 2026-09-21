@@ -72,6 +72,22 @@ EVENT_FORMATS = frozenset({
 SESSION_ID_PLACEHOLDER = "{session_id}"
 PROMPT_PLACEHOLDER = "{prompt}"
 
+#: ``model_flag`` in :data:`DEFAULT_ADAPTERS` — ``(flag, index)`` — declares that this
+#: CLI takes a model override, and *where* in its argv the flag belongs. Only an
+#: adapter whose flag has been run against the installed CLI carries one; a
+#: ``model`` configured for an adapter without it is refused at load rather than
+#: guessed at, because the position is not portable between CLIs (``claude --model X
+#: -p …`` takes it before the prompt flag, and a subcommand CLI does not).
+#:
+#: This exists because `execution.adapters.<name>.command` is the wrong tool for
+#: pinning a model: replacing the whole argv opts that adapter out of the verified
+#: default *and* out of its resume command (see the config.yaml note), which is how
+#: turn two of a conversation quietly stopped being one. A one-flag insertion keeps
+#: both. Pinning matters in practice: unpinned, the CLI follows whatever default the
+#: user's own `~/.claude/settings.json` holds, so a dispatched run can hit a model
+#: limit the person never chose for it and exit in three seconds (2026-09-21).
+MODEL_FLAG_KEY = "model_flag"
+
 
 @dataclass(frozen=True)
 class ExecutionAdapter:
@@ -219,6 +235,7 @@ DEFAULT_ADAPTERS: dict[str, dict[str, Any]] = {
         "session_id_source": SESSION_ID_CALLER,
         "event_format": EVENT_FORMAT_CLAUDE_STREAM_JSON,
         "workspace_key": "claude",
+        "model_flag": ("--model", 1),
     },
     "kiro": {
         "command": [
@@ -244,6 +261,24 @@ def _validated_argv(name: str, field: str, command: Any) -> tuple[str, ...]:
             f"execution adapter {name} {field} must contain exactly one {PROMPT_PLACEHOLDER} element"
         )
     return tuple(command)
+
+
+def _with_model(
+    name: str, command: tuple[str, ...], model: str, model_flag: tuple[str, int] | None
+) -> tuple[str, ...]:
+    """Insert ``--model <model>`` at the position this CLI takes it.
+
+    Refuses rather than guesses for an adapter with no declared position: an
+    inserted flag that lands in the wrong place either fails loudly at launch or,
+    worse, is swallowed as a positional argument by a CLI that takes one.
+    """
+    if model_flag is None:
+        raise ValueError(
+            f"execution.adapters.{name}.model is not supported: no verified --model "
+            f"position for this adapter. Pin the model in the CLI's own configuration."
+        )
+    flag, index = model_flag
+    return command[:index] + (flag, model) + command[index:]
 
 
 def build_adapter_registry(config: dict[str, Any]) -> dict[str, ExecutionAdapter]:
@@ -328,6 +363,31 @@ def build_adapter_registry(config: dict[str, Any]) -> dict[str, ExecutionAdapter
             not isinstance(part, str) or not part for part in app_server_command
         ):
             raise ValueError(f"execution.adapters.{name}.app_server_command must be a non-empty string list")
+        if "model" in values:
+            model = values["model"]
+            if not isinstance(model, str) or not model.strip():
+                raise ValueError(f"execution.adapters.{name}.model must be a non-empty string")
+            if overridden or "resume_command" in values:
+                # The override's argv is the declaration of what that executable
+                # takes; the default's flag position says nothing about it. Put the
+                # flag in the override rather than have this insert one blind.
+                #
+                # `resume_command` counts on its own, not only alongside `command`:
+                # it can be overridden by itself, and then turn two runs a different
+                # program from turn one. Checking only `command` inserted the default
+                # CLI's flag position into that wrapper's argv — where it is either
+                # rejected or, worse, swallowed as a positional argument.
+                raise ValueError(
+                    f"execution.adapters.{name}.model cannot be combined with a command or "
+                    f"resume_command override — put the flag in the override's own argv"
+                )
+            model_flag = defaults.get(MODEL_FLAG_KEY)
+            command = _with_model(name, command, model, model_flag)
+            if resume_command:
+                # Both, always. A model pinned on the first turn and absent on the
+                # second is a conversation that changes model halfway through, which
+                # is exactly the surprise pinning exists to prevent.
+                resume_command = _with_model(name, resume_command, model, model_flag)
         registry[name] = ExecutionAdapter(
             name=name,
             command_template=command,

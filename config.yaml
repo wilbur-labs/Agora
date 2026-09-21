@@ -150,6 +150,15 @@ execution:
     claude:
       enabled: true
       workspace_key: claude
+      # Pinned, not inherited. Unpinned, the CLI follows whatever default sits in
+      # the user's own ~/.claude/settings.json — which is a setting they change for
+      # their *interactive* work, and a dispatched run then silently follows it. On
+      # 2026-09-21 that meant two turns died three seconds in against a model limit
+      # the run never asked for, with the reason only in stdout. `--model` is
+      # inserted into both the first-turn and the resume command (see
+      # execution/adapters.py MODEL_FLAG_KEY); `opus[1m]` is the long-context
+      # variant if a task needs it.
+      model: opus
     kiro:
       enabled: true
       workspace_key: kiro
