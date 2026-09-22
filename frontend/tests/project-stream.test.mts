@@ -3,6 +3,7 @@ import { test } from "node:test";
 
 import {
   activeRunsOf, composeIntentOf, dispatchTargetOf, stepNumberOf, streamItemsOf, streamStatusOf,
+  visibleTranscriptLines,
 } from "../src/lib/project-stream.ts";
 
 const run = (id: string, task: string, at: string, extra: Record<string, unknown> = {}) => ({
@@ -91,4 +92,27 @@ test("the header says running over waiting over idle, and unknown when it cannot
   assert.deepEqual(streamStatusOf([], true, 0, steps), { kind: "unknown" });
   assert.deepEqual(streamStatusOf([], false, null, steps), { kind: "unknown" });
   assert.equal(activeRunsOf([live, run("q", "t3", "2026-09-17T00:00:00Z", { state: "queued" })]).length, 2);
+});
+
+test("an empty thinking marker never takes a line in the window", () => {
+  // What every thinking block rendered as before CR-104: its content went to the
+  // deltas, which the reader dropped, and the closing copy it did render was empty.
+  assert.deepEqual(visibleTranscriptLines("· \nit spoke\n", false), ["it spoke", ""]);
+  // A marker with something after it is the agent thinking out loud, and stays.
+  assert.deepEqual(visibleTranscriptLines("· really thinking", false), ["· really thinking"]);
+});
+
+test("a live turn holds back its mid-word tail, a settled one shows it", () => {
+  const body = "a whole line\nhalf a li";
+  assert.deepEqual(visibleTranscriptLines(body, true), ["a whole line"]);
+  // Settled: an unterminated last line is all there will ever be of it.
+  assert.deepEqual(visibleTranscriptLines(body, false), ["a whole line", "half a li"]);
+});
+
+test("a turn is never left with nothing to draw", () => {
+  // The order is the guard. Counting raw lines first withheld the half line and then
+  // filtered away the only line left, blanking the window (codex review, 2026-09-22).
+  assert.deepEqual(visibleTranscriptLines("· \nhalf a li", true), ["half a li"]);
+  assert.deepEqual(visibleTranscriptLines("half a li", true), ["half a li"]);
+  assert.deepEqual(visibleTranscriptLines("", true), [""]);
 });

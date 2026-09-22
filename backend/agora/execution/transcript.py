@@ -269,6 +269,11 @@ class ClaudeStreamJsonReader(TranscriptReader):
         #: worktree path is ~110 characters here, and printing it in full made every
         #: tool line unreadable while saying nothing the reader did not know.
         self._cwd: str | None = None
+        #: Which content blocks are thinking, learned from ``content_block_start``.
+        #: ``content_block_stop`` carries only an index, so closing the line needs
+        #: this. Indices are per message and reused across messages, which is why
+        #: an index is discarded on stop rather than accumulated.
+        self._thinking_blocks: set[int] = set()
 
     def _keep_settlement(self, event: dict[str, Any], line: str) -> None:
         if str(event.get("type", "")) == "result":
@@ -292,14 +297,47 @@ class ClaudeStreamJsonReader(TranscriptReader):
         return self._unread(kind)
 
     def _read_stream_event(self, inner: dict[str, Any]) -> str:
-        if str(inner.get("type", "")) != "content_block_delta":
+        """Text and thinking, as they are typed.
+
+        Thinking used to be dropped here and then rendered from the closing
+        ``assistant`` message, where — because the deltas had carried it — it was
+        empty. The window therefore stood completely still while the agent
+        thought, and produced a bare ``·`` with nothing after it when it
+        finished. Both halves of that were the same defect (CR-104): the content
+        the reader wanted was in the deltas nobody read.
+        """
+        kind = str(inner.get("type", ""))
+        index = inner.get("index")
+        if kind == "content_block_start":
+            block = inner.get("content_block")
+            if isinstance(block, dict) and str(block.get("type", "")) == "thinking":
+                if isinstance(index, int):
+                    self._thinking_blocks.add(index)
+                # Opens the line; the deltas continue it. Unterminated for the
+                # same reason the text deltas are.
+                return "· "
+            return ""
+        if kind == "content_block_stop":
+            if isinstance(index, int) and index in self._thinking_blocks:
+                self._thinking_blocks.discard(index)
+                return "\n"
+            return ""
+        if kind != "content_block_delta":
             return ""
         delta = inner.get("delta")
-        if not isinstance(delta, dict) or str(delta.get("type", "")) != "text_delta":
+        if not isinstance(delta, dict):
             return ""
-        # Deliberately unterminated: consecutive deltas are one sentence being
-        # typed, and a newline per delta would shred it.
-        return _text_of(delta.get("text"))
+        delta_type = str(delta.get("type", ""))
+        if delta_type == "text_delta":
+            # Deliberately unterminated: consecutive deltas are one sentence being
+            # typed, and a newline per delta would shred it.
+            return _text_of(delta.get("text"))
+        if delta_type == "thinking_delta":
+            # Every line carries the marker, as `_prompt_echo` does for the same
+            # reason: the transcript is line-based, and a second line without the
+            # marker reads as the agent's own prose rather than as its thinking.
+            return _text_of(delta.get("thinking")).replace("\n", "\n· ")
+        return ""
 
     def _read_assistant(self, message: dict[str, Any]) -> str:
         blocks = message.get("content")
@@ -317,7 +355,15 @@ class ClaudeStreamJsonReader(TranscriptReader):
             elif block_type == "tool_use":
                 rendered.append(_line(f"$ {_tool_call(block.get('name'), block.get('input'), cwd=self._cwd)}"))
             elif block_type == "thinking":
-                rendered.append(_line(f"· {_clip(_text_of(block.get('thinking')))}"))
+                # Streamed as deltas above, so what arrives here is the closing
+                # copy and is normally empty — and an empty one rendered a `·`
+                # with nothing after it, which is all the window used to show for
+                # an entire thinking block (CR-104). A non-empty one still
+                # renders: that means the deltas did *not* carry it, and dropping
+                # it on the assumption that they did would lose the text outright.
+                thinking = _clip(_text_of(block.get("thinking")))
+                if thinking.strip():
+                    rendered.append(_line(f"· {thinking}"))
             else:
                 rendered.append(self._unread(f"claude block:{block_type}"))
         return "".join(rendered)

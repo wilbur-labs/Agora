@@ -1176,6 +1176,104 @@ def test_a_settlement_larger_than_the_tail_survives():
     assert observation is not None and observation.token_measurement == "exact"
 
 
+def test_thinking_streams_as_it_is_typed_and_leaves_no_empty_marker():
+    """The window has to move while the agent thinks (CR-104).
+
+    Thinking used to be dropped in the stream and then rendered from the closing
+    `assistant` message — where, because the deltas had carried it, it was empty.
+    The window stood still for the whole thinking block and then printed a bare
+    `·`, which is what the user reported as "没什么显示" plus "断断续续".
+    """
+    from agora.execution.transcript import reader_for
+
+    def event(inner):
+        return json.dumps({"type": "stream_event", "event": inner})
+
+    reader = reader_for(EVENT_FORMAT_CLAUDE_STREAM_JSON)
+    rendered = "".join([
+        reader.feed(event({"type": "content_block_start", "index": 0,
+                           "content_block": {"type": "thinking", "thinking": ""}})),
+        reader.feed(event({"type": "content_block_delta", "index": 0,
+                           "delta": {"type": "thinking_delta", "thinking": "先看"}})),
+        reader.feed(event({"type": "content_block_delta", "index": 0,
+                           "delta": {"type": "thinking_delta", "thinking": "工作树"}})),
+        reader.feed(event({"type": "content_block_stop", "index": 0})),
+        # The closing copy, empty because the deltas carried it.
+        reader.feed(json.dumps({"type": "assistant", "message": {"role": "assistant",
+                                "content": [{"type": "thinking", "thinking": ""}]}})),
+    ])
+    assert rendered == "· 先看工作树\n", rendered
+    assert "· \n" not in rendered, "an empty marker line is the defect being fixed"
+
+
+def test_multi_line_thinking_marks_every_line():
+    """The transcript is line-based: an unmarked second line reads as the agent's
+    own prose rather than as its thinking, exactly as `_prompt_echo` found."""
+    from agora.execution.transcript import reader_for
+
+    reader = reader_for(EVENT_FORMAT_CLAUDE_STREAM_JSON)
+    rendered = "".join([
+        reader.feed(json.dumps({"type": "stream_event", "event": {
+            "type": "content_block_start", "index": 0,
+            "content_block": {"type": "thinking", "thinking": ""}}})),
+        reader.feed(json.dumps({"type": "stream_event", "event": {
+            "type": "content_block_delta", "index": 0,
+            "delta": {"type": "thinking_delta", "thinking": "一行\n二行"}}})),
+        reader.feed(json.dumps({"type": "stream_event", "event": {
+            "type": "content_block_stop", "index": 0}})),
+    ])
+    assert rendered == "· 一行\n· 二行\n", rendered
+
+
+def test_a_persons_prompt_is_echoed_whole_however_long_it_is():
+    """CR-99's rule: what the person typed goes into the window as they typed it.
+
+    Length is explicitly not the test. Truncating a long instruction someone
+    actually wrote is the "the system decided what you may see" behaviour CR-99
+    removed, and it would come straight back if this were a size limit.
+    """
+    from agora.execution.dispatcher import _prompt_echo
+
+    long_prompt = "\n".join(f"第 {n} 行的要求" for n in range(200))
+    echoed = _prompt_echo(long_prompt, False)
+    assert echoed.count("\n") == 200
+    for line in echoed.splitlines():
+        assert line.startswith("› "), line
+    assert "第 199 行的要求" in echoed
+
+
+def test_a_machine_written_review_prompt_is_summarised_not_reprinted():
+    """CR-106: the review prompt embeds whole changed files, and echoing it line
+    by line put alembic.ini, env.py and the new tests into the chat window — code
+    the person had just watched the worker write."""
+    from agora.execution.dispatcher import _prompt_echo
+
+    prompt = (
+        "You are an independent code reviewer.\n"
+        "## FILE: backend/alembic.ini (added)\n"
+        "[alembic]\nscript_location = %(here)s/alembic\n"
+    )
+    echoed = _prompt_echo(prompt, True, machine_written=True)
+    assert echoed.count("\n") == 1, "one line, not the diff"
+    assert echoed.startswith("›› ")
+    assert "alembic" not in echoed and "script_location" not in echoed
+    assert str(len(prompt.strip())) in echoed, "says how much it stood in for"
+
+
+def test_thinking_that_never_streamed_is_still_rendered():
+    """The closing copy is only skipped when it is empty.
+
+    A non-empty one means the deltas did not carry it — dropping it on the
+    assumption that they always do would lose the text outright.
+    """
+    from agora.execution.transcript import reader_for
+
+    reader = reader_for(EVENT_FORMAT_CLAUDE_STREAM_JSON)
+    rendered = reader.feed(json.dumps({"type": "assistant", "message": {
+        "role": "assistant", "content": [{"type": "thinking", "thinking": "没走 delta"}]}}))
+    assert rendered == "· 没走 delta\n", rendered
+
+
 def test_an_untruncated_tail_is_still_preferred():
     """Rebuilding when nothing was dropped would throw away context."""
     from agora.execution.dispatcher import _settlement_stdout

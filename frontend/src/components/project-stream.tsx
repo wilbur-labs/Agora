@@ -37,6 +37,7 @@ import { listTaskEvents } from "@/lib/control-plane";
 import { nextStepAfter, noNextStepIsCertain, reviewFixPrompt } from "@/lib/auto-advance";
 import {
   activeRunsOf, composeIntentOf, dispatchTargetOf, streamItemsOf, streamStatusOf,
+  visibleTranscriptLines,
   type StreamItem,
 } from "@/lib/project-stream";
 import { REVIEW_REQUESTER } from "@/lib/run-column";
@@ -136,9 +137,12 @@ function transcriptBody(text: string): string {
 }
 
 /** The transcript as the terminal shows it: the agent's own words as text, everything
- * it ran or noted as dark blocks between them. */
-function TranscriptView({ text }: { text: string }) {
-  const lines = transcriptBody(text).split("\n");
+ * it ran or noted as dark blocks between them. Which lines it shows — the empty
+ * thinking markers it drops, and the mid-word tail it holds back while a run is still
+ * writing — is `visibleTranscriptLines`, out in the library where `node --test` can
+ * reach it (CR-18). This component fetches and draws; it does not decide. */
+function TranscriptView({ text, holdLastLine = false }: { text: string; holdLastLine?: boolean }) {
+  const lines = visibleTranscriptLines(transcriptBody(text), holdLastLine);
   const segments: { term: boolean; lines: string[] }[] = [];
   let fenced = false;
   for (const line of lines) {
@@ -830,7 +834,13 @@ export function ProjectStream({
             const transcript = transcripts[item.unit.run.run_id];
             // A transcript that holds only the prompt's echo has said nothing yet; the
             // record's tail is then the answer, not the echo (review, 2026-09-19).
-            const turnText = transcriptBody(transcript?.text ?? "").trim() || reply;
+            const turnBody = transcriptBody(transcript?.text ?? "");
+            const turnText = turnBody.trim() || reply;
+            // Withhold the tail only when there is one: a live run whose text does not
+            // end in a newline is mid-line (CR-105). `turnText` is trimmed, so the test
+            // has to be on the untrimmed body — trimmed, it would always look mid-line
+            // and the last line would never be shown while the run was alive.
+            const turnHold = live && turnBody !== "" && !turnBody.endsWith("\n");
             return (
               <div key={item.key} className="space-y-2">
                 {record && record.prompt.trim() !== "" && (
@@ -868,7 +878,7 @@ export function ProjectStream({
                       {transcript?.lossy && <span className="text-destructive">{t("workspace.stream.transcriptLossy")}</span>}
                     </div>
                     {turnText !== ""
-                      ? <TranscriptView text={turnText} />
+                      ? <TranscriptView text={turnText} holdLastLine={turnHold} />
                       : live
                         ? <p className="text-[12px] text-muted-foreground">{t("workspace.stream.transcriptWaiting")}</p>
                         : (transcript === undefined && record === null)
@@ -916,7 +926,9 @@ export function ProjectStream({
                   // it shows the reviewer's own transcript; settled, its verdict, which
                   // is the thing to read and is what the gate quotes (2026-09-19).
                   const reviewFeed = transcripts[review.run_id];
-                  const reviewTurn = transcriptBody(reviewFeed?.text ?? "").trim();
+                  const reviewBody = transcriptBody(reviewFeed?.text ?? "");
+                  const reviewTurn = reviewBody.trim();
+                  const reviewHold = reviewLive && reviewBody !== "" && !reviewBody.endsWith("\n");
                   // A review that was stopped or died leaves no verdict. Drawing nothing
                   // then erased what it had already said and hid that it ended at all,
                   // so the only silent case is the one that never started (review,
@@ -943,7 +955,7 @@ export function ProjectStream({
                             <Prose text={cut} />
                           </>
                         : reviewTurn !== ""
-                          ? <TranscriptView text={reviewTurn} />
+                          ? <TranscriptView text={reviewTurn} holdLastLine={reviewHold} />
                           : <p className="text-[12px] text-muted-foreground">{t(reviewLive ? "workspace.stream.transcriptWaiting" : "workspace.stream.run.noOutput")}</p>}
                     </div>
                   );

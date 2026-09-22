@@ -169,3 +169,33 @@ export function streamStatusOf<R extends StreamRunLike>(
   if (openGates > 0) return { kind: "waiting", count: openGates };
   return { kind: "idle" };
 }
+
+/**
+ * A `·` or `✎` with nothing after it. Before CR-104 that is what an entire thinking
+ * block rendered as: its content went to the deltas, which the reader dropped, and
+ * the closing copy it did render was empty. Filtered at render time as well as fixed
+ * in the reader, because a transcript is rendered once — when it is written — so
+ * every one already on disk still holds these.
+ */
+const MARKER_ONLY = /^[·✎]\s*$/;
+
+/**
+ * The transcript lines a turn should show.
+ *
+ * `holdLastLine` withholds the final one. A growing transcript normally ends mid-line
+ * — the file does not end in a newline, and the run-log reader serves whole
+ * *characters*, not whole lines — so rendering it made the tail of the window twitch
+ * mid-word on every poll (CR-105). The caller decides, because only it can see both
+ * halves: the run is still writing AND its text does not end in a newline. Once the
+ * run settles, an unterminated last line is all there will ever be of it, so it shows.
+ *
+ * **A turn is never left with nothing to draw**, and the order below is what keeps
+ * that true. Counting raw lines first, a live `["· ", "<half a line>"]` withheld the
+ * half line and then filtered away the only line left, blanking the window until the
+ * next newline (codex review, 2026-09-22). The promise is about lines the reader can
+ * *see*, so it is measured on those.
+ */
+export function visibleTranscriptLines(body: string, holdLastLine: boolean): string[] {
+  const visible = body.split("\n").filter((line) => !MARKER_ONLY.test(line));
+  return holdLastLine && visible.length > 1 ? visible.slice(0, -1) : visible;
+}

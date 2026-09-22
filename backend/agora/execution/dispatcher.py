@@ -840,7 +840,9 @@ class ExecutionDispatcher:
                     run_id, RunState.FAILED, expected_version=running.version, exit_code=None,
                     stdout_tail="", stderr_tail="", error_message=redact_text(f"process start failed: {exc}"),
                 )
-            self.run_logs.append(run_id, _prompt_echo(run.prompt, resuming))
+            self.run_logs.append(
+                run_id, _prompt_echo(run.prompt, resuming, machine_written=role == ROLE_REVIEW),
+            )
             try:
                 proc = await asyncio.create_subprocess_exec(
                     *command,
@@ -1328,7 +1330,9 @@ class ExecutionDispatcher:
                     stdout_tail="", stderr_tail="",
                     error_message=redact_text(f"process start failed: {exc}"),
                 )
-            self.run_logs.append(run_id, _prompt_echo(run.prompt, resuming))
+            self.run_logs.append(
+                run_id, _prompt_echo(run.prompt, resuming, machine_written=role == ROLE_REVIEW),
+            )
             self.run_logs.append(
                 run_id, f"· 在远端 {describe_target(remote)} 的工作树 {workspace} 里执行。\n",
             )
@@ -3089,8 +3093,8 @@ def _failure_note(error: str | None, stderr_tail: str) -> str:
     return "".join(f"{line}\n" for line in lines) if lines else ""
 
 
-def _prompt_echo(prompt: str, resuming: bool) -> str:
-    """The user's own turn, opening the transcript.
+def _prompt_echo(prompt: str, resuming: bool, *, machine_written: bool = False) -> str:
+    """The turn that opens the transcript.
 
     The transcript is read as a conversation, so it has to contain both halves.
     The marker also records which half of adr/0007's mechanism ran: ``›`` opened a
@@ -3102,8 +3106,25 @@ def _prompt_echo(prompt: str, resuming: bool) -> str:
     marking only the first line put the rest into the terminal pane, where it read
     as something the *agent* had said. The window takes the leading run of marked
     lines as the message, so the boundary is in the text rather than assumed.
+
+    ``machine_written`` marks a prompt **Agora composed**, not one a person typed.
+    The review prompt embeds whole changed files (``_review_prompt``, up to ~16k
+    characters), and echoing it line by line put alembic.ini, env.py and the new
+    test files into the chat window — code the person had just watched the worker
+    write, replayed at them as though they had said it (CR-106).
+
+    The distinction is **who wrote it**, not how long it is. Echoing by length
+    would truncate a person's own long instruction, which is exactly the "the
+    system decided what you may see" behaviour that CR-99 removed.
     """
     marker = "››" if resuming else "›"
+    if machine_written:
+        # One line, and it says what the turn is rather than reprinting it. The
+        # content is not lost: a review's subject is the worker run whose output
+        # is right above it in the same conversation.
+        body = prompt.strip()
+        summary = f"（Agora 自动拼的复核请求，{len(body)} 字；内容是上面那一轮改动的文件）"
+        return redact_text(f"{marker} {summary}\n")
     lines = prompt.strip().splitlines() or [""]
     return redact_text("".join(f"{marker} {line}\n" for line in lines))
 
