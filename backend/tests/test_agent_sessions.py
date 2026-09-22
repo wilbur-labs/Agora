@@ -1316,6 +1316,616 @@ def test_thinking_served_both_ways_is_shown_once():
     assert again == "· 第二轮\n", again
 
 
+def test_a_closing_copy_is_matched_to_its_block_and_not_to_its_position():
+    """Measured ordering: one `assistant` copy per block, each before that
+    block's `content_block_stop`, each carrying its block alone —
+
+        content_block_start 0 (thinking) → deltas → assistant [thinking]
+        → content_block_stop 0 → content_block_start 1 (text) → deltas
+        → assistant [text] → content_block_stop 1
+
+    (claude CLI, 2026-09-22). So a copy always sits at position 0 while the
+    stream index climbs, and reading the position as the index asked about
+    block 0 for every block. Here the thinking block is index **1**: its words
+    streamed, so its copy is a repeat and must not be rendered a second time.
+    Keyed on position, the lookup asks about block 0, finds nothing, and prints
+    the thinking twice.
+    """
+    from agora.execution.transcript import reader_for
+
+    reader = reader_for(EVENT_FORMAT_CLAUDE_STREAM_JSON)
+    rendered = "".join([
+        reader.feed(json.dumps({"type": "stream_event", "event": {
+            "type": "content_block_start", "index": 0,
+            "content_block": {"type": "text", "text": ""}}})),
+        reader.feed(json.dumps({"type": "stream_event", "event": {
+            "type": "content_block_delta", "index": 0,
+            "delta": {"type": "text_delta", "text": "先说一句"}}})),
+        reader.feed(json.dumps({"type": "assistant", "message": {"role": "assistant",
+                                "content": [{"type": "text", "text": "先说一句"}]}})),
+        reader.feed(json.dumps({"type": "stream_event", "event": {
+            "type": "content_block_stop", "index": 0}})),
+        reader.feed(json.dumps({"type": "stream_event", "event": {
+            "type": "content_block_start", "index": 1,
+            "content_block": {"type": "thinking", "thinking": ""}}})),
+        reader.feed(json.dumps({"type": "stream_event", "event": {
+            "type": "content_block_delta", "index": 1,
+            "delta": {"type": "thinking_delta", "thinking": "流过的"}}})),
+        reader.feed(json.dumps({"type": "assistant", "message": {"role": "assistant",
+                                "content": [{"type": "thinking", "thinking": "流过的"}]}})),
+        reader.feed(json.dumps({"type": "stream_event", "event": {
+            "type": "content_block_stop", "index": 1}})),
+    ])
+    assert rendered.count("流过的") == 1, rendered
+    assert "claude thinking:streamed and repeated" in reader.unread_kinds
+
+
+def test_an_unclosed_blocks_estimate_survives_the_next_message_starting():
+    """A block whose `content_block_stop` never came is written out when index 0
+    starts the next message, not overwritten in silence (kiro review,
+    2026-09-22). `finish()` cannot save it: by then `_thinking_blocks[0]` holds
+    the *new* message's block.
+    """
+    from agora.execution.transcript import reader_for
+
+    reader = reader_for(EVENT_FORMAT_CLAUDE_STREAM_JSON)
+    reader.feed(json.dumps({"type": "stream_event", "event": {
+        "type": "content_block_start", "index": 0,
+        "content_block": {"type": "thinking", "thinking": ""}}}))
+    reader.feed(json.dumps({"type": "stream_event", "event": {
+        "type": "content_block_delta", "index": 0,
+        "delta": {"type": "thinking_delta", "thinking": "", "estimated_tokens": 391}}}))
+    # No `content_block_stop` — the message was cut short. The next one begins.
+    carried = reader.feed(json.dumps({"type": "stream_event", "event": {
+        "type": "content_block_start", "index": 0,
+        "content_block": {"type": "thinking", "thinking": ""}}}))
+    assert carried == "· 想了约 391 tokens\n", carried
+
+
+def test_a_copy_that_never_arrived_does_not_silence_the_next_block():
+    """Matching copies to blocks *in order* breaks as soon as one copy is missing:
+    the head of the queue stays behind and every later copy is matched to the
+    wrong block (kiro review, 2026-09-22). Identity does not have that failure —
+    here block 0's copy never arrives, and block 1's copy must still render.
+    """
+    from agora.execution.transcript import reader_for
+
+    reader = reader_for(EVENT_FORMAT_CLAUDE_STREAM_JSON)
+    for event in [
+        {"type": "content_block_start", "index": 0,
+         "content_block": {"type": "thinking", "thinking": ""}},
+        {"type": "content_block_delta", "index": 0,
+         "delta": {"type": "thinking_delta", "thinking": "流过的"}},
+        # block 0's closing copy is lost here
+        {"type": "content_block_start", "index": 1,
+         "content_block": {"type": "thinking", "thinking": ""}},
+    ]:
+        reader.feed(json.dumps({"type": "stream_event", "event": event}))
+    closing = reader.feed(json.dumps({"type": "assistant", "message": {
+        "role": "assistant", "content": [{"type": "thinking", "thinking": "没流过的"}]}}))
+    # Leading newline: block 0's line is still open and this is block 1's text,
+    # so the line is ended rather than continued (kiro review, round 6).
+    assert closing == "\n· 没流过的\n", closing
+    assert "claude thinking:streamed and repeated" not in reader.unread_kinds
+
+
+def test_a_copy_that_extends_the_deltas_appends_only_the_suffix():
+    """The block's signature is its identity: measured on a real stream, the
+    `signature_delta` accumulates to exactly the `signature` the closing copy
+    carries (500 characters, byte for byte, 2026-09-22). With the block
+    identified and its streamed words in hand, a copy that extends them yields
+    exactly its suffix — the old code dropped the whole copy here and its own
+    comment called that suffix unrecoverable (kiro review, 2026-09-22).
+    """
+    from agora.execution.transcript import reader_for
+
+    reader = reader_for(EVENT_FORMAT_CLAUDE_STREAM_JSON)
+    for event in [
+        # Block 0 is text, so the thinking block is index 1 while its copy still
+        # sits at position 0 — the shape that the position lookup got wrong.
+        {"type": "content_block_start", "index": 0,
+         "content_block": {"type": "text", "text": ""}},
+        {"type": "content_block_stop", "index": 0},
+        {"type": "content_block_start", "index": 1,
+         "content_block": {"type": "thinking", "thinking": "", "signature": ""}},
+        {"type": "content_block_delta", "index": 1,
+         "delta": {"type": "thinking_delta", "thinking": "前半"}},
+        {"type": "content_block_delta", "index": 1,
+         "delta": {"type": "signature_delta", "signature": "CAIS8AIK"}},
+        {"type": "content_block_delta", "index": 1,
+         "delta": {"type": "signature_delta", "signature": "pgEIEhgC"}},
+    ]:
+        reader.feed(json.dumps({"type": "stream_event", "event": event}))
+    closing = reader.feed(json.dumps({"type": "assistant", "message": {
+        "role": "assistant", "content": [{
+            "type": "thinking", "thinking": "前半和后半",
+            "signature": "CAIS8AIKpgEIEhgC"}]}}))
+    # The suffix, on the line the deltas left open — not the whole copy again.
+    assert closing == "和后半\n", closing
+    assert "claude thinking:streamed and repeated" not in reader.unread_kinds
+
+
+def test_two_blocks_with_the_same_words_are_not_guessed_between():
+    """Words are not a unique identity. Block 0 streams 检查文件 and closes; block
+    1 streams nothing and its copy carries 检查文件 too. Matching on text alone
+    picked the closed block, saw it had been shown, and silenced block 1's only
+    copy (kiro review, 2026-09-22). Unresolvable without a signature — so it is
+    rendered and the tie is reported, not guessed.
+    """
+    from agora.execution.transcript import reader_for
+
+    reader = reader_for(EVENT_FORMAT_CLAUDE_STREAM_JSON)
+    for event in [
+        {"type": "content_block_start", "index": 0,
+         "content_block": {"type": "thinking", "thinking": ""}},
+        {"type": "content_block_delta", "index": 0,
+         "delta": {"type": "thinking_delta", "thinking": "检查文件"}},
+        {"type": "content_block_stop", "index": 0},
+        {"type": "content_block_start", "index": 1,
+         "content_block": {"type": "thinking", "thinking": ""}},
+    ]:
+        reader.feed(json.dumps({"type": "stream_event", "event": event}))
+    closing = reader.feed(json.dumps({"type": "assistant", "message": {
+        "role": "assistant", "content": [{"type": "thinking", "thinking": "检查文件"}]}}))
+    assert "· 检查文件\n" in closing, closing
+    assert "claude thinking:copy matches two blocks" in reader.unread_kinds
+
+
+def test_words_shown_by_the_copy_also_suppress_the_count():
+    """A block whose words arrive only in the closing copy has been shown, and
+    its `content_block_stop` must not then add a token count on top of them —
+    the same "never both" rule the deltas already obey (kiro review,
+    2026-09-22).
+    """
+    from agora.execution.transcript import reader_for
+
+    reader = reader_for(EVENT_FORMAT_CLAUDE_STREAM_JSON)
+    for event in [
+        {"type": "content_block_start", "index": 0,
+         "content_block": {"type": "thinking", "thinking": "", "signature": ""}},
+        # The shape claude actually serves: an estimate, no words.
+        {"type": "content_block_delta", "index": 0,
+         "delta": {"type": "thinking_delta", "thinking": "", "estimated_tokens": 391}},
+        {"type": "content_block_delta", "index": 0,
+         "delta": {"type": "signature_delta", "signature": "CAIS8AIK"}},
+    ]:
+        reader.feed(json.dumps({"type": "stream_event", "event": event}))
+    closing = reader.feed(json.dumps({"type": "assistant", "message": {
+        "role": "assistant", "content": [{
+            "type": "thinking", "thinking": "这次副本里有字", "signature": "CAIS8AIK"}]}}))
+    assert closing == "· 这次副本里有字\n", closing
+    stop = reader.feed(json.dumps({"type": "stream_event", "event": {
+        "type": "content_block_stop", "index": 0}}))
+    assert "391" not in stop, stop
+    assert "391" not in reader.finish()
+
+
+def test_the_same_words_in_two_open_blocks_are_not_guessed_between_either():
+    """The tie does not depend on the word-for-word block having been closed: a
+    block whose `content_block_stop` went missing is still open, and the first
+    fix only tested the closed ones (kiro review, round 3).
+    """
+    from agora.execution.transcript import reader_for
+
+    reader = reader_for(EVENT_FORMAT_CLAUDE_STREAM_JSON)
+    for event in [
+        {"type": "content_block_start", "index": 0,
+         "content_block": {"type": "thinking", "thinking": ""}},
+        {"type": "content_block_delta", "index": 0,
+         "delta": {"type": "thinking_delta", "thinking": "检查文件"}},
+        # no content_block_stop for block 0 — it is still open
+        {"type": "content_block_start", "index": 1,
+         "content_block": {"type": "thinking", "thinking": ""}},
+    ]:
+        reader.feed(json.dumps({"type": "stream_event", "event": event}))
+    closing = reader.feed(json.dumps({"type": "assistant", "message": {
+        "role": "assistant", "content": [{"type": "thinking", "thinking": "检查文件"}]}}))
+    assert "检查文件" in closing, closing
+    assert "claude thinking:copy matches two blocks" in reader.unread_kinds
+
+
+def test_every_line_a_copy_adds_carries_the_thinking_marker():
+    """The transcript is read line by line, so a continuation line without `·`
+    reads as the agent's own prose (kiro review, round 3)."""
+    from agora.execution.transcript import reader_for
+
+    reader = reader_for(EVENT_FORMAT_CLAUDE_STREAM_JSON)
+    for event in [
+        {"type": "content_block_start", "index": 0,
+         "content_block": {"type": "thinking", "thinking": "", "signature": ""}},
+        {"type": "content_block_delta", "index": 0,
+         "delta": {"type": "thinking_delta", "thinking": "前半"}},
+        {"type": "content_block_delta", "index": 0,
+         "delta": {"type": "signature_delta", "signature": "CAIS8AIK"}},
+    ]:
+        reader.feed(json.dumps({"type": "stream_event", "event": event}))
+    closing = reader.feed(json.dumps({"type": "assistant", "message": {
+        "role": "assistant", "content": [{
+            "type": "thinking", "thinking": "前半\n第二行\n第三行",
+            "signature": "CAIS8AIK"}]}}))
+    assert closing == "\n· 第二行\n· 第三行\n", closing
+
+
+def test_a_repeat_diagnostic_does_not_continue_an_open_thinking_line():
+    """`_unread` writes a line of its own, and gluing it to the end of a thinking
+    line the deltas left unfinished breaks the line boundaries the transcript is
+    parsed on (kiro review, round 3)."""
+    from agora.execution.transcript import reader_for
+
+    reader = reader_for(EVENT_FORMAT_CLAUDE_STREAM_JSON)
+    for event in [
+        {"type": "content_block_start", "index": 0,
+         "content_block": {"type": "thinking", "thinking": ""}},
+        {"type": "content_block_delta", "index": 0,
+         "delta": {"type": "thinking_delta", "thinking": "流过的"}},
+    ]:
+        reader.feed(json.dumps({"type": "stream_event", "event": event}))
+    closing = reader.feed(json.dumps({"type": "assistant", "message": {
+        "role": "assistant", "content": [{"type": "thinking", "thinking": "流过的"}]}}))
+    assert closing.startswith("\n"), closing
+    assert "流过的· " not in closing, closing
+
+
+def test_a_silent_block_that_already_closed_still_counts_in_the_tie():
+    """The tie is about a block that streamed nothing, not about whether it is
+    still open: block 1 can close before its copy arrives, and testing only the
+    open blocks matched the copy to block 0 and dropped block 1's only words
+    (kiro review, round 4).
+    """
+    from agora.execution.transcript import reader_for
+
+    reader = reader_for(EVENT_FORMAT_CLAUDE_STREAM_JSON)
+    for event in [
+        {"type": "content_block_start", "index": 0,
+         "content_block": {"type": "thinking", "thinking": ""}},
+        {"type": "content_block_delta", "index": 0,
+         "delta": {"type": "thinking_delta", "thinking": "检查文件"}},
+        {"type": "content_block_stop", "index": 0},
+        {"type": "content_block_start", "index": 1,
+         "content_block": {"type": "thinking", "thinking": ""}},
+        {"type": "content_block_stop", "index": 1},
+    ]:
+        reader.feed(json.dumps({"type": "stream_event", "event": event}))
+    closing = reader.feed(json.dumps({"type": "assistant", "message": {
+        "role": "assistant", "content": [{"type": "thinking", "thinking": "检查文件"}]}}))
+    assert "检查文件" in closing, closing
+    assert "claude thinking:copy matches two blocks" in reader.unread_kinds
+
+
+def test_a_copy_that_arrives_after_the_count_says_so():
+    """Measured, the copy comes before `content_block_stop`. If it ever came
+    after, the count is already on the line and the words cannot replace it — so
+    the pair is reported rather than left looking intended (kiro review, round
+    4)."""
+    from agora.execution.transcript import reader_for
+
+    reader = reader_for(EVENT_FORMAT_CLAUDE_STREAM_JSON)
+    for event in [
+        {"type": "content_block_start", "index": 0,
+         "content_block": {"type": "thinking", "thinking": "", "signature": ""}},
+        {"type": "content_block_delta", "index": 0,
+         "delta": {"type": "thinking_delta", "thinking": "", "estimated_tokens": 391}},
+        {"type": "content_block_delta", "index": 0,
+         "delta": {"type": "signature_delta", "signature": "CAIS8AIK"}},
+    ]:
+        reader.feed(json.dumps({"type": "stream_event", "event": event}))
+    stop = reader.feed(json.dumps({"type": "stream_event", "event": {
+        "type": "content_block_stop", "index": 0}}))
+    assert stop == "· 想了约 391 tokens\n", stop
+    closing = reader.feed(json.dumps({"type": "assistant", "message": {
+        "role": "assistant", "content": [{
+            "type": "thinking", "thinking": "迟到的字", "signature": "CAIS8AIK"}]}}))
+    assert "· 迟到的字\n" in closing, closing
+    assert "claude thinking:copy arrived after the count" in reader.unread_kinds
+
+
+def test_a_copy_replayed_after_it_was_rendered_is_not_rendered_twice():
+    """Rendering a copy makes its words that block's text. Leaving the text empty
+    made a replay of the same event look like a suffix, and the whole thing was
+    printed again (kiro review, round 4)."""
+    from agora.execution.transcript import reader_for
+
+    reader = reader_for(EVENT_FORMAT_CLAUDE_STREAM_JSON)
+    reader.feed(json.dumps({"type": "stream_event", "event": {
+        "type": "content_block_start", "index": 0,
+        "content_block": {"type": "thinking", "thinking": "", "signature": "CAIS8AIK"}}}))
+    copy = json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [
+        {"type": "thinking", "thinking": "这次副本里有字", "signature": "CAIS8AIK"}]}})
+    assert reader.feed(copy) == "· 这次副本里有字\n"
+    again = reader.feed(copy)
+    assert "这次副本里有字" not in again, again
+    assert "claude thinking:streamed and repeated" in reader.unread_kinds
+
+
+def test_an_unsigned_copy_that_extends_the_deltas_still_appends_only_the_suffix():
+    """Without a signature the words are the identity, and a copy that extends
+    them is still the same block's. Matching on equality alone sent it down the
+    "no block" path: the prefix was printed a second time and the open line was
+    broken (kiro review, round 5)."""
+    from agora.execution.transcript import reader_for
+
+    reader = reader_for(EVENT_FORMAT_CLAUDE_STREAM_JSON)
+    for event in [
+        {"type": "content_block_start", "index": 0,
+         "content_block": {"type": "thinking", "thinking": ""}},
+        {"type": "content_block_delta", "index": 0,
+         "delta": {"type": "thinking_delta", "thinking": "前半"}},
+    ]:
+        reader.feed(json.dumps({"type": "stream_event", "event": event}))
+    closing = reader.feed(json.dumps({"type": "assistant", "message": {
+        "role": "assistant",
+        "content": [{"type": "thinking", "thinking": "前半和后半"}]}}))
+    assert closing == "和后半\n", closing
+
+
+def test_a_copy_does_not_continue_another_blocks_open_line():
+    """Each block owns the line it left open. A copy belonging to a different
+    block used to continue it, so two blocks ended up on one line under one
+    marker and a line-by-line reader filed the text under the wrong one (kiro
+    review, round 6)."""
+    from agora.execution.transcript import reader_for
+
+    reader = reader_for(EVENT_FORMAT_CLAUDE_STREAM_JSON)
+    for event in [
+        {"type": "content_block_start", "index": 0,
+         "content_block": {"type": "thinking", "thinking": "", "signature": "sig-0"}},
+        {"type": "content_block_delta", "index": 0,
+         "delta": {"type": "thinking_delta", "thinking": "检查文件"}},
+        # block 0's line stays open — no `content_block_stop`
+        {"type": "content_block_start", "index": 1,
+         "content_block": {"type": "thinking", "thinking": "", "signature": "sig-1"}},
+    ]:
+        reader.feed(json.dumps({"type": "stream_event", "event": event}))
+    closing = reader.feed(json.dumps({"type": "assistant", "message": {
+        "role": "assistant", "content": [{
+            "type": "thinking", "thinking": "继续处理", "signature": "sig-1"}]}}))
+    assert closing == "\n· 继续处理\n", closing
+
+
+def test_a_copy_naming_a_block_this_reader_never_saw_is_not_matched_by_words():
+    """A signature is an answer. When it matches nothing, the copy belongs to a
+    block this reader never saw start — falling through to the words matched it
+    to a different block that happened to say the same thing and suppressed it
+    as that block's repeat (kiro review, round 6)."""
+    from agora.execution.transcript import reader_for
+
+    reader = reader_for(EVENT_FORMAT_CLAUDE_STREAM_JSON)
+    for event in [
+        {"type": "content_block_start", "index": 0,
+         "content_block": {"type": "thinking", "thinking": "", "signature": "sig-a"}},
+        {"type": "content_block_delta", "index": 0,
+         "delta": {"type": "thinking_delta", "thinking": "检查文件"}},
+        {"type": "content_block_stop", "index": 0},
+    ]:
+        reader.feed(json.dumps({"type": "stream_event", "event": event}))
+    # Block B's `content_block_start` was lost; only its copy arrives.
+    closing = reader.feed(json.dumps({"type": "assistant", "message": {
+        "role": "assistant", "content": [{
+            "type": "thinking", "thinking": "检查文件", "signature": "sig-b"}]}}))
+    assert "· 检查文件\n" in closing, closing
+    assert "claude thinking:streamed and repeated" not in reader.unread_kinds
+
+
+def test_two_blocks_that_are_both_a_prefix_are_not_cut_at_a_guessed_place():
+    """"前半" and "前半和" are both prefixes of "前半和后半", and without a
+    signature nothing says which one the copy continues. Taking the first cut
+    the suffix at the wrong place and said nothing about it (kiro review, round
+    6)."""
+    from agora.execution.transcript import reader_for
+
+    reader = reader_for(EVENT_FORMAT_CLAUDE_STREAM_JSON)
+    for event in [
+        {"type": "content_block_start", "index": 0,
+         "content_block": {"type": "thinking", "thinking": ""}},
+        {"type": "content_block_delta", "index": 0,
+         "delta": {"type": "thinking_delta", "thinking": "前半和"}},
+        {"type": "content_block_stop", "index": 0},
+        {"type": "content_block_start", "index": 1,
+         "content_block": {"type": "thinking", "thinking": ""}},
+        {"type": "content_block_delta", "index": 1,
+         "delta": {"type": "thinking_delta", "thinking": "前半"}},
+        {"type": "content_block_stop", "index": 1},
+    ]:
+        reader.feed(json.dumps({"type": "stream_event", "event": event}))
+    closing = reader.feed(json.dumps({"type": "assistant", "message": {
+        "role": "assistant", "content": [{"type": "thinking", "thinking": "前半和后半"}]}}))
+    assert "前半和后半" in closing, closing
+    assert "claude thinking:copy matches two blocks" in reader.unread_kinds
+
+
+def test_a_second_blocks_thinking_starts_on_its_own_line():
+    """Measured path, truncated stream: block 0 loses its `content_block_stop`
+    and block 1 streams. Without ending the open line the two blocks came out as
+    one `· 检查文件· 继续处理`, which a line-by-line reader files as a single
+    thinking record (kiro review, round 7)."""
+    from agora.execution.transcript import reader_for
+
+    reader = reader_for(EVENT_FORMAT_CLAUDE_STREAM_JSON)
+    rendered = "".join(
+        reader.feed(json.dumps({"type": "stream_event", "event": event}))
+        for event in [
+            {"type": "content_block_start", "index": 0,
+             "content_block": {"type": "thinking", "thinking": ""}},
+            {"type": "content_block_delta", "index": 0,
+             "delta": {"type": "thinking_delta", "thinking": "检查文件"}},
+            # no `content_block_stop` for block 0
+            {"type": "content_block_start", "index": 1,
+             "content_block": {"type": "thinking", "thinking": ""}},
+            {"type": "content_block_delta", "index": 1,
+             "delta": {"type": "thinking_delta", "thinking": "继续处理"}},
+        ]
+    )
+    assert rendered == "· 检查文件\n· 继续处理", rendered
+
+
+def test_the_reply_does_not_continue_an_unfinished_thinking_line():
+    """Same rule for the agent's own text: it must not land on a `·` line left
+    open by a block that never closed (kiro review, round 7)."""
+    from agora.execution.transcript import reader_for
+
+    reader = reader_for(EVENT_FORMAT_CLAUDE_STREAM_JSON)
+    for event in [
+        {"type": "content_block_start", "index": 0,
+         "content_block": {"type": "thinking", "thinking": ""}},
+        {"type": "content_block_delta", "index": 0,
+         "delta": {"type": "thinking_delta", "thinking": "检查文件"}},
+    ]:
+        reader.feed(json.dumps({"type": "stream_event", "event": event}))
+    reply = reader.feed(json.dumps({"type": "stream_event", "event": {
+        "type": "content_block_delta", "index": 1,
+        "delta": {"type": "text_delta", "text": "我的回答"}}}))
+    assert reply == "\n我的回答", reply
+
+
+def test_elimination_counts_the_blocks_that_have_shown_nothing():
+    """One block still silent, others already filled in by their own copies: the
+    copy can only be that one's. Counting candidates instead of silent ones lost
+    the match, and the block's `content_block_stop` then printed a token count on
+    top of the words the copy had just shown (kiro review, round 7)."""
+    from agora.execution.transcript import reader_for
+
+    reader = reader_for(EVENT_FORMAT_CLAUDE_STREAM_JSON)
+    for event in [
+        {"type": "content_block_start", "index": 0,
+         "content_block": {"type": "thinking", "thinking": ""}},
+        {"type": "content_block_delta", "index": 0,
+         "delta": {"type": "thinking_delta", "thinking": "", "estimated_tokens": 12}},
+    ]:
+        reader.feed(json.dumps({"type": "stream_event", "event": event}))
+    # Block 0's words arrive only in its copy, and it closes.
+    reader.feed(json.dumps({"type": "assistant", "message": {
+        "role": "assistant", "content": [{"type": "thinking", "thinking": "第一段"}]}}))
+    reader.feed(json.dumps({"type": "stream_event", "event": {
+        "type": "content_block_stop", "index": 0}}))
+    for event in [
+        {"type": "content_block_start", "index": 1,
+         "content_block": {"type": "thinking", "thinking": ""}},
+        {"type": "content_block_delta", "index": 1,
+         "delta": {"type": "thinking_delta", "thinking": "", "estimated_tokens": 391}},
+    ]:
+        reader.feed(json.dumps({"type": "stream_event", "event": event}))
+    closing = reader.feed(json.dumps({"type": "assistant", "message": {
+        "role": "assistant", "content": [{"type": "thinking", "thinking": "第二段"}]}}))
+    assert "· 第二段\n" in closing, closing
+    stop = reader.feed(json.dumps({"type": "stream_event", "event": {
+        "type": "content_block_stop", "index": 1}}))
+    assert "391" not in stop, stop
+
+
+def test_more_than_one_silent_block_is_reported_rather_than_picked_between():
+    """Elimination names a block only when exactly one has shown nothing. With
+    two, the copy is still rendered but the tie is reported — otherwise every
+    candidate stays unshown and each `content_block_stop` adds a token count
+    beside words already on screen (kiro review, round 8)."""
+    from agora.execution.transcript import reader_for
+
+    reader = reader_for(EVENT_FORMAT_CLAUDE_STREAM_JSON)
+    for index in (0, 1):
+        reader.feed(json.dumps({"type": "stream_event", "event": {
+            "type": "content_block_start", "index": index,
+            "content_block": {"type": "thinking", "thinking": ""}}}))
+        reader.feed(json.dumps({"type": "stream_event", "event": {
+            "type": "content_block_delta", "index": index,
+            "delta": {"type": "thinking_delta", "thinking": "", "estimated_tokens": 30}}}))
+    closing = reader.feed(json.dumps({"type": "assistant", "message": {
+        "role": "assistant", "content": [{"type": "thinking", "thinking": "谁的字"}]}}))
+    assert "· 谁的字\n" in closing, closing
+    assert "claude thinking:copy matches two blocks" in reader.unread_kinds
+
+
+def test_a_disagreeing_copy_replayed_is_not_rendered_twice():
+    """The words a copy showed become the block's text even when they disagree
+    with the deltas — `_unread` deduplicates, so a replay came back with the
+    content repeated and no warning at all (kiro review, round 8)."""
+    from agora.execution.transcript import reader_for
+
+    reader = reader_for(EVENT_FORMAT_CLAUDE_STREAM_JSON)
+    for event in [
+        {"type": "content_block_start", "index": 0,
+         "content_block": {"type": "thinking", "thinking": "", "signature": "S"}},
+        {"type": "content_block_delta", "index": 0,
+         "delta": {"type": "thinking_delta", "thinking": "旧内容"}},
+    ]:
+        reader.feed(json.dumps({"type": "stream_event", "event": event}))
+    copy = json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [
+        {"type": "thinking", "thinking": "新内容", "signature": "S"}]}})
+    assert "新内容" in reader.feed(copy)
+    again = reader.feed(copy)
+    assert "新内容" not in again, again
+
+
+def test_the_only_block_there_is_gets_the_copy_even_with_no_signature():
+    """One block, one copy: nothing else it could belong to. Left unmatched, the
+    block stayed unshown and its `content_block_stop` printed a token count on
+    top of the words the copy had just shown (kiro review, round 5)."""
+    from agora.execution.transcript import reader_for
+
+    reader = reader_for(EVENT_FORMAT_CLAUDE_STREAM_JSON)
+    for event in [
+        {"type": "content_block_start", "index": 0,
+         "content_block": {"type": "thinking", "thinking": ""}},
+        {"type": "content_block_delta", "index": 0,
+         "delta": {"type": "thinking_delta", "thinking": "", "estimated_tokens": 391}},
+    ]:
+        reader.feed(json.dumps({"type": "stream_event", "event": event}))
+    closing = reader.feed(json.dumps({"type": "assistant", "message": {
+        "role": "assistant", "content": [{"type": "thinking", "thinking": "副本里的字"}]}}))
+    assert closing == "· 副本里的字\n", closing
+    stop = reader.feed(json.dumps({"type": "stream_event", "event": {
+        "type": "content_block_stop", "index": 0}}))
+    assert "391" not in stop, stop
+
+
+def test_a_suffix_arriving_after_the_block_closed_keeps_its_marker():
+    """`content_block_stop` ends the open line; a state that still claims the
+    line is open then wrote the late suffix without the `·`, and a line-by-line
+    reader takes that for the agent's own prose (kiro review, round 5)."""
+    from agora.execution.transcript import reader_for
+
+    reader = reader_for(EVENT_FORMAT_CLAUDE_STREAM_JSON)
+    for event in [
+        {"type": "content_block_start", "index": 0,
+         "content_block": {"type": "thinking", "thinking": "", "signature": ""}},
+        {"type": "content_block_delta", "index": 0,
+         "delta": {"type": "thinking_delta", "thinking": "前半"}},
+        {"type": "content_block_delta", "index": 0,
+         "delta": {"type": "signature_delta", "signature": "CAIS8AIK"}},
+        {"type": "content_block_stop", "index": 0},
+    ]:
+        reader.feed(json.dumps({"type": "stream_event", "event": event}))
+    closing = reader.feed(json.dumps({"type": "assistant", "message": {
+        "role": "assistant", "content": [{
+            "type": "thinking", "thinking": "前半后半", "signature": "CAIS8AIK"}]}}))
+    assert closing == "· 后半\n", closing
+
+
+def test_a_new_messages_blocks_do_not_inherit_the_previous_messages_indices():
+    """Indices are per message and restart at 0, and — measured — the copies
+    arrive interleaved with the blocks, so there is no point in the stream that
+    is reliably "the message ended". The reset therefore happens when index 0
+    starts. Without it, a second message's thinking would be matched against the
+    first message's record and silenced as a repeat of something else.
+    """
+    from agora.execution.transcript import reader_for
+
+    reader = reader_for(EVENT_FORMAT_CLAUDE_STREAM_JSON)
+    for event in [
+        {"type": "content_block_start", "index": 0,
+         "content_block": {"type": "thinking", "thinking": ""}},
+        {"type": "content_block_delta", "index": 0,
+         "delta": {"type": "thinking_delta", "thinking": "第一条的思考"}},
+    ]:
+        reader.feed(json.dumps({"type": "stream_event", "event": event}))
+    # The first message's copy never arrives — the turn moved on.
+    reader.feed(json.dumps({"type": "stream_event", "event": {
+        "type": "content_block_start", "index": 0,
+        "content_block": {"type": "thinking", "thinking": ""}}}))
+    closing = reader.feed(json.dumps({"type": "assistant", "message": {
+        "role": "assistant", "content": [{"type": "thinking", "thinking": "第二条的思考"}]}}))
+    assert closing == "· 第二条的思考\n", closing
+    assert "claude thinking:streamed and repeated" not in reader.unread_kinds
+
+
 def test_a_sibling_that_streamed_does_not_silence_a_block_that_did_not():
     """Asked once per message instead of per block, one streaming block dropped
     the closing copy of every other one (kiro review, 2026-09-22)."""

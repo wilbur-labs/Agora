@@ -271,27 +271,126 @@ class ClaudeStreamJsonReader(TranscriptReader):
         self._cwd: str | None = None
         #: Open thinking blocks, by the index ``content_block_start`` gave them:
         #: ``{"tokens": <last estimate>, "shown": <any text was rendered, never
-        #: unset>, "line_open": <the rendered text ended mid-line>}``.
+        #: unset>, "line_open": <the rendered text ended mid-line>,
+        #: "signature": <accumulated ``signature_delta``>, "text": <the words
+        #: shown for it so far>, "counted": <its estimate was already printed>}``.
         #: ``content_block_stop`` carries only an index, so closing one needs this.
+        #:
+        #: The last two fields are what lets a closing ``assistant`` copy be tied
+        #: to the block it repeats — see ``_match_thinking``.
         #:
         #: ``shown`` and ``line_open`` are two questions and were briefly one
         #: field: clearing ``shown`` to re-open the marker after a trailing
         #: newline also told the close that nothing had been rendered, so a block
         #: printed its words *and* a token count (kiro review, 2026-09-22).
         self._thinking_blocks: dict[int, dict[str, Any]] = {}
-        #: Block indices whose thinking this message already streamed. The closing
-        #: ``assistant`` copy of one of those is a duplicate; the copy of any
-        #: other block is not, and a single message-wide flag dropped the second
-        #: kind (kiro review, 2026-09-22). Indices match the closing message's
-        #: ``content`` positions, which is what the stream's ``index`` counts.
-        #:
-        #: **Covered:** a block whose deltas carried its text, and a block in the
-        #: same message whose deltas did not. **Not covered:** a block whose
-        #: deltas carried only *part* of the text that the closing copy then
-        #: repeats in full — the rest is dropped rather than appended, because
-        #: nothing here can tell that suffix from a repeat. No CLI observed does
-        #: this; claude serves the words in neither place.
-        self._thinking_streamed: set[int] = set()
+        #: Blocks this message has already closed, kept only so that a closing
+        #: copy arriving after its ``content_block_stop`` can still be matched.
+        #: Emptied when the next message's index 0 starts.
+        self._thinking_closed: list[dict[str, Any]] = []
+
+    def _candidate_thinking(self) -> list[dict[str, Any]]:
+        """Blocks a closing copy could belong to: still open, or closed this
+        message. Emptied when the next message's index 0 starts."""
+        return [*self._thinking_blocks.values(), *self._thinking_closed]
+
+    def _match_thinking(
+        self, signature: str, text: str,
+    ) -> tuple[dict[str, Any] | None, bool]:
+        """The open block a closing ``assistant`` copy belongs to, or ``None``.
+
+        A copy of a block whose deltas already carried the words is a duplicate;
+        a copy of any other block is not, and telling them apart needs to know
+        *which* block the copy is. Three things were tried:
+
+        * **Its position in ``content``** — wrong. Measured against the installed
+          CLI on 2026-09-22, ``assistant`` events arrive one **per block**, each
+          carrying that block alone and each *before* its own
+          ``content_block_stop``: ``content_block_start 0 (thinking) → deltas →
+          assistant [thinking] → content_block_stop 0 → content_block_start 1
+          (text) → deltas → assistant [text] → content_block_stop 1``. So every
+          copy sits at position 0 while the stream index climbs, and reading the
+          position as the index asked about block 0 for every block.
+        * **A queue of indices, one taken per copy** — wrong for a different
+          reason (kiro review, 2026-09-22): a copy that never arrives, or arrives
+          in a shape this cannot read, leaves the queue head pointing at the
+          previous block, and every later copy is then matched to the wrong one.
+          Order is not identity.
+        * **The block's own identity**, which is what this does. Measured on the
+          same stream: the ``signature_delta`` accumulates to exactly the
+          ``signature`` the closing copy carries (500 characters, byte for byte).
+          The words are the fallback identity when a copy carries no signature.
+
+        Returns ``(block, ambiguous)``. No block means the copy cannot be tied to
+        one, and the caller renders it: text that cannot be matched is text that
+        would otherwise be lost, and a duplicate is the cheaper mistake of the
+        two. ``ambiguous`` says that was not a clean "no match" but a tie the
+        stream does not let this resolve, which the caller reports.
+
+        **The words are not a unique identity, and the signature is.** Two blocks
+        in one message can carry the same words: block 0 streams "检查文件" and
+        closes, block 1 streams nothing and its copy carries "检查文件" too. The
+        text fallback matched block 0, saw that it had already been shown, and
+        silenced block 1's only copy (kiro review, 2026-09-22). So whenever the
+        words match one block while another is still waiting for its first ones,
+        nothing is guessed — the tie is reported. **Whether the word-for-word
+        block is open or closed makes no difference to that tie**, and a first
+        version that only tested the closed ones left the same hole open for a
+        block whose ``content_block_stop`` went missing (kiro review, round 3).
+        """
+        open_blocks = list(self._thinking_blocks.values())
+        if signature:
+            for state in (*open_blocks, *self._thinking_closed):
+                if state["signature"] and state["signature"] == signature:
+                    return state, False
+            # A copy that names its block, for a block this reader never saw
+            # start. Falling through to the words matched it to a *different*
+            # block that happened to say the same thing, and suppressed it as
+            # that block's repeat (kiro review, round 6). A signature is an
+            # answer: when it matches nothing, the answer is "not one of these".
+            return None, False
+        if not text:
+            return None, False
+        candidates = [*open_blocks, *self._thinking_closed]
+        # A copy that *extends* what a block streamed is that block's copy too —
+        # equality alone sent it down the "no block" path, where the prefix was
+        # printed a second time and the open line broken (kiro review, round 5).
+        matches = [
+            state for state in candidates
+            if state["text"] and text.startswith(state["text"])
+        ]
+        if not matches:
+            # Identity by elimination: exactly one block has yet to show
+            # anything, and a copy whose words match no other block can only be
+            # its. Counting *candidates* rather than empty ones was too narrow —
+            # a message whose earlier blocks were filled in by their own copies
+            # left more than one candidate, so the match failed and the block's
+            # `content_block_stop` printed a token count on top of the words the
+            # copy had just shown (kiro review, rounds 5 and 7).
+            silent = [state for state in candidates if not state["text"]]
+            if len(silent) == 1:
+                return silent[0], False
+            # More than one block has shown nothing, so elimination names none
+            # of them. Reported, not returned as a plain miss: the copy is
+            # rendered either way, but leaving every candidate unshown lets each
+            # one's `content_block_stop` add a token count beside words that are
+            # already on screen (kiro review, round 8).
+            return None, len(silent) > 1
+        if any(not state["text"] for state in (*open_blocks, *self._thinking_closed)):
+            # A block that has streamed nothing could be whose copy this is, and
+            # so could the one it matches word for word. Without a signature
+            # nothing here can tell them apart. **Closed blocks count on both
+            # sides of that tie**: a silent block that closed before its copy
+            # arrived is exactly as plausible a source as an open one, and
+            # testing only the open ones lost its words (kiro review, round 4).
+            return None, True
+        if len(matches) > 1:
+            # Two blocks whose words are both a prefix of this copy — "前半" and
+            # "前半和" — and nothing without a signature says which one it
+            # continues. Taking the first cut the suffix at the wrong place and
+            # said nothing about it (kiro review, round 6).
+            return None, True
+        return matches[0], False
 
     def _keep_settlement(self, event: dict[str, Any], line: str) -> None:
         if str(event.get("type", "")) == "result":
@@ -336,19 +435,44 @@ class ClaudeStreamJsonReader(TranscriptReader):
         kind = str(inner.get("type", ""))
         index = inner.get("index")
         if kind == "content_block_start":
+            carried_over = ""
+            if index == 0:
+                # Block indices are per message and restart at 0, so this is a
+                # new message and `self._thinking_blocks[0]` is about to be
+                # overwritten. Anything still open there never got its
+                # `content_block_stop` — a truncated message, a dropped line —
+                # and its estimate is written out now rather than overwritten in
+                # silence (kiro review, 2026-09-22). Done at the *start* of a
+                # message because, measured, the closing copies arrive
+                # interleaved with the blocks rather than after them: no point
+                # in the stream reliably means "the message ended".
+                carried_over = "".join(
+                    self._close_thinking(state)
+                    for _, state in sorted(self._thinking_blocks.items())
+                )
+                self._thinking_blocks.clear()
+                self._thinking_closed.clear()
             block = inner.get("content_block")
             if isinstance(block, dict) and str(block.get("type", "")) == "thinking":
                 if isinstance(index, int):
                     self._thinking_blocks[index] = {
                         "tokens": 0, "shown": False, "line_open": False,
+                        "signature": _text_of(block.get("signature")), "text": "",
+                        "counted": False,
                     }
                 # Nothing is written yet. Opening the line here is what produced
                 # the empty marker: with no text ever arriving, `· ` and the
                 # newline at stop were the entire block.
-            return ""
+            return carried_over
         if kind == "content_block_stop":
             if isinstance(index, int) and index in self._thinking_blocks:
-                return self._close_thinking(self._thinking_blocks.pop(index))
+                state = self._thinking_blocks.pop(index)
+                # Kept, not dropped: measured, the closing copy arrives *before*
+                # this event, but a CLI that sends it after would leave the copy
+                # with no block to match and its words printed a second time.
+                # Identity outlives the block; the list is emptied per message.
+                self._thinking_closed.append(state)
+                return self._close_thinking(state)
             return ""
         if kind != "content_block_delta":
             return ""
@@ -358,8 +482,10 @@ class ClaudeStreamJsonReader(TranscriptReader):
         delta_type = str(delta.get("type", ""))
         if delta_type == "text_delta":
             # Deliberately unterminated: consecutive deltas are one sentence being
-            # typed, and a newline per delta would shred it.
-            return _text_of(delta.get("text"))
+            # typed, and a newline per delta would shred it. A thinking line left
+            # open by a block that never closed is ended first, so the reply does
+            # not continue it under a `·` (kiro review, round 7).
+            return self._close_open_lines() + _text_of(delta.get("text"))
         if delta_type == "thinking_delta":
             state = self._thinking_blocks.get(index) if isinstance(index, int) else None
             estimated = delta.get("estimated_tokens")
@@ -369,8 +495,15 @@ class ClaudeStreamJsonReader(TranscriptReader):
             text = _text_of(delta.get("thinking"))
             if not text:
                 return ""
-            if isinstance(index, int):
-                self._thinking_streamed.add(index)
+            if state is not None:
+                # Kept whole, because it is this block's second identity: a
+                # closing copy carrying no signature is matched on its words.
+                state["text"] += text
+            # Another block's unfinished line is ended first: a stream that lost
+            # a `content_block_stop` used to run the next block's thinking onto
+            # it, and a line-by-line reader files both under the first block
+            # (kiro review, round 7).
+            broke = self._close_open_lines(keep=state)
             # A line already open continues; otherwise this opens one. Every line
             # carries the marker, as `_prompt_echo` does for the same reason: the
             # transcript is line-based, and a second line without the marker reads
@@ -386,7 +519,14 @@ class ClaudeStreamJsonReader(TranscriptReader):
             if state is not None:
                 state["shown"] = True
                 state["line_open"] = not body.endswith("\n")
-            return body
+            return broke + body
+        if delta_type == "signature_delta":
+            # The block's identity, accumulated: measured, these deltas add up to
+            # exactly the `signature` its closing copy carries.
+            state = self._thinking_blocks.get(index) if isinstance(index, int) else None
+            if state is not None:
+                state["signature"] += _text_of(delta.get("signature"))
+            return ""
         return ""
 
     def _close_thinking(self, state: dict[str, Any]) -> str:
@@ -399,10 +539,24 @@ class ClaudeStreamJsonReader(TranscriptReader):
         """
         if state["shown"]:
             # Words were shown, so the count would only repeat what the reader
-            # can already see. All that is left is to terminate an open line.
-            return "\n" if state["line_open"] else ""
+            # can already see. All that is left is to terminate an open line —
+            # and to record that it is now terminated, or a copy arriving after
+            # this would continue a line that no longer exists and write its
+            # words without the thinking marker (kiro review, round 5).
+            if not state["line_open"]:
+                return ""
+            state["line_open"] = False
+            return "\n"
         tokens = state["tokens"]
-        return _line(f"· 想了约 {tokens} tokens") if tokens else ""
+        if not tokens:
+            return ""
+        # Recorded, because it is what a later copy cannot undo: once the count
+        # is on the line, words arriving afterwards make the transcript show
+        # both (kiro review, round 4). Measured, the copy comes first and this
+        # never fires; when it does, `_render_thinking_copy` says so rather than
+        # letting the pair look intended.
+        state["counted"] = True
+        return _line(f"· 想了约 {tokens} tokens")
 
     def finish(self) -> str:
         # A thinking block still open here never got its `content_block_stop`.
@@ -413,19 +567,122 @@ class ClaudeStreamJsonReader(TranscriptReader):
             for _, state in sorted(self._thinking_blocks.items())
         )
         self._thinking_blocks.clear()
+        self._thinking_closed.clear()
         return pending + super().finish()
+
+    def _render_thinking_copy(
+        self, words: str, source: dict[str, Any] | None, ambiguous: bool,
+    ) -> str:
+        """What a non-empty closing copy adds to the transcript.
+
+        Four outcomes, and the reason there are four is that the block's identity
+        now says which one applies:
+
+        * **no block** — render it. Text that cannot be matched is text that
+          would be lost, and a duplicate is the cheaper mistake. Reported when
+          the match was a tie rather than a plain miss.
+        * **a block that streamed nothing** — this copy is the only place the
+          words appear, so it renders, and the block is marked shown so its
+          ``content_block_stop`` does not also print a token count on top of the
+          words it just showed (kiro review, 2026-09-22).
+        * **a block whose words this copy extends** — only the suffix is
+          appended. The old code dropped the whole copy here and its comment
+          called the suffix unrecoverable; with the block identified and its
+          streamed text in hand, the suffix is exactly what the copy has beyond
+          it (kiro review, 2026-09-22).
+        * **a block whose words this copy repeats** — nothing is appended, and
+          it is reported rather than passed over: no observed CLI serves the
+          words twice, so this firing at all is news.
+
+        Every line written here carries the ``·`` marker and every diagnostic
+        starts on its own line: a continuation line without the marker reads as
+        the agent's own prose, and a note glued to an unfinished thinking line
+        breaks the line boundaries the whole transcript is parsed on (kiro
+        review, round 3).
+        """
+        if source is None:
+            note = self._unread("claude thinking:copy matches two blocks") if ambiguous else ""
+            return self._close_open_lines() + _marked_lines(_clip(words)) + note
+        streamed = source["text"]
+        if not source["shown"]:
+            # Another block's unfinished line first: this copy is not its
+            # continuation, and appending to it glued two blocks into one line
+            # that a line-by-line reader then files under the wrong one (kiro
+            # review, round 6).
+            broke = self._close_open_lines()
+            source["shown"] = True
+            source["line_open"] = False
+            # The words are now this block's text, so an identical copy replayed
+            # after this one is recognised as the repeat it is. Leaving it empty
+            # made the replay look like a suffix and printed the whole thing
+            # again (kiro review, round 4).
+            source["text"] = words
+            late = (
+                self._unread("claude thinking:copy arrived after the count")
+                if source.get("counted") else ""
+            )
+            return broke + _marked_lines(_clip(words)) + late
+        if words == streamed:
+            return self._close_open_lines() + self._unread(
+                "claude thinking:streamed and repeated"
+            )
+        if words.startswith(streamed):
+            broke = self._close_open_lines(keep=source)
+            suffix = _clip(words[len(streamed):])
+            body = _marked_lines(suffix, lead=not source["line_open"])
+            source["text"] = words
+            source["line_open"] = False
+            return broke + body
+        # Same block, and the copy is neither what streamed nor an extension of
+        # it. Rendered so nothing is lost, and reported because the two versions
+        # disagreeing is a shape nothing observed produces.
+        broke = self._close_open_lines()
+        # The copy's words are what the reader now sees for this block, so a
+        # replay of the same event is recognised as a repeat. Left unset, it was
+        # rendered again — and `_unread` deduplicates, so the second copy came
+        # with no warning at all (kiro review, round 8).
+        source["text"] = words
+        return broke + _marked_lines(_clip(words)) + self._unread(
+            "claude thinking:copy disagrees with the deltas"
+        )
+
+    def _close_open_lines(self, keep: dict[str, Any] | None = None) -> str:
+        """Terminate any other block's unfinished line before writing elsewhere.
+
+        Each block owns the line it left open; text written for a *different*
+        block continues it, and the two end up on one line under one block's
+        marker (kiro review, round 6). ``keep`` is the block about to be written
+        to, whose own line is a continuation and is left alone.
+        """
+        return "".join(
+            self._close_open_line(state)
+            for state in self._candidate_thinking()
+            if state is not keep
+        )
+
+    @staticmethod
+    def _close_open_line(state: dict[str, Any]) -> str:
+        """Terminate a thinking line the deltas left unfinished, if any.
+
+        Anything written after an open line — a note, a diagnostic — would
+        otherwise continue it, so the transcript's own line boundaries stop
+        holding (kiro review, round 3).
+        """
+        if not state["line_open"]:
+            return ""
+        state["line_open"] = False
+        return "\n"
 
     def _read_assistant(self, message: dict[str, Any]) -> str:
         blocks = message.get("content")
         if not isinstance(blocks, list):
-            # The message is over either way, and block indices restart with the
-            # next one. Returning without clearing let a truncated or unexpected
-            # `content` carry this message's indices into the next, where they
-            # would silence a block that never streamed (kiro review, 2026-09-22).
-            self._thinking_streamed.clear()
+            # A copy in a shape this cannot read describes no block. Nothing is
+            # cleared: the open blocks are still open — measured, this event
+            # arrives *before* their `content_block_stop` — and their estimates
+            # are still owed to the reader.
             return ""
         rendered: list[str] = []
-        for position, block in enumerate(blocks):
+        for block in blocks:
             if not isinstance(block, dict):
                 continue
             block_type = str(block.get("type", ""))
@@ -448,23 +705,19 @@ class ClaudeStreamJsonReader(TranscriptReader):
                 # on a CLI that serves it both ways, and asking the question once
                 # per message rather than per block dropped a block that never
                 # streamed because a sibling did (kiro review, 2026-09-22).
-                thinking = _clip(_text_of(block.get("thinking")))
-                if thinking.strip() and position not in self._thinking_streamed:
-                    rendered.append(_line(f"· {thinking}"))
-                elif thinking.strip():
-                    # Served in both places. Whether this copy repeats the deltas
-                    # or extends them cannot be told apart from here, so it is not
-                    # appended — but it is not passed over in silence either: the
-                    # reader is told the shape was unexpected, through the same
-                    # channel every other unrecognised event uses. No observed CLI
-                    # does this (claude serves the words in neither place), so this
-                    # firing at all is news (kiro review, 2026-09-22).
-                    rendered.append(self._unread("claude thinking:streamed and repeated"))
+                #
+                # Which block this copy is comes from the block's own identity —
+                # its signature, or failing that its words. Not from its position
+                # in `content`, and not from the order the copies arrive in:
+                # `_match_thinking` records what each of those got wrong.
+                words = _text_of(block.get("thinking"))
+                source, ambiguous = self._match_thinking(
+                    _text_of(block.get("signature")), words,
+                )
+                if words.strip():
+                    rendered.append(self._render_thinking_copy(words, source, ambiguous))
             else:
                 rendered.append(self._unread(f"claude block:{block_type}"))
-        # The message is over: its thinking, if any, has been accounted for. Block
-        # indices restart with the next message, so they must not carry over.
-        self._thinking_streamed.clear()
         return "".join(rendered)
 
 
@@ -556,6 +809,21 @@ def _line(text: str) -> str:
     if not text:
         return ""
     return text if text.endswith("\n") else f"{text}\n"
+
+
+def _marked_lines(text: str, *, lead: bool = True) -> str:
+    """Thinking text as transcript lines, with the ``·`` marker on **every** one.
+
+    The transcript is line-based and read line by line, so a continuation line
+    without the marker reads as the agent's own prose rather than as its
+    thinking. ``lead=False`` continues a line the deltas left open. A trailing
+    marker for a line that never starts is dropped — the same empty ``·`` the
+    streaming path exists to avoid.
+    """
+    body = ("· " if lead else "") + text.replace("\n", "\n· ")
+    if body.endswith("\n· "):
+        body = body[:-2]
+    return _line(body)
 
 
 def _text_of(value: Any) -> str:
