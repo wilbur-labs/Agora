@@ -296,6 +296,11 @@ export const workspace = {
       stopping: "stopping…",
       stopFailed: "Could not stop this turn: {reason}",
       transcriptWaiting: "Waiting for the first line…",
+      // Shown under a live turn that has already written something. The pause
+      // between lines is usually thinking, whose words claude does not serve in
+      // this mode — so the window would otherwise sit perfectly still and look
+      // finished (user, 2026-09-22: "正在输出的时候也没什么显示").
+      transcriptWorking: "still working…",
       transcriptStalled: "last read did not come back — retrying",
       transcriptUnreadable: "transcript could not be read",
       transcriptLossy: "some output was lost before it could be saved",
@@ -1198,6 +1203,7 @@ export const workspace = {
       stopping: "正在停止…",
       stopFailed: "停不下来：{reason}",
       transcriptWaiting: "等第一行输出…",
+      transcriptWorking: "还在跑…",
       transcriptStalled: "上一次读取没回来——重试中",
       transcriptUnreadable: "读不到 transcript",
       transcriptLossy: "有一部分输出没来得及保存就丢了",

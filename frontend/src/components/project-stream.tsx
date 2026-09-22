@@ -880,7 +880,7 @@ export function ProjectStream({
                     {turnText !== ""
                       ? <TranscriptView text={turnText} holdLastLine={turnHold} />
                       : live
-                        ? <p className="text-[12px] text-muted-foreground">{t("workspace.stream.transcriptWaiting")}</p>
+                        ? null /* the live indicator below is the whole statement */
                         : (transcript === undefined && record === null)
                           /* Older than the recent few, or a read that failed: nothing was
                              prefetched, so the turn is opened on demand — its record,
@@ -889,6 +889,20 @@ export function ProjectStream({
                             ? <p className="text-[12px] text-muted-foreground">{t("workspace.stream.loading")}</p>
                             : <button type="button" onClick={() => { readExchange(item.unit.run); setOpened((held) => new Set(held).add(item.unit.run.run_id)); void pull(item.unit.run.run_id); }} className="text-[12px] text-muted-foreground underline-offset-2 hover:underline">{t(full === "failed" ? "workspace.stream.answerReadFailed" : "workspace.stream.answerRead")}</button>)
                           : <p className="text-[12px] text-muted-foreground">{t("workspace.stream.run.noOutput")}</p>}
+                    {/* Under the text, where the eye already is. Shown for the whole of a
+                        live turn, not only once it has written something: claude does not
+                        serve the words of its thinking in this mode (measured 2026-09-22),
+                        so a turn that opens with several minutes of it produces no
+                        transcript at all — and a still line reading "waiting for the first
+                        line" is exactly the "正在输出的时候也没什么显示" this is for
+                        (kiro review, 2026-09-22). The wording is the only thing that
+                        changes with it; the pulse is the point. */}
+                    {live && (
+                      <p className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                        <span className="inline-block size-1.5 animate-pulse rounded-full bg-primary" />
+                        {t(turnText === "" ? "workspace.stream.transcriptWaiting" : "workspace.stream.transcriptWorking")}
+                      </p>
+                    )}
                     {!live && record?.error_message && <p className="mt-1 text-[12px] text-destructive">{record.error_message}</p>}
                     {/* What the turn changed — listed once it has ended, as the terminal
                         would print a diff summary. Nothing listed means nothing changed

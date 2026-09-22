@@ -269,11 +269,29 @@ class ClaudeStreamJsonReader(TranscriptReader):
         #: worktree path is ~110 characters here, and printing it in full made every
         #: tool line unreadable while saying nothing the reader did not know.
         self._cwd: str | None = None
-        #: Which content blocks are thinking, learned from ``content_block_start``.
-        #: ``content_block_stop`` carries only an index, so closing the line needs
-        #: this. Indices are per message and reused across messages, which is why
-        #: an index is discarded on stop rather than accumulated.
-        self._thinking_blocks: set[int] = set()
+        #: Open thinking blocks, by the index ``content_block_start`` gave them:
+        #: ``{"tokens": <last estimate>, "shown": <any text was rendered, never
+        #: unset>, "line_open": <the rendered text ended mid-line>}``.
+        #: ``content_block_stop`` carries only an index, so closing one needs this.
+        #:
+        #: ``shown`` and ``line_open`` are two questions and were briefly one
+        #: field: clearing ``shown`` to re-open the marker after a trailing
+        #: newline also told the close that nothing had been rendered, so a block
+        #: printed its words *and* a token count (kiro review, 2026-09-22).
+        self._thinking_blocks: dict[int, dict[str, Any]] = {}
+        #: Block indices whose thinking this message already streamed. The closing
+        #: ``assistant`` copy of one of those is a duplicate; the copy of any
+        #: other block is not, and a single message-wide flag dropped the second
+        #: kind (kiro review, 2026-09-22). Indices match the closing message's
+        #: ``content`` positions, which is what the stream's ``index`` counts.
+        #:
+        #: **Covered:** a block whose deltas carried its text, and a block in the
+        #: same message whose deltas did not. **Not covered:** a block whose
+        #: deltas carried only *part* of the text that the closing copy then
+        #: repeats in full — the rest is dropped rather than appended, because
+        #: nothing here can tell that suffix from a repeat. No CLI observed does
+        #: this; claude serves the words in neither place.
+        self._thinking_streamed: set[int] = set()
 
     def _keep_settlement(self, event: dict[str, Any], line: str) -> None:
         if str(event.get("type", "")) == "result":
@@ -297,14 +315,23 @@ class ClaudeStreamJsonReader(TranscriptReader):
         return self._unread(kind)
 
     def _read_stream_event(self, inner: dict[str, Any]) -> str:
-        """Text and thinking, as they are typed.
+        """Text as it is typed, and what can honestly be said about thinking.
 
-        Thinking used to be dropped here and then rendered from the closing
-        ``assistant`` message, where — because the deltas had carried it — it was
-        empty. The window therefore stood completely still while the agent
-        thought, and produced a bare ``·`` with nothing after it when it
-        finished. Both halves of that were the same defect (CR-104): the content
-        the reader wanted was in the deltas nobody read.
+        **The thinking text is not available**, measured against the installed CLI
+        on 2026-09-22 rather than assumed: ``content_block_start`` carries
+        ``{"type": "thinking", "thinking": "", "signature": ""}``, every
+        ``thinking_delta`` carries ``thinking: ""`` plus an ``estimated_tokens``
+        count, and the closing ``assistant`` copy is empty too. Claude does not
+        hand this mode the words.
+
+        So the window used to show a bare ``·`` with nothing after it, once per
+        thinking block, and stood still for however long the block took (CR-104).
+        What *is* knowable is how much thinking happened, and that is what the
+        closing line says. Rendering nothing at all would be the other honest
+        option; a count is the one that tells the reader the pause was work.
+
+        If a future CLI does stream the words, they render — the count line then
+        steps aside rather than repeating what was already shown.
         """
         kind = str(inner.get("type", ""))
         index = inner.get("index")
@@ -312,15 +339,16 @@ class ClaudeStreamJsonReader(TranscriptReader):
             block = inner.get("content_block")
             if isinstance(block, dict) and str(block.get("type", "")) == "thinking":
                 if isinstance(index, int):
-                    self._thinking_blocks.add(index)
-                # Opens the line; the deltas continue it. Unterminated for the
-                # same reason the text deltas are.
-                return "· "
+                    self._thinking_blocks[index] = {
+                        "tokens": 0, "shown": False, "line_open": False,
+                    }
+                # Nothing is written yet. Opening the line here is what produced
+                # the empty marker: with no text ever arriving, `· ` and the
+                # newline at stop were the entire block.
             return ""
         if kind == "content_block_stop":
             if isinstance(index, int) and index in self._thinking_blocks:
-                self._thinking_blocks.discard(index)
-                return "\n"
+                return self._close_thinking(self._thinking_blocks.pop(index))
             return ""
         if kind != "content_block_delta":
             return ""
@@ -333,18 +361,71 @@ class ClaudeStreamJsonReader(TranscriptReader):
             # typed, and a newline per delta would shred it.
             return _text_of(delta.get("text"))
         if delta_type == "thinking_delta":
-            # Every line carries the marker, as `_prompt_echo` does for the same
-            # reason: the transcript is line-based, and a second line without the
-            # marker reads as the agent's own prose rather than as its thinking.
-            return _text_of(delta.get("thinking")).replace("\n", "\n· ")
+            state = self._thinking_blocks.get(index) if isinstance(index, int) else None
+            estimated = delta.get("estimated_tokens")
+            if state is not None and isinstance(estimated, int):
+                # Last one wins: the estimate is cumulative for the block.
+                state["tokens"] = estimated
+            text = _text_of(delta.get("thinking"))
+            if not text:
+                return ""
+            if isinstance(index, int):
+                self._thinking_streamed.add(index)
+            # A line already open continues; otherwise this opens one. Every line
+            # carries the marker, as `_prompt_echo` does for the same reason: the
+            # transcript is line-based, and a second line without the marker reads
+            # as the agent's own prose rather than as its thinking.
+            lead = "" if state is not None and state["line_open"] else "· "
+            body = lead + text.replace("\n", "\n· ")
+            if body.endswith("\n· "):
+                # Text ending on a newline would leave the marker for a line that
+                # has not started — an empty `·`, which is the thing this whole
+                # change removes (kiro review, 2026-09-22). The next delta opens
+                # its own.
+                body = body[:-2]
+            if state is not None:
+                state["shown"] = True
+                state["line_open"] = not body.endswith("\n")
+            return body
         return ""
+
+    def _close_thinking(self, state: dict[str, Any]) -> str:
+        """End a thinking block: terminate its line, or report its size.
+
+        Split out because the block also has to be closed when the stream stops
+        without a ``content_block_stop`` — a killed process, a cancelled turn, a
+        truncated pipe — where the estimate would otherwise be dropped although it
+        had already arrived (kiro review, 2026-09-22).
+        """
+        if state["shown"]:
+            # Words were shown, so the count would only repeat what the reader
+            # can already see. All that is left is to terminate an open line.
+            return "\n" if state["line_open"] else ""
+        tokens = state["tokens"]
+        return _line(f"· 想了约 {tokens} tokens") if tokens else ""
+
+    def finish(self) -> str:
+        # A thinking block still open here never got its `content_block_stop`.
+        # Whatever was known about it is written before the closing notes rather
+        # than discarded with the reader.
+        pending = "".join(
+            self._close_thinking(state)
+            for _, state in sorted(self._thinking_blocks.items())
+        )
+        self._thinking_blocks.clear()
+        return pending + super().finish()
 
     def _read_assistant(self, message: dict[str, Any]) -> str:
         blocks = message.get("content")
         if not isinstance(blocks, list):
+            # The message is over either way, and block indices restart with the
+            # next one. Returning without clearing let a truncated or unexpected
+            # `content` carry this message's indices into the next, where they
+            # would silence a block that never streamed (kiro review, 2026-09-22).
+            self._thinking_streamed.clear()
             return ""
         rendered: list[str] = []
-        for block in blocks:
+        for position, block in enumerate(blocks):
             if not isinstance(block, dict):
                 continue
             block_type = str(block.get("type", ""))
@@ -355,17 +436,35 @@ class ClaudeStreamJsonReader(TranscriptReader):
             elif block_type == "tool_use":
                 rendered.append(_line(f"$ {_tool_call(block.get('name'), block.get('input'), cwd=self._cwd)}"))
             elif block_type == "thinking":
-                # Streamed as deltas above, so what arrives here is the closing
-                # copy and is normally empty — and an empty one rendered a `·`
-                # with nothing after it, which is all the window used to show for
-                # an entire thinking block (CR-104). A non-empty one still
-                # renders: that means the deltas did *not* carry it, and dropping
-                # it on the assumption that they did would lose the text outright.
+                # The closing copy. Measured against the installed CLI it is
+                # always empty — the words are not served in this mode — and an
+                # empty one rendered a `·` with nothing after it, which is all the
+                # window used to show for an entire thinking block (CR-104).
+                #
+                # A non-empty one renders only when *this block's* deltas did not
+                # already show it. All three parts are needed: dropping it
+                # unconditionally would lose text a future CLI serves only here,
+                # rendering it unconditionally would print the same thinking twice
+                # on a CLI that serves it both ways, and asking the question once
+                # per message rather than per block dropped a block that never
+                # streamed because a sibling did (kiro review, 2026-09-22).
                 thinking = _clip(_text_of(block.get("thinking")))
-                if thinking.strip():
+                if thinking.strip() and position not in self._thinking_streamed:
                     rendered.append(_line(f"· {thinking}"))
+                elif thinking.strip():
+                    # Served in both places. Whether this copy repeats the deltas
+                    # or extends them cannot be told apart from here, so it is not
+                    # appended — but it is not passed over in silence either: the
+                    # reader is told the shape was unexpected, through the same
+                    # channel every other unrecognised event uses. No observed CLI
+                    # does this (claude serves the words in neither place), so this
+                    # firing at all is news (kiro review, 2026-09-22).
+                    rendered.append(self._unread("claude thinking:streamed and repeated"))
             else:
                 rendered.append(self._unread(f"claude block:{block_type}"))
+        # The message is over: its thinking, if any, has been accounted for. Block
+        # indices restart with the next message, so they must not carry over.
+        self._thinking_streamed.clear()
         return "".join(rendered)
 
 

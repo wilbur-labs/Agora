@@ -1176,13 +1176,17 @@ def test_a_settlement_larger_than_the_tail_survives():
     assert observation is not None and observation.token_measurement == "exact"
 
 
-def test_thinking_streams_as_it_is_typed_and_leaves_no_empty_marker():
-    """The window has to move while the agent thinks (CR-104).
+def test_a_thinking_block_reports_its_size_because_its_words_are_not_served():
+    """The shape below is **measured**, not invented (claude CLI, 2026-09-22).
 
-    Thinking used to be dropped in the stream and then rendered from the closing
-    `assistant` message — where, because the deltas had carried it, it was empty.
-    The window stood still for the whole thinking block and then printed a bare
-    `·`, which is what the user reported as "没什么显示" plus "断断续续".
+    `content_block_start` carries `{"type":"thinking","thinking":"","signature":""}`,
+    every `thinking_delta` carries `thinking: ""` with an `estimated_tokens` count,
+    and the closing `assistant` copy is empty too. The words are not on offer in
+    this mode, so the transcript says how much thinking happened instead of
+    printing a bare `·` and standing still (CR-104).
+
+    The first version of this test fabricated thinking text and passed while the
+    product stayed broken — which is why the fixture is now the real one.
     """
     from agora.execution.transcript import reader_for
 
@@ -1192,23 +1196,43 @@ def test_thinking_streams_as_it_is_typed_and_leaves_no_empty_marker():
     reader = reader_for(EVENT_FORMAT_CLAUDE_STREAM_JSON)
     rendered = "".join([
         reader.feed(event({"type": "content_block_start", "index": 0,
-                           "content_block": {"type": "thinking", "thinking": ""}})),
+                           "content_block": {"type": "thinking", "thinking": "", "signature": ""}})),
         reader.feed(event({"type": "content_block_delta", "index": 0,
-                           "delta": {"type": "thinking_delta", "thinking": "先看"}})),
+                           "delta": {"type": "thinking_delta", "thinking": "", "estimated_tokens": 64}})),
         reader.feed(event({"type": "content_block_delta", "index": 0,
-                           "delta": {"type": "thinking_delta", "thinking": "工作树"}})),
+                           "delta": {"type": "thinking_delta", "thinking": "", "estimated_tokens": 391}})),
+        reader.feed(event({"type": "content_block_delta", "index": 0,
+                           "delta": {"type": "signature_delta", "signature": "abc"}})),
         reader.feed(event({"type": "content_block_stop", "index": 0})),
-        # The closing copy, empty because the deltas carried it.
         reader.feed(json.dumps({"type": "assistant", "message": {"role": "assistant",
                                 "content": [{"type": "thinking", "thinking": ""}]}})),
     ])
-    assert rendered == "· 先看工作树\n", rendered
-    assert "· \n" not in rendered, "an empty marker line is the defect being fixed"
+    # The cumulative estimate, not the sum of the deltas.
+    assert rendered == "· 想了约 391 tokens\n", rendered
+    assert "· \n" not in rendered, "the empty marker is the defect being fixed"
 
 
-def test_multi_line_thinking_marks_every_line():
-    """The transcript is line-based: an unmarked second line reads as the agent's
-    own prose rather than as its thinking, exactly as `_prompt_echo` found."""
+def test_a_thinking_block_with_no_estimate_renders_nothing_at_all():
+    """Saying nothing beats saying `·`. A marker with nothing after it is what the
+    window showed for an entire thinking block before CR-104."""
+    from agora.execution.transcript import reader_for
+
+    reader = reader_for(EVENT_FORMAT_CLAUDE_STREAM_JSON)
+    rendered = "".join([
+        reader.feed(json.dumps({"type": "stream_event", "event": {
+            "type": "content_block_start", "index": 0,
+            "content_block": {"type": "thinking", "thinking": ""}}})),
+        reader.feed(json.dumps({"type": "stream_event", "event": {
+            "type": "content_block_stop", "index": 0}})),
+    ])
+    assert rendered == "", rendered
+
+
+def test_thinking_words_render_if_a_future_cli_ever_streams_them():
+    """The count stands in for words that are not served; it does not replace words
+    that are. Every line carries the marker for `_prompt_echo`'s reason: the
+    transcript is line-based, and an unmarked second line reads as the agent's own
+    prose rather than as its thinking."""
     from agora.execution.transcript import reader_for
 
     reader = reader_for(EVENT_FORMAT_CLAUDE_STREAM_JSON)
@@ -1218,11 +1242,128 @@ def test_multi_line_thinking_marks_every_line():
             "content_block": {"type": "thinking", "thinking": ""}}})),
         reader.feed(json.dumps({"type": "stream_event", "event": {
             "type": "content_block_delta", "index": 0,
-            "delta": {"type": "thinking_delta", "thinking": "一行\n二行"}}})),
+            "delta": {"type": "thinking_delta", "thinking": "一行\n二行",
+                      "estimated_tokens": 12}}})),
         reader.feed(json.dumps({"type": "stream_event", "event": {
             "type": "content_block_stop", "index": 0}})),
     ])
     assert rendered == "· 一行\n· 二行\n", rendered
+    assert "tokens" not in rendered, "the count does not repeat what was shown"
+
+
+def test_thinking_that_ends_on_a_newline_leaves_no_dangling_marker():
+    """`text.replace("\\n", "\\n· ")` on "第一行\\n" would mark a line that never
+    starts — the empty `·` this whole change removes (kiro review, 2026-09-22)."""
+    from agora.execution.transcript import reader_for
+
+    reader = reader_for(EVENT_FORMAT_CLAUDE_STREAM_JSON)
+    rendered = "".join([
+        reader.feed(json.dumps({"type": "stream_event", "event": {
+            "type": "content_block_start", "index": 0,
+            "content_block": {"type": "thinking", "thinking": ""}}})),
+        reader.feed(json.dumps({"type": "stream_event", "event": {
+            "type": "content_block_delta", "index": 0,
+            "delta": {"type": "thinking_delta", "thinking": "第一行\n"}}})),
+        reader.feed(json.dumps({"type": "stream_event", "event": {
+            "type": "content_block_stop", "index": 0}})),
+    ])
+    assert rendered == "· 第一行\n", rendered
+    assert "· \n" not in rendered
+
+
+def test_a_thinking_estimate_survives_a_stream_that_never_closed_the_block():
+    """A killed process, a cancelled turn or a truncated pipe ends the stream
+    without `content_block_stop`. What was already known is written by `finish`
+    rather than discarded with the reader (kiro review, 2026-09-22)."""
+    from agora.execution.transcript import reader_for
+
+    reader = reader_for(EVENT_FORMAT_CLAUDE_STREAM_JSON)
+    reader.feed(json.dumps({"type": "stream_event", "event": {
+        "type": "content_block_start", "index": 0,
+        "content_block": {"type": "thinking", "thinking": ""}}}))
+    reader.feed(json.dumps({"type": "stream_event", "event": {
+        "type": "content_block_delta", "index": 0,
+        "delta": {"type": "thinking_delta", "thinking": "", "estimated_tokens": 391}}}))
+    assert "· 想了约 391 tokens\n" in reader.finish()
+
+
+def test_thinking_served_both_ways_is_shown_once():
+    """A CLI that streams the words AND repeats them in the closing copy must not
+    produce two copies in the transcript (kiro review, 2026-09-22)."""
+    from agora.execution.transcript import reader_for
+
+    reader = reader_for(EVENT_FORMAT_CLAUDE_STREAM_JSON)
+    rendered = "".join([
+        reader.feed(json.dumps({"type": "stream_event", "event": {
+            "type": "content_block_start", "index": 0,
+            "content_block": {"type": "thinking", "thinking": ""}}})),
+        reader.feed(json.dumps({"type": "stream_event", "event": {
+            "type": "content_block_delta", "index": 0,
+            "delta": {"type": "thinking_delta", "thinking": "检查文件"}}})),
+        reader.feed(json.dumps({"type": "stream_event", "event": {
+            "type": "content_block_stop", "index": 0}})),
+        reader.feed(json.dumps({"type": "assistant", "message": {"role": "assistant",
+                                "content": [{"type": "thinking", "thinking": "检查文件"}]}})),
+    ])
+    assert rendered.count("检查文件") == 1, rendered
+    # Not silently, though: a copy served in both places is a shape no observed CLI
+    # produces, and whether it repeats the deltas or extends them cannot be told
+    # from here — so it is reported rather than passed over (kiro review).
+    assert "claude thinking:streamed and repeated" in reader.unread_kinds
+    # And a later message decides for itself.
+    again = reader.feed(json.dumps({"type": "assistant", "message": {"role": "assistant",
+                                    "content": [{"type": "thinking", "thinking": "第二轮"}]}}))
+    assert again == "· 第二轮\n", again
+
+
+def test_a_sibling_that_streamed_does_not_silence_a_block_that_did_not():
+    """Asked once per message instead of per block, one streaming block dropped
+    the closing copy of every other one (kiro review, 2026-09-22)."""
+    from agora.execution.transcript import reader_for
+
+    reader = reader_for(EVENT_FORMAT_CLAUDE_STREAM_JSON)
+    reader.feed(json.dumps({"type": "stream_event", "event": {
+        "type": "content_block_start", "index": 0,
+        "content_block": {"type": "thinking", "thinking": ""}}}))
+    reader.feed(json.dumps({"type": "stream_event", "event": {
+        "type": "content_block_delta", "index": 0,
+        "delta": {"type": "thinking_delta", "thinking": "流过的"}}}))
+    reader.feed(json.dumps({"type": "stream_event", "event": {
+        "type": "content_block_stop", "index": 0}}))
+    closing = reader.feed(json.dumps({"type": "assistant", "message": {
+        "role": "assistant", "content": [
+            {"type": "thinking", "thinking": "流过的"},
+            {"type": "thinking", "thinking": "没流过的"},
+        ]}}))
+    # The sibling that never streamed is rendered — that is the fix. Block 0 is
+    # served in both places, which is reported rather than repeated.
+    assert "· 没流过的\n" in closing, closing
+    # Block 0 is not rendered a second time...
+    assert "· 流过的\n" not in closing, closing
+    # ...and not passed over in silence either.
+    assert "claude thinking:streamed and repeated" in reader.unread_kinds
+
+
+def test_words_and_a_count_are_never_both_shown_for_one_block():
+    """`shown` was briefly cleared to re-open the marker after a trailing newline,
+    which also told the close that nothing had been rendered — so the block printed
+    its words *and* a token count (kiro review, 2026-09-22)."""
+    from agora.execution.transcript import reader_for
+
+    reader = reader_for(EVENT_FORMAT_CLAUDE_STREAM_JSON)
+    rendered = "".join([
+        reader.feed(json.dumps({"type": "stream_event", "event": {
+            "type": "content_block_start", "index": 0,
+            "content_block": {"type": "thinking", "thinking": ""}}})),
+        reader.feed(json.dumps({"type": "stream_event", "event": {
+            "type": "content_block_delta", "index": 0,
+            "delta": {"type": "thinking_delta", "thinking": "第一行\n",
+                      "estimated_tokens": 12}}})),
+        reader.feed(json.dumps({"type": "stream_event", "event": {
+            "type": "content_block_stop", "index": 0}})),
+    ])
+    assert rendered == "· 第一行\n", rendered
+    assert "tokens" not in rendered
 
 
 def test_a_persons_prompt_is_echoed_whole_however_long_it_is():
