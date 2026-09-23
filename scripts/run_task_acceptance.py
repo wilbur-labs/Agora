@@ -289,6 +289,15 @@ async def _accept(temp_root: Path | None) -> dict[str, object]:
             timeout_seconds=10,
         )
         contract = load_task_contract(CONTRACT_PATH)
+        # A project takes no task until its goal is set (CR-61). The acceptance goes
+        # through the same human-facing path a user does rather than an exemption, so
+        # what it accepts is the product's own mainline.
+        projects.set_charter(
+            project_id,
+            goal=contract.goal,
+            non_goals=[],
+            success_criteria=["The formal Task mainline reaches human approval"],
+        )
         task = service.create(
             project_id=project_id,
             title=contract.title,
