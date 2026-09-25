@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shlex
 import stat
 
 import asyncssh
@@ -88,7 +89,7 @@ class _FakeConn:
 
     async def create_process(self, cmd, *, encoding=None, env=None):
         if self._captured_env is not None:
-            self._captured_env.update({"__env__": env})
+            self._captured_env.update({"__env__": env, "__cmd__": cmd})
         return _FakeProc()
 
     def close(self):
@@ -234,13 +235,37 @@ def test_launch_strips_credential_and_non_agora_env(monkeypatch):
             "PATH": "/usr/bin",
         },
     ))
-    sent = captured["__env__"]
+    sent = captured["__cmd__"]
     # ONLY the explicit three agent-identity vars cross — a finite allowlist, not a prefix.
-    assert sent == {"AGORA_TASK_ID": "t", "AGORA_RUN_ID": "r", "AGORA_PROJECT_ID": "p"}
-    assert "AGORA_SSH_KEY_x" not in sent          # credential excluded
-    assert "AGORA_CONTROL_PLANE_TOKEN" not in sent  # AGORA_-prefixed secret NOT leaked
-    assert "AWS_SECRET_ACCESS_KEY" not in sent
-    assert "PATH" not in sent
+    # They must travel *in the command*: an SSH env request is advisory and sshd's
+    # AcceptEnv default (LANG LC_*) drops AGORA_* silently, which left the agent on a
+    # real host with no run id (CR-22). Asserting the env= kwarg instead would pass
+    # while the host received nothing.
+    assert captured["__env__"] is None
+    assert "env AGORA_PROJECT_ID=p AGORA_RUN_ID=r AGORA_TASK_ID=t agent" in sent
+    # Neither the credential nor any other secret appears anywhere in what is sent.
+    for leaked in ("SECRET", "leak", "tok", "AGORA_SSH_KEY_x", "AGORA_CONTROL_PLANE_TOKEN",
+                   "AWS_SECRET_ACCESS_KEY", "PATH"):
+        assert leaked not in sent
+
+
+def test_launch_shell_hostile_identity_value_stays_one_word(monkeypatch):
+    # The carrier moved from an SSH env request into the command line (CR-22), so the
+    # escaping is now load-bearing for injection safety, not just cosmetics. An
+    # allowlisted var whose value carries quotes, a semicolon, spaces and a command
+    # substitution must still be a single `NAME=VALUE` word — never an extra command.
+    captured = {}
+    env = _env(monkeypatch, _FakeConn(captured_env=captured), secret_ref="AGORA_SSH_KEY_x")
+    hostile = "r'; touch /tmp/pwned; $(id) #"
+    _run(env.launch(
+        ["agent"],
+        env={"AGORA_TASK_ID": "t", "AGORA_RUN_ID": hostile, "AGORA_PROJECT_ID": "p"},
+    ))
+    sent = captured["__cmd__"]
+    # shlex.quote wraps the whole assignment; the hostile payload lives inside one word.
+    assert f"env AGORA_PROJECT_ID=p {shlex.quote('AGORA_RUN_ID=' + hostile)} AGORA_TASK_ID=t agent" == sent
+    # None of the injection tokens escape as their own shell syntax.
+    assert "; touch" not in sent.replace(shlex.quote("AGORA_RUN_ID=" + hostile), "")
 
 
 # --- RemoteProcessHandle basic contract ---

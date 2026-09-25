@@ -404,11 +404,28 @@ class RemoteEnvironment:
     # --- helpers ---
 
     @staticmethod
-    def _remote_cmd(argv: Sequence[str], cwd: Path | None) -> str:
+    def _remote_cmd(
+        argv: Sequence[str],
+        cwd: Path | None,
+        env: Mapping[str, str] | None = None,
+    ) -> str:
         """argv -> a single remote command line. Every element is shlex.quote'd so a
         prompt or path can never break out into extra remote words. cwd is normalized
-        to a POSIX path (the remote is Linux even when the client is Windows)."""
+        to a POSIX path (the remote is Linux even when the client is Windows).
+
+        ``env`` is prefixed as ``env NAME=VALUE ...`` rather than sent as an SSH env
+        request, because a request is only advisory: sshd forwards a variable only if
+        its ``AcceptEnv`` allows it, and the OpenSSH default is ``AcceptEnv LANG LC_*``
+        — which dropped every ``AGORA_*`` silently, leaving the agent on the host with
+        no run id at all (CR-22, measured against the test host: ``env | grep -c
+        '^AGORA_'`` came back 0). Putting the assignments in the command makes the
+        local and remote paths agree without asking anything of the server's config.
+        Each ``NAME=VALUE`` is quoted as one word; the names come from the caller's
+        allowlist, so nothing here can turn into an option or an extra command."""
         quoted = " ".join(shlex.quote(str(a)) for a in argv)
+        if env:
+            assignments = " ".join(shlex.quote(f"{k}={v}") for k, v in sorted(env.items()))
+            quoted = f"env {assignments} {quoted}"
         if cwd is not None:
             return f"cd {shlex.quote(_posix(cwd))} && {quoted}"
         return quoted
@@ -526,23 +543,25 @@ class RemoteEnvironment:
     ) -> ProcessHandle:
         if not argv:
             raise ValueError("argv must name a program to run")
-        cmd = self._remote_cmd(argv, cwd)
-        # launch is side-effecting: a connection failure is fail-closed (no retry).
-        conn = await self._ensure_conn()
         # SECURITY: the caller passes {**os.environ, AGORA_*}. Forwarding os.environ
-        # over SSH env requests would ship arbitrary local secrets (the secret_ref
-        # credential, AWS_*, tokens, proxy creds, ...) to the REMOTE host. Treat the
-        # caller's env as untrusted: forward ONLY an allowlist — the AGORA_* the agent
-        # needs — and nothing else. (Widening the allowlist is a config-layer decision,
-        # U5; the default is deny.)
-        remote_env: dict[str, str] | None = None
+        # to the REMOTE host would ship arbitrary local secrets (the secret_ref
+        # credential, AWS_*, tokens, proxy creds, ...). Treat the caller's env as
+        # untrusted: forward ONLY an allowlist — the AGORA_* the agent needs — and
+        # nothing else. (Widening the allowlist is a config-layer decision, U5; the
+        # default is deny.)
+        remote_env: dict[str, str] = {}
         if env is not None:
             remote_env = {
                 k: v for k, v in env.items()
                 if k in _LAUNCH_ENV_ALLOWLIST                   # only the explicit few
                 and not _env_name_eq(k, self._secret_ref)       # defense-in-depth: never the credential
             }
-        proc = await conn.create_process(cmd, encoding=None, env=remote_env)
+        # The assignments travel inside the command (see _remote_cmd): an SSH env
+        # request is advisory and the server's AcceptEnv default drops them (CR-22).
+        cmd = self._remote_cmd(argv, cwd, remote_env)
+        # launch is side-effecting: a connection failure is fail-closed (no retry).
+        conn = await self._ensure_conn()
+        proc = await conn.create_process(cmd, encoding=None)
         return RemoteProcessHandle(proc)
 
     # --- AsyncFilesystem (CR-11) ---
