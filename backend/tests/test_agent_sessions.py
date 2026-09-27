@@ -3992,7 +3992,7 @@ def test_a_cancel_drains_before_it_closes_the_gate(tmp_path):
 
     from agora.execution.dispatcher import ExecutionDispatcher
 
-    source = inspect.getsource(ExecutionDispatcher.execute)
+    source = inspect.getsource(ExecutionDispatcher._execute_once)
     cancel_branch = source[source.index("except asyncio.CancelledError:"):]
     cancel_branch = cancel_branch[: cancel_branch.index("raise")]
     wait_at = cancel_branch.index("asyncio.wait(")

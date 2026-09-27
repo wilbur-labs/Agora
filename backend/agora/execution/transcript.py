@@ -79,6 +79,12 @@ class TranscriptReader:
         #: the transcript was not enough: this has to reach the session record and
         #: stop the next resume.
         self.session_conflict: tuple[str, str] | None = None
+        #: What the provider itself said went wrong, when it said so in its own
+        #: event stream (codex ``turn.failed`` / ``error``). A failed turn used to
+        #: settle as "process exited with a non-zero status" while the real reason
+        #: — a usage limit and when it resets — sat in the last stdout line, which
+        #: the card then showed as raw JSON (CR-120). Last one wins.
+        self.vendor_error: str | None = None
 
     def feed(self, line: str) -> str:
         """Read one line of the provider's stdout; return text to display."""
@@ -204,7 +210,15 @@ class CodexJsonlReader(TranscriptReader):
                 return self._unread(f"{kind}(no item)")
             return self._read_item(kind, item)
         if kind in {"turn.failed", "error"}:
-            return _line(f"✖ {_text_of(event.get('error') or event.get('message'))}")
+            raw = event.get('error') or event.get('message')
+            # ``turn.failed`` nests it (``{"error": {"message": ...}}``); ``error``
+            # carries it flat. Both are the same sentence, so read it once.
+            if isinstance(raw, dict) and isinstance(raw.get('message'), str):
+                raw = raw['message']
+            text = _text_of(raw)
+            if text.strip():
+                self.vendor_error = text.strip()
+            return _line(f"✖ {text}")
         if kind in self.silent_kinds:
             return ""
         return self._unread(kind)

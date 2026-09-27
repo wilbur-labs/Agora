@@ -100,6 +100,10 @@ export function ProjectChat({
   const [ownText, setOwnText] = useState("");
   const [freshKey, setFreshKey] = useState<string | null>(null);
   const [ideas, setIdeas] = useState<IdeaTurn[]>([]);
+  // What the person just sent, shown as their bubble the moment they send it (CR-119).
+  // The kickoff's passes take a minute; the bubble used to appear only when the agent's
+  // answer came back, so the message seemed to vanish while the agent thought.
+  const [sent, setSent] = useState<string | null>(null);
   const streamRef = useRef<HTMLDivElement | null>(null);
   // Every request that may set `read` takes a ticket; only the newest may apply its
   // answer, so a re-read started by a failure cannot land after the retry that worked.
@@ -139,11 +143,16 @@ export function ProjectChat({
     // The newest turn is what the person is looking at.
     const el = streamRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [step.kind, record?.revision, ideas.length, busy]);
+  }, [step.kind, record?.revision, ideas.length, busy, sent]);
 
-  const run = async (what: NonNullable<typeof busy>, action: () => Promise<KickoffPayload>) => {
+  const run = async (
+    what: NonNullable<typeof busy>,
+    action: () => Promise<KickoffPayload>,
+    said?: { text: string; restore: () => void },
+  ) => {
     setBusy(what);
     setError(null);
+    if (said) setSent(said.text);
     const mine = ++ticket.current;
     const revisionBefore = read?.record?.revision ?? null;
     try {
@@ -155,10 +164,18 @@ export function ProjectChat({
       // conversation shows the record as it is rather than the step it was on; when it
       // did move, the failure banner would contradict what is now on screen.
       const after = await load();
-      if (after !== null && (after.record?.revision ?? null) !== revisionBefore) setError(null);
+      const moved = after !== null && (after.record?.revision ?? null) !== revisionBefore;
+      if (moved) setError(null);
+      // The box was emptied on send; a failure puts the words back to retry from — but
+      // only when the record did not move. If it did, the send most likely landed (the
+      // response was lost, or another tab got there first) and the box now belongs to
+      // the next question; putting the old words there would save them as its answer
+      // on the next send (kiro round 3 on CR-119).
+      else said?.restore();
       if (what === "adopt") onAdopted();
     } finally {
       setBusy(null);
+      setSent(null);
     }
   };
 
@@ -169,20 +186,21 @@ export function ProjectChat({
     const text = value.trim();
     if (!text) return;
     setFreshKey(current.question.id);
-    // The boxes are cleared only once the answer has landed. Clearing them first threw
-    // away what the person had typed whenever the request failed — a paragraph of
-    // Japanese gone, with nothing to retry from.
-    void run("answer", async () => {
-      const payload = await saveKickoffAnswers(
-        projectId,
-        { ...record.answers, [current.question.id]: text },
-        record.revision,
-      );
-      setDraftText("");
-      setWritingOwn(false);
-      setOwnText("");
-      return payload;
-    });
+    // The boxes empty on send, because the words are now on screen as the person's
+    // bubble (CR-119). A failure restores them exactly — a paragraph of Japanese must
+    // never be lost to a request that did not land.
+    const before = { draftText, writingOwn, ownText };
+    setDraftText("");
+    setWritingOwn(false);
+    setOwnText("");
+    void run(
+      "answer",
+      () => saveKickoffAnswers(projectId, { ...record.answers, [current.question.id]: text }, record.revision),
+      {
+        text: value === YOU_DECIDE_ANSWER ? t("projectChat.question.youDecide") : text,
+        restore: () => { setDraftText(before.draftText); setWritingOwn(before.writingOwn); setOwnText(before.ownText); },
+      },
+    );
   };
 
   const clearAnswer = (questionId: string) => {
@@ -323,6 +341,12 @@ export function ProjectChat({
             <IdeaTurnView key={turn.key} turn={turn} t={t} busy={busy} onPlace={place} />
           ))}
 
+          {sent !== null && (
+            <Bubble who="you" t={t}>
+              <p className="whitespace-pre-wrap">{sent}</p>
+            </Bubble>
+          )}
+
           {busy !== null && busy !== "place" && (
             <p className="flex items-center gap-2 text-xs text-muted-foreground">
               <Loader2 className="size-3.5 animate-spin" />
@@ -345,11 +369,12 @@ export function ProjectChat({
           busy={busy !== null}
           onSend={(text) => {
             if (mode.kind === "brief") {
-              void run("start", async () => {
-                const payload = await startKickoff(projectId, text, read?.record?.revision ?? null);
-                setDraftText("");
-                return payload;
-              });
+              setDraftText("");
+              void run(
+                "start",
+                () => startKickoff(projectId, text, read?.record?.revision ?? null),
+                { text, restore: () => setDraftText(text) },
+              );
             } else if (mode.kind === "answer") {
               answerCurrent(text);
             } else if (mode.kind === "idea") {
@@ -359,11 +384,12 @@ export function ProjectChat({
               // one, with the draft it is about. The box is only offered because the
               // remark reaches the agent; text that went nowhere would be a lie told by
               // a textarea.
-              void run("refine", async () => {
-                const payload = await refineKickoff(projectId, record.revision, text);
-                setDraftText("");
-                return payload;
-              });
+              setDraftText("");
+              void run(
+                "refine",
+                () => refineKickoff(projectId, record.revision, text),
+                { text, restore: () => setDraftText(text) },
+              );
             }
           }}
         />
@@ -541,6 +567,14 @@ function RecordStream(props: {
             </Button>
             <RedoButton t={t} busy={busy !== null} onRedo={props.onRedo} />
           </div>
+        </Bubble>
+      )}
+
+      {/* What the person said that produced this draft. Shown from the record, so the
+          bubble that appeared on send (CR-119) does not vanish when the answer lands. */}
+      {step.kind === "proposed" && typeof record.refine_note === "string" && record.refine_note.trim() !== "" && (
+        <Bubble who="you" t={t}>
+          <p className="whitespace-pre-wrap">{record.refine_note}</p>
         </Bubble>
       )}
 

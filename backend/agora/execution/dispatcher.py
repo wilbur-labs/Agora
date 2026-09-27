@@ -38,6 +38,7 @@ from .sessions import (
     AgentSessionStore,
 )
 from .transcript import TranscriptReader, reader_for
+from .review_fallback import REVIEW_SUBSTITUTES, failure_reason, is_usage_limit, readable_failure
 from .deliverables import (
     MAX_FILES,
     baseline_state,
@@ -349,7 +350,7 @@ class ExecutionDispatcher:
         )
 
     def schedule(self, run_id: str) -> None:
-        task = asyncio.create_task(self._execute_guarded(run_id), name=f"agora-run-{run_id}")
+        task = asyncio.create_task(self._execute_and_gate(run_id), name=f"agora-run-{run_id}")
         self._scheduled[task] = run_id
         task.add_done_callback(self._scheduled_done)
 
@@ -471,6 +472,21 @@ class ExecutionDispatcher:
             return None
         finally:
             await components.aclose()
+
+    async def _execute_and_gate(self, run_id: str) -> ExecutionRun:
+        """``_execute_guarded``, then the pre-launch review gate on whatever it settled.
+
+        ``execute`` already gates the runs it returns; this covers the ones it did not
+        return — an exception that ``_execute_guarded`` turned into a FAILED row
+        (kiro round 3 on CR-121). Asking twice is harmless: the gate only acts while
+        the worker run still owes a review, and the first answer settles that.
+        """
+        settled = await self._execute_guarded(run_id)
+        try:
+            await self._gate_prelaunch_review_failure(settled)
+        except Exception:
+            pass  # the startup reconciliation remains the backstop
+        return settled
 
     async def _execute_guarded(self, run_id: str) -> ExecutionRun:
         try:
@@ -648,6 +664,41 @@ class ExecutionDispatcher:
         task.exception()
 
     async def execute(self, run_id: str) -> ExecutionRun:
+        settled = await self._execute_once(run_id)
+        await self._gate_prelaunch_review_failure(settled)
+        return settled
+
+    async def _gate_prelaunch_review_failure(self, settled: ExecutionRun) -> None:
+        """A review run that failed before it ever launched still gets its gate.
+
+        Every pre-launch refusal in ``_execute_once`` / ``_execute_remote`` — adapter
+        gone, workspace not a provisioned worktree, session refused, the process
+        failing to start — settles the row with ``finish`` and returns, without
+        ``_after_run``. For a review run that left the worker run owing a review with
+        no gate item anywhere: the task refused every new worker run and the inbox
+        was empty until a restart's reconciliation noticed. The substitute reviewer
+        (CR-121) made it likely rather than rare — a kiro worktree that was never
+        provisioned is exactly this — and the codex review of CR-121 found it.
+
+        Asked of the record, not of which branch returned: only when the worker run
+        still owes a review is ``_after_run`` called, so a review that launched and
+        failed — which raised its own blocker already — is not gated twice.
+        """
+        if role_of(settled.result_metadata) != ROLE_REVIEW:
+            return
+        if settled.state not in {RunState.FAILED, RunState.TIMED_OUT}:
+            return
+        reviews_run_id = (settled.result_metadata or {}).get(REVIEWS_RUN_KEY)
+        if not reviews_run_id:
+            return
+        try:
+            owed = self.store.reviews_owed(task_id=settled.task_id)
+        except Exception:
+            return  # the startup reconciliation remains the backstop
+        if any(row.get("run_id") == reviews_run_id for row in owed):
+            await self._after_run(settled, ROLE_REVIEW, reviews_run_id)
+
+    async def _execute_once(self, run_id: str) -> ExecutionRun:
         initial = self.store.require(run_id)
         if initial.state != RunState.QUEUED:
             return initial
@@ -1175,7 +1226,7 @@ class ExecutionDispatcher:
                 )
                 error = (
                     f"timeout after {running.timeout_seconds}s" if timed_out
-                    else (None if proc.returncode == 0 else "process exited with a non-zero status")
+                    else (None if proc.returncode == 0 else _nonzero_reason(transcript))
                 )
                 # Why it failed, into the transcript. The window reads the
                 # conversation, and the record fallback cannot help here: the
@@ -1478,7 +1529,7 @@ class ExecutionDispatcher:
                 )
                 error = (
                     f"timeout after {running.timeout_seconds}s" if timed_out
-                    else (None if handle.returncode == 0 else "process exited with a non-zero status")
+                    else (None if handle.returncode == 0 else _nonzero_reason(transcript))
                 )
                 if target is not RunState.SUCCEEDED:
                     self.run_logs.append(run_id, _failure_note(error, err))
@@ -1753,7 +1804,8 @@ class ExecutionDispatcher:
             elif role == ROLE_REVIEW and finished.state == RunState.SUCCEEDED:
                 self._raise_review_attention(finished, reviews_run_id, AttentionKind.APPROVAL)
             elif role == ROLE_REVIEW and finished.state in {RunState.FAILED, RunState.TIMED_OUT}:
-                self._raise_review_attention(finished, reviews_run_id, AttentionKind.BLOCKER)
+                if not await self._substitute_review(finished, reviews_run_id):
+                    self._raise_review_attention(finished, reviews_run_id, AttentionKind.BLOCKER)
         except Exception as exc:
             # Orchestration is best-effort for the run that just completed: its own
             # outcome is already recorded and must not change. But "best-effort"
@@ -2115,7 +2167,53 @@ class ExecutionDispatcher:
             internal=True,
         )
 
-    async def _dispatch_review(self, worker_run: ExecutionRun) -> None:
+    def _linked_reviews(self, task_id: str, worker_run_id: str) -> list[Any]:
+        """Every review run recorded against one worker run, newest first."""
+        return [
+            run for run in self.store.list(task_id=task_id, limit=500)
+            if run.role == ROLE_REVIEW and run.reviews_run_id == worker_run_id
+        ]
+
+    async def _substitute_review(self, failed: ExecutionRun, reviews_run_id: str | None) -> bool:
+        """Hand a review whose reviewer ran out of quota to its substitute (CR-121).
+
+        True when a substitute review was dispatched — ``_dispatch_review`` then owns
+        every outcome, including recording a blocker if the substitute cannot be
+        queued. False when this failure is not a substitution case, and the caller
+        raises the ordinary blocker.
+
+        Narrow on purpose: only a usage limit, only the configured pair, only one hop
+        (a worker run that already has another review linked gets no second
+        substitute), never the agent that did the work, and only while
+        ``auto_review`` is on. The substitute reviews the
+        same worker run, so its verdict is the gate for that work and the failed run
+        stays on record beside it.
+        """
+        substitute = REVIEW_SUBSTITUTES.get(failed.adapter)
+        if not (self.auto_review and substitute and reviews_run_id):
+            return False
+        if not is_usage_limit(failed.error_message) or substitute not in self.adapters:
+            return False
+        worker = self.store.get(reviews_run_id)
+        if worker is None:
+            return False
+        if worker.adapter == substitute:
+            # The substitute wrote this code. A review by the implementer is not an
+            # independent review (AGENTS.md: the reviewer is never the model that wrote
+            # the code), so the blocker stands rather than a self-review passing as one.
+            return False
+        if any(run.run_id != failed.run_id for run in self._linked_reviews(failed.task_id, reviews_run_id)):
+            return False
+        # The failed review's own prompt, not a fresh one: that prompt was built from
+        # the worker's worktree when the worker settled, and the worktree is shared by
+        # the project's runs on this adapter — rebuilding it now could hand kiro a
+        # later version than the one this approval will be bound to (kiro round 3).
+        await self._dispatch_review(worker, reviewer=substitute, prompt=failed.prompt or None)
+        return True
+
+    async def _dispatch_review(
+        self, worker_run: ExecutionRun, *, reviewer: str | None = None, prompt: str | None = None,
+    ) -> None:
         """Queue an independent review run by the project's reviewer agent.
 
         Every path that ends without a review run records a blocker naming what
@@ -2131,7 +2229,7 @@ class ExecutionDispatcher:
                 reason=f"项目 {worker_run.project_id} 已不在配置中,无法确定评审代理。",
             )
             return
-        reviewer = project.reviewer_agent
+        reviewer = reviewer or project.reviewer_agent
         if reviewer not in self.adapters:
             # A pinned runtime is never silently substituted, and "skip the review"
             # is a substitution: it replaces an independent review with none.
@@ -2170,11 +2268,12 @@ class ExecutionDispatcher:
                 )
                 return
         try:
-            prompt = (
-                await self._review_prompt_remote(worker_run, worker_adapter)  # type: ignore[arg-type]
-                if is_remote(worker_adapter)
-                else await asyncio.to_thread(self._review_prompt, worker_run)
-            )
+            if prompt is None:
+                prompt = (
+                    await self._review_prompt_remote(worker_run, worker_adapter)  # type: ignore[arg-type]
+                    if is_remote(worker_adapter)
+                    else await asyncio.to_thread(self._review_prompt, worker_run)
+                )
             request = CreateRunRequest(
                 task_id=worker_run.task_id,
                 adapter=reviewer,
@@ -2243,12 +2342,25 @@ class ExecutionDispatcher:
         self, review_run: ExecutionRun, reviews_run_id: str | None, kind: AttentionKind,
     ) -> None:
         """Turn a completed review run into a human attention item on the task."""
+        stood_in_for = self._stood_in_for(review_run, reviews_run_id)
         if kind == AttentionKind.APPROVAL:
             title = f"评审完成,待你批准(评审:{review_run.adapter})"
+            if stood_in_for is not None:
+                title = (
+                    f"评审完成,待你批准(评审:{review_run.adapter},顶替 {stood_in_for.adapter}:"
+                    f"{readable_failure(stood_in_for.adapter, stood_in_for.error_message)})"
+                )
             body = review_run.stdout_tail or "(评审未产出文本)"
         else:
             title = f"评审运行未完成(评审:{review_run.adapter})"
-            body = review_run.error_message or review_run.stderr_tail or "(无错误详情)"
+            reason = readable_failure(
+                review_run.adapter, failure_reason(review_run.error_message, review_run.stderr_tail),
+            )
+            body = (
+                f"{review_run.adapter} 的复核没有完成:{reason}。\n"
+                "这次实现还没有任何复核结论。回复或取消本条之后任务就能继续,"
+                "但那样这次实现就是没有经过复核被接受的。复核的原始输出在对话里这张复核卡上。"
+            )
         AttentionStore(self.store.tasks).create(
             CreateAttentionRequest(
                 task_id=review_run.task_id,
@@ -2261,6 +2373,30 @@ class ExecutionDispatcher:
             ),
             internal=True,  # the control plane's own gate item; see AttentionStore.create
         )
+
+    def _stood_in_for(self, review_run: ExecutionRun, reviews_run_id: str | None) -> ExecutionRun | None:
+        """The failed review this one substituted for, if it was a substitute.
+
+        Derived from the record rather than stored: a review is a substitute when an
+        earlier review of the same worker run, by the reviewer it stands in for,
+        failed on a usage limit. Nothing new is written, so nothing can drift.
+        """
+        if not reviews_run_id:
+            return None
+        try:
+            linked = self._linked_reviews(review_run.task_id, reviews_run_id)
+        except Exception:
+            return None
+        for run in linked:
+            if (
+                run.run_id != review_run.run_id
+                and REVIEW_SUBSTITUTES.get(run.adapter) == review_run.adapter
+                and run.state in {RunState.FAILED, RunState.TIMED_OUT}
+            ):
+                full = self.store.get(run.run_id)
+                if full is not None and is_usage_limit(full.error_message):
+                    return full
+        return None
 
     def _workspace_is_allowed(self, workspace: Path, project_root: Path) -> bool:
         allowed_roots = [project_root.expanduser().resolve(), *self.allowed_workspace_roots]
@@ -3077,6 +3213,18 @@ def _settlement_stdout(
     return "\n".join(transcript.settlement.values()), False
 
 
+def _nonzero_reason(transcript: TranscriptReader) -> str:
+    """Why a run that exited non-zero failed, in the provider's own words if it gave any.
+
+    "process exited with a non-zero status" is what Agora can conclude on its own;
+    when the CLI said why in its event stream — codex ``turn.failed``: "You've hit
+    your usage limit ... try again at 8:44 PM" — that sentence is the reason, and it
+    is what the card, the gate and the substitution rule read (CR-120 / CR-121).
+    """
+    said = transcript.vendor_error
+    return f"agent reported: {said}" if said else "process exited with a non-zero status"
+
+
 def _failure_note(error: str | None, stderr_tail: str) -> str:
     """The turn's failure, as the conversation should read it.
 
@@ -3086,7 +3234,10 @@ def _failure_note(error: str | None, stderr_tail: str) -> str:
     permission. A window showing only the first tells the person their message
     failed without telling them why.
     """
-    lines = [f"✖ {error}"] if error else []
+    # A reason the agent reported is already in the transcript: its reader drew the
+    # provider's own ``✖`` line as the event streamed past. Writing it again here put
+    # the same sentence on the card twice.
+    lines = [f"✖ {error}"] if error and not error.startswith("agent reported: ") else []
     tail = (stderr_tail or "").strip()
     if tail:
         lines.extend(tail.splitlines()[-20:])

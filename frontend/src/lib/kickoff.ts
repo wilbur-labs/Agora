@@ -54,6 +54,9 @@ export interface KickoffRecordLike {
   mockup_note: string;
   read_notes: readonly string[];
   proposal: KickoffProposalLike | null;
+  /** What the person said about the previous draft, which this proposal was redrawn
+   *  from. Absent until the first refine with words; only the latest is kept. */
+  refine_note?: string | null;
   context: {
     readme: boolean;
     tree_entries: number;

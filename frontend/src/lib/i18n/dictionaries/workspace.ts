@@ -316,6 +316,10 @@ export const workspace = {
       promptSummary: "The prompt for step {step} (open to read it)",
       seedVerify: "When done, end with: which files changed, how to start or verify it (commands, URL), and where any screenshots are. The person verifies from the conversation, not from a log.",
       replyFolded: "Showing the end of a long reply; the whole is under \"expand\" on the card.",
+      reviewStoodIn: "standing in for {adapter} (out of quota)",
+      reviewQuota: "{adapter} is out of quota, so this review did not finish.",
+      reviewQuotaUntil: "{adapter} is out of quota (it says it is usable again after {when}), so this review did not finish.",
+      reviewFailedBecause: "{adapter}'s review did not finish: {reason}",
       status: {
         running: "{adapter} · step {step} running",
         waiting: "{count} waiting on you",
@@ -1217,6 +1221,10 @@ export const workspace = {
       promptSummary: "开始第 {step} 步的提示词（点开看全文）",
       seedVerify: "做完后请在最后写清：改了哪些文件；怎么启动或验证（命令、地址）；截图放在哪。我在对话里看结果，不看日志。",
       replyFolded: "回复较长，只显示末尾；全文在卡片「展开」里。",
+      reviewStoodIn: "顶替 {adapter}（额度用完）",
+      reviewQuota: "{adapter} 额度用完，这次复核没做完。",
+      reviewQuotaUntil: "{adapter} 额度用完（它说 {when} 之后可以再用），这次复核没做完。",
+      reviewFailedBecause: "{adapter} 的复核没做完：{reason}",
       status: {
         running: "{adapter} · 第 {step} 步 运行中",
         waiting: "{count} 条等你",

@@ -35,6 +35,7 @@ import { CONTINUE_ADAPTER, CONTINUE_TIMEOUT_SECONDS, provisionResultGate, seedCo
 import { getWorkspaceStatus, provisionWorkspace } from "@/lib/workspaces";
 import { listTaskEvents } from "@/lib/control-plane";
 import { nextStepAfter, noNextStepIsCertain, reviewFixPrompt } from "@/lib/auto-advance";
+import { reviewFailure, stoodInFor } from "@/lib/review-failure";
 import {
   activeRunsOf, composeIntentOf, dispatchTargetOf, streamItemsOf, streamStatusOf,
   visibleTranscriptLines,
@@ -933,7 +934,18 @@ export function ProjectStream({
                 {chat && item.unit.run.state !== "queued" && item.unit.run.state !== "running" && chatChanges(item.unit.run.run_id)}
                 {item.unit.nested.map((review) => {
                   const rec = details[review.run_id];
-                  const verdict = rec !== undefined && rec !== "failed" ? rec.stdout_tail.trim() : "";
+                  // Only a review that finished has a verdict. A failed one's stdout is
+                  // the provider's raw event stream — JSON lines, with the one sentence
+                  // that mattered at the very end (CR-120). It gets its transcript and its
+                  // reason instead.
+                  const verdict = rec !== undefined && rec !== "failed" && review.state === "succeeded" ? rec.stdout_tail.trim() : "";
+                  const failure = rec !== undefined && rec !== "failed" && review.state !== "succeeded" && !(review.state === "queued" || review.state === "running")
+                    ? reviewFailure(rec.error_message, rec.stderr_tail) : null;
+                  const reasonOf = (runId: string) => {
+                    const other = details[runId];
+                    return other !== undefined && other !== "failed" ? other.error_message : undefined;
+                  };
+                  const standIn = stoodInFor(review, item.unit.nested, reasonOf);
                   const reviewLive = review.state === "queued" || review.state === "running";
                   // A review takes minutes, and while it ran this drew nothing at all —
                   // the conversation looked idle with a reviewer working in it. Running,
@@ -953,6 +965,7 @@ export function ProjectStream({
                     <div key={review.run_id} className="min-w-0 max-w-[64ch] rounded-xl border border-l-4 border-l-amber-500 bg-card px-3 py-2 text-[14px] leading-relaxed">
                       <div className="mb-1 flex flex-wrap items-center gap-x-2 font-mono text-[10px] text-muted-foreground">
                         <span>{t("workspace.stream.reviewReply", { adapter: adapterLabel(review.adapter) })}</span>
+                        {standIn && <span className="text-amber-700 dark:text-amber-400">{t("workspace.stream.reviewStoodIn", { adapter: adapterLabel(standIn.adapter) })}</span>}
                         {reviewLive
                           ? <><span className="inline-flex items-center gap-1 text-amber-700 dark:text-amber-400"><span className="size-1.5 animate-pulse rounded-full bg-current" />{te("runState", review.state)}</span>
                               <button type="button" onClick={() => void stopTurn(review)} disabled={stopping.has(review.run_id)} className="underline-offset-2 hover:underline disabled:opacity-50">{t(stopping.has(review.run_id) ? "workspace.stream.stopping" : "workspace.stream.stop")}</button></>
@@ -971,6 +984,13 @@ export function ProjectStream({
                         : reviewTurn !== ""
                           ? <TranscriptView text={reviewTurn} holdLastLine={reviewHold} />
                           : <p className="text-[12px] text-muted-foreground">{t(reviewLive ? "workspace.stream.transcriptWaiting" : "workspace.stream.run.noOutput")}</p>}
+                      {failure && (
+                        <p className="mt-1 text-[13px] text-destructive">
+                          {failure.kind === "quota"
+                            ? t(failure.when ? "workspace.stream.reviewQuotaUntil" : "workspace.stream.reviewQuota", { adapter: adapterLabel(review.adapter), when: failure.when ?? "" })
+                            : t("workspace.stream.reviewFailedBecause", { adapter: adapterLabel(review.adapter), reason: failure.text })}
+                        </p>
+                      )}
                     </div>
                   );
                 })}
