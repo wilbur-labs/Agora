@@ -17,7 +17,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.concurrency import run_in_threadpool
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from agora.config.settings import get_config
 from agora.fsprobe import PathProbe, probe_path
@@ -25,6 +25,15 @@ from agora.tasks.router import get_project_registry, get_task_store
 from agora.tasks.store import TaskStore
 from agora.execution.adapters import build_adapter_registry
 from agora.execution.dispatcher import token_capturable_adapters
+from agora.execution.environment_registry_models import (
+    ENVIRONMENT_ID_PATTERN,
+    RemoteEnvironmentRecord,
+)
+from agora.execution.environment_registry_store import (
+    RemoteEnvironmentExistsError,
+    RemoteEnvironmentNotFoundError,
+    RemoteEnvironmentStore,
+)
 from agora.execution.models import RunState
 from agora.execution.router import get_execution_store
 from agora.execution.store import ExecutionStore
@@ -45,6 +54,11 @@ from agora.workspaces.models import ProvisionRequest
 from agora.workspaces.provisioner import WorkspaceProvisioner
 
 router = APIRouter(tags=["settings"])
+
+
+def get_remote_environment_store() -> RemoteEnvironmentStore:
+    """The registered-remote-environment store, on the one control-plane database."""
+    return RemoteEnvironmentStore(resolve_control_plane_db_path(get_config()))
 
 
 def _provisioner_for(registry: ProjectRegistry) -> WorkspaceProvisioner:
@@ -963,3 +977,155 @@ def _writable(path: Path, probe: PathProbe) -> bool:
         return os.access(target, os.W_OK)
     except OSError:
         return False
+
+
+# ------------------------------------------------------- remote environments (CR-4 slice 1)
+#
+# The registry the mockup's environment screen sits on. A remote environment is the
+# persisted SSH section of an execution adapter (see execution/remote_wiring.py's note:
+# the config already binds an adapter to a host, and this screen is a layer over that).
+#
+# Slice 1 is CRUD + list only: registering an environment records it, it does NOT yet
+# feed the runtime (a run still resolves its remote target from config.yaml). Connection
+# testing, TOFU fingerprint confirmation and a credential home are slice 2, which needs a
+# real host. See task.yaml CR-4 anchor.
+#
+# A credential value is never accepted or returned here — `secret_ref` names an env var
+# (NFR-2 / SECURITY-12, public repo). The list reports whether that env var is currently
+# set, never its value, exactly as `_control_plane_auth` does above.
+
+
+class RemoteEnvironmentRequest(BaseModel):
+    """The registerable fields of a remote environment. Mirrors
+    ``RemoteAdapterConfig`` plus the registry's id + label. No credential field
+    exists — only ``secret_ref``, the name of the env var that holds it."""
+
+    environment_id: str = Field(min_length=1, max_length=64, pattern=ENVIRONMENT_ID_PATTERN.pattern)
+    label: str = Field(min_length=1, max_length=200)
+    ssh_host: str = Field(min_length=1, max_length=255)
+    ssh_port: int = Field(default=22, ge=1, le=65535)
+    ssh_user: str = Field(min_length=1, max_length=255)
+    remote_workspace: str = Field(min_length=1, max_length=4096)
+    remote_project_root: str = Field(min_length=1, max_length=4096)
+    # Constrained to the AGORA_ namespace on purpose. `secret_present` below probes
+    # os.environ for this name, so an unconstrained secret_ref would turn the list
+    # endpoint into an oracle for whether *any* server env var is set (e.g. PATH,
+    # AWS_SECRET_ACCESS_KEY) — it never returns the value, but the presence probe
+    # itself should not reach outside the credentials this feature owns. The
+    # AGORA_ prefix matches the convention adapters.py already documents
+    # (secret_ref, e.g. AGORA_SSH_KEY_<adapter>).
+    secret_ref: str = Field(min_length=1, max_length=255, pattern=r"^AGORA_[A-Za-z0-9_]+$")
+    host_key_mode: str = Field(default="strict", pattern=r"^(strict|tofu)$")
+    known_hosts_path: str | None = Field(default=None, max_length=4096)
+    cleanup_worktree: bool = False
+
+    @model_validator(mode="after")
+    def _tofu_needs_known_hosts(self) -> "RemoteEnvironmentRequest":
+        # tofu pins the first-seen key into a known_hosts file, so tofu with no file
+        # to pin into is refused here, at register time — not deferred to a slice-2
+        # connect failure. This is the authority the frontend echoes; without it the
+        # server would accept a config the form blocks and the runtime cannot use
+        # (RemoteEnvironment._known_hosts_arg raises at connect for exactly this).
+        if self.host_key_mode == "tofu" and not (self.known_hosts_path or "").strip():
+            raise ValueError("trust-on-first-use (tofu) requires a known_hosts_path")
+        return self
+
+    def to_record(self) -> RemoteEnvironmentRecord:
+        return RemoteEnvironmentRecord(
+            environment_id=self.environment_id,
+            label=self.label,
+            ssh_host=self.ssh_host,
+            ssh_port=self.ssh_port,
+            ssh_user=self.ssh_user,
+            remote_workspace=self.remote_workspace,
+            remote_project_root=self.remote_project_root,
+            secret_ref=self.secret_ref,
+            host_key_mode=self.host_key_mode,  # type: ignore[arg-type]
+            known_hosts_path=self.known_hosts_path,
+            cleanup_worktree=self.cleanup_worktree,
+        )
+
+
+def _remote_environment_view(record: RemoteEnvironmentRecord) -> dict[str, Any]:
+    """One registered environment for the UI. The credential itself is never here:
+    ``secret_ref`` is the env-var name, and ``secret_present`` says only whether that
+    variable is currently set — never its value. This is the same distinction
+    ``_control_plane_auth`` keeps, and it is what lets the screen tell "registered but
+    the credential env var is not set on this machine" from "ready", without ever
+    handling the secret."""
+    return {
+        "environment_id": record.environment_id,
+        "label": record.label,
+        "ssh_host": record.ssh_host,
+        "ssh_port": record.ssh_port,
+        "ssh_user": record.ssh_user,
+        "remote_workspace": record.remote_workspace,
+        "remote_project_root": record.remote_project_root,
+        "secret_ref": record.secret_ref,
+        "secret_present": bool(os.environ.get(record.secret_ref, "").strip()),
+        "host_key_mode": record.host_key_mode,
+        "known_hosts_path": record.known_hosts_path,
+        "cleanup_worktree": record.cleanup_worktree,
+        "created_at": record.created_at,
+        "updated_at": record.updated_at,
+    }
+
+
+@router.get("/remote-environments")
+def list_remote_environments(
+    store: RemoteEnvironmentStore = Depends(get_remote_environment_store),
+) -> dict[str, Any]:
+    """Every registered remote environment. Credentials are never returned; each
+    entry reports only whether its ``secret_ref`` env var is currently set."""
+    return {"environments": [_remote_environment_view(r) for r in store.list_environments()]}
+
+
+@router.post("/remote-environments", status_code=status.HTTP_201_CREATED)
+def create_remote_environment(
+    request: RemoteEnvironmentRequest,
+    store: RemoteEnvironmentStore = Depends(get_remote_environment_store),
+) -> dict[str, Any]:
+    """Register a remote environment. Slice 1: records it only — it does not yet
+    feed the runtime. A duplicate id is 409; an invalid SSH field set is 422."""
+    try:
+        record = store.insert(request.to_record())
+    except RemoteEnvironmentExistsError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from None
+    except (ValueError, ValidationError) as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from None
+    return _remote_environment_view(record)
+
+
+@router.put("/remote-environments/{environment_id}")
+def update_remote_environment(
+    environment_id: str,
+    request: RemoteEnvironmentRequest,
+    store: RemoteEnvironmentStore = Depends(get_remote_environment_store),
+) -> dict[str, Any]:
+    """Replace an existing environment's editable fields. The id in the path is the
+    row updated; a mismatching id in the body is refused rather than silently
+    creating a second row or renaming in place."""
+    if request.environment_id != environment_id:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "environment_id in the body must match the id in the path",
+        )
+    try:
+        record = store.update(environment_id, request.to_record())
+    except RemoteEnvironmentNotFoundError:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, f"Unknown remote environment: {environment_id}"
+        ) from None
+    except (ValueError, ValidationError) as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from None
+    return _remote_environment_view(record)
+
+
+@router.delete("/remote-environments/{environment_id}")
+def delete_remote_environment(
+    environment_id: str,
+    store: RemoteEnvironmentStore = Depends(get_remote_environment_store),
+) -> dict[str, Any]:
+    """Forget a registered environment. Idempotent: deleting an id that is already
+    gone reports ``was_registered: false`` rather than 404."""
+    return {"was_registered": store.delete(environment_id)}

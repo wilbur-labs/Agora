@@ -1,31 +1,35 @@
 "use client";
 
 /**
- * Environments — mockup v2, screen 3, restricted to what Agora can actually read.
+ * Environments — mockup v2, screen 3.
  *
- * The mockup shows three machines: this one, a VPS, and a third that is known
- * about but unreachable. **Two of those three have no data source.** There is no
- * environment registry: `agora/environments.py` defines the `run` + `probe` seam
- * (W2) and exactly one implementation, `LocalEnvironment`. Registering a remote
- * host is W3-a, and W3-a is not built.
- *
- * So this screen shows the one environment that exists, from real reads, and says
- * plainly that the others cannot be registered yet. It does not draw a greyed-out
- * card for a machine nobody told Agora about — that would be inventing the very
- * inventory the mockup's own note says must never be confused with an empty one.
+ * The top card is this machine, from real reads. Below it is the remote-environment
+ * registry (CR-4 slice 1): registered SSH hosts a run could use, with a form to add,
+ * edit and delete them. Registering records the host — it does not connect yet; a run
+ * still resolves its remote target from config.yaml until the runtime is wired (slice 2,
+ * which also adds a test connection, TOFU fingerprint confirmation and a credential
+ * home). The credential itself is never shown or entered here: an environment carries
+ * `secret_ref`, the name of an env var, and the list reports only whether that variable
+ * is currently set.
  */
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { AlertTriangle, CheckCircle2, HelpCircle, Server, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, HelpCircle, Pencil, Plus, Server, Trash2, XCircle } from "lucide-react";
 
 import { DeliveryShell } from "@/components/delivery-shell";
+import { RemoteEnvironmentForm } from "@/components/remote-environment-form";
+import { Button } from "@/components/ui/button";
 import { useI18n } from "@/lib/i18n";
 import {
+  deleteRemoteEnvironment,
   getSettingsOverview,
+  listRemoteEnvironments,
+  type RemoteEnvironment,
   type RuntimeCapabilities,
   type SettingsOverview,
 } from "@/lib/control-plane";
+import { environmentReadiness } from "@/lib/remote-environments";
 import { probeRuntimes } from "@/lib/runtime-probe";
 
 export default function EnvironmentsPage() {
@@ -34,6 +38,17 @@ export default function EnvironmentsPage() {
   const [runtimesFailed, setRuntimesFailed] = useState(false);
   const [overview, setOverview] = useState<SettingsOverview | null>(null);
   const [overviewFailed, setOverviewFailed] = useState(false);
+
+  const [remotes, setRemotes] = useState<RemoteEnvironment[] | null>(null);
+  const [remotesFailed, setRemotesFailed] = useState(false);
+  // The form's target: null = closed, "new" = registering, or an environment to edit.
+  const [formTarget, setFormTarget] = useState<"new" | RemoteEnvironment | null>(null);
+
+  function reloadRemotes() {
+    listRemoteEnvironments()
+      .then((data) => { setRemotes(data.environments); setRemotesFailed(false); })
+      .catch(() => { setRemotes(null); setRemotesFailed(true); });
+  }
 
   useEffect(() => {
     // Two independent reads, each reporting only for itself. A failed probe of
@@ -47,7 +62,13 @@ export default function EnvironmentsPage() {
     getSettingsOverview()
       .then((data) => { setOverview(data); setOverviewFailed(false); })
       .catch(() => { setOverview(null); setOverviewFailed(true); });
+    reloadRemotes();
   }, []);
+
+  async function handleDelete(environmentId: string) {
+    await deleteRemoteEnvironment(environmentId);
+    reloadRemotes();
+  }
 
   const projects = overview?.projects.items ?? [];
 
@@ -169,8 +190,93 @@ export default function EnvironmentsPage() {
           </div>
         </section>
 
-        {/* The two cards the mockup shows and this build cannot: said as a
-            capability that is missing, not drawn as machines that are offline. */}
+        {/* The remote-environment registry (CR-4 slice 1): registered SSH hosts a run
+            could use. Registering records the host; it does not connect yet. */}
+        <section className="space-y-4 rounded-xl border p-5">
+          <header className="flex flex-wrap items-center gap-3">
+            <Server className="size-4" />
+            <div>
+              <h2 className="text-base font-semibold">{t("environments.remoteList.title")}</h2>
+              <p className="text-sm text-muted-foreground">{t("environments.remoteList.subtitle")}</p>
+            </div>
+            {formTarget === null && (
+              <Button className="ml-auto" onClick={() => setFormTarget("new")}>
+                <Plus className="size-4" />
+                {t("environments.remoteList.add")}
+              </Button>
+            )}
+          </header>
+
+          {formTarget !== null && (
+            <RemoteEnvironmentForm
+              existing={formTarget === "new" ? undefined : formTarget}
+              onSaved={() => { setFormTarget(null); reloadRemotes(); }}
+              onCancel={() => setFormTarget(null)}
+            />
+          )}
+
+          {remotesFailed && <Notice>{t("environments.remoteList.unreadable")}</Notice>}
+
+          {remotes && remotes.length === 0 && formTarget === null && (
+            <p className="text-sm text-muted-foreground">{t("environments.remoteList.empty")}</p>
+          )}
+
+          <div className="space-y-3">
+            {remotes?.map((env) => {
+              const readiness = environmentReadiness(env);
+              // readiness already chose the sentence off `secret_present`; resolve it
+              // once here. Passing it to both `yes` and `no` keeps Tri's icon/colour
+              // (green when set, red when not) without re-resolving the key against a
+              // second, mismatched param set for the branch Tri won't render.
+              const readinessDetail = t(readiness.detailKey, { secretRef: env.secret_ref });
+              return (
+                <div key={env.environment_id} className="rounded-lg border px-4 py-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-semibold">{env.label}</span>
+                    <span className="font-mono text-xs text-muted-foreground">
+                      {t("environments.remoteList.hostLine", {
+                        user: env.ssh_user, host: env.ssh_host, port: env.ssh_port,
+                      })}
+                    </span>
+                    <span className="ml-auto flex items-center gap-2">
+                      <Button variant="outline" size="sm" onClick={() => setFormTarget(env)}>
+                        <Pencil className="size-3.5" />
+                        {t("environments.remoteList.edit")}
+                      </Button>
+                      <Button variant="outline" size="sm" onClick={() => handleDelete(env.environment_id)}>
+                        <Trash2 className="size-3.5" />
+                        {t("environments.remoteList.delete")}
+                      </Button>
+                    </span>
+                  </div>
+                  <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                    <Tri
+                      value={env.secret_present}
+                      yes={readinessDetail}
+                      no={readinessDetail}
+                      unknown=""
+                    />
+                    <span>
+                      {env.host_key_mode === "tofu"
+                        ? t("environments.remoteList.hostKeyTofu")
+                        : t("environments.remoteList.hostKeyStrict")}
+                    </span>
+                    <span className="font-mono">
+                      {t("environments.remoteList.secretRefLabel", { secretRef: env.secret_ref })}
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            {t("environments.remoteList.notWiredNote")}
+          </p>
+        </section>
+
+        {/* Slice 1 says what it does and does not do: it records the host, the runtime
+            is not wired yet, and connection testing / TOFU / a credential home are slice 2. */}
         <section className="rounded-xl border border-dashed p-5">
           <h2 className="flex items-center gap-2 text-base font-semibold">
             <AlertTriangle className="size-4 text-amber-500" />

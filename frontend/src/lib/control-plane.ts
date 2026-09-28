@@ -294,6 +294,70 @@ export function unregisterWorkspaceSource(path: string): Promise<{ was_registere
   });
 }
 
+// --- Remote environments (registry, CR-4 slice 1) ---
+//
+// A registered SSH environment. Slice 1 records it; it does not yet feed the runtime.
+// The credential is never carried: `secret_ref` is the *name* of an env var, and
+// `secret_present` says only whether that variable is currently set on the server —
+// never its value.
+
+export interface RemoteEnvironment {
+  environment_id: string;
+  label: string;
+  ssh_host: string;
+  ssh_port: number;
+  ssh_user: string;
+  remote_workspace: string;
+  remote_project_root: string;
+  secret_ref: string;
+  secret_present: boolean;
+  host_key_mode: "strict" | "tofu";
+  known_hosts_path: string | null;
+  cleanup_worktree: boolean;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+/** The registerable fields — no credential value, only the env-var name in `secret_ref`. */
+export interface RemoteEnvironmentInput {
+  environment_id: string;
+  label: string;
+  ssh_host: string;
+  ssh_port: number;
+  ssh_user: string;
+  remote_workspace: string;
+  remote_project_root: string;
+  secret_ref: string;
+  host_key_mode: "strict" | "tofu";
+  known_hosts_path: string | null;
+  cleanup_worktree: boolean;
+}
+
+export function listRemoteEnvironments(): Promise<{ environments: RemoteEnvironment[] }> {
+  return request("/api/remote-environments");
+}
+
+export function createRemoteEnvironment(input: RemoteEnvironmentInput): Promise<RemoteEnvironment> {
+  return request("/api/remote-environments", {
+    method: "POST", body: JSON.stringify(input),
+  });
+}
+
+export function updateRemoteEnvironment(
+  environmentId: string, input: RemoteEnvironmentInput,
+): Promise<RemoteEnvironment> {
+  return request(`/api/remote-environments/${encodeURIComponent(environmentId)}`, {
+    method: "PUT", body: JSON.stringify(input),
+  });
+}
+
+/** Forget a registered environment. Idempotent. */
+export function deleteRemoteEnvironment(environmentId: string): Promise<{ was_registered: boolean }> {
+  return request(`/api/remote-environments/${encodeURIComponent(environmentId)}`, {
+    method: "DELETE",
+  });
+}
+
 export function createTask(input: CreateTaskInput): Promise<TaskManifest> {
   return request("/api/tasks", { method: "POST", body: JSON.stringify(input) });
 }
