@@ -18,8 +18,18 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import Literal
 
 from .adapters import HostKeyMode, RemoteAdapterConfig
+
+#: Where an environment's SSH credential comes from (CR-4 slice 2, adr/0001). Three
+#: sources, each reported to the UI as itself:
+#:   env_var  — slice-1 mechanism: ``secret_ref`` names an env var the operator sets.
+#:   key_path — a private-key file PATH (not a secret) stored in the DB as secret_ref.
+#:   keyring  — a password kept in the OS keyring (never in the DB); secret_ref is
+#:              unused for connection but retained as a label.
+#: ``env_var`` is the default so rows registered in slice 1 keep working unchanged.
+CredentialSource = Literal["env_var", "key_path", "keyring"]
 
 #: The registry key rule, stated once so the Pydantic request field, this
 #: validator and the frontend form all enforce the *same* thing: must start with
@@ -64,6 +74,7 @@ class RemoteEnvironmentRecord:
     host_key_mode: HostKeyMode = "strict"
     known_hosts_path: str | None = None
     cleanup_worktree: bool = False
+    credential_source: CredentialSource = "env_var"
     created_at: str | None = None
     updated_at: str | None = None
 

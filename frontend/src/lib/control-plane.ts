@@ -296,10 +296,13 @@ export function unregisterWorkspaceSource(path: string): Promise<{ was_registere
 
 // --- Remote environments (registry, CR-4 slice 1) ---
 //
-// A registered SSH environment. Slice 1 records it; it does not yet feed the runtime.
-// The credential is never carried: `secret_ref` is the *name* of an env var, and
-// `secret_present` says only whether that variable is currently set on the server —
-// never its value.
+// A registered SSH environment. The credential value is never carried. `credential_source`
+// says where the credential lives — an env var name (`secret_ref`), a private-key file
+// path (`secret_ref`), or a password in the OS keyring — and `credential_present` says
+// only whether it is set: true/false, or null when this machine cannot tell (e.g. no
+// keyring backend), which is not the same as "not set" (adr/0001).
+
+export type CredentialSource = "env_var" | "key_path" | "keyring";
 
 export interface RemoteEnvironment {
   environment_id: string;
@@ -310,7 +313,8 @@ export interface RemoteEnvironment {
   remote_workspace: string;
   remote_project_root: string;
   secret_ref: string;
-  secret_present: boolean;
+  credential_source: CredentialSource;
+  credential_present: boolean | null;
   host_key_mode: "strict" | "tofu";
   known_hosts_path: string | null;
   cleanup_worktree: boolean;
@@ -318,7 +322,9 @@ export interface RemoteEnvironment {
   updated_at: string | null;
 }
 
-/** The registerable fields — no credential value, only the env-var name in `secret_ref`. */
+/** The registerable fields. No credential value except a keyring `password` (write-only:
+ * sent to store in the OS keyring, never returned). For key_path/env_var, `secret_ref`
+ * carries the path / env-var name and `password` is null. */
 export interface RemoteEnvironmentInput {
   environment_id: string;
   label: string;
@@ -328,6 +334,10 @@ export interface RemoteEnvironmentInput {
   remote_workspace: string;
   remote_project_root: string;
   secret_ref: string;
+  credential_source: CredentialSource;
+  /** Only for credential_source "keyring": the password to store. null otherwise, and on
+   * an update means "keep the existing keyring password". Never populated from a read. */
+  password: string | null;
   host_key_mode: "strict" | "tofu";
   known_hosts_path: string | null;
   cleanup_worktree: boolean;

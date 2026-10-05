@@ -22,6 +22,14 @@ dependencies = [
     # against message injection (CVE-2023-46445/46446). Earlier versions negotiate a
     # session an attacker can silently truncate, which defeats the point of SSH here.
     "asyncssh>=2.14.2",
+    # OS keyring for the remote-environment password credential (CR-4 slice 2,
+    # adr/0001): a password lives in the platform secret store (Windows Credential
+    # Locker / macOS Keychain / Linux Secret Service), never in the control-plane DB
+    # (NFR-2 / SECURITY-12 — the mirror is public). The library picks the right backend
+    # per OS; a machine with no usable backend fails closed rather than storing the
+    # secret in the clear. A key PATH is not a secret and stays in the DB; only a
+    # password uses this.
+    "keyring>=25.0",
 ]
 
 [project.optional-dependencies]

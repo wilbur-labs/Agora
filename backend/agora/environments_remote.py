@@ -180,11 +180,28 @@ class RemoteEnvironment:
         secret_ref: str,
         host_key_mode: HostKeyMode = "strict",
         known_hosts_path: str | None = None,
+        credential_source: str = "env_var",
+        environment_id: str | None = None,
     ) -> None:
         self._host = host
         self._port = port
         self._user = user
         self._secret_ref = secret_ref
+        if credential_source not in ("env_var", "key_path", "keyring"):
+            # A credential source we cannot interpret is a security setting; refuse
+            # rather than guess (fail-closed, same posture as host_key_mode).
+            raise ValueError(
+                f"credential_source must be 'env_var', 'key_path' or 'keyring', "
+                f"got {credential_source!r}"
+            )
+        if credential_source == "keyring" and not environment_id:
+            # keyring credentials are keyed by environment_id; without it there is
+            # nothing to look up. Refuse at construction, not at connect.
+            raise ValueError(
+                "credential_source 'keyring' requires environment_id (the keyring key)"
+            )
+        self._credential_source = credential_source
+        self._environment_id = environment_id
         if host_key_mode not in ("strict", "tofu"):
             # A misconfigured host_key_mode is a security setting we cannot interpret;
             # refuse rather than guess (fail-closed).
@@ -198,8 +215,47 @@ class RemoteEnvironment:
     # --- connection ---
 
     def _credentials(self) -> dict:
-        """Resolve credentials from the env var named by ``secret_ref``. A key path is
-        preferred; a password is the fallback. Never inline, never logged."""
+        """Resolve credentials by ``credential_source`` (adr/0001). Never inline, never
+        logged. Three sources:
+
+        - ``keyring``: the password lives in the OS keyring, keyed by environment_id
+          (never in the DB). Fetched here at connect time; a missing keyring entry or
+          an unavailable backend is a fail-closed refusal, not a silent fallback.
+        - ``key_path``: ``secret_ref`` holds a private-key file PATH (not a secret).
+        - ``env_var``: ``secret_ref`` names an env var (slice-1 mechanism). Its value
+          is a key path if it points at a file, otherwise a password.
+        """
+        if self._credential_source == "keyring":
+            # Imported lazily: keeps the asyncssh module usable in contexts (tests,
+            # tooling) that never touch the keyring, and mirrors how this module is
+            # imported only where a remote environment is actually built.
+            from agora.execution import credential_store
+
+            try:
+                password = credential_store.get_password(self._environment_id)
+            except credential_store.KeyringUnavailableError as exc:
+                # Must surface as a refusal the run/probe paths already handle; a bare
+                # RuntimeError would escape them as an unhandled crash.
+                raise RemoteHostKeyError(
+                    f"OS keyring unavailable for environment {self._environment_id!r}; "
+                    f"refusing to connect ({exc})"
+                ) from exc
+            if not password:
+                raise RemoteHostKeyError(
+                    f"no keyring password set for environment {self._environment_id!r}; "
+                    f"refusing to connect"
+                )
+            return {"password": password}
+        if self._credential_source == "key_path":
+            key_path = self._secret_ref
+            if not key_path or not Path(key_path).expanduser().is_file():
+                raise RemoteHostKeyError(
+                    f"key-path credential {key_path!r} is not a readable file; "
+                    f"refusing to connect"
+                )
+            return {"client_keys": [key_path]}
+        # env_var (slice-1): the env var named by secret_ref holds a key path or a
+        # password.
         secret = os.environ.get(self._secret_ref)
         if not secret:
             raise RemoteHostKeyError(

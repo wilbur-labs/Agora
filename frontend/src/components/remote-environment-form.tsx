@@ -21,7 +21,9 @@ import {
 import {
   emptyEnvironmentInput,
   toEnvironmentInput,
+  toSubmission,
   validateEnvironmentInput,
+  withCredentialSource,
   type FieldError,
 } from "@/lib/remote-environments";
 import { useI18n } from "@/lib/i18n";
@@ -55,15 +57,18 @@ export function RemoteEnvironmentForm({
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
-    const found = validateEnvironmentInput(input);
+    const found = validateEnvironmentInput(input, {
+      existingCredentialPresent: isEdit && existing.credential_present === true,
+    });
     setErrors(found);
     if (found.length > 0) return;
     setSubmitting(true);
     setSaveError(null);
     try {
+      const body = toSubmission(input);
       const saved = isEdit
-        ? await updateRemoteEnvironment(existing.environment_id, input)
-        : await createRemoteEnvironment(input);
+        ? await updateRemoteEnvironment(existing.environment_id, body)
+        : await createRemoteEnvironment(body);
       onSaved(saved);
     } catch (err) {
       const message = err instanceof ApiError ? err.message : String(err);
@@ -117,13 +122,56 @@ export function RemoteEnvironmentForm({
             onChange={(e) => set("ssh_user", e.target.value)}
           />
         </Field>
-        <Field label={t("environments.form.secretRefLabel")} hint={t("environments.form.secretRefHint")} error={errorFor("secret_ref")}>
-          <input
-            className="w-full rounded-md border px-3 py-2 text-sm font-mono"
-            value={input.secret_ref}
-            onChange={(e) => set("secret_ref", e.target.value)}
-          />
+        <Field label={t("environments.form.credentialSourceLabel")} hint={t("environments.form.credentialSourceHint")}>
+          <select
+            className="w-full rounded-md border px-3 py-2 text-sm"
+            value={input.credential_source}
+            onChange={(e) =>
+              setInput((prev) =>
+                withCredentialSource(prev, e.target.value as RemoteEnvironmentInput["credential_source"]),
+              )
+            }
+          >
+            <option value="env_var">{t("environments.form.sourceEnvVar")}</option>
+            <option value="key_path">{t("environments.form.sourceKeyPath")}</option>
+            <option value="keyring">{t("environments.form.sourceKeyring")}</option>
+          </select>
         </Field>
+        {input.credential_source === "keyring" ? (
+          <Field
+            label={t("environments.form.passwordLabel")}
+            hint={isEdit ? t("environments.form.passwordHintEdit") : t("environments.form.passwordHint")}
+            error={errorFor("password")}
+          >
+            <input
+              type="password"
+              autoComplete="new-password"
+              className="w-full rounded-md border px-3 py-2 text-sm font-mono"
+              value={input.password ?? ""}
+              onChange={(e) => set("password", e.target.value ? e.target.value : null)}
+            />
+          </Field>
+        ) : (
+          <Field
+            label={
+              input.credential_source === "key_path"
+                ? t("environments.form.keyPathLabel")
+                : t("environments.form.secretRefLabel")
+            }
+            hint={
+              input.credential_source === "key_path"
+                ? t("environments.form.keyPathHint")
+                : t("environments.form.secretRefHint")
+            }
+            error={errorFor("secret_ref")}
+          >
+            <input
+              className="w-full rounded-md border px-3 py-2 text-sm font-mono"
+              value={input.secret_ref}
+              onChange={(e) => set("secret_ref", e.target.value)}
+            />
+          </Field>
+        )}
         <Field label={t("environments.form.workspaceLabel")} error={errorFor("remote_workspace")}>
           <input
             className="w-full rounded-md border px-3 py-2 text-sm font-mono"

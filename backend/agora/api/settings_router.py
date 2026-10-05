@@ -9,21 +9,26 @@ this deliberately reports *runs Agora has dispatched*, never a plan balance.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import textwrap
+import threading
+from functools import wraps
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, TypeVar
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
-from agora.config.settings import get_config
+from agora.config.settings import get_config, resolve_control_plane_db_path
 from agora.fsprobe import PathProbe, probe_path
 from agora.tasks.router import get_project_registry, get_task_store
 from agora.tasks.store import TaskStore
 from agora.execution.adapters import build_adapter_registry
+from agora.execution import credential_store
+from agora.execution.credential_store import KeyringUnavailableError
 from agora.execution.dispatcher import token_capturable_adapters
 from agora.execution.environment_registry_models import (
     ENVIRONMENT_ID_PATTERN,
@@ -985,20 +990,29 @@ def _writable(path: Path, probe: PathProbe) -> bool:
 # persisted SSH section of an execution adapter (see execution/remote_wiring.py's note:
 # the config already binds an adapter to a host, and this screen is a layer over that).
 #
-# Slice 1 is CRUD + list only: registering an environment records it, it does NOT yet
-# feed the runtime (a run still resolves its remote target from config.yaml). Connection
-# testing, TOFU fingerprint confirmation and a credential home are slice 2, which needs a
-# real host. See task.yaml CR-4 anchor.
+# Slice 1 was CRUD + list only. Slice 2 (adr/0001) adds a credential home: a
+# `credential_source` per environment — an env var name (slice-1 default), a private-key
+# file PATH (stored in the DB, not a secret), or a password kept in the OS keyring
+# (never in the DB). Connection testing and TOFU fingerprint confirmation are the rest
+# of slice 2 and need a real host. See task.yaml CR-4 anchor.
 #
-# A credential value is never accepted or returned here — `secret_ref` names an env var
-# (NFR-2 / SECURITY-12, public repo). The list reports whether that env var is currently
-# set, never its value, exactly as `_control_plane_auth` does above.
+# A credential VALUE is never returned here, and only a keyring password is ever
+# accepted — written to the OS keyring and dropped, never stored on the row, echoed in a
+# response, or logged. The list reports only whether the credential is present (env var
+# set / key file exists / keyring entry exists), never its value.
+
+#: The AGORA_ namespace an env-var secret_ref must live in. `secret_present` probes
+#: os.environ for this name, so constraining it keeps the list endpoint from becoming an
+#: oracle for whether any arbitrary server env var is set.
+_ENV_VAR_SECRET_REF = re.compile(r"^AGORA_[A-Za-z0-9_]+$")
 
 
 class RemoteEnvironmentRequest(BaseModel):
-    """The registerable fields of a remote environment. Mirrors
-    ``RemoteAdapterConfig`` plus the registry's id + label. No credential field
-    exists — only ``secret_ref``, the name of the env var that holds it."""
+    """The registerable fields of a remote environment. Mirrors ``RemoteAdapterConfig``
+    plus the registry's id + label and the credential home (``credential_source`` +,
+    for keyring, a write-only ``password``). No credential VALUE is ever stored on the
+    row: a password goes to the OS keyring, a key path is not a secret, an env-var name
+    is just a name (adr/0001)."""
 
     environment_id: str = Field(min_length=1, max_length=64, pattern=ENVIRONMENT_ID_PATTERN.pattern)
     label: str = Field(min_length=1, max_length=200)
@@ -1007,27 +1021,64 @@ class RemoteEnvironmentRequest(BaseModel):
     ssh_user: str = Field(min_length=1, max_length=255)
     remote_workspace: str = Field(min_length=1, max_length=4096)
     remote_project_root: str = Field(min_length=1, max_length=4096)
-    # Constrained to the AGORA_ namespace on purpose. `secret_present` below probes
-    # os.environ for this name, so an unconstrained secret_ref would turn the list
-    # endpoint into an oracle for whether *any* server env var is set (e.g. PATH,
-    # AWS_SECRET_ACCESS_KEY) — it never returns the value, but the presence probe
-    # itself should not reach outside the credentials this feature owns. The
-    # AGORA_ prefix matches the convention adapters.py already documents
-    # (secret_ref, e.g. AGORA_SSH_KEY_<adapter>).
-    secret_ref: str = Field(min_length=1, max_length=255, pattern=r"^AGORA_[A-Za-z0-9_]+$")
+    # secret_ref means different things per credential_source (see the validator):
+    #   env_var  — the NAME of an env var, constrained to the AGORA_ namespace so the
+    #              presence probe cannot be pointed at an unrelated variable.
+    #   key_path — a private-key file PATH (not a secret, stored in the DB).
+    #   keyring  — an unused label; the password lives in the OS keyring.
+    # Length only here; the per-source rules are enforced in _validate_credential.
+    secret_ref: str = Field(min_length=1, max_length=4096)
     host_key_mode: str = Field(default="strict", pattern=r"^(strict|tofu)$")
     known_hosts_path: str | None = Field(default=None, max_length=4096)
     cleanup_worktree: bool = False
+    # Where the credential comes from (CR-4 slice 2, adr/0001). Default env_var keeps
+    # slice-1 requests valid unchanged.
+    credential_source: str = Field(default="env_var", pattern=r"^(env_var|key_path|keyring)$")
+    # A password, present ONLY on a create/update that sets a keyring credential. It is
+    # written to the OS keyring and then dropped — never stored on the record, returned
+    # in a response, or logged (adr/0001). None on read and on non-keyring sources.
+    #
+    # No max_length constraint on purpose: a Field length violation raises at FastAPI's
+    # request-parse layer, whose default 422 body echoes the offending `input` — which
+    # for this field is the password itself. Length is checked in _validate_credential
+    # instead, with a message that never interpolates the value.
+    password: str | None = Field(default=None)
 
     @model_validator(mode="after")
-    def _tofu_needs_known_hosts(self) -> "RemoteEnvironmentRequest":
-        # tofu pins the first-seen key into a known_hosts file, so tofu with no file
-        # to pin into is refused here, at register time — not deferred to a slice-2
-        # connect failure. This is the authority the frontend echoes; without it the
-        # server would accept a config the form blocks and the runtime cannot use
+    def _validate_credential(self) -> "RemoteEnvironmentRequest":
+        # tofu pins the first-seen key into a known_hosts file, so tofu with no file to
+        # pin into is refused here, at register time — not deferred to a slice-2 connect
+        # failure. This is the authority the frontend echoes; without it the server
+        # would accept a config the form blocks and the runtime cannot use
         # (RemoteEnvironment._known_hosts_arg raises at connect for exactly this).
         if self.host_key_mode == "tofu" and not (self.known_hosts_path or "").strip():
             raise ValueError("trust-on-first-use (tofu) requires a known_hosts_path")
+
+        # Per-source credential rules (adr/0001).
+        if self.credential_source == "env_var":
+            # secret_present probes os.environ for this name, so an unconstrained name
+            # would turn the list endpoint into an oracle for any server env var
+            # (PATH, AWS_SECRET_ACCESS_KEY, ...). Constrain to the AGORA_ namespace.
+            if not _ENV_VAR_SECRET_REF.match(self.secret_ref):
+                raise ValueError(
+                    "for credential_source 'env_var', secret_ref must be an env var "
+                    "name in the AGORA_ namespace (^AGORA_[A-Za-z0-9_]+$)"
+                )
+            if self.password is not None:
+                raise ValueError("a password is only accepted for credential_source 'keyring'")
+        elif self.credential_source == "key_path":
+            # secret_ref is a file path; a password does not belong here.
+            if self.password is not None:
+                raise ValueError("a password is only accepted for credential_source 'keyring'")
+        elif self.credential_source == "keyring":
+            # A create/update that sets a keyring credential must carry the password to
+            # store. (An update that keeps the existing keyring password sends no
+            # password — allowed, so editing other fields does not require re-entering
+            # the secret; see the endpoint.) Length is bounded here, not via a Field
+            # max_length, so an over-long value never gets echoed by FastAPI's parse-time
+            # 422 — the message names no value.
+            if self.password is not None and len(self.password) > 1024:
+                raise ValueError("password is too long (max 1024 characters)")
         return self
 
     def to_record(self) -> RemoteEnvironmentRecord:
@@ -1043,16 +1094,63 @@ class RemoteEnvironmentRequest(BaseModel):
             host_key_mode=self.host_key_mode,  # type: ignore[arg-type]
             known_hosts_path=self.known_hosts_path,
             cleanup_worktree=self.cleanup_worktree,
+            credential_source=self.credential_source,  # type: ignore[arg-type]
         )
+
+
+#: One lock for every remote-environment mutation. A create/update/delete touches two
+#: stores — the row and the OS keyring — and FastAPI runs these sync handlers on a
+#: thread pool, so two overlapping requests could interleave them (one request's
+#: keyring cleanup deleting the password another just saved). Held across both writes,
+#: including cleanup and rollback. Mutations are rare and human-driven, so serializing
+#: them costs nothing.
+_REMOTE_ENV_MUTATION_LOCK = threading.Lock()
+
+_F = TypeVar("_F", bound=Callable[..., Any])
+
+
+def _serialized(func: _F) -> _F:
+    @wraps(func)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        with _REMOTE_ENV_MUTATION_LOCK:
+            return func(*args, **kwargs)
+
+    return wrapper  # type: ignore[return-value]
+
+
+def _credential_present(record: RemoteEnvironmentRecord) -> bool | None:
+    """Whether this environment's credential is present — read per source, never the
+    value (adr/0001). Three-state, honouring the second constitution rule:
+
+    - env_var: the named env var is set on this machine.
+    - key_path: the key file at secret_ref exists.
+    - keyring: an entry exists in the OS keyring. ``None`` (not False) when this
+      machine has NO keyring backend — "cannot tell" is not "not set".
+    """
+    if record.credential_source == "keyring":
+        try:
+            return credential_store.has_password(record.environment_id)
+        except KeyringUnavailableError:
+            return None  # no backend here — unknown, never "absent"
+    if record.credential_source == "key_path":
+        if not record.secret_ref:
+            return False
+        try:
+            return Path(record.secret_ref).expanduser().is_file()
+        except (OSError, RuntimeError):
+            # Permission denied / unavailable filesystem / no home to expand: the file
+            # could not be inspected — unknown, never "absent".
+            return None
+    # env_var (slice-1 default)
+    return bool(os.environ.get(record.secret_ref, "").strip())
 
 
 def _remote_environment_view(record: RemoteEnvironmentRecord) -> dict[str, Any]:
     """One registered environment for the UI. The credential itself is never here:
-    ``secret_ref`` is the env-var name, and ``secret_present`` says only whether that
-    variable is currently set — never its value. This is the same distinction
-    ``_control_plane_auth`` keeps, and it is what lets the screen tell "registered but
-    the credential env var is not set on this machine" from "ready", without ever
-    handling the secret."""
+    ``credential_source`` says where it lives and ``credential_present`` says only
+    whether it is set (env var set / key file exists / keyring entry exists), never its
+    value — a three-state fact (True/False/None), where None means "this machine cannot
+    tell" (e.g. no keyring backend), kept apart from False ("looked, not set")."""
     return {
         "environment_id": record.environment_id,
         "label": record.label,
@@ -1062,7 +1160,8 @@ def _remote_environment_view(record: RemoteEnvironmentRecord) -> dict[str, Any]:
         "remote_workspace": record.remote_workspace,
         "remote_project_root": record.remote_project_root,
         "secret_ref": record.secret_ref,
-        "secret_present": bool(os.environ.get(record.secret_ref, "").strip()),
+        "credential_source": record.credential_source,
+        "credential_present": _credential_present(record),
         "host_key_mode": record.host_key_mode,
         "known_hosts_path": record.known_hosts_path,
         "cleanup_worktree": record.cleanup_worktree,
@@ -1075,53 +1174,174 @@ def _remote_environment_view(record: RemoteEnvironmentRecord) -> dict[str, Any]:
 def list_remote_environments(
     store: RemoteEnvironmentStore = Depends(get_remote_environment_store),
 ) -> dict[str, Any]:
-    """Every registered remote environment. Credentials are never returned; each
-    entry reports only whether its ``secret_ref`` env var is currently set."""
+    """Every registered remote environment. Credential values are never returned; each
+    entry reports only its ``credential_source`` and whether the credential is present
+    (env var set / key file exists / keyring entry exists), never the value."""
     return {"environments": [_remote_environment_view(r) for r in store.list_environments()]}
 
 
 @router.post("/remote-environments", status_code=status.HTTP_201_CREATED)
+@_serialized
 def create_remote_environment(
     request: RemoteEnvironmentRequest,
     store: RemoteEnvironmentStore = Depends(get_remote_environment_store),
 ) -> dict[str, Any]:
-    """Register a remote environment. Slice 1: records it only — it does not yet
-    feed the runtime. A duplicate id is 409; an invalid SSH field set is 422."""
+    """Register a remote environment. Records it (slice 1) and, for a keyring
+    credential, stores the password in the OS keyring (slice 2, adr/0001). A duplicate
+    id is 409; an invalid SSH field set is 422; a keyring credential with no password,
+    or no keyring backend, is 422.
+
+    The password lives in the request body exactly once: it is written to the keyring
+    and never placed on the record, returned, or logged.
+    """
+    if request.credential_source == "keyring" and not request.password:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "a keyring credential requires a password to store",
+        )
     try:
         record = store.insert(request.to_record())
     except RemoteEnvironmentExistsError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from None
-    except (ValueError, ValidationError) as exc:
+    except ValidationError:
+        # A record re-validation failure: str(ValidationError) includes the offending
+        # input_value for type errors pydantic raises itself, which does NOT route
+        # through the global RequestValidationError redactor. The record carries no
+        # password field today, but do not depend on that invariant here — return a
+        # value-free message rather than the raw pydantic string (adr/0001).
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, "invalid remote environment fields"
+        ) from None
+    except ValueError as exc:
+        # Store-raised business errors carry our own value-free messages.
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from None
+    # Row is in; now store the password. If the keyring write fails (no backend),
+    # roll the row back so we never leave a keyring environment that can never connect.
+    if request.credential_source == "keyring":
+        try:
+            credential_store.set_password(request.environment_id, request.password)
+        except KeyringUnavailableError as exc:
+            store.delete(request.environment_id)
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from None
+        record = store.require(request.environment_id)
     return _remote_environment_view(record)
 
 
+def _restore_keyring_password(environment_id: str, prior: str | None) -> bool:
+    """Put the keyring back to ``prior`` (delete the entry if there was none). Returns
+    whether that worked; never raises, because it runs while another error is already
+    on its way to the caller."""
+    try:
+        if prior is None:
+            credential_store.delete_password(environment_id)
+        else:
+            credential_store.set_password(environment_id, prior)
+    except KeyringUnavailableError:
+        return False
+    return True
+
+
 @router.put("/remote-environments/{environment_id}")
+@_serialized
 def update_remote_environment(
     environment_id: str,
     request: RemoteEnvironmentRequest,
     store: RemoteEnvironmentStore = Depends(get_remote_environment_store),
 ) -> dict[str, Any]:
     """Replace an existing environment's editable fields. The id in the path is the
-    row updated; a mismatching id in the body is refused rather than silently
-    creating a second row or renaming in place."""
+    row updated; a mismatching id in the body is refused rather than silently creating a
+    second row or renaming in place.
+
+    Keyring password (adr/0001): a password sent here is written to the keyring
+    (replacing any existing one). A keyring credential with NO password keeps the
+    existing keyring entry — so editing a label does not force re-entering the secret —
+    *provided one already exists*; changing the source to keyring with neither a new
+    password nor an existing keyring entry is refused (422), because it would persist an
+    environment that can never connect.
+    """
     if request.environment_id != environment_id:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
             "environment_id in the body must match the id in the path",
         )
-    try:
-        record = store.update(environment_id, request.to_record())
-    except RemoteEnvironmentNotFoundError:
+    # Confirm the row exists before touching anything, so a 404 costs no write and the
+    # keyring is never mutated for an environment that isn't there.
+    existing = store.get(environment_id)
+    if existing is None:
         raise HTTPException(
             status.HTTP_404_NOT_FOUND, f"Unknown remote environment: {environment_id}"
-        ) from None
-    except (ValueError, ValidationError) as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from None
+        )
+    # Decide the keyring outcome BEFORE mutating anything, so an invalid combination is
+    # a clean 422 rather than a half-applied update.
+    if request.credential_source == "keyring" and not request.password:
+        try:
+            has_existing = credential_store.has_password(environment_id)
+        except KeyringUnavailableError as exc:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from None
+        if not has_existing:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                "a keyring credential requires a password (none was provided and none "
+                "is already stored for this environment)",
+            )
+    # Store the password FIRST (when one was sent), so a keyring failure aborts before
+    # the row is touched — no half-applied update where the row changed but the secret
+    # did not land. The password exists in the request body only; never on the record,
+    # returned, or logged.
+    wrote_password = request.credential_source == "keyring" and bool(request.password)
+    prior_password: str | None = None
+    if wrote_password:
+        try:
+            # Keep what was there so a failed row write can put it back (CR-8).
+            prior_password = credential_store.get_password(environment_id)
+            credential_store.set_password(environment_id, request.password)
+        except KeyringUnavailableError as exc:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from None
+    try:
+        record = store.update(environment_id, request.to_record())
+    except Exception as exc:
+        # The row did not change, so the keyring must not stay ahead of it: restore
+        # the previous password (or remove the new one if there was none) — CR-8.
+        restore_failed = wrote_password and not _restore_keyring_password(
+            environment_id, prior_password
+        )
+        suffix = (
+            "; the previous keyring password could not be restored, so the stored "
+            "password is now the one just sent"
+            if restore_failed
+            else ""
+        )
+        if isinstance(exc, RemoteEnvironmentNotFoundError):
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND,
+                f"Unknown remote environment: {environment_id}{suffix}",
+            ) from None
+        if isinstance(exc, ValidationError):
+            # Same reasoning as create: never echo a raw pydantic string (it can carry
+            # input_value) — it bypasses the global redactor. Value-free message
+            # (adr/0001).
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                f"invalid remote environment fields{suffix}",
+            ) from None
+        if isinstance(exc, ValueError):
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT, f"{exc}{suffix}"
+            ) from None
+        raise
+    # If the credential moved AWAY from keyring, forget the now-orphaned secret so it does
+    # not linger in the OS keyring. Best-effort (same posture as delete): if the keyring
+    # is unavailable right now the secret is left behind — CR-10, deferred.
+    if existing.credential_source == "keyring" and request.credential_source != "keyring":
+        try:
+            credential_store.delete_password(environment_id)
+        except KeyringUnavailableError:
+            pass
     return _remote_environment_view(record)
 
 
 @router.delete("/remote-environments/{environment_id}")
+@_serialized
 def delete_remote_environment(
     environment_id: str,
     store: RemoteEnvironmentStore = Depends(get_remote_environment_store),

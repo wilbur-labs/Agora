@@ -35,6 +35,8 @@ from typing import Any, Iterator
 
 from agora.tasks.models import utc_now
 
+from . import credential_store
+from .credential_store import KeyringUnavailableError
 from .environment_registry_models import (
     RemoteEnvironmentRecord,
     validate_environment_id,
@@ -93,11 +95,27 @@ class RemoteEnvironmentStore:
                     host_key_mode TEXT NOT NULL DEFAULT 'strict',
                     known_hosts_path TEXT,
                     cleanup_worktree INTEGER NOT NULL DEFAULT 0,
+                    -- Where the SSH credential comes from (CR-4 slice 2, adr/0001).
+                    -- A password (source 'keyring') lives in the OS keyring, never
+                    -- here; a key PATH ('key_path') is not a secret and is carried in
+                    -- secret_ref; 'env_var' is the slice-1 default.
+                    credential_source TEXT NOT NULL DEFAULT 'env_var',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
                 """
             )
+            # Migrate a slice-1 table in place: add credential_source if an older row
+            # set was created before it existed. ADD COLUMN with a DEFAULT backfills
+            # every existing row to 'env_var' (the slice-1 behaviour), touches no data,
+            # and is the safe migration on the shared control-plane DB (adr/0002). Guard
+            # on the current columns so re-running _initialize is idempotent.
+            columns = {row["name"] for row in db.execute("PRAGMA table_info(remote_environments)")}
+            if "credential_source" not in columns:
+                db.execute(
+                    "ALTER TABLE remote_environments "
+                    "ADD COLUMN credential_source TEXT NOT NULL DEFAULT 'env_var'"
+                )
             db.commit()
 
     # ------------------------------------------------------------------ reads
@@ -144,8 +162,8 @@ class RemoteEnvironmentStore:
                         environment_id, label, ssh_host, ssh_port, ssh_user,
                         remote_workspace, remote_project_root, secret_ref,
                         host_key_mode, known_hosts_path, cleanup_worktree,
-                        created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        credential_source, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (*_columns(record), now, now),
                 )
@@ -169,7 +187,7 @@ class RemoteEnvironmentStore:
                    SET label = ?, ssh_host = ?, ssh_port = ?, ssh_user = ?,
                        remote_workspace = ?, remote_project_root = ?, secret_ref = ?,
                        host_key_mode = ?, known_hosts_path = ?, cleanup_worktree = ?,
-                       updated_at = ?
+                       credential_source = ?, updated_at = ?
                  WHERE environment_id = ?
                 """,
                 (
@@ -183,6 +201,7 @@ class RemoteEnvironmentStore:
                     record.host_key_mode,
                     record.known_hosts_path,
                     1 if record.cleanup_worktree else 0,
+                    record.credential_source,
                     utc_now(),
                     environment_id,
                 ),
@@ -195,13 +214,35 @@ class RemoteEnvironmentStore:
 
     def delete(self, environment_id: str) -> bool:
         """Forget a registered environment. Returns whether a row was removed
-        (idempotent: deleting an already-absent id is not an error)."""
+        (idempotent: deleting an already-absent id is not an error).
+
+        If the environment kept its password in the OS keyring (adr/0001), that entry
+        is removed too, so a deleted environment does not orphan a secret in the OS
+        store. The keyring delete is best-effort AFTER the row is gone: a keyring that
+        is unavailable must not block forgetting the environment (the row is the
+        authoritative record), and deleting an absent entry is already a no-op in
+        ``credential_store``.
+
+        Known gap (CR-10, deferred): if the keyring is unavailable at this moment (e.g.
+        locked) the password stays in the OS store with no row left to retry from. It
+        is overwritten if the same id is registered again; otherwise only removable by
+        hand from the OS credential manager.
+        """
+        record = self.get(environment_id)
         with self._transaction() as db:
             cursor = db.execute(
                 "DELETE FROM remote_environments WHERE environment_id = ?",
                 (environment_id,),
             )
-            return cursor.rowcount > 0
+            removed = cursor.rowcount > 0
+        if removed and record is not None and record.credential_source == "keyring":
+            try:
+                credential_store.delete_password(environment_id)
+            except KeyringUnavailableError:
+                # The secret may be left behind (CR-10, see docstring); the row is
+                # already gone and forgetting the environment must not fail on this.
+                pass
+        return removed
 
 
 def _columns(record: RemoteEnvironmentRecord) -> tuple[Any, ...]:
@@ -217,6 +258,7 @@ def _columns(record: RemoteEnvironmentRecord) -> tuple[Any, ...]:
         record.host_key_mode,
         record.known_hosts_path,
         1 if record.cleanup_worktree else 0,
+        record.credential_source,
     )
 
 
@@ -233,6 +275,7 @@ def _record_from_row(row: sqlite3.Row) -> RemoteEnvironmentRecord:
         host_key_mode=row["host_key_mode"],
         known_hosts_path=row["known_hosts_path"],
         cleanup_worktree=bool(row["cleanup_worktree"]),
+        credential_source=row["credential_source"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )

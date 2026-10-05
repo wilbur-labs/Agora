@@ -224,11 +224,11 @@ export default function EnvironmentsPage() {
           <div className="space-y-3">
             {remotes?.map((env) => {
               const readiness = environmentReadiness(env);
-              // readiness already chose the sentence off `secret_present`; resolve it
-              // once here. Passing it to both `yes` and `no` keeps Tri's icon/colour
-              // (green when set, red when not) without re-resolving the key against a
-              // second, mismatched param set for the branch Tri won't render.
-              const readinessDetail = t(readiness.detailKey, { secretRef: env.secret_ref });
+              // readiness already chose the sentence off `credential_present` (a
+              // three-state fact); resolve it once and pass it to all three Tri slots so
+              // the icon/colour follows the boolean while the text is already correct —
+              // no re-resolving a key against a second, mismatched param set.
+              const readinessDetail = t(readiness.detailKey);
               return (
                 <div key={env.environment_id} className="rounded-lg border px-4 py-3">
                   <div className="flex flex-wrap items-center gap-2">
@@ -251,10 +251,10 @@ export default function EnvironmentsPage() {
                   </div>
                   <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
                     <Tri
-                      value={env.secret_present}
+                      value={env.credential_present}
                       yes={readinessDetail}
                       no={readinessDetail}
-                      unknown=""
+                      unknown={readinessDetail}
                     />
                     <span>
                       {env.host_key_mode === "tofu"
@@ -262,7 +262,11 @@ export default function EnvironmentsPage() {
                         : t("environments.remoteList.hostKeyStrict")}
                     </span>
                     <span className="font-mono">
-                      {t("environments.remoteList.secretRefLabel", { secretRef: env.secret_ref })}
+                      {env.credential_source === "keyring"
+                        ? t("environments.remoteList.credentialViaKeyring")
+                        : env.credential_source === "key_path"
+                        ? t("environments.remoteList.credentialViaKeyPath", { path: env.secret_ref })
+                        : t("environments.remoteList.secretRefLabel", { secretRef: env.secret_ref })}
                     </span>
                   </div>
                 </div>

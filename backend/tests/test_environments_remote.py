@@ -129,6 +129,24 @@ def test_invalid_host_key_mode_is_refused():
         RemoteEnvironment(host="h", user="u", secret_ref="R", host_key_mode="trustme")
 
 
+def test_keyring_unavailable_at_connect_is_a_refusal_not_a_crash(monkeypatch):
+    """An unusable keyring at connect time must surface as RemoteHostKeyError — the
+    refusal run/probe already map to unstartable/unknown — not as a bare RuntimeError
+    that escapes them."""
+    from agora.execution import credential_store
+
+    def _unavailable(environment_id):
+        raise credential_store.KeyringUnavailableError("locked")
+
+    monkeypatch.setattr(credential_store, "get_password", _unavailable)
+    env = RemoteEnvironment(
+        host="h", user="u", secret_ref="label", credential_source="keyring",
+        environment_id="env-a",
+    )
+    with pytest.raises(RemoteHostKeyError):
+        env._credentials()
+
+
 def test_tofu_requires_known_hosts_path(monkeypatch):
     monkeypatch.setenv("R", "pw")
     # tofu with no file to pin into must refuse (there is no implicit place to pin).

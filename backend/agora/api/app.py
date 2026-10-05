@@ -2,8 +2,11 @@
 import sys
 from pathlib import Path
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -114,6 +117,96 @@ app.include_router(control_plane_router, prefix="/api")
 app.include_router(task_discovery_router, prefix="/api")
 app.include_router(settings_router, prefix="/api")
 app.include_router(kickoff_router, prefix="/api")
+
+
+# Field names whose VALUE must never be reflected back in a 422 body. FastAPI's default
+# request-validation handler echoes the offending `input` for each error — and when a
+# body-level (model) validator fails, `input` is the WHOLE parsed body, which for the
+# remote-environment endpoints carries the keyring `password`. The credential invariant
+# (adr/0001) is that a password lives in the request body once and is never returned or
+# logged, so the value is redacted out of every validation-error response here rather
+# than relying on each endpoint. Redaction only touches the error detail's echoed input;
+# the status code and which fields failed are unchanged.
+_REDACTED_ERROR_FIELDS = frozenset({"password"})
+_REDACTED_PLACEHOLDER = "[redacted]"
+# Fixed, value-free message used in place of a validator's own message when that error
+# could carry a sensitive value. pydantic v2 interpolates the offending value into as
+# many as three echoed places — `input`, `ctx` (the raised exception), and `msg` (its
+# text) — so redacting only `input` is not enough (adr/0001).
+_REDACTED_MESSAGE = "invalid value for a sensitive field"
+
+
+def _raw_mentions_secret(value: str | bytes) -> bool:
+    text = value.decode("utf-8", "replace") if isinstance(value, bytes) else value
+    return any(field in text.lower() for field in _REDACTED_ERROR_FIELDS)
+
+
+def _carries_secret(value: Any) -> bool:
+    """Whether an echoed input could hold a secret, at any depth. A raw string/bytes
+    body (sent as text/plain, or otherwise not parsed into structure) cannot be
+    inspected field by field, so one that so much as names a sensitive field counts."""
+    if isinstance(value, dict):
+        return any(
+            key in _REDACTED_ERROR_FIELDS or _carries_secret(item)
+            for key, item in value.items()
+        )
+    if isinstance(value, (list, tuple)):
+        return any(_carries_secret(item) for item in value)
+    if isinstance(value, (str, bytes)):
+        return _raw_mentions_secret(value)
+    return False
+
+
+def _redact_secrets(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _REDACTED_PLACEHOLDER if key in _REDACTED_ERROR_FIELDS else _redact_secrets(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_redact_secrets(item) for item in value]
+    if isinstance(value, (str, bytes)) and _raw_mentions_secret(value):
+        return _REDACTED_PLACEHOLDER  # unstructured: the whole thing goes
+    return value
+
+
+def _scrub_validation_errors(errors: list) -> list:
+    scrubbed = []
+    for error in errors:
+        error = dict(error)
+        loc = error.get("loc") or ()
+        field_level_sensitive = bool(loc) and loc[-1] in _REDACTED_ERROR_FIELDS
+        raw_input = error.get("input")
+        # Searched at any depth: a malformed body (an array where an object was
+        # expected, an object nested in one) is echoed whole, secrets and all.
+        body_carries_secret = _carries_secret(raw_input)
+        # An error can carry the secret value in up to three echoed channels, so treat
+        # them together. A field-level error on a sensitive field: its `input` IS the
+        # value. A body-level (model_validator) error: `input` is the whole parsed body,
+        # so redact the sensitive keys inside it. Either way, pydantic also puts the
+        # value into `ctx["error"]` (the raised exception, stringified by
+        # jsonable_encoder) and into `msg` (its text) — so a validator that interpolated
+        # the value would leak it there past an input-only redaction. This handler is
+        # sold as the global net, so close all three whenever the error could carry a
+        # secret, rather than trusting every validator message to stay value-free.
+        if field_level_sensitive and "input" in error:
+            error["input"] = _REDACTED_PLACEHOLDER
+        elif body_carries_secret:
+            error["input"] = _redact_secrets(raw_input)
+        if field_level_sensitive or body_carries_secret:
+            error.pop("ctx", None)  # ctx["error"] is the raised exception, may hold the value
+            if "msg" in error:
+                error["msg"] = _REDACTED_MESSAGE  # msg text may interpolate the value
+        scrubbed.append(error)
+    return scrubbed
+
+
+@app.exception_handler(RequestValidationError)
+async def _redacting_validation_handler(_: Request, exc: RequestValidationError) -> JSONResponse:
+    # jsonable_encoder first (as FastAPI's own handler does) so a ValueError carried in a
+    # model-validator error's ctx becomes a plain string; then redact the sensitive
+    # values out of the now-pure-dict structure.
+    return JSONResponse(status_code=422, content={"detail": _scrub_validation_errors(jsonable_encoder(exc.errors()))})
 
 
 _RETIRED_API_PREFIXES = (
