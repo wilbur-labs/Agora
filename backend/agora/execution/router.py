@@ -698,7 +698,7 @@ async def handoff_task(
     try:
         result = await run_in_threadpool(
             hand_off, task_store, store, registry, task_id, actor=actor,
-            adapters=dispatcher.adapters,
+            adapters=dispatcher.adapters, environments=dispatcher.environments,
         )
     except HandoffNotCommitted as exc:
         # CR-91: nothing was bound, so the task is still verified. A coded detail, so a
@@ -736,7 +736,9 @@ def _remote_adapter_of(dispatcher: ExecutionDispatcher, run: ExecutionRun):
     if target is None:
         return None
     try:
-        return adapter_for_recorded_target(dispatcher.adapters.get(run.adapter), target)
+        return adapter_for_recorded_target(
+            dispatcher.adapters.get(run.adapter), target, dispatcher.environments,
+        )
     except RemoteTargetMismatch as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from None
 

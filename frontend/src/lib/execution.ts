@@ -26,6 +26,8 @@ export interface RemoteTarget {
   project_root: string;
   /** The worktree there, for a run's record; absent on an adapter's capability. */
   workspace?: string | null;
+  /** The registered environment a run was dispatched to (CR-4), when it was. */
+  environment_id?: string | null;
 }
 
 export interface AdapterCapability {
@@ -97,6 +99,8 @@ export interface CreateRunInput {
    * (CR-75). The server stores it as its own role.
    */
   kind?: "work" | "chat";
+  /** Run on this registered remote environment (CR-4) instead of the adapter's own place. */
+  environment_id?: string;
 }
 
 export interface CancelRunInput {

@@ -100,6 +100,8 @@ class RemoteEnvironmentStore:
                     -- here; a key PATH ('key_path') is not a secret and is carried in
                     -- secret_ref; 'env_var' is the slice-1 default.
                     credential_source TEXT NOT NULL DEFAULT 'env_var',
+                    -- The project whose root this is (one environment = one project).
+                    project_id TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -116,6 +118,11 @@ class RemoteEnvironmentStore:
                     "ALTER TABLE remote_environments "
                     "ADD COLUMN credential_source TEXT NOT NULL DEFAULT 'env_var'"
                 )
+            if "project_id" not in columns:
+                # Nullable on purpose: an existing row's project is not something this
+                # migration can know, and guessing it is the cross-project write this
+                # column exists to stop. Such a row is refused at dispatch until edited.
+                db.execute("ALTER TABLE remote_environments ADD COLUMN project_id TEXT")
             db.commit()
 
     # ------------------------------------------------------------------ reads
@@ -162,8 +169,8 @@ class RemoteEnvironmentStore:
                         environment_id, label, ssh_host, ssh_port, ssh_user,
                         remote_workspace, remote_project_root, secret_ref,
                         host_key_mode, known_hosts_path, cleanup_worktree,
-                        credential_source, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        credential_source, project_id, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (*_columns(record), now, now),
                 )
@@ -187,7 +194,7 @@ class RemoteEnvironmentStore:
                    SET label = ?, ssh_host = ?, ssh_port = ?, ssh_user = ?,
                        remote_workspace = ?, remote_project_root = ?, secret_ref = ?,
                        host_key_mode = ?, known_hosts_path = ?, cleanup_worktree = ?,
-                       credential_source = ?, updated_at = ?
+                       credential_source = ?, project_id = ?, updated_at = ?
                  WHERE environment_id = ?
                 """,
                 (
@@ -202,6 +209,7 @@ class RemoteEnvironmentStore:
                     record.known_hosts_path,
                     1 if record.cleanup_worktree else 0,
                     record.credential_source,
+                    record.project_id,
                     utc_now(),
                     environment_id,
                 ),
@@ -259,6 +267,7 @@ def _columns(record: RemoteEnvironmentRecord) -> tuple[Any, ...]:
         record.known_hosts_path,
         1 if record.cleanup_worktree else 0,
         record.credential_source,
+        record.project_id,
     )
 
 
@@ -276,6 +285,7 @@ def _record_from_row(row: sqlite3.Row) -> RemoteEnvironmentRecord:
         known_hosts_path=row["known_hosts_path"],
         cleanup_worktree=bool(row["cleanup_worktree"]),
         credential_source=row["credential_source"],
+        project_id=row["project_id"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )

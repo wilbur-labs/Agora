@@ -24,6 +24,7 @@ from fastapi.testclient import TestClient
 
 from agora.api.app import app
 from agora.api.settings_router import get_remote_environment_store
+from agora.tasks.router import get_project_registry
 from agora.execution.environment_registry_store import RemoteEnvironmentStore
 
 
@@ -40,15 +41,29 @@ def _payload(environment_id: str = "kimono-vps", **overrides) -> dict:
         "host_key_mode": "strict",
         "known_hosts_path": "/home/ubuntu/.agora/known_hosts",
         "cleanup_worktree": False,
+        "project_id": "kimono",
     }
     base.update(overrides)
     return base
+
+
+class _Projects:
+    """The project registry as the environment endpoints need it: ``get`` or KeyError."""
+
+    def __init__(self, ids):
+        self._ids = set(ids)
+
+    def get(self, project_id):
+        if project_id not in self._ids:
+            raise KeyError(project_id)
+        return object()
 
 
 @pytest.fixture
 def client(tmp_path: Path):
     store = RemoteEnvironmentStore(tmp_path / "agora.db")
     app.dependency_overrides[get_remote_environment_store] = lambda: store
+    app.dependency_overrides[get_project_registry] = lambda: _Projects({"kimono", "other"})
     with TestClient(app) as test_client:
         test_client.store = store  # type: ignore[attr-defined]
         yield test_client
@@ -635,3 +650,44 @@ def test_uninspectable_key_path_reads_as_unknown_not_absent(client, monkeypatch)
     resp = client.get("/api/remote-environments")
     assert resp.status_code == 200, resp.text
     assert resp.json()["environments"][0]["credential_present"] is None
+
+
+def test_a_worktree_directory_outside_the_project_root_is_refused_at_register_time(client):
+    """The remote provisioner only builds worktrees inside the project root; a directory
+    elsewhere would fail on the host at the first provision, so it is refused here."""
+    resp = client.post(
+        "/api/remote-environments",
+        json=_payload(remote_project_root="/workplace/ai-projects/MindRAG",
+                      remote_workspace="/workplace/ai-projects/.agora-worktrees"),
+    )
+    assert resp.status_code == 422, resp.text
+    assert "inside the remote project root" in resp.text
+
+
+def test_an_environment_must_name_an_existing_project(client):
+    """Option A (CR-4): one environment = one project's root on one host."""
+    missing = _payload()
+    del missing["project_id"]
+    assert client.post("/api/remote-environments", json=missing).status_code == 422
+    resp = client.post("/api/remote-environments", json=_payload(project_id="nope"))
+    assert resp.status_code == 422 and "Unknown project" in resp.text
+    ok = client.post("/api/remote-environments", json=_payload())
+    assert ok.status_code == 201 and ok.json()["project_id"] == "kimono"
+
+
+def test_a_row_from_before_the_project_column_migrates_unbound(tmp_path):
+    import sqlite3
+
+    db_path = tmp_path / "legacy2.db"
+    RemoteEnvironmentStore(db_path)  # current schema
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("ALTER TABLE remote_environments DROP COLUMN project_id")
+    conn.execute(
+        "INSERT INTO remote_environments (environment_id, label, ssh_host, ssh_port, ssh_user, "
+        "remote_workspace, remote_project_root, secret_ref, host_key_mode, known_hosts_path, "
+        "cleanup_worktree, credential_source, created_at, updated_at) VALUES "
+        "('old','L','h',22,'u','/p/w','/p','AGORA_X','strict',NULL,0,'env_var','t','t')"
+    )
+    conn.commit()
+    conn.close()
+    assert RemoteEnvironmentStore(db_path).require("old").project_id is None

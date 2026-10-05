@@ -5,6 +5,7 @@ import asyncio
 import inspect
 import os
 from collections import defaultdict
+from dataclasses import replace
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -19,6 +20,7 @@ from agora.attention.models import AttentionKind, AttentionUrgency, CreateAttent
 from agora.attention.bridges.codex_app_server import CodexAppServerError, CodexAppServerRunner
 from agora.attention.bridges.codex_broker import CodexApprovalBroker
 
+from agora.workspaces.models import ProvisionRequest, WorkspaceState
 from agora.workspaces.naming import worktree_branch
 
 from .adapters import (
@@ -28,8 +30,11 @@ from .adapters import (
     SESSION_ID_CALLER,
     ExecutionAdapter,
 )
+from .environment_registry_store import RemoteEnvironmentStore
 from .remote_wiring import (
-    adapter_for_recorded_target, describe_target, is_remote, remote_components_for,
+    EnvironmentLookup, RemoteTargetMismatch, adapter_for_recorded_target, describe_target,
+    initialise_if_empty, is_remote,
+    on_registered_environment, remote_components_for,
     remote_target_of, remote_target_record, remote_workspace_of, same_remote_host,
 )
 from .runlog import RunLogStore
@@ -139,6 +144,9 @@ class _ReaderGate:
         self.open = False
 
 class ExecutionDispatcher:
+    #: Page size for looking up where a task's work is (``_launched_run_of``).
+    _PLACEMENT_PAGE = 500
+
     # Which usage reader parses which event format. Keyed by the format an
     # adapter **emits**, not by adapter name: the argv already decides the format
     # (``--json`` / ``--output-format stream-json``), and a second adapter-keyed
@@ -178,6 +186,7 @@ class ExecutionDispatcher:
         auto_review: bool = False,
         sessions: AgentSessionStore | None = None,
         run_logs: RunLogStore | None = None,
+        environments: EnvironmentLookup | None = None,
     ):
         if max_concurrent_global < 1 or max_concurrent_per_project < 1:
             raise ValueError("execution concurrency limits must be positive")
@@ -190,6 +199,8 @@ class ExecutionDispatcher:
         # resolve_control_plane_db_path exists to hold). Injectable for tests.
         self.sessions = sessions or AgentSessionStore(store.db_path)
         self.run_logs = run_logs or RunLogStore(Path(store.db_path).parent / "run-logs")
+        # Registered remote environments (CR-4), on the same control-plane database.
+        self.environments: EnvironmentLookup = environments or RemoteEnvironmentStore(store.db_path)
         # Opt-in: when true, a succeeded developer run auto-dispatches an
         # independent review run by the project's reviewer agent. Default off
         # keeps single-run behavior (and existing tests) unchanged.
@@ -300,8 +311,14 @@ class ExecutionDispatcher:
         *,
         role: str = ROLE_WORKER,
         reviews_run_id: str | None = None,
+        placed: ExecutionAdapter | None = None,
     ) -> ExecutionRun:
         """Create a queued run.
+
+        ``placed`` is a server-side argument like ``role``: an adapter already placed
+        by the caller (the review path places the reviewer where the WORKER ran). When
+        given, the request's ``environment_id`` is not looked up again — the registry's
+        current paths may have moved since the worker was queued.
 
         ``role`` defaults to ``worker`` and is a server-side argument: anything
         arriving from a client is a worker run (``CreateRunRequest`` refuses the
@@ -315,6 +332,34 @@ class ExecutionDispatcher:
         adapter = self.adapters.get(request.adapter)
         if adapter is None:
             raise RunValidationError(f"Unknown or disabled execution adapter: {request.adapter}")
+        if placed is None:
+            # A task's work lives where its first launched run executed; every later run
+            # of it stays there (CR-4 wiring). A request naming no environment inherits
+            # the task's — so a continuation from any client lands on the work — and one
+            # naming a different place is refused, never relocated.
+            request = self._place_on_task(task.task_id, request)
+        if placed is not None:
+            if placed.name != adapter.name:
+                raise RunValidationError("placed adapter does not match the requested adapter")
+            adapter = placed
+        elif request.environment_id is not None:
+            # A registered environment chosen at dispatch time (CR-4): the agent CLI
+            # stays the adapter, where it runs comes from the registry. Unknown is a
+            # refusal, never a quiet fall back to the adapter's own place.
+            record = self.environments.get(request.environment_id) if self.environments else None
+            if record is None:
+                raise RunValidationError(
+                    f"Unknown remote environment: {request.environment_id}"
+                )
+            if record.project_id != task.project_id:
+                # Its root is another project's repository: running here would edit
+                # that repository and book the commit to this task (option A, CR-4).
+                raise RunValidationError(
+                    f"Remote environment {request.environment_id} belongs to project "
+                    f"{record.project_id or '(none — edit it to choose one)'}, "
+                    f"not {task.project_id}"
+                )
+            adapter = on_registered_environment(adapter, record)
         try:
             project = self.projects.get(task.project_id)
             if is_remote(adapter):
@@ -460,7 +505,9 @@ class ExecutionDispatcher:
                 self._baselines.get(current.run_id),
             )
         try:
-            pinned = adapter_for_recorded_target(self.adapters.get(current.adapter), recorded)
+            pinned = adapter_for_recorded_target(
+                self.adapters.get(current.adapter), recorded, self.environments,
+            )
             components = remote_components_for(pinned, self.projects)
         except Exception:  # noqa: BLE001 - the host cannot be reached as recorded: unknown, not empty
             return None
@@ -1296,7 +1343,7 @@ class ExecutionDispatcher:
             recorded = remote_target_of(run)
             if recorded is None:
                 raise RuntimeError("this run carries no recorded remote target")
-            pinned = adapter_for_recorded_target(adapter, recorded)
+            pinned = adapter_for_recorded_target(adapter, recorded, self.environments)
             components = remote_components_for(
                 pinned, self.projects, allowed_workspace_roots=self.allowed_workspace_roots,
             )
@@ -1575,6 +1622,150 @@ class ExecutionDispatcher:
             if snapshot.get("truncated") else None
         )
         return files, note
+
+    def _launched_run_of(self, task_id: str):
+        """The task's newest run that left the queue, or None.
+
+        Durable evidence, not an inference from how a run ended: ``started_at`` is
+        written the moment a run becomes RUNNING and survives every ending — success,
+        failure, a lost SSH connection, a timeout, a restart (ABANDONED). Inferring a
+        launch from an exit code or a snapshot missed exactly those endings and sent a
+        continuation away from work the agent had already written (review, twice).
+
+        The cost, accepted: an attempt that started but failed before its agent ran
+        (worktree not ready) also fixes the task's place. That mistake is visible and
+        recoverable — start a new task; sending work elsewhere is neither. A run that
+        never left the queue (cancelled there) does not count."""
+        # Paged to the end: a bounded look would forget the work once enough newer runs
+        # that never left the queue piled up in front of it (review).
+        offset, page = 0, self._PLACEMENT_PAGE
+        while True:
+            batch = self.store.list(task_id=task_id, limit=page, offset=offset)
+            for prior in batch:
+                if prior.role == ROLE_REVIEW:
+                    continue  # placed by its worker, never the source of the task's place
+                if prior.started_at is not None:
+                    return prior
+            if len(batch) < page:
+                return None
+            offset += page
+
+    def placement_refusal(
+        self, task_id: str, environment_id: str | None, adapter_name: str | None = None,
+    ) -> str | None:
+        """Why a run (or a worktree provision) of this task may not go to
+        ``environment_id`` — or None. ``None`` here means the adapter's own place, which
+        ``adapter_name`` resolves: this machine, or the remote its config.yaml names —
+        compared by host, account and project root, so "both None" can no longer hide a
+        move between this machine and a configured remote, or between two of them.
+
+        What this compares, exactly:
+          - registered environment: its id, then host, port, account, project root and
+            worktree directory against the task's last run there;
+          - config.yaml remote: host, port, account and project root (not its worktree
+            directory);
+          - this machine: nothing beyond "this machine" (a project root moved by a
+            projects.yaml re-import is not detected).
+        Not covered: those two gaps (CR-21), and switching EXECUTOR on the same place,
+        which moves to that executor's own worktree and branch — as it always has on
+        this machine too (CR-15). Concurrent edits between this check and the run being
+        recorded are not serialised (CR-17)."""
+        prior = self._launched_run_of(task_id)
+        if prior is None:
+            return None  # nothing has run yet: any place may start the work
+        target = getattr(prior, "remote", None)
+        prior_env = target.environment_id if target is not None else None
+        if prior_env != environment_id:
+            where = (
+                f"registered environment {prior_env}" if prior_env
+                else f"{target.user}@{target.host}:{target.project_root}" if target is not None
+                else "this machine"
+            )
+            return (
+                f"This task's work is on {where}; a run of it cannot be sent elsewhere. "
+                f"Start a new task to work in another place."
+            )
+        if environment_id is None:
+            if adapter_name is None:
+                return None  # a caller that does not name the executor cannot be checked further
+            adapter = self.adapters.get(adapter_name)
+            new_remote = adapter.remote if adapter is not None else None
+            was = (target.host, int(target.port), target.user, target.project_root) if target else None
+            now = (
+                (new_remote.ssh_host, int(new_remote.ssh_port), new_remote.ssh_user,
+                 new_remote.remote_project_root) if new_remote is not None else None
+            )
+            if was != now:
+                where = f"{target.user}@{target.host}:{target.project_root}" if target else "this machine"
+                there = (
+                    f"{new_remote.ssh_user}@{new_remote.ssh_host}:{new_remote.remote_project_root}"
+                    if new_remote is not None else "this machine"
+                )
+                return (
+                    f"This task's work is on {where}; executor {adapter_name} runs on {there}. "
+                    f"A run of this task cannot be sent elsewhere — start a new task to work there."
+                )
+            return None
+        record = self.environments.get(environment_id)
+        if record is None:
+            return None  # the caller's own "unknown environment" refusal says it better
+        was = (target.host, int(target.port), target.user, target.project_root,
+               str(PurePosixPath(target.workspace).parent) if target.workspace else None)
+        now = (record.ssh_host, int(record.ssh_port), record.ssh_user,
+               record.remote_project_root, str(PurePosixPath(record.remote_workspace)))
+        if was != now:
+            # Edited since: a follow-up would run on the new place and never touch the
+            # reviewed work (review, CR-4 wiring). Both places named; never moved silently.
+            return (
+                f"Remote environment {environment_id} was changed after this task last ran "
+                f"there: its work is at {target.user}@{target.host}:{target.project_root}, the "
+                f"environment now points at {record.ssh_user}@{record.ssh_host}:"
+                f"{record.remote_project_root}. Point it back, or start the work on the new "
+                f"place as a new task."
+            )
+        return None
+
+    def task_environment(self, task_id: str) -> str | None:
+        """The registered environment this task's work is on, or None (this machine, or
+        an adapter's configured remote, or nothing launched yet). What a request naming
+        no environment inherits — asked by the worktree preflight too, so the check and
+        the run agree on the place."""
+        prior = self._launched_run_of(task_id)
+        return prior.remote.environment_id if prior is not None and prior.remote else None
+
+    def _place_on_task(self, task_id: str, request: CreateRunRequest) -> CreateRunRequest:
+        """``request`` placed where the task's work lives (see ``placement_refusal``)."""
+        prior_env = self.task_environment(task_id)
+        if request.environment_id is None and prior_env is not None:
+            request = request.model_copy(update={"environment_id": prior_env})
+        refusal = self.placement_refusal(task_id, request.environment_id, request.adapter)
+        if refusal is not None:
+            raise RunValidationError(refusal)
+        return request
+
+    async def _provision_remote(self, adapter: ExecutionAdapter, project_id: str) -> str | None:
+        """Provision ``adapter``'s worktree on its remote host. None when it is ready;
+        otherwise the reason, already redacted — never raises."""
+        try:
+            components = remote_components_for(
+                adapter, self.projects, allowed_workspace_roots=self.allowed_workspace_roots,
+            )
+        except Exception as exc:  # noqa: BLE001 - a misconfigured place is a reason, not a crash
+            return redact_text(f"{type(exc).__name__}: {exc}")
+        try:
+            # The remote root may be a pre-created empty directory (D2 form-2): make it a
+            # repository first, as project creation does locally. Idempotent.
+            await initialise_if_empty(components, project_id)
+            result = await components.provisioner.provision(
+                ProvisionRequest(project_id=project_id, adapter=adapter.name)
+            )
+            if result.status.state != WorkspaceState.READY:
+                return redact_text(f"{result.status.state.value}: {result.status.error or ''}".strip())
+            return None
+        except Exception as exc:  # noqa: BLE001
+            return redact_text(f"{type(exc).__name__}: {exc}")
+        finally:
+            await components.aclose()
 
     async def _review_prompt_remote(self, worker_run: ExecutionRun, adapter: ExecutionAdapter) -> str:
         """``_review_prompt``, read on the worker's host: readiness, changed files and
@@ -2249,6 +2440,44 @@ class ExecutionDispatcher:
             return
         worker_adapter = self.adapters.get(worker_run.adapter)
         reviewer_adapter = self.adapters[reviewer]
+        review_environment_id: str | None = None
+        recorded = remote_target_of(worker_run)
+        if recorded is not None and recorded.get("environment_id"):
+            # The worker ran on a registered environment (CR-4): the review goes to the
+            # same one with the reviewer's CLI — same account, same host by construction.
+            try:
+                worker_adapter = adapter_for_recorded_target(
+                    worker_adapter, recorded, self.environments,
+                )
+            except RemoteTargetMismatch as exc:
+                self._block_review_owed(
+                    task_id=worker_run.task_id, run_id=worker_run.run_id,
+                    reason=f"评审无法派到开发所在的注册环境：{exc}",
+                )
+                return
+            review_environment_id = recorded["environment_id"]
+            # Placed where the WORKER ran — its recorded host, project root and worktree
+            # directory (with the environment's current credentials, already checked to
+            # reach the same account above) — never the registry's current paths: an
+            # environment edited mid-run would otherwise review one repository's change
+            # from inside another (review, CR-4 wiring).
+            reviewer_adapter = replace(
+                reviewer_adapter, bridge_mode="ssh",
+                remote=worker_adapter.remote.model_copy(update={  # type: ignore[union-attr]
+                    "remote_workspace": str(
+                        PurePosixPath(recorded["workspace"]).parent / reviewer_adapter.workspace_key
+                    ),
+                }),
+            )
+            # The reviewer runs in its OWN worktree there (its own branch); make sure it
+            # exists before the review is queued, as project creation does locally.
+            provisioned = await self._provision_remote(reviewer_adapter, worker_run.project_id)
+            if provisioned is not None:
+                self._block_review_owed(
+                    task_id=worker_run.task_id, run_id=worker_run.run_id,
+                    reason=f"评审代理 {reviewer!r} 在注册环境 {review_environment_id!r} 上的工作树未能建立：{provisioned}",
+                )
+                return
         if is_remote(worker_adapter) or is_remote(reviewer_adapter):
             # A review reads the worker's worktree, so the two must be on the same
             # account of the same host (W3-a U5). Not a substitution to make quietly —
@@ -2281,11 +2510,15 @@ class ExecutionDispatcher:
                 timeout_seconds=worker_run.timeout_seconds,
                 actor=REVIEW_REQUESTER,
                 expected_task_version=task.version,
+                environment_id=review_environment_id,
             )
             # The role travels as an argument, not as request metadata: the request
             # model refuses the reserved keys so no client can forge a role, and this
             # is the only place that asks for ROLE_REVIEW.
-            review_run = self.queue(request, role=ROLE_REVIEW, reviews_run_id=worker_run.run_id)
+            review_run = self.queue(
+                request, role=ROLE_REVIEW, reviews_run_id=worker_run.run_id,
+                placed=reviewer_adapter if review_environment_id is not None else None,
+            )
         except Exception as exc:
             # A failed prompt build, a rejected request, a queue conflict, a task
             # that moved underneath us: all of them mean no review exists, and that

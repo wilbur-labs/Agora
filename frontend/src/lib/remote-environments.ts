@@ -98,6 +98,7 @@ export function validateEnvironmentInput(
     ["ssh_user", "environments.form.errors.userRequired"],
     ["remote_workspace", "environments.form.errors.workspaceRequired"],
     ["remote_project_root", "environments.form.errors.projectRootRequired"],
+    ["project_id", "environments.form.errors.projectRequired"],
   ];
   // A keyring credential hides the secret_ref field (it is only a label there, filled
   // in by `toSubmission`), so requiring it would block on a field the person cannot see.
@@ -129,6 +130,15 @@ export function validateEnvironmentInput(
     }
   }
   // key_path: secret_ref is a file path; no pattern to enforce client-side.
+
+  // The remote provisioner builds worktrees only inside the project root; mirrored from
+  // the server (`remote_path_within`) so the form says it before the host refuses it.
+  if (
+    input.remote_workspace.trim() && input.remote_project_root.trim()
+    && !remotePathWithin(input.remote_workspace.trim(), input.remote_project_root.trim())
+  ) {
+    errors.push({ field: "remote_workspace", messageKey: "environments.form.errors.workspaceOutsideRoot" });
+  }
 
   if (!Number.isInteger(input.ssh_port) || input.ssh_port < 1 || input.ssh_port > 65535) {
     errors.push({ field: "ssh_port", messageKey: "environments.form.errors.portRange" });
@@ -174,6 +184,19 @@ export function toSubmission(input: RemoteEnvironmentInput): RemoteEnvironmentIn
     : { ...input, secret_ref: KEYRING_SECRET_REF_LABEL };
 }
 
+/** Whether POSIX `path` lies strictly inside `root`, compared by path components
+ * (`/a/bc` is not under `/a/b`). Lexical, like the server's check; the host re-checks
+ * with symlinks resolved. */
+export function remotePathWithin(path: string, root: string): boolean {
+  if (!path.startsWith("/") || !root.startsWith("/")) return false;
+  // "." segments vanish, as in the server's PurePosixPath; ".." is refused below.
+  const child = path.split("/").filter((part) => part && part !== ".");
+  const parent = root.split("/").filter((part) => part && part !== ".");
+  if (child.includes("..")) return false;
+  if (child.length <= parent.length) return false;
+  return parent.every((part, i) => child[i] === part);
+}
+
 /** A blank input for a new environment, with the safe defaults (strict host key, port 22). */
 export function emptyEnvironmentInput(): RemoteEnvironmentInput {
   return {
@@ -190,6 +213,7 @@ export function emptyEnvironmentInput(): RemoteEnvironmentInput {
     host_key_mode: "strict",
     known_hosts_path: null,
     cleanup_worktree: false,
+    project_id: "",
   };
 }
 
@@ -211,5 +235,69 @@ export function toEnvironmentInput(env: RemoteEnvironment): RemoteEnvironmentInp
     host_key_mode: env.host_key_mode,
     known_hosts_path: env.known_hosts_path,
     cleanup_worktree: env.cleanup_worktree,
+    project_id: env.project_id ?? "",
   };
+}
+
+// --- choosing where a run executes (CR-4: the environment dropdown beside the box) ---
+
+/** What the dispatch box knows about registered environments. Three states kept apart:
+ * still loading, could not be read, and read (possibly empty). */
+export type EnvironmentListState =
+  | { kind: "loading" }
+  | { kind: "failed" }
+  | { kind: "ready"; environments: RemoteEnvironment[] };
+
+/** One choice in the dropdown. `value` "" is the adapter's own place (this machine,
+ * or the remote its configuration names); anything else is a registered environment id. */
+export interface DispatchEnvironmentChoice {
+  value: string;
+  /** Registered: its label. Own place: null (the caller says it, from the adapter). */
+  label: string | null;
+  /** Registered: `user@host[:port]`. */
+  target: string | null;
+}
+
+export const OWN_PLACE = "";
+
+/** The dropdown's choices, and what to say beside it. A list that could not be read
+ * is "failed", never shown as if there were no environments. */
+export function dispatchEnvironmentChoices(state: EnvironmentListState, projectId: string): {
+  choices: DispatchEnvironmentChoice[];
+  notice: "loading" | "failed" | null;
+} {
+  const own: DispatchEnvironmentChoice = { value: OWN_PLACE, label: null, target: null };
+  if (state.kind !== "ready") return { choices: [own], notice: state.kind };
+  return {
+    choices: [
+      own,
+      // Only this project's environments: another project's root is that project's
+      // repository (one environment = one project; the server refuses it too).
+      ...state.environments.filter((env) => env.project_id === projectId).map((env) => ({
+        value: env.environment_id,
+        label: env.label,
+        target: `${env.ssh_user}@${env.ssh_host}${env.ssh_port !== 22 ? `:${env.ssh_port}` : ""}`,
+      })),
+    ],
+    notice: null,
+  };
+}
+
+/** The environment a send goes to, decided at the moment of sending. The adapter's own
+ * place is `null`. A chosen environment that is no longer in a list that WAS read is
+ * refused ("gone") rather than quietly replaced by the adapter's own place; one that
+ * cannot be checked (list loading or unreadable) is passed through — the server
+ * refuses an unknown id itself. */
+export function dispatchEnvironmentOf(
+  selected: string,
+  state: EnvironmentListState,
+  projectId: string,
+): { ok: true; environmentId: string | null } | { ok: false; reason: "gone" } {
+  if (selected === OWN_PLACE) return { ok: true, environmentId: null };
+  if (state.kind === "ready" && !state.environments.some(
+    (env) => env.environment_id === selected && env.project_id === projectId,
+  )) {
+    return { ok: false, reason: "gone" };
+  }
+  return { ok: true, environmentId: selected };
 }

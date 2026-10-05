@@ -30,7 +30,7 @@ from agora.tasks.store import TaskStore
 from agora.projects import ProjectRegistry
 from agora.workspaces.naming import worktree_branch
 
-from .deliverables import _GIT, _read_changes, digest_of, provisioned_worktree_check, ready_worktree_check
+from .deliverables import MAX_FILES, _GIT, _read_changes, digest_of, provisioned_worktree_check, ready_worktree_check
 from .dispatcher import ROLE_KEY, ROLE_WORKER
 from .remote_wiring import RemoteTargetMismatch, adapter_for_recorded_target, remote_components_for, remote_target_of
 from .models import RunState
@@ -307,6 +307,7 @@ def hand_off(
     *,
     actor: str,
     adapters: dict | None = None,
+    environments=None,
 ) -> HandoffResult:
     """Commit the deliverable, bind the commit to the task, and mark it done."""
     task = task_store.get(task_id)
@@ -331,7 +332,9 @@ def hand_off(
         run_id = worker.run_id
         workspace_str = worker.workspace
         try:
-            pinned = adapter_for_recorded_target((adapters or {}).get(worker.adapter), remote_target)
+            pinned = adapter_for_recorded_target(
+                (adapters or {}).get(worker.adapter), remote_target, environments,
+            )
         except RemoteTargetMismatch as exc:
             commit, committed, files, note = None, False, [], f"{exc}; nothing committed"
         else:

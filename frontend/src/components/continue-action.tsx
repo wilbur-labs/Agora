@@ -166,7 +166,9 @@ export function ContinueAction({
     const controller = new AbortController();
     let timer: number | undefined;
     const read = () => {
-      getWorkspaceStatus(task.project_id, adapter, controller.signal)
+      // task_id: the server checks the place this task's work is on (its next run
+      // inherits it), not necessarily this machine.
+      getWorkspaceStatus(task.project_id, adapter, controller.signal, null, task.task_id)
         .then((value) => {
           if (controller.signal.aborted) return;
           setStatus(value);
@@ -227,7 +229,7 @@ export function ContinueAction({
     if (decision.needsProvision) {
       setBusy("provisioning");
       try {
-        const result = await provisionWorkspace(task.project_id, adapter);
+        const result = await provisionWorkspace(task.project_id, adapter, undefined, null, task.task_id);
         if (!mounted.current) return;
         setStatus(result.status);
         setStatusError(null);

@@ -30,10 +30,13 @@ import { useI18n } from "@/lib/i18n";
 
 export function RemoteEnvironmentForm({
   existing,
+  projects,
   onSaved,
   onCancel,
 }: {
   existing?: RemoteEnvironment;
+  /** The projects an environment can belong to; null when the list could not be read. */
+  projects: { project_id: string; name: string }[] | null;
   onSaved: (env: RemoteEnvironment) => void;
   onCancel: () => void;
 }) {
@@ -172,12 +175,24 @@ export function RemoteEnvironmentForm({
             />
           </Field>
         )}
-        <Field label={t("environments.form.workspaceLabel")} error={errorFor("remote_workspace")}>
+        <Field label={t("environments.form.workspaceLabel")} hint={t("environments.form.workspaceHint")} error={errorFor("remote_workspace")}>
           <input
             className="w-full rounded-md border px-3 py-2 text-sm font-mono"
             value={input.remote_workspace}
             onChange={(e) => set("remote_workspace", e.target.value)}
           />
+        </Field>
+        <Field label={t("environments.form.projectLabel")} hint={t("environments.form.projectHint")} error={errorFor("project_id")}>
+          <select
+            className="w-full rounded-md border px-3 py-2 text-sm"
+            value={input.project_id}
+            onChange={(e) => set("project_id", e.target.value)}
+          >
+            <option value="">{projects === null ? t("environments.form.projectsUnreadable") : t("environments.form.projectPick")}</option>
+            {/* An existing binding stays selectable even when the list could not be read. */}
+            {projects === null && input.project_id && <option value={input.project_id}>{input.project_id}</option>}
+            {(projects ?? []).map((p) => <option key={p.project_id} value={p.project_id}>{p.name || p.project_id}</option>)}
+          </select>
         </Field>
         <Field label={t("environments.form.projectRootLabel")} error={errorFor("remote_project_root")}>
           <input

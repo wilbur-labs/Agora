@@ -4,13 +4,12 @@
  * Environments — mockup v2, screen 3.
  *
  * The top card is this machine, from real reads. Below it is the remote-environment
- * registry (CR-4 slice 1): registered SSH hosts a run could use, with a form to add,
- * edit and delete them. Registering records the host — it does not connect yet; a run
- * still resolves its remote target from config.yaml until the runtime is wired (slice 2,
- * which also adds a test connection, TOFU fingerprint confirmation and a credential
- * home). The credential itself is never shown or entered here: an environment carries
- * `secret_ref`, the name of an env var, and the list reports only whether that variable
- * is currently set.
+ * registry (CR-4): registered SSH hosts, with a form to add, edit and delete them. A
+ * run uses one when it is chosen beside the message box at dispatch time (project
+ * stream); otherwise it runs where its executor is configured. Not on this page yet: a
+ * test connection and TOFU fingerprint confirmation. A credential value is never shown:
+ * the list reports only whether it is present (env var set / key file exists / keyring
+ * entry exists), or that this machine cannot tell.
  */
 
 import { useEffect, useState } from "react";
@@ -24,6 +23,7 @@ import { useI18n } from "@/lib/i18n";
 import {
   deleteRemoteEnvironment,
   getSettingsOverview,
+  listProjects,
   listRemoteEnvironments,
   type RemoteEnvironment,
   type RuntimeCapabilities,
@@ -43,12 +43,21 @@ export default function EnvironmentsPage() {
   const [remotesFailed, setRemotesFailed] = useState(false);
   // The form's target: null = closed, "new" = registering, or an environment to edit.
   const [formTarget, setFormTarget] = useState<"new" | RemoteEnvironment | null>(null);
+  // Which projects an environment can belong to (one environment = one project). null
+  // = the list could not be read; the form then says so instead of offering nothing.
+  const [projectChoices, setProjectChoices] = useState<{ project_id: string; name: string }[] | null>(null);
 
   function reloadRemotes() {
     listRemoteEnvironments()
       .then((data) => { setRemotes(data.environments); setRemotesFailed(false); })
       .catch(() => { setRemotes(null); setRemotesFailed(true); });
   }
+
+  useEffect(() => {
+    listProjects()
+      .then((data) => setProjectChoices(data.items.map((p) => ({ project_id: p.project_id, name: p.name }))))
+      .catch(() => setProjectChoices(null));
+  }, []);
 
   useEffect(() => {
     // Two independent reads, each reporting only for itself. A failed probe of
@@ -210,6 +219,7 @@ export default function EnvironmentsPage() {
           {formTarget !== null && (
             <RemoteEnvironmentForm
               existing={formTarget === "new" ? undefined : formTarget}
+              projects={projectChoices}
               onSaved={() => { setFormTarget(null); reloadRemotes(); }}
               onCancel={() => setFormTarget(null)}
             />
@@ -237,6 +247,13 @@ export default function EnvironmentsPage() {
                       {t("environments.remoteList.hostLine", {
                         user: env.ssh_user, host: env.ssh_host, port: env.ssh_port,
                       })}
+                    </span>
+                    <span className={env.project_id ? "text-xs text-muted-foreground" : "text-xs text-amber-700 dark:text-amber-400"}>
+                      {env.project_id
+                        ? t("environments.remoteList.projectLine", {
+                          project: projectChoices?.find((p) => p.project_id === env.project_id)?.name || env.project_id,
+                        })
+                        : t("environments.remoteList.unbound")}
                     </span>
                     <span className="ml-auto flex items-center gap-2">
                       <Button variant="outline" size="sm" onClick={() => setFormTarget(env)}>
@@ -279,8 +296,8 @@ export default function EnvironmentsPage() {
           </p>
         </section>
 
-        {/* Slice 1 says what it does and does not do: it records the host, the runtime
-            is not wired yet, and connection testing / TOFU / a credential home are slice 2. */}
+        {/* What a registered environment does when chosen, and what this page cannot do
+            yet (test connection, fingerprint confirmation) — said, not implied. */}
         <section className="rounded-xl border border-dashed p-5">
           <h2 className="flex items-center gap-2 text-base font-semibold">
             <AlertTriangle className="size-4 text-amber-500" />

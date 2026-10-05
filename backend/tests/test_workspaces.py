@@ -362,3 +362,220 @@ def test_the_same_obstacle_is_not_reported_as_two_facts(tmp_path, git_project):
 
     assert status.state == WorkspaceState.ERROR
     assert status.error.count("PermissionError") == 1
+
+
+# --- registered environments (CR-4): provision and status where the run will execute ---
+
+def _environment_api(tmp_path, git_project, monkeypatch):
+    from agora.execution.adapters import ExecutionAdapter
+    from agora.execution.environment_registry_models import RemoteEnvironmentRecord
+    from agora.execution.environment_registry_store import RemoteEnvironmentStore
+    from agora.execution import remote_wiring
+    from agora.workspaces import router as ws_router
+    from agora.workspaces.models import ProvisionResult, WorkspaceStatus
+
+    _, provisioner = _system(tmp_path, git_project)
+    environments = RemoteEnvironmentStore(tmp_path / "registry.db")
+    environments.insert(RemoteEnvironmentRecord(
+        environment_id="ai-server", label="AI server", ssh_host="10.0.0.5", ssh_user="me",
+        remote_workspace="/workplace/.agora-worktrees/codex",
+        remote_project_root="/workplace/ai-projects/alpha",
+        secret_ref="os-keyring", credential_source="keyring", project_id="alpha",
+    ))
+    local_codex = ExecutionAdapter(name="codex", command_template=("codex",), workspace_key="codex")
+    monkeypatch.setattr(ws_router, "get_execution_adapters", lambda: {"codex": local_codex})
+    monkeypatch.setattr(ws_router, "get_remote_environments", lambda: environments)
+    seen = []
+
+    def _status(adapter_name):
+        return WorkspaceStatus(
+            project_id="alpha", adapter=adapter_name, state="ready",
+            path="/workplace/.agora-worktrees/codex", branch="agora/alpha/codex",
+            source_is_git=True,
+        )
+
+    class _RemoteProvisioner:
+        async def ensure_source_repo(self, project_id):
+            seen.append(("ensure", project_id))
+            return False
+
+        async def provision(self, request):
+            return ProvisionResult(status=_status(request.adapter), created=True)
+
+        async def status(self, project_id, adapter_name):
+            return _status(adapter_name)
+
+    class _Components:
+        config = type("C", (), {"remote_project_root": "/workplace/ai-projects/alpha"})()
+
+        class filesystem:  # a pre-created empty root
+            @staticmethod
+            async def is_empty_dir(path):
+                return True
+
+        async def aclose(self):
+            pass
+
+    def _factory(adapter, projects, **kw):
+        seen.append(adapter.remote)
+        comp = _Components()
+        comp.provisioner = _RemoteProvisioner()
+        return comp
+
+    monkeypatch.setattr(ws_router, "remote_components_for", _factory)
+    app.dependency_overrides[get_workspace_provisioner] = lambda: provisioner
+    return TestClient(app), seen
+
+
+def test_provision_on_a_registered_environment_goes_to_that_host(tmp_path, git_project, monkeypatch):
+    client, seen = _environment_api(tmp_path, git_project, monkeypatch)
+    try:
+        created = client.post("/api/workspaces/provision", json={
+            "project_id": "alpha", "adapter": "codex", "environment_id": "ai-server",
+        })
+        assert created.status_code == 200, created.text
+        assert seen and seen[0].ssh_host == "10.0.0.5"
+        assert seen[0].credential_source == "keyring" and seen[0].environment_id == "ai-server"
+        # The remote root is made a repository before the worktree is built (D2 form-2).
+        assert seen[1] == ("ensure", "alpha")
+        status = client.get("/api/workspaces/alpha/codex", params={"environment_id": "ai-server"})
+        assert status.status_code == 200 and status.json()["state"] == "ready"
+        assert len([s for s in seen if not isinstance(s, tuple)]) == 2
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_an_environment_with_a_missing_executor_is_a_404_not_local(tmp_path, git_project, monkeypatch):
+    client, seen = _environment_api(tmp_path, git_project, monkeypatch)
+    try:
+        created = client.post("/api/workspaces/provision", json={
+            "project_id": "alpha", "adapter": "kiro", "environment_id": "ai-server",
+        })
+        assert created.status_code == 404, created.text
+        assert seen == []
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_an_unknown_environment_is_a_404_not_a_local_provision(tmp_path, git_project, monkeypatch):
+    client, seen = _environment_api(tmp_path, git_project, monkeypatch)
+    try:
+        created = client.post("/api/workspaces/provision", json={
+            "project_id": "alpha", "adapter": "codex", "environment_id": "nowhere",
+        })
+        assert created.status_code == 404
+        assert client.get(
+            "/api/workspaces/alpha/codex", params={"environment_id": "nowhere"},
+        ).status_code == 404
+        assert seen == []
+        # And nothing was provisioned locally either.
+        assert client.get("/api/workspaces/alpha/codex").json()["state"] == "missing"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_the_real_registry_dependency_resolves(tmp_path, monkeypatch):
+    """Every other test replaces it; this one calls it, so a missing import or a wrong
+    path fails here instead of as a 500 in the running app."""
+    from agora.workspaces import router as ws_router
+
+    monkeypatch.setattr(
+        ws_router, "get_config",
+        lambda: {"control_plane": {"db_path": str(tmp_path / "agora.db")}},
+    )
+    assert ws_router.get_remote_environments().list_environments() == []
+
+
+def test_provision_on_another_project_s_environment_is_refused(tmp_path, git_project, monkeypatch):
+    from agora.execution.environment_registry_models import RemoteEnvironmentRecord
+    from agora.workspaces import router as ws_router
+
+    client, seen = _environment_api(tmp_path, git_project, monkeypatch)
+    ws_router.get_remote_environments().insert(RemoteEnvironmentRecord(
+        environment_id="elsewhere", label="B's root", ssh_host="10.0.0.5", ssh_user="me",
+        remote_workspace="/workplace/ai-projects/B/.agora/workspaces",
+        remote_project_root="/workplace/ai-projects/B", secret_ref="AGORA_X",
+        project_id="beta",
+    ))
+    try:
+        created = client.post("/api/workspaces/provision", json={
+            "project_id": "alpha", "adapter": "codex", "environment_id": "elsewhere",
+        })
+        assert created.status_code == 422, created.text
+        assert "belongs to project beta" in created.text
+        assert seen == []
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_provision_for_a_task_is_refused_before_anything_is_built(tmp_path, git_project, monkeypatch):
+    """review: a fix whose run would be refused must not first build a worktree (or
+    initialise a repository) in the wrong place."""
+    import agora.execution.router as exec_router
+
+    client, seen = _environment_api(tmp_path, git_project, monkeypatch)
+
+    class _Dispatcher:
+        def placement_refusal(self, task_id, environment_id, adapter_name=None):
+            return "This task's work is on registered environment other; ..."
+
+    monkeypatch.setattr(exec_router, "get_execution_dispatcher", lambda: _Dispatcher())
+    try:
+        created = client.post("/api/workspaces/provision", json={
+            "project_id": "alpha", "adapter": "codex", "environment_id": "ai-server",
+            "task_id": "t1",
+        })
+        assert created.status_code == 409, created.text
+        assert seen == []
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_a_task_aware_status_check_looks_where_the_task_s_work_is(tmp_path, git_project, monkeypatch):
+    """review: with no environment named, the preflight must check the place the run
+    will inherit (the task's environment), not this machine."""
+    import agora.execution.router as exec_router
+
+    client, seen = _environment_api(tmp_path, git_project, monkeypatch)
+
+    class _Dispatcher:
+        def task_environment(self, task_id):
+            return "ai-server"
+
+        def placement_refusal(self, task_id, environment_id, adapter_name=None):
+            return None
+
+    monkeypatch.setattr(exec_router, "get_execution_dispatcher", lambda: _Dispatcher())
+    try:
+        status = client.get("/api/workspaces/alpha/codex", params={"task_id": "t1"})
+        assert status.status_code == 200, status.text
+        assert seen and seen[0].environment_id == "ai-server"
+        created = client.post("/api/workspaces/provision", json={
+            "project_id": "alpha", "adapter": "codex", "task_id": "t1",
+        })
+        assert created.status_code == 200, created.text
+        assert all(getattr(s, "environment_id", "ai-server") == "ai-server" for s in seen if not isinstance(s, tuple))
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_a_task_aware_status_check_refuses_what_the_run_would_refuse(tmp_path, git_project, monkeypatch):
+    """review: the check must not say "ready" for a place the task's run would be refused."""
+    import agora.execution.router as exec_router
+
+    client, seen = _environment_api(tmp_path, git_project, monkeypatch)
+
+    class _Dispatcher:
+        def task_environment(self, task_id):
+            return "ai-server"
+
+        def placement_refusal(self, task_id, environment_id, adapter_name=None):
+            return "Remote environment ai-server was changed after this task last ran there"
+
+    monkeypatch.setattr(exec_router, "get_execution_dispatcher", lambda: _Dispatcher())
+    try:
+        status = client.get("/api/workspaces/alpha/codex", params={"task_id": "t1"})
+        assert status.status_code == 409, status.text
+        assert seen == []
+    finally:
+        app.dependency_overrides.clear()

@@ -318,6 +318,9 @@ export interface RemoteEnvironment {
   host_key_mode: "strict" | "tofu";
   known_hosts_path: string | null;
   cleanup_worktree: boolean;
+  /** The project whose root this is (one environment = one project). null only on a row
+   * registered before the field existed — unusable for dispatch until edited. */
+  project_id: string | null;
   created_at: string | null;
   updated_at: string | null;
 }
@@ -341,6 +344,7 @@ export interface RemoteEnvironmentInput {
   host_key_mode: "strict" | "tofu";
   known_hosts_path: string | null;
   cleanup_worktree: boolean;
+  project_id: string;
 }
 
 export function listRemoteEnvironments(): Promise<{ environments: RemoteEnvironment[] }> {

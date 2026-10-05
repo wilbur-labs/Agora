@@ -23,9 +23,12 @@ import { DeliverablesBlock, type DeliverablesRead } from "@/components/run-deliv
 import { relTime } from "@/components/timeline-entry";
 import { listAttention, type AttentionItem } from "@/lib/attention";
 import {
-  ApiError, appendTaskEvent, getTask, handoffTask, placeIdeaTask, proposeFromIdea, transitionTask,
+  ApiError, appendTaskEvent, getTask, handoffTask, listRemoteEnvironments, placeIdeaTask, proposeFromIdea, transitionTask,
   type IdeaProposal, type TaskManifest,
 } from "@/lib/control-plane";
+import {
+  OWN_PLACE, dispatchEnvironmentChoices, dispatchEnvironmentOf, type EnvironmentListState,
+} from "@/lib/remote-environments";
 import {
   cancelRun, createRun, getRun, getRunDeliverables, getRunOutput, listActiveProjectRuns, listExecutionAdapters, listRuns,
   remoteTargetLabel,
@@ -202,6 +205,10 @@ export function ProjectStream({
   const [adapters, setAdapters] = useState<AdapterCapability[] | null>(null);
   const [adapter, setAdapter] = useState<ExecutionAdapter>((workerAdapter as ExecutionAdapter | null) ?? CONTINUE_ADAPTER);
   const [adapterChosen, setAdapterChosen] = useState(false);
+  // Where a dispatched run executes (CR-4): the adapter's own place, or a registered
+  // remote environment — chosen at the moment of sending, beside the executor.
+  const [environments, setEnvironments] = useState<EnvironmentListState>({ kind: "loading" });
+  const [environmentChoice, setEnvironmentChoice] = useState<string>(OWN_PLACE);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [notice, setNotice] = useState<{ text: string; tone: "ok" | "warn" | "bad" } | null>(null);
@@ -320,6 +327,9 @@ export function ProjectStream({
     const ctrl = new AbortController();
     void load(ctrl.signal);
     listExecutionAdapters(ctrl.signal).then((list) => { if (!ctrl.signal.aborted) setAdapters(list); }).catch(() => {});
+    listRemoteEnvironments()
+      .then((result) => { if (!ctrl.signal.aborted) setEnvironments({ kind: "ready", environments: result.environments }); })
+      .catch(() => { if (!ctrl.signal.aborted) setEnvironments({ kind: "failed" }); });
     const timer = window.setInterval(() => { if (document.visibilityState === "visible") void load(); }, POLL_MS);
     return () => { ctrl.abort(); window.clearInterval(timer); };
   }, [load]);
@@ -403,9 +413,11 @@ export function ProjectStream({
   // The worktree the run would execute in, checked and — when it does not exist yet —
   // created, before anything is dispatched (the same preflight the task page's
   // Continue has always done). Returns the sentence that stops the send, or null.
-  const ensureWorkspace = async (who: ExecutionAdapter): Promise<string | null> => {
-    let status = await getWorkspaceStatus(projectId, who);
-    if (status.state === "missing") status = (await provisionWorkspace(projectId, who)).status;
+  const ensureWorkspace = async (
+    who: ExecutionAdapter, environmentId: string | null = null, taskId: string | null = null,
+  ): Promise<string | null> => {
+    let status = await getWorkspaceStatus(projectId, who, undefined, environmentId, taskId);
+    if (status.state === "missing") status = (await provisionWorkspace(projectId, who, undefined, environmentId, taskId)).status;
     const gate = provisionResultGate(status, (state) => te("workspaceState", state));
     return gate.dispatch ? null : t("workspace.stream.compose.worktreeNotReady", { detail: "detail" in gate.failure ? gate.failure.detail : te("workspaceState", status.state) });
   };
@@ -440,11 +452,19 @@ export function ProjectStream({
       try {
         const fresh = await getTask(task.task_id);
         const planned = fresh.state === "planned" ? fresh : await transitionTask(fresh, "planned");
-        const reviewed = runs?.find((run) => run.run_id === outcome.item.run_id);
-        const who = reviewed?.adapter ?? adapter;
-        const stop = await ensureWorkspace(who);
+        // The fix goes to the reviewed work's own executor and place. The run list is
+        // a window (it can miss an older run, or fail on its own), so a run not in it
+        // is read directly; one that cannot be read stops the fix rather than sending
+        // it to the current executor's place — which may be another machine entirely.
+        const reviewed = runs?.find((run) => run.run_id === outcome.item.run_id)
+          ?? (outcome.item.run_id ? await getRun(outcome.item.run_id).catch(() => null) : null);
+        if (!reviewed) throw new Error(t("workspace.stream.compose.fixPlaceUnknown"));
+        const who = reviewed.adapter as ExecutionAdapter;
+        const environmentId = reviewed.remote?.environment_id ?? null;
+        const stop = await ensureWorkspace(who, environmentId, task.task_id);
         if (stop !== null) throw new Error(stop);
         await createRun({
+          ...(environmentId ? { environment_id: environmentId } : {}),
           task_id: task.task_id,
           adapter: who,
           prompt: reviewFixPrompt({ reviewTitle: outcome.item.title, reviewBody: outcome.item.body, reason: outcome.response }),
@@ -465,11 +485,13 @@ export function ProjectStream({
   const startNext = async (key: string, row: PlanRow, seed: string) => {
     patch(key, { error: null });
     try {
-      const stop = await ensureWorkspace(adapter);
+      const placed = dispatchEnvironmentOf(environmentChoice, environments, projectId);
+      if (!placed.ok) throw new Error(t("workspace.stream.compose.envGone"));
+      const stop = await ensureWorkspace(adapter, placed.environmentId, row.task_id);
       if (stop !== null) throw new Error(stop);
       const fresh = await getTask(row.task_id);
       const at = now();
-      const run = await createRun({ task_id: row.task_id, adapter, kind: "work", prompt: seed, metadata: { display_prompt: t("workspace.stream.promptSummary", { step: row.step }) }, timeout_seconds: CONTINUE_TIMEOUT_SECONDS, expected_task_version: fresh.version, actor: "user" });
+      const run = await createRun({ ...(placed.environmentId ? { environment_id: placed.environmentId } : {}), task_id: row.task_id, adapter, kind: "work", prompt: seed, metadata: { display_prompt: t("workspace.stream.promptSummary", { step: row.step }) }, timeout_seconds: CONTINUE_TIMEOUT_SECONDS, expected_task_version: fresh.version, actor: "user" });
       if (!alive.current) return;
       patch(key, { started: true, editing: false });
       push({ type: "auto", key: `k${Date.now()}`, at, text: t("workspace.stream.compose.sent", { adapter: adapterLabel(adapter), step: row.step }), runId: run.run_id });
@@ -544,11 +566,13 @@ export function ProjectStream({
         setNotice({ text: t(`workspace.stream.compose.${target.reason}`), tone: "warn" });
         return;
       }
+      const placed = dispatchEnvironmentOf(environmentChoice, environments, projectId);
+      if (!placed.ok) { setNotice({ text: t("workspace.stream.compose.envGone"), tone: "bad" }); return; }
       const echoKey = show();
-      const stop = await ensureWorkspace(adapter);
+      const stop = await ensureWorkspace(adapter, placed.environmentId, target.step.task_id);
       if (stop !== null) { undo.current?.(); setNotice({ text: stop, tone: "bad" }); return; }
       const fresh = await getTask(target.step.task_id);
-      const run = await createRun({ task_id: target.step.task_id, adapter, kind: "work", prompt: intent.text, timeout_seconds: CONTINUE_TIMEOUT_SECONDS, expected_task_version: fresh.version, actor: "user" });
+      const run = await createRun({ ...(placed.environmentId ? { environment_id: placed.environmentId } : {}), task_id: target.step.task_id, adapter, kind: "work", prompt: intent.text, timeout_seconds: CONTINUE_TIMEOUT_SECONDS, expected_task_version: fresh.version, actor: "user" });
       if (!alive.current) return;
       undo.current = null;
       patch(echoKey, { runId: run.run_id });
@@ -1119,7 +1143,25 @@ export function ProjectStream({
           >
             {(adapters ?? [{ name: adapter } as AdapterCapability]).map((item) => <option key={item.name} value={item.name}>{adapterLabel(item.name)}</option>)}
           </select>
-          <span className="rounded-md border px-2 py-1" title={t("workspace.stream.compose.envTitle")}>{adapters === null ? "—" : envLabel(adapter)}</span>
+          <select
+            id="project-stream-environment"
+            value={environmentChoice}
+            onChange={(e) => setEnvironmentChoice(e.target.value)}
+            className="max-w-[16rem] rounded-md border bg-background px-2 py-1 text-[12px]"
+            aria-label={t("workspace.stream.compose.environment")}
+            title={t("workspace.stream.compose.envTitle")}
+          >
+            {dispatchEnvironmentChoices(environments, projectId).choices.map((choice) => (
+              <option key={choice.value || "own"} value={choice.value}>
+                {choice.value === OWN_PLACE
+                  ? t("workspace.stream.compose.envFollowTask", { own: adapters === null ? "—" : envLabel(adapter) })
+                  : t("workspace.stream.compose.envRegistered", { label: choice.label ?? choice.value, target: choice.target ?? "" })}
+              </option>
+            ))}
+          </select>
+          {dispatchEnvironmentChoices(environments, projectId).notice === "failed" && (
+            <span className="text-amber-700 dark:text-amber-400">{t("workspace.stream.compose.envListFailed")}</span>
+          )}
           <span className="min-w-0 flex-1 truncate">
             {composeIntentOf(draft)?.kind === "dispatch"
               ? (target.kind === "step" ? t("workspace.stream.compose.to", { step: target.step.step, title: target.step.title })

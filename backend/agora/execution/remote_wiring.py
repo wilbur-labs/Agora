@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Protocol
 
 from agora.environments_remote import RemoteEnvironment, RemoteFilesystem
 from agora.projects import ProjectRegistry
@@ -71,10 +71,15 @@ def remote_target_record(config: RemoteAdapterConfig) -> dict[str, Any]:
     the place it executes, fixed at that moment. No credential reference — that is
     looked up by adapter name when the run is read, and refused if it no longer
     reaches the same place."""
-    return {
+    record = {
         "host": config.ssh_host, "port": config.ssh_port, "user": config.ssh_user,
         "workspace": config.remote_workspace, "project_root": config.remote_project_root,
     }
+    if config.environment_id:
+        # A registered environment (CR-4): later reads take its credentials from the
+        # registry by this id, not from the adapter's config.yaml section.
+        record["environment_id"] = config.environment_id
+    return record
 
 
 def remote_target_of(run) -> dict[str, Any] | None:
@@ -93,11 +98,82 @@ class RemoteTargetMismatch(RuntimeError):
     """The adapter no longer reaches the place a run executed."""
 
 
-def adapter_for_recorded_target(adapter: ExecutionAdapter | None, target: dict[str, Any]) -> ExecutionAdapter:
+class EnvironmentLookup(Protocol):
+    """The registered-environment store, as far as execution needs it."""
+
+    def get(self, environment_id: str) -> Any: ...
+
+
+async def initialise_if_empty(components: "RemoteComponents", project_id: str) -> None:
+    """Make a registered environment's root a repository — ONLY when it is an empty,
+    pre-created directory (D2 form-2). A directory holding files but no ``.git`` is NOT
+    initialised: ``git init`` plus a seed commit of ``.gitignore`` would give every
+    worktree a project without its sources (review). Such a root, an unreadable one, or
+    a missing one is left alone and the provision that follows says what is wrong."""
+    try:
+        empty = await components.filesystem.is_empty_dir(Path(components.config.remote_project_root))
+    except Exception:  # noqa: BLE001 - cannot tell: do not initialise
+        return
+    if empty:
+        await components.provisioner.ensure_source_repo(project_id)
+
+
+def remote_path_within(path: str, root: str) -> bool:
+    """Whether POSIX ``path`` lies strictly inside ``root``, by path COMPONENTS (``/a/bc``
+    is not under ``/a/b``). Lexical only — the provisioner re-checks on the host with
+    symlinks resolved; this is the early, honest refusal at register time."""
+    child, parent = PurePosixPath(path), PurePosixPath(root)
+    if not (child.is_absolute() and parent.is_absolute()) or ".." in child.parts:
+        return False
+    return child != parent and child.parts[: len(parent.parts)] == parent.parts
+
+
+def on_registered_environment(adapter: ExecutionAdapter, record: Any) -> ExecutionAdapter:
+    """``adapter`` (the agent CLI) pointed at a registered environment (CR-4): its
+    remote section — host, credential source, host-key settings — comes from the
+    registry record instead of config.yaml.
+
+    The record's ``remote_workspace`` is the directory for this environment's worktrees;
+    each adapter gets its own subdirectory, because each worktree is on its adapter's
+    own branch — a reviewer sharing the worker's worktree would fail the branch check
+    before it ever launched (codex review)."""
+    config = record.to_adapter_config()
+    workspace = PurePosixPath(config.remote_workspace) / adapter.workspace_key
+    return replace(adapter, bridge_mode="ssh", remote=config.model_copy(
+        update={"remote_workspace": str(workspace)},
+    ))
+
+
+def adapter_for_recorded_target(
+    adapter: ExecutionAdapter | None,
+    target: dict[str, Any],
+    environments: EnvironmentLookup | None = None,
+) -> ExecutionAdapter:
     """The adapter as it must be used to read a run recorded at ``target``: the current
     adapter's credentials and host-key settings, the *recorded* host, account and paths.
     Refuses — never substitutes — when the adapter is gone, is local now, or points at
-    a different account or host."""
+    a different account or host.
+
+    A run queued on a registered environment (its target carries ``environment_id``)
+    takes those settings from the registry by that id instead — and is refused the
+    same way when the environment is gone or now reaches another account or host."""
+    environment_id = target.get("environment_id")
+    if environment_id:
+        if adapter is None:
+            raise RemoteTargetMismatch("this run's execution adapter is no longer configured")
+        if environments is None:
+            # Not "unregistered": this caller simply cannot look. Said as itself.
+            raise RemoteTargetMismatch(
+                f"this run executed on registered environment {environment_id!r}, and the "
+                f"environment registry is not available here to read it"
+            )
+        record = environments.get(environment_id)
+        if record is None:
+            raise RemoteTargetMismatch(
+                f"this run executed on registered environment {environment_id!r}, which is "
+                f"no longer registered"
+            )
+        adapter = on_registered_environment(adapter, record)
     if adapter is None or adapter.remote is None:
         raise RemoteTargetMismatch(
             "this run executed on a remote host, and its adapter is no longer configured as remote"
@@ -180,6 +256,8 @@ def remote_components_for(
         secret_ref=remote.secret_ref,
         host_key_mode=remote.host_key_mode,
         known_hosts_path=remote.known_hosts_path,
+        credential_source=remote.credential_source,
+        environment_id=remote.environment_id,
     )
     filesystem = environment.fs
     # The provisioner sees the remote paths, not the registry's locally resolved ones,

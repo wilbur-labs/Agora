@@ -75,6 +75,12 @@ class RemoteEnvironmentRecord:
     known_hosts_path: str | None = None
     cleanup_worktree: bool = False
     credential_source: CredentialSource = "env_var"
+    #: The project this environment's root belongs to (CR-4 wiring, option A): one
+    #: environment = one project on one host. A run of another project may not use it —
+    #: it would edit this project's repository and book the commit to the other one.
+    #: None only on a row written before the column existed; such a row cannot be used
+    #: until it is edited to name its project.
+    project_id: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
 
@@ -83,9 +89,9 @@ class RemoteEnvironmentRecord:
 
         Constructing it validates the SSH fields (``extra='forbid'`` cannot fire —
         we pass exactly its fields — but the port type, host_key_mode literal and
-        required-string checks all run here). Slice 1 does not feed this into the
-        runtime; it exists so validation has one owner and slice 2 has the object
-        it needs.
+        required-string checks all run here). It is also what a run dispatched to this
+        environment executes with (``remote_wiring.on_registered_environment``),
+        carrying the credential source and the id that keys a keyring password.
         """
         return RemoteAdapterConfig(
             ssh_host=self.ssh_host,
@@ -97,4 +103,6 @@ class RemoteEnvironmentRecord:
             host_key_mode=self.host_key_mode,
             known_hosts_path=self.known_hosts_path,
             cleanup_worktree=self.cleanup_worktree,
+            credential_source=self.credential_source,
+            environment_id=self.environment_id,
         )

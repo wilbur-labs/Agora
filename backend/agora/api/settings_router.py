@@ -28,6 +28,7 @@ from agora.tasks.router import get_project_registry, get_task_store
 from agora.tasks.store import TaskStore
 from agora.execution.adapters import build_adapter_registry
 from agora.execution import credential_store
+from agora.execution.remote_wiring import remote_path_within
 from agora.execution.credential_store import KeyringUnavailableError
 from agora.execution.dispatcher import token_capturable_adapters
 from agora.execution.environment_registry_models import (
@@ -1021,6 +1022,9 @@ class RemoteEnvironmentRequest(BaseModel):
     ssh_user: str = Field(min_length=1, max_length=255)
     remote_workspace: str = Field(min_length=1, max_length=4096)
     remote_project_root: str = Field(min_length=1, max_length=4096)
+    # The project whose root ``remote_project_root`` is (one environment = one project
+    # on one host). Required: an unbound environment could be chosen from any project.
+    project_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
     # secret_ref means different things per credential_source (see the validator):
     #   env_var  — the NAME of an env var, constrained to the AGORA_ namespace so the
     #              presence probe cannot be pointed at an unrelated variable.
@@ -1053,6 +1057,14 @@ class RemoteEnvironmentRequest(BaseModel):
         # (RemoteEnvironment._known_hosts_arg raises at connect for exactly this).
         if self.host_key_mode == "tofu" and not (self.known_hosts_path or "").strip():
             raise ValueError("trust-on-first-use (tofu) requires a known_hosts_path")
+        # The remote provisioner only builds worktrees inside the project root (it is
+        # constructed with no other allowed root), so a worktree directory elsewhere
+        # would fail on the host at the first provision. Refuse it here instead.
+        if not remote_path_within(self.remote_workspace, self.remote_project_root):
+            raise ValueError(
+                "the remote worktree directory must be an absolute path inside the remote "
+                "project root (e.g. <project root>/.agora/workspaces)"
+            )
 
         # Per-source credential rules (adr/0001).
         if self.credential_source == "env_var":
@@ -1095,6 +1107,7 @@ class RemoteEnvironmentRequest(BaseModel):
             known_hosts_path=self.known_hosts_path,
             cleanup_worktree=self.cleanup_worktree,
             credential_source=self.credential_source,  # type: ignore[arg-type]
+            project_id=self.project_id,
         )
 
 
@@ -1162,6 +1175,7 @@ def _remote_environment_view(record: RemoteEnvironmentRecord) -> dict[str, Any]:
         "secret_ref": record.secret_ref,
         "credential_source": record.credential_source,
         "credential_present": _credential_present(record),
+        "project_id": record.project_id,
         "host_key_mode": record.host_key_mode,
         "known_hosts_path": record.known_hosts_path,
         "cleanup_worktree": record.cleanup_worktree,
@@ -1185,6 +1199,7 @@ def list_remote_environments(
 def create_remote_environment(
     request: RemoteEnvironmentRequest,
     store: RemoteEnvironmentStore = Depends(get_remote_environment_store),
+    registry: ProjectRegistry = Depends(get_project_registry),
 ) -> dict[str, Any]:
     """Register a remote environment. Records it (slice 1) and, for a keyring
     credential, stores the password in the OS keyring (slice 2, adr/0001). A duplicate
@@ -1199,6 +1214,7 @@ def create_remote_environment(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
             "a keyring credential requires a password to store",
         )
+    _require_project(registry, request.project_id)
     try:
         record = store.insert(request.to_record())
     except RemoteEnvironmentExistsError as exc:
@@ -1227,6 +1243,16 @@ def create_remote_environment(
     return _remote_environment_view(record)
 
 
+def _require_project(registry: ProjectRegistry, project_id: str) -> None:
+    """An environment may only be bound to a project that exists (422 otherwise)."""
+    try:
+        registry.get(project_id)
+    except KeyError:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, f"Unknown project: {project_id}"
+        ) from None
+
+
 def _restore_keyring_password(environment_id: str, prior: str | None) -> bool:
     """Put the keyring back to ``prior`` (delete the entry if there was none). Returns
     whether that worked; never raises, because it runs while another error is already
@@ -1247,6 +1273,7 @@ def update_remote_environment(
     environment_id: str,
     request: RemoteEnvironmentRequest,
     store: RemoteEnvironmentStore = Depends(get_remote_environment_store),
+    registry: ProjectRegistry = Depends(get_project_registry),
 ) -> dict[str, Any]:
     """Replace an existing environment's editable fields. The id in the path is the
     row updated; a mismatching id in the body is refused rather than silently creating a
@@ -1271,6 +1298,7 @@ def update_remote_environment(
         raise HTTPException(
             status.HTTP_404_NOT_FOUND, f"Unknown remote environment: {environment_id}"
         )
+    _require_project(registry, request.project_id)
     # Decide the keyring outcome BEFORE mutating anything, so an invalid combination is
     # a clean 422 rather than a half-applied update.
     if request.credential_source == "keyring" and not request.password:

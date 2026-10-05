@@ -37,14 +37,34 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-export function getWorkspaceStatus(projectId: string, adapter: ExecutionAdapter, signal?: AbortSignal): Promise<WorkspaceStatus> {
-  return request(`/api/workspaces/${encodeURIComponent(projectId)}/${encodeURIComponent(adapter)}`, { signal });
+/** `environmentId` names a registered remote environment (CR-4): the worktree is
+ * checked there instead of where the adapter's own configuration points. */
+export function getWorkspaceStatus(
+  projectId: string, adapter: ExecutionAdapter, signal?: AbortSignal, environmentId?: string | null,
+  taskId?: string | null,
+): Promise<WorkspaceStatus> {
+  // `taskId`: the server resolves where that task's work is when no environment is named,
+  // the same way its next run inherits it — so the check and the run agree on the place.
+  const params = new URLSearchParams();
+  if (environmentId) params.set("environment_id", environmentId);
+  if (taskId) params.set("task_id", taskId);
+  const query = params.size ? `?${params.toString()}` : "";
+  return request(`/api/workspaces/${encodeURIComponent(projectId)}/${encodeURIComponent(adapter)}${query}`, { signal });
 }
 
-export function provisionWorkspace(projectId: string, adapter: ExecutionAdapter, signal?: AbortSignal): Promise<ProvisionResult> {
+/** `taskId`, when given, makes the server check the task's placement rule first, so a
+ * worktree is never built where that task's run would be refused. */
+export function provisionWorkspace(
+  projectId: string, adapter: ExecutionAdapter, signal?: AbortSignal, environmentId?: string | null,
+  taskId?: string | null,
+): Promise<ProvisionResult> {
   return request("/api/workspaces/provision", {
     method: "POST",
-    body: JSON.stringify({ project_id: projectId, adapter }),
+    body: JSON.stringify({
+      project_id: projectId, adapter,
+      ...(environmentId ? { environment_id: environmentId } : {}),
+      ...(taskId ? { task_id: taskId } : {}),
+    }),
     signal,
   });
 }

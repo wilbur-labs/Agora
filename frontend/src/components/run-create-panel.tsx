@@ -60,7 +60,9 @@ export function RunCreatePanel({
   const selectionRef = useRef("");
   const provisionAbortRef = useRef<AbortController | null>(null);
   const selectedTask = eligible.find((task) => task.task_id === taskId) ?? null;
-  const selectionKey = selectedTask ? `${selectedTask.project_id}:${adapter}` : "";
+  // The task is part of the key: the worktree a task needs depends on where ITS work is
+  // (CR-4 placement), so a late answer for one task must not be taken for another's.
+  const selectionKey = selectedTask ? `${selectedTask.project_id}:${adapter}:${selectedTask.task_id}` : "";
   const provisioning = provisioningKey === selectionKey;
   const valid = Boolean(selectedTask && workspace?.state === "ready" && prompt.trim() && prompt.length <= 16_000 && Number.isInteger(timeout) && timeout >= 1 && timeout <= 7200);
 
@@ -69,7 +71,7 @@ export function RunCreatePanel({
     const controller = new AbortController();
     let retryTimer: number | undefined;
     setWorkspaceLoading(true); setWorkspace(null); setError(null);
-    const refresh = () => getWorkspaceStatus(selectedTask.project_id, adapter, controller.signal)
+    const refresh = () => getWorkspaceStatus(selectedTask.project_id, adapter, controller.signal, null, selectedTask.task_id)
       .then((status) => {
         setWorkspace(status);
         if (status.state === "provisioning") retryTimer = window.setTimeout(refresh, 1500);
@@ -218,14 +220,14 @@ export function RunCreatePanel({
                   disabled={provisioning}
                   onClick={async () => {
                     if (!selectedTask) return;
-                    const requestKey = `${selectedTask.project_id}:${adapter}`;
+                    const requestKey = `${selectedTask.project_id}:${adapter}:${selectedTask.task_id}`;
                     provisionAbortRef.current?.abort();
                     const controller = new AbortController();
                     provisionAbortRef.current = controller;
                     setProvisioningKey(requestKey); setError(null);
                     setWorkspace((current) => current ? { ...current, state: "provisioning", error: null } : current);
                     try {
-                      const result = await provisionWorkspace(selectedTask.project_id, adapter, controller.signal);
+                      const result = await provisionWorkspace(selectedTask.project_id, adapter, controller.signal, null, selectedTask.task_id);
                       if (mountedRef.current && selectionRef.current === requestKey) setWorkspace(result.status);
                     } catch (err) {
                       if ((err as Error).name !== "AbortError" && mountedRef.current && selectionRef.current === requestKey) {

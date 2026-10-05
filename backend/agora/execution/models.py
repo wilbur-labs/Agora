@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, Literal
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -191,6 +191,11 @@ class CreateRunRequest(BaseModel):
     #: ``work`` (default) is a worker run; ``chat`` is a question (CR-75) — the server
     #: files it under ``ROLE_CHAT``: no cross-review, no hand-off, the task not moved.
     kind: Literal["work", "chat"] = "work"
+    #: Run on this registered remote environment (CR-4) instead of where the adapter's
+    #: own config points. ``None`` keeps the adapter's configured place.
+    environment_id: Optional[str] = Field(
+        default=None, min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]*$"
+    )
 
     @field_validator("prompt")
     @classmethod
@@ -265,6 +270,9 @@ class RemoteTarget(BaseModel):
     user: str
     project_root: str
     workspace: str | None = None
+    #: The registered environment a run was dispatched to (CR-4), when it was; a
+    #: follow-up run (a review fix) goes back to the same one.
+    environment_id: str | None = None
 
 
 def remote_target_public(metadata: dict[str, Any] | None) -> "RemoteTarget | None":
@@ -277,6 +285,7 @@ def remote_target_public(metadata: dict[str, Any] | None) -> "RemoteTarget | Non
         return RemoteTarget(
             host=str(raw["host"]), port=int(raw.get("port", 22)), user=str(raw["user"]),
             project_root=str(raw["project_root"]), workspace=str(raw.get("workspace")) if raw.get("workspace") else None,
+            environment_id=str(raw["environment_id"]) if raw.get("environment_id") else None,
         )
     except (KeyError, TypeError, ValueError):
         return None

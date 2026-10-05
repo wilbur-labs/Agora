@@ -14,6 +14,9 @@ from .models import AdapterCapability, RemoteTarget
 #: NFR-1 default and is fully implemented; ``tofu`` is accepted at config time but
 #: fails closed at connect (CR-6 — full TOFU awaits a real host to verify against).
 HostKeyMode = Literal["strict", "tofu"]
+#: Where the SSH credential comes from (task adr/0001). ``env_var`` is the only one a
+#: config.yaml adapter uses; the other two arrive with a registered environment.
+CredentialSourceName = Literal["env_var", "key_path", "keyring"]
 
 
 class RemoteAdapterConfig(BaseModel):
@@ -35,6 +38,10 @@ class RemoteAdapterConfig(BaseModel):
     host_key_mode: HostKeyMode = "strict"       # NFR-1 default strict; tofu opt-in
     known_hosts_path: Optional[str] = None      # used/required under strict
     cleanup_worktree: bool = False              # Q5=C: default keep; true = teardown after handoff
+    # Set only when this config comes from a registered environment (CR-4): which
+    # credential source to use, and the registry id that keys a keyring password.
+    credential_source: CredentialSourceName = "env_var"
+    environment_id: Optional[str] = None
 
     model_config = ConfigDict(extra="forbid")   # unknown keys fail-closed at load
 
@@ -415,6 +422,16 @@ def build_adapter_registry(config: dict[str, Any]) -> dict[str, ExecutionAdapter
         if registry[name].bridge_mode == "ssh":
             if not isinstance(ssh_values, dict):
                 raise ValueError(f"execution adapter {name} with bridge_mode 'ssh' needs an 'ssh' config section")
+            # The two registry-only fields are not config.yaml's to set: a keyring or
+            # key-path source needs the registry's id, and an environment_id would make
+            # a configured remote pose as a registered one. Refused at load, not at the
+            # first run (review).
+            for registry_only in ("credential_source", "environment_id"):
+                if registry_only in ssh_values:
+                    raise ValueError(
+                        f"execution adapter {name} ssh config may not set {registry_only!r}: "
+                        f"it belongs to a registered remote environment"
+                    )
             try:
                 remote = RemoteAdapterConfig(**ssh_values)
             except ValidationError as exc:

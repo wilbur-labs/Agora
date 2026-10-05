@@ -6,6 +6,10 @@ import {
   emptyEnvironmentInput,
   environmentReadiness,
   KEYRING_SECRET_REF_LABEL,
+  OWN_PLACE,
+  remotePathWithin,
+  dispatchEnvironmentChoices,
+  dispatchEnvironmentOf,
   toEnvironmentInput,
   toSubmission,
   validateEnvironmentInput,
@@ -27,6 +31,7 @@ function env(overrides: Partial<RemoteEnvironment> = {}): RemoteEnvironment {
     host_key_mode: "strict",
     known_hosts_path: "/home/ubuntu/.agora/known_hosts",
     cleanup_worktree: false,
+    project_id: "p1",
     created_at: "2026-09-28T00:00:00Z",
     updated_at: "2026-09-28T00:00:00Z",
     ...overrides,
@@ -34,7 +39,7 @@ function env(overrides: Partial<RemoteEnvironment> = {}): RemoteEnvironment {
 }
 
 function input(overrides: Partial<RemoteEnvironmentInput> = {}): RemoteEnvironmentInput {
-  return { ...emptyEnvironmentInput(), ...overrides };
+  return { ...emptyEnvironmentInput(), project_id: "p1", ...overrides };
 }
 
 // --- readiness: never claims a read this build does not perform ---------------------
@@ -63,7 +68,7 @@ test("a fully-specified input has no errors", () => {
     label: "kimono VPS",
     ssh_host: "vps.example.test",
     ssh_user: "ubuntu",
-    remote_workspace: "/srv/ws",
+    remote_workspace: "/srv/proj/ws",
     remote_project_root: "/srv/proj",
     secret_ref: "AGORA_SSH_KEY_kimono",
   });
@@ -76,6 +81,7 @@ test("every missing required field is reported at once, not one at a time", () =
   assert.deepEqual(fields, [
     "environment_id",
     "label",
+    "project_id",
     "remote_project_root",
     "remote_workspace",
     "secret_ref",
@@ -89,7 +95,7 @@ test("an id with illegal characters is rejected", () => {
     input({
       environment_id: "has spaces",
       label: "x", ssh_host: "h", ssh_user: "u",
-      remote_workspace: "/w", remote_project_root: "/p", secret_ref: "S",
+      remote_workspace: "/p/w", remote_project_root: "/p", secret_ref: "S",
     }),
   );
   assert.ok(errors.some((e) => e.field === "environment_id"));
@@ -98,7 +104,7 @@ test("an id with illegal characters is rejected", () => {
 test("a port out of range is rejected", () => {
   const base = {
     environment_id: "e", label: "x", ssh_host: "h", ssh_user: "u",
-    remote_workspace: "/w", remote_project_root: "/p", secret_ref: "S",
+    remote_workspace: "/p/w", remote_project_root: "/p", secret_ref: "S",
   };
   assert.ok(validateEnvironmentInput(input({ ...base, ssh_port: 0 })).some((e) => e.field === "ssh_port"));
   assert.ok(validateEnvironmentInput(input({ ...base, ssh_port: 70000 })).some((e) => e.field === "ssh_port"));
@@ -108,7 +114,7 @@ test("tofu without a known_hosts path is rejected, mirroring the backend", () =>
   const errors = validateEnvironmentInput(
     input({
       environment_id: "e", label: "x", ssh_host: "h", ssh_user: "u",
-      remote_workspace: "/w", remote_project_root: "/p", secret_ref: "S",
+      remote_workspace: "/p/w", remote_project_root: "/p", secret_ref: "S",
       host_key_mode: "tofu", known_hosts_path: null,
     }),
   );
@@ -119,7 +125,7 @@ test("tofu with a known_hosts path is accepted", () => {
   const errors = validateEnvironmentInput(
     input({
       environment_id: "e", label: "x", ssh_host: "h", ssh_user: "u",
-      remote_workspace: "/w", remote_project_root: "/p", secret_ref: "AGORA_SSH_KEY_e",
+      remote_workspace: "/p/w", remote_project_root: "/p", secret_ref: "AGORA_SSH_KEY_e",
       host_key_mode: "tofu", known_hosts_path: "/home/u/.agora/known_hosts",
     }),
   );
@@ -129,7 +135,7 @@ test("tofu with a known_hosts path is accepted", () => {
 test("a secret_ref outside the AGORA_ namespace is rejected, mirroring the backend", () => {
   const base = {
     environment_id: "e", label: "x", ssh_host: "h", ssh_user: "u",
-    remote_workspace: "/w", remote_project_root: "/p",
+    remote_workspace: "/p/w", remote_project_root: "/p",
   };
   // A bare name (would let the server's presence probe reach any env var).
   assert.ok(
@@ -150,7 +156,7 @@ test("key_path source does not enforce the AGORA_ prefix (secret_ref is a file p
   const errors = validateEnvironmentInput(
     input({
       environment_id: "e", label: "x", ssh_host: "h", ssh_user: "u",
-      remote_workspace: "/w", remote_project_root: "/p",
+      remote_workspace: "/p/w", remote_project_root: "/p",
       credential_source: "key_path", secret_ref: "/home/u/.ssh/id_ed25519",
     }),
   );
@@ -161,7 +167,7 @@ test("keyring source on create requires a password", () => {
   const errors = validateEnvironmentInput(
     input({
       environment_id: "e", label: "x", ssh_host: "h", ssh_user: "u",
-      remote_workspace: "/w", remote_project_root: "/p",
+      remote_workspace: "/p/w", remote_project_root: "/p",
       credential_source: "keyring", secret_ref: "login", password: null,
     }),
   );
@@ -174,7 +180,7 @@ test("keyring source on edit with an existing credential accepts a blank passwor
   const errors = validateEnvironmentInput(
     input({
       environment_id: "e", label: "x", ssh_host: "h", ssh_user: "u",
-      remote_workspace: "/w", remote_project_root: "/p",
+      remote_workspace: "/p/w", remote_project_root: "/p",
       credential_source: "keyring", secret_ref: "login", password: null,
     }),
     { existingCredentialPresent: true },
@@ -243,4 +249,97 @@ test("a keyring submission keeps a typed label and the password", () => {
   const sent = toSubmission(draft);
   assert.equal(sent.secret_ref, "my-label");
   assert.equal(sent.password, "pw");
+});
+
+// --- the dispatch box's environment dropdown (CR-4 wiring) ---------------------------
+
+test("the adapter's own place is always the first choice", () => {
+  for (const state of [{ kind: "loading" as const }, { kind: "failed" as const }, { kind: "ready" as const, environments: [] }]) {
+    const { choices } = dispatchEnvironmentChoices(state, "p1");
+    assert.equal(choices[0].value, OWN_PLACE);
+  }
+});
+
+test("registered environments follow, labelled with where they reach", () => {
+  const { choices, notice } = dispatchEnvironmentChoices({
+    kind: "ready",
+    environments: [env({ environment_id: "ai", label: "AI server", ssh_user: "me", ssh_host: "10.0.0.5" }),
+      env({ environment_id: "vps", label: "VPS", ssh_user: "u", ssh_host: "vps", ssh_port: 2222 })],
+  }, "p1");
+  assert.equal(notice, null);
+  assert.deepEqual(choices.slice(1), [
+    { value: "ai", label: "AI server", target: "me@10.0.0.5" },
+    { value: "vps", label: "VPS", target: "u@vps:2222" },
+  ]);
+});
+
+test("a list that could not be read says so, not that there are none", () => {
+  const { choices, notice } = dispatchEnvironmentChoices({ kind: "failed" }, "p1");
+  assert.equal(notice, "failed");
+  assert.equal(choices.length, 1);
+});
+
+test("the own place sends no environment", () => {
+  assert.deepEqual(dispatchEnvironmentOf(OWN_PLACE, { kind: "ready", environments: [] }, "p1"), { ok: true, environmentId: null });
+});
+
+test("a chosen environment that was removed is refused, not swapped for the own place", () => {
+  assert.deepEqual(
+    dispatchEnvironmentOf("ai", { kind: "ready", environments: [env({ environment_id: "other" })] }, "p1"),
+    { ok: false, reason: "gone" },
+  );
+});
+
+test("a chosen environment that cannot be checked yet is passed to the server", () => {
+  assert.deepEqual(dispatchEnvironmentOf("ai", { kind: "failed" }, "p1"), { ok: true, environmentId: "ai" });
+  assert.deepEqual(
+    dispatchEnvironmentOf("ai", { kind: "ready", environments: [env({ environment_id: "ai" })] }, "p1"),
+    { ok: true, environmentId: "ai" },
+  );
+});
+
+test("a worktree directory outside the project root is refused in the form", () => {
+  const errors = validateEnvironmentInput(input({
+    environment_id: "ai", label: "AI", ssh_host: "h", ssh_user: "u", secret_ref: "AGORA_X",
+    remote_project_root: "/workplace/ai-projects/MindRAG",
+    remote_workspace: "/workplace/ai-projects/.agora-worktrees",
+  }));
+  assert.ok(errors.some((e) => e.field === "remote_workspace" && e.messageKey.endsWith("workspaceOutsideRoot")));
+});
+
+test("remotePathWithin compares components, not string prefixes", () => {
+  assert.equal(remotePathWithin("/a/b/.agora/workspaces", "/a/b"), true);
+  assert.equal(remotePathWithin("/a/bc/x", "/a/b"), false);
+  assert.equal(remotePathWithin("/a/b", "/a/b"), false);
+  assert.equal(remotePathWithin("/a/b/../c", "/a/b"), false);
+  assert.equal(remotePathWithin("a/b/c", "/a/b"), false);
+});
+
+test("remotePathWithin ignores '.' segments like the server's PurePosixPath", () => {
+  assert.equal(remotePathWithin("/a/./b/ws", "/a/b"), true);
+  assert.equal(remotePathWithin("/a/b/ws", "/a/./b"), true);
+});
+
+test("the dispatch dropdown offers only this project's environments", () => {
+  const { choices } = dispatchEnvironmentChoices({
+    kind: "ready",
+    environments: [env({ environment_id: "mine", project_id: "p1" }), env({ environment_id: "theirs", project_id: "p2" }),
+      env({ environment_id: "unbound", project_id: null })],
+  }, "p1");
+  assert.deepEqual(choices.map((c) => c.value), [OWN_PLACE, "mine"]);
+});
+
+test("another project's environment is refused as gone, not sent", () => {
+  assert.deepEqual(
+    dispatchEnvironmentOf("theirs", { kind: "ready", environments: [env({ environment_id: "theirs", project_id: "p2" })] }, "p1"),
+    { ok: false, reason: "gone" },
+  );
+});
+
+test("an environment must name its project", () => {
+  const errors = validateEnvironmentInput(input({
+    environment_id: "ai", label: "AI", ssh_host: "h", ssh_user: "u", secret_ref: "AGORA_X",
+    remote_project_root: "/p", remote_workspace: "/p/w", project_id: "",
+  }));
+  assert.ok(errors.some((e) => e.field === "project_id"));
 });
