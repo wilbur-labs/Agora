@@ -20,8 +20,24 @@ import stat
 import asyncssh
 import pytest
 
+from agora import environments_remote
+
 from agora.environments import CommandResult
-from agora.environments_remote import RemoteEnvironment, RemoteProcessHandle, RemoteHostKeyError
+from agora.environments_remote import (
+    RemoteEnvironment,
+    RemoteHostKeyError,
+    RemoteProcessHandle,
+    _agent_path_word,
+    _parse_login_path,
+)
+
+
+@pytest.fixture(autouse=True)
+def _no_operator_known_hosts(monkeypatch, tmp_path_factory):
+    """Keep every test hermetic: the operator's real ~/.ssh/known_hosts must never
+    decide a test's outcome. Tests that exercise it point it somewhere explicit."""
+    absent = tmp_path_factory.mktemp("no-ssh") / "known_hosts"
+    monkeypatch.setattr(environments_remote, "_user_known_hosts", lambda: absent)
 
 
 def _run(coro):
@@ -75,9 +91,13 @@ class _FakeSFTP:
 
 
 class _FakeConn:
-    def __init__(self, *, run_result=None, run_error=None, sftp=None, captured_env=None):
+    def __init__(self, *, run_result=None, run_error=None, sftp=None, captured_env=None,
+                 probe_stdout=None, probe_error=None, probe_proc=None):
         self._run_result, self._run_error = run_result, run_error
         self._sftp, self._captured_env = sftp, captured_env
+        self._probe_stdout, self._probe_error = probe_stdout, probe_error
+        self._probe_proc = probe_proc
+        self.probes = 0
 
     async def run(self, cmd, *, encoding=None, check=False):
         if self._run_error is not None:
@@ -88,6 +108,11 @@ class _FakeConn:
         return self._sftp
 
     async def create_process(self, cmd, *, encoding=None, env=None):
+        if "__AGORA_LOGIN_PATH_BEGIN__" in cmd:  # the login-PATH probe (CR-23)
+            self.probes += 1
+            if self._probe_error is not None:
+                raise self._probe_error
+            return self._probe_proc or _FakeProbeProc(self._probe_stdout or b"")
         if self._captured_env is not None:
             self._captured_env.update({"__env__": env, "__cmd__": cmd})
         return _FakeProc()
@@ -97,6 +122,25 @@ class _FakeConn:
 
     async def wait_closed(self):
         pass
+
+
+class _FakeProbeProc:
+    def __init__(self, stdout=b"", hang=False):
+        self._stdout, self._hang = stdout, hang
+        self.returncode = None
+        self.terminated = self.closed = False
+
+    async def communicate(self):
+        if self._hang:
+            await asyncio.sleep(3600)
+        self.returncode = 0
+        return self._stdout, b""
+
+    def terminate(self):
+        self.terminated = True
+
+    def close(self):
+        self.closed = True
 
 
 class _FakeProc:
@@ -260,11 +304,14 @@ def test_launch_strips_credential_and_non_agora_env(monkeypatch):
     # real host with no run id (CR-22). Asserting the env= kwarg instead would pass
     # while the host received nothing.
     assert captured["__env__"] is None
-    assert "env AGORA_PROJECT_ID=p AGORA_RUN_ID=r AGORA_TASK_ID=t agent" in sent
+    assert sent.endswith(" AGORA_PROJECT_ID=p AGORA_RUN_ID=r AGORA_TASK_ID=t agent")
     # Neither the credential nor any other secret appears anywhere in what is sent.
     for leaked in ("SECRET", "leak", "tok", "AGORA_SSH_KEY_x", "AGORA_CONTROL_PLANE_TOKEN",
-                   "AWS_SECRET_ACCESS_KEY", "PATH"):
+                   "AWS_SECRET_ACCESS_KEY", "/usr/bin"):
         assert leaked not in sent
+    # A PATH is set (CR-23), but it is built on the remote from its own $HOME/$PATH —
+    # never the local PATH value passed in env.
+    assert "PATH=\"$HOME/.local/bin" in sent
 
 
 def test_launch_shell_hostile_identity_value_stays_one_word(monkeypatch):
@@ -281,7 +328,10 @@ def test_launch_shell_hostile_identity_value_stays_one_word(monkeypatch):
     ))
     sent = captured["__cmd__"]
     # shlex.quote wraps the whole assignment; the hostile payload lives inside one word.
-    assert f"env AGORA_PROJECT_ID=p {shlex.quote('AGORA_RUN_ID=' + hostile)} AGORA_TASK_ID=t agent" == sent
+    assert (
+        f"env {_agent_path_word(None)} AGORA_PROJECT_ID=p "
+        f"{shlex.quote('AGORA_RUN_ID=' + hostile)} AGORA_TASK_ID=t agent"
+    ) == sent
     # None of the injection tokens escape as their own shell syntax.
     assert "; touch" not in sent.replace(shlex.quote("AGORA_RUN_ID=" + hostile), "")
 
@@ -412,6 +462,16 @@ class _NoKey:
     """A key whose openssh export has too few fields — drives the format guard."""
     def export_public_key(self, fmt="openssh"):
         return b"ssh-ed25519"
+
+
+def _pub(key):
+    return key.export_public_key("openssh").split()[1]
+
+
+def _trusted_keys(known_hosts, host):
+    """The public keys a known_hosts argument trusts for ``host`` (default port)."""
+    host_keys = asyncssh.match_known_hosts(known_hosts, host, "", None)[0]
+    return [k.export_public_key("openssh").split()[1] for k in host_keys]
 
 
 def _tofu_env(monkeypatch, tmp_path, *, port=22, host="h"):
@@ -639,3 +699,149 @@ def test_real_remote_roundtrip(tmp_path):
             await env2.aclose()
 
     asyncio.run(scenario())
+
+
+
+# --- remote PATH for agent launches (CR-23) ---------------------------------------
+
+def test_parse_login_path_ignores_profile_noise():
+    out = (
+        "Welcome!\nbash: no job control\n"
+        "__AGORA_LOGIN_PATH_BEGIN__/a:/b__AGORA_LOGIN_PATH_END__\n"
+    )
+    assert _parse_login_path(out) == "/a:/b"
+    assert _parse_login_path("no markers here") is None
+    assert _parse_login_path("__AGORA_LOGIN_PATH_BEGIN____AGORA_LOGIN_PATH_END__") is None
+
+
+def test_path_word_quotes_a_hostile_login_path_as_one_literal():
+    word = _agent_path_word("/x'; rm -rf ~; echo '")
+    # One shell word: the user bins (expanded remotely) then the probed path as a literal.
+    assert shlex.split(word) == ["PATH=$HOME/.local/bin:$HOME/bin:$HOME/.npm-global/bin:$HOME/.bun/bin:$HOME/.cargo/bin:$HOME/.volta/bin:/x'; rm -rf ~; echo '"]
+
+
+def test_launch_uses_the_probed_login_path(monkeypatch):
+    captured = {}
+    probe = b"motd\n__AGORA_LOGIN_PATH_BEGIN__/opt/node/bin:/usr/bin__AGORA_LOGIN_PATH_END__\n"
+    env = _env(monkeypatch, _FakeConn(probe_stdout=probe, captured_env=captured))
+    _run(env.launch(["claude"], env={"AGORA_RUN_ID": "r"}))
+    sent = captured["__cmd__"]
+    assert sent.startswith("env " + _agent_path_word("/opt/node/bin:/usr/bin") + " ")
+    assert sent.endswith(" claude")
+
+
+def test_launch_falls_back_to_remote_path_when_probe_fails(monkeypatch):
+    captured = {}
+    env = _env(monkeypatch, _FakeConn(probe_error=OSError("probe broke"), captured_env=captured))
+    _run(env.launch(["claude"]))
+    assert captured["__cmd__"] == "env " + _agent_path_word(None) + " claude"
+
+
+def test_login_path_is_probed_once_per_environment(monkeypatch):
+    conn = _FakeConn(probe_stdout=b"__AGORA_LOGIN_PATH_BEGIN__/p__AGORA_LOGIN_PATH_END__",
+                     captured_env={})
+    env = _env(monkeypatch, conn)
+    _run(env.launch(["a"]))
+    _run(env.launch(["b"]))
+    assert conn.probes == 1
+
+
+def test_a_hanging_probe_is_terminated_and_closed(monkeypatch):
+    """codex review: wait_for's timeout does not stop the remote shell; a profile that
+    hangs must not leave its process and channel open beside the agent."""
+    monkeypatch.setattr(environments_remote, "LOGIN_PATH_PROBE_TIMEOUT", 0.05)
+    hung = _FakeProbeProc(hang=True)
+    captured = {}
+    env = _env(monkeypatch, _FakeConn(probe_proc=hung, captured_env=captured))
+    _run(env.launch(["claude"]))
+    assert hung.terminated and hung.closed
+    assert captured["__cmd__"] == "env " + _agent_path_word(None) + " claude"
+
+
+def test_a_finished_probe_is_still_closed(monkeypatch):
+    done = _FakeProbeProc(stdout=b"__AGORA_LOGIN_PATH_BEGIN__/p__AGORA_LOGIN_PATH_END__")
+    env = _env(monkeypatch, _FakeConn(probe_proc=done, captured_env={}))
+    _run(env.launch(["claude"]))
+    assert done.closed and not done.terminated
+
+
+
+# --- TOFU respects the operator's own known_hosts (Orca study, CR-12 item 3) ---
+
+def test_tofu_does_not_pin_a_host_the_operator_already_trusts(monkeypatch, tmp_path):
+    """The host is in ~/.ssh/known_hosts with key K1; the server now presents K2. TOFU
+    must not pin K2 into Agora's file — the verified connect then checks both files
+    and rejects K2, as OpenSSH would."""
+    env, kh = _tofu_env(monkeypatch, tmp_path)
+    user_kh = tmp_path / "user_known_hosts"
+    trusted = _real_key()
+    user_kh.write_text(_kh_line("h", trusted), encoding="utf-8")
+    monkeypatch.setattr(environments_remote, "_user_known_hosts", lambda: user_kh)
+    calls = {"n": 0}
+
+    async def fake_get(host, port, **kw):
+        calls["n"] += 1
+        return _real_key()  # a different key
+
+    monkeypatch.setattr(asyncssh, "get_server_host_key", fake_get)
+    _run(env._tofu_pin_if_needed())
+    assert calls["n"] == 0
+    assert not kh.exists()
+    # The verified connect trusts exactly the operator's key for "h".
+    assert _trusted_keys(env._known_hosts_arg(), "h") == [_pub(trusted)]
+
+
+def test_tofu_verifies_against_both_files_once_pinned(monkeypatch, tmp_path):
+    env, kh = _tofu_env(monkeypatch, tmp_path)
+    pinned, operators = _real_key(), _real_key()
+    kh.write_text(_kh_line("other", pinned), encoding="utf-8")
+    user_kh = tmp_path / "user_known_hosts"
+    user_kh.write_text(_kh_line("elsewhere", operators), encoding="utf-8")
+    monkeypatch.setattr(environments_remote, "_user_known_hosts", lambda: user_kh)
+    arg = env._known_hosts_arg()
+    assert _trusted_keys(arg, "other") == [_pub(pinned)]
+    assert _trusted_keys(arg, "elsewhere") == [_pub(operators)]
+
+
+def test_known_hosts_with_non_ascii_comments_are_read_as_utf8(monkeypatch, tmp_path):
+    """codex review: asyncssh reads known_hosts in the platform encoding (cp932 on a
+    Japanese Windows); a UTF-8 file with a Japanese comment must still load."""
+    env, kh = _tofu_env(monkeypatch, tmp_path)
+    key = _real_key()
+    kh.write_text("# 社内サーバー（検証用）" + chr(10) + _kh_line("h", key), encoding="utf-8")
+    assert env._host_is_pinned()
+    assert _trusted_keys(env._known_hosts_arg(), "h") == [_pub(key)]
+
+
+def test_undecodable_known_hosts_fails_closed(monkeypatch, tmp_path):
+    env, kh = _tofu_env(monkeypatch, tmp_path)
+    kh.write_bytes(b"# \xff\xfe not utf-8" + bytes([10]))
+    with pytest.raises(UnicodeDecodeError):
+        env._host_is_pinned()
+
+
+def test_unreadable_operator_known_hosts_fails_closed(monkeypatch, tmp_path):
+    """Same rule as Agora's own file: an unparseable trust store is not "empty"."""
+    env, kh = _tofu_env(monkeypatch, tmp_path)
+    user_kh = tmp_path / "user_known_hosts"
+    user_kh.write_text("@garbage-marker h not-a-key" + chr(10), encoding="utf-8")
+    monkeypatch.setattr(environments_remote, "_user_known_hosts", lambda: user_kh)
+    with pytest.raises(Exception):
+        env._host_is_pinned()
+
+
+def test_a_stalled_probe_channel_open_does_not_block_launch(monkeypatch):
+    """codex review: the deadline must also cover opening the probe's channel; a server
+    that stalls on the exec request must not hold the agent launch indefinitely."""
+    monkeypatch.setattr(environments_remote, "LOGIN_PATH_PROBE_TIMEOUT", 0.05)
+    captured = {}
+
+    class _StallingConn(_FakeConn):
+        async def create_process(self, cmd, *, encoding=None, env=None):
+            if "__AGORA_LOGIN_PATH_BEGIN__" in cmd:
+                await asyncio.sleep(3600)
+            return await super().create_process(cmd, encoding=encoding, env=env)
+
+    env = _env(monkeypatch, _StallingConn(captured_env=captured))
+    _run(asyncio.wait_for(env.launch(["claude"]), timeout=5))
+    assert captured["__cmd__"] == "env " + _agent_path_word(None) + " claude"

@@ -105,6 +105,72 @@ def _pin_lock_for(known_hosts_path: str) -> asyncio.Lock:
     return lock
 
 
+#: User-level bin directories agent CLIs are commonly installed into (``pip --user`` /
+#: ``pipx`` / the Claude Code installer use ~/.local/bin; npm with a user prefix, bun,
+#: cargo, volta). An SSH exec runs a non-login shell, so a PATH set in ~/.profile is
+#: missing and ``claude`` there is "command not found" (CR-23). Prepended as shell text
+#: on the remote side so ``$HOME`` expands THERE; the list is constant, never input.
+_AGENT_PATH_DIRS = (
+    "$HOME/.local/bin",
+    "$HOME/bin",
+    "$HOME/.npm-global/bin",
+    "$HOME/.bun/bin",
+    "$HOME/.cargo/bin",
+    "$HOME/.volta/bin",
+)
+#: Markers around the probed login PATH, so whatever a profile script prints (banners,
+#: "no job control" warnings) cannot be mistaken for it.
+_PATH_BEGIN = "__AGORA_LOGIN_PATH_BEGIN__"
+_PATH_END = "__AGORA_LOGIN_PATH_END__"
+#: The login-shell probe runs the user's profile; a profile that blocks must not stall
+#: a run. On timeout the probe is skipped, not failed.
+LOGIN_PATH_PROBE_TIMEOUT = 10.0
+_UNPROBED = object()
+
+
+def _parse_login_path(stdout: str) -> str | None:
+    """The PATH printed between the markers, or None when the probe produced none."""
+    start = stdout.rfind(_PATH_BEGIN)
+    if start < 0:
+        return None
+    start += len(_PATH_BEGIN)
+    end = stdout.find(_PATH_END, start)
+    if end < 0:
+        return None
+    path = stdout[start:end].strip()
+    return path or None
+
+
+def _agent_path_word(login_path: str | None) -> str:
+    """One shell word ``PATH=<user bins>:<base>`` for ``env``. The user-bin part is
+    double-quoted so ``$HOME`` expands on the remote; the probed login PATH is a literal
+    and goes in single quotes via shlex; without a probe the remote's own ``$PATH`` is
+    the base. Adjacent quoted strings join into one word in POSIX sh."""
+    bins = ":".join(_AGENT_PATH_DIRS)
+    if login_path:
+        return f'PATH="{bins}"' + shlex.quote(":" + login_path)
+    return f'PATH="{bins}:$PATH"'
+
+
+def _user_known_hosts() -> Path:
+    """The operator's own OpenSSH known_hosts (``~/.ssh/known_hosts``; on Windows
+    %USERPROFILE%\.ssh). TOFU consults it as well as Agora's own pin file, so a host the
+    operator already trusts is never re-pinned to whatever key it presents now."""
+    return Path.home() / ".ssh" / "known_hosts"
+
+
+def _load_known_hosts(paths: Sequence[Path]) -> "asyncssh.SSHKnownHosts | None":
+    """Parse the existing files among ``paths`` as ONE trust store, decoded as UTF-8.
+    asyncssh's own ``read_known_hosts`` opens files in the platform encoding — cp932 on
+    a Japanese Windows — so a UTF-8 file with a non-ASCII comment would fail every
+    connection. None when none of the files exists. An undecodable or unparseable file
+    raises: an unreadable trust store is never treated as empty."""
+    texts = [p.read_text(encoding="utf-8") for p in paths if p.is_file()]
+    if not texts:
+        return None
+    return asyncssh.import_known_hosts("\n".join(texts) + "\n")
+
+
 class RemoteHostKeyError(Exception):
     """Host key verification failed (unknown host under strict, or a changed key).
     A distinct type so a caller can tell a security refusal from an ordinary
@@ -211,6 +277,9 @@ class RemoteEnvironment:
         self._host_key_mode = host_key_mode
         self._known_hosts_path = known_hosts_path
         self._conn: "asyncssh.SSHClientConnection | None" = None
+        # The remote login shell's PATH, probed once per instance (= per run); None when
+        # the probe produced nothing usable (CR-23).
+        self._login_path: object = _UNPROBED
 
     # --- connection ---
 
@@ -279,15 +348,29 @@ class RemoteEnvironment:
         already in ``known_hosts_path``, so tofu verifies against that same file exactly
         like strict. A changed key is then rejected like any strict mismatch — that is
         the whole point of pinning. ``known_hosts_path`` is REQUIRED for tofu: there must
-        be a definite file to pin into, so refuse rather than pin somewhere implicit."""
+        be a definite file to pin into, so refuse rather than pin somewhere implicit.
+        When the operator's own ``~/.ssh/known_hosts`` exists, tofu verifies against it
+        too: a host already trusted there keeps that key (see ``_host_is_pinned``)."""
         if self._host_key_mode == "tofu":
             if self._known_hosts_path is None:
                 raise RemoteHostKeyError(
                     "host_key_mode 'tofu' requires known_hosts_path: there must be a "
                     "definite file to pin the first-seen key into; refusing to connect."
                 )
-            return self._known_hosts_path
-        # strict:
+            own = Path(self._known_hosts_path).expanduser()
+            loaded = _load_known_hosts([own, _user_known_hosts()])
+            # Nothing on disk yet: hand asyncssh the path, which it rejects as unknown.
+            return loaded if loaded is not None else self._known_hosts_path
+        # strict: the explicit file, else the operator's default — read as UTF-8 here
+        # rather than by asyncssh in the platform encoding.
+        path = (
+            Path(self._known_hosts_path).expanduser()
+            if self._known_hosts_path is not None
+            else _user_known_hosts()
+        )
+        loaded = _load_known_hosts([path])
+        if loaded is not None:
+            return loaded
         if self._known_hosts_path is not None:
             return self._known_hosts_path
         return ()  # asyncssh: () means "use the default known_hosts files" (strict)
@@ -313,15 +396,23 @@ class RemoteEnvironment:
         return self._host if self._port == 22 else f"[{self._host}]:{self._port}"
 
     def _host_is_pinned(self) -> bool:
-        """True if known_hosts_path already trusts a key for this host, decided by
-        asyncssh's own matcher (the one the verified connect uses). A missing file is
+        """True if Agora's pin file OR the operator's own ``~/.ssh/known_hosts`` already
+        trusts a key for this host, decided by asyncssh's own matcher (the one the
+        verified connect uses). Checking the operator's file is what stops TOFU from
+        pinning a key that differs from one they already trust — the exact signature of
+        a man in the middle; the verified connect then rejects it. A missing file is
         'not pinned'. A file we cannot read/parse is NOT silently treated as empty —
         the error propagates, because overwriting an unreadable trust store is exactly
         the failure this mode must not cause."""
-        path = Path(self._known_hosts_path).expanduser()
-        if not path.is_file():
+        return any(
+            self._file_trusts_host(path)
+            for path in (Path(self._known_hosts_path).expanduser(), _user_known_hosts())
+        )
+
+    def _file_trusts_host(self, path: Path) -> bool:
+        known = _load_known_hosts([path])
+        if known is None:
             return False
-        known = asyncssh.read_known_hosts(str(path))
         port = None if self._port == 22 else self._port
         # addr="" — we match on hostname + port only. asyncssh treats addr as an IP and
         # would call ip_address() on it; passing the (possibly non-IP) host there raises.
@@ -464,6 +555,7 @@ class RemoteEnvironment:
         argv: Sequence[str],
         cwd: Path | None,
         env: Mapping[str, str] | None = None,
+        path_word: str | None = None,
     ) -> str:
         """argv -> a single remote command line. Every element is shlex.quote'd so a
         prompt or path can never break out into extra remote words. cwd is normalized
@@ -477,14 +569,61 @@ class RemoteEnvironment:
         '^AGORA_'`` came back 0). Putting the assignments in the command makes the
         local and remote paths agree without asking anything of the server's config.
         Each ``NAME=VALUE`` is quoted as one word; the names come from the caller's
-        allowlist, so nothing here can turn into an option or an extra command."""
+        allowlist, so nothing here can turn into an option or an extra command.
+
+        ``path_word`` is a pre-built ``PATH=...`` word from :func:`_agent_path_word`
+        (constant text plus a shlex-quoted literal), placed first."""
         quoted = " ".join(shlex.quote(str(a)) for a in argv)
+        words = [path_word] if path_word else []
         if env:
-            assignments = " ".join(shlex.quote(f"{k}={v}") for k, v in sorted(env.items()))
-            quoted = f"env {assignments} {quoted}"
+            words += [shlex.quote(f"{k}={v}") for k, v in sorted(env.items())]
+        if words:
+            quoted = f"env {' '.join(words)} {quoted}"
         if cwd is not None:
             return f"cd {shlex.quote(_posix(cwd))} && {quoted}"
         return quoted
+
+    async def _login_path_for(self, conn: "asyncssh.SSHClientConnection") -> str | None:
+        """The remote user's login-shell PATH, probed once and cached. Runs the login
+        shell (``-ilc``, so the profile and an interactive-guarded rc such as nvm's are
+        read) and prints PATH between markers. Any failure — timeout, non-zero exit, no
+        markers — yields None and the caller falls back to the remote ``$PATH``: the
+        user bin dirs are still added, so this is an improvement, never a requirement."""
+        if self._login_path is not _UNPROBED:
+            return self._login_path  # type: ignore[return-value]
+        script = f"printf '\\n{_PATH_BEGIN}%s{_PATH_END}\\n' \"$PATH\""
+        cmd = f'"${{SHELL:-/bin/sh}}" -ilc {shlex.quote(script)} </dev/null'
+        login_path: str | None = None
+        proc = None
+
+        async def _probe() -> bytes:
+            # One deadline covers opening the channel as well as reading it: a server
+            # that stalls on the exec request must not hold up the launch either.
+            nonlocal proc
+            proc = await conn.create_process(cmd, encoding=None)
+            out, _ = await proc.communicate()
+            return out
+
+        try:
+            out = await asyncio.wait_for(_probe(), timeout=LOGIN_PATH_PROBE_TIMEOUT)
+            login_path = _parse_login_path((out or b"").decode("utf-8", errors="replace"))
+        except Exception:
+            # Optional by design: whatever goes wrong here, the launch proceeds on the
+            # remote $PATH plus the user bin dirs.
+            login_path = None
+        finally:
+            # A wait_for timeout (or a cancellation) does not stop the remote shell: a
+            # profile that hangs would keep its process and channel open beside the
+            # agent for the whole run. End it explicitly, whatever happened above.
+            if proc is not None:
+                try:
+                    if proc.returncode is None:
+                        proc.terminate()
+                    proc.close()
+                except Exception:
+                    pass
+        self._login_path = login_path
+        return login_path
 
     # --- AsyncExecutionEnvironment ---
 
@@ -612,11 +751,14 @@ class RemoteEnvironment:
                 if k in _LAUNCH_ENV_ALLOWLIST                   # only the explicit few
                 and not _env_name_eq(k, self._secret_ref)       # defense-in-depth: never the credential
             }
-        # The assignments travel inside the command (see _remote_cmd): an SSH env
-        # request is advisory and the server's AcceptEnv default drops them (CR-22).
-        cmd = self._remote_cmd(argv, cwd, remote_env)
         # launch is side-effecting: a connection failure is fail-closed (no retry).
         conn = await self._ensure_conn()
+        # The assignments travel inside the command (see _remote_cmd): an SSH env
+        # request is advisory and the server's AcceptEnv default drops them (CR-22).
+        # PATH gains the login shell's PATH and the user bin dirs, so an agent CLI
+        # installed under ~/.local/bin is found (CR-23).
+        path_word = _agent_path_word(await self._login_path_for(conn))
+        cmd = self._remote_cmd(argv, cwd, remote_env, path_word)
         proc = await conn.create_process(cmd, encoding=None)
         return RemoteProcessHandle(proc)
 
