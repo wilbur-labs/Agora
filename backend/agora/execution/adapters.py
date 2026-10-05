@@ -16,7 +16,7 @@ from .models import AdapterCapability, RemoteTarget
 HostKeyMode = Literal["strict", "tofu"]
 #: Where the SSH credential comes from (task adr/0001). ``env_var`` is the only one a
 #: config.yaml adapter uses; the other two arrive with a registered environment.
-CredentialSourceName = Literal["env_var", "key_path", "keyring"]
+CredentialSourceName = Literal["env_var", "key_path", "keyring", "ssh_default"]
 
 
 class RemoteAdapterConfig(BaseModel):

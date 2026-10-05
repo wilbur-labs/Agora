@@ -176,3 +176,28 @@ def test_a_run_on_a_remote_adapter_executes_on_the_host_and_brings_back_its_chan
 
 async def _remove(components, workspace: PurePosixPath, name: str) -> None:
     await components.environment.run(["rm", "-f", str(workspace / name)], timeout=30)
+
+
+@pytest.mark.integration
+def test_default_ssh_keys_reach_the_real_host():
+    """CR-24 on a real host: no password, no key path — this machine's ~/.ssh keys, as
+    `ssh user@host` uses them. Set AGORA_SSH_TEST_DEFAULT_KEYS=1 where that login works."""
+    import asyncio as _asyncio
+    import os as _os
+
+    from agora.environments_remote import RemoteEnvironment
+
+    host, user = _os.environ.get("AGORA_SSH_TEST_HOST"), _os.environ.get("AGORA_SSH_TEST_USER")
+    if not (host and user and _os.environ.get("AGORA_SSH_TEST_DEFAULT_KEYS")):
+        pytest.skip("set AGORA_SSH_TEST_HOST / _USER / AGORA_SSH_TEST_DEFAULT_KEYS=1")
+    env = RemoteEnvironment(host=host, user=user, secret_ref="ssh-default", credential_source="ssh_default")
+
+    async def go():
+        try:
+            return await env.run(["echo", "default-keys-ok"], timeout=30)
+        finally:
+            await env.aclose()
+
+    result = _asyncio.run(go())
+    assert result.outcome == "completed", result
+    assert "default-keys-ok" in result.stdout

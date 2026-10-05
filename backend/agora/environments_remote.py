@@ -253,11 +253,11 @@ class RemoteEnvironment:
         self._port = port
         self._user = user
         self._secret_ref = secret_ref
-        if credential_source not in ("env_var", "key_path", "keyring"):
+        if credential_source not in ("env_var", "key_path", "keyring", "ssh_default"):
             # A credential source we cannot interpret is a security setting; refuse
             # rather than guess (fail-closed, same posture as host_key_mode).
             raise ValueError(
-                f"credential_source must be 'env_var', 'key_path' or 'keyring', "
+                f"credential_source must be 'env_var', 'key_path', 'keyring' or 'ssh_default', "
                 f"got {credential_source!r}"
             )
         if credential_source == "keyring" and not environment_id:
@@ -315,6 +315,12 @@ class RemoteEnvironment:
                     f"refusing to connect"
                 )
             return {"password": password}
+        if self._credential_source == "ssh_default":
+            # This machine's own SSH setup, as the `ssh` command uses it (CR-24): pass no
+            # credential, and asyncssh loads the default key files from ~/.ssh (skipping
+            # passphrase-protected ones) and an agent if SSH_AUTH_SOCK is set. Nothing is
+            # read here, and nothing crosses to the remote.
+            return {}
         if self._credential_source == "key_path":
             key_path = self._secret_ref
             if not key_path or not Path(key_path).expanduser().is_file():

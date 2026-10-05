@@ -302,7 +302,8 @@ export function unregisterWorkspaceSource(path: string): Promise<{ was_registere
 // only whether it is set: true/false, or null when this machine cannot tell (e.g. no
 // keyring backend), which is not the same as "not set" (adr/0001).
 
-export type CredentialSource = "env_var" | "key_path" | "keyring";
+/** `ssh_default`: this machine's own SSH keys / agent, like the `ssh` command (CR-24). */
+export type CredentialSource = "env_var" | "key_path" | "keyring" | "ssh_default";
 
 export interface RemoteEnvironment {
   environment_id: string;

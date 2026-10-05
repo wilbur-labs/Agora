@@ -6,6 +6,7 @@ import {
   emptyEnvironmentInput,
   environmentReadiness,
   KEYRING_SECRET_REF_LABEL,
+  SSH_DEFAULT_SECRET_REF_LABEL,
   OWN_PLACE,
   remotePathWithin,
   dispatchEnvironmentChoices,
@@ -342,4 +343,17 @@ test("an environment must name its project", () => {
     remote_project_root: "/p", remote_workspace: "/p/w", project_id: "",
   }));
   assert.ok(errors.some((e) => e.field === "project_id"));
+});
+
+test("ssh_default needs no secret_ref and sends no password (CR-24)", () => {
+  const draft = { ...withCredentialSource(input(), "ssh_default"), password: "stale" };
+  assert.deepEqual(validateEnvironmentInput({ ...draft, secret_ref: "" }).filter((e) => e.field === "secret_ref"), []);
+  const sent = toSubmission({ ...draft, secret_ref: "" });
+  assert.equal(sent.secret_ref, SSH_DEFAULT_SECRET_REF_LABEL);
+  assert.equal(sent.password, null);
+});
+
+test("leaving ssh_default drops its auto label", () => {
+  const draft = { ...input(), credential_source: "ssh_default" as const, secret_ref: SSH_DEFAULT_SECRET_REF_LABEL };
+  assert.equal(withCredentialSource(draft, "env_var").secret_ref, "");
 });

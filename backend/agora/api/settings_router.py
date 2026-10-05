@@ -1037,7 +1037,7 @@ class RemoteEnvironmentRequest(BaseModel):
     cleanup_worktree: bool = False
     # Where the credential comes from (CR-4 slice 2, adr/0001). Default env_var keeps
     # slice-1 requests valid unchanged.
-    credential_source: str = Field(default="env_var", pattern=r"^(env_var|key_path|keyring)$")
+    credential_source: str = Field(default="env_var", pattern=r"^(env_var|key_path|keyring|ssh_default)$")
     # A password, present ONLY on a create/update that sets a keyring credential. It is
     # written to the OS keyring and then dropped — never stored on the record, returned
     # in a response, or logged (adr/0001). None on read and on non-keyring sources.
@@ -1078,8 +1078,9 @@ class RemoteEnvironmentRequest(BaseModel):
                 )
             if self.password is not None:
                 raise ValueError("a password is only accepted for credential_source 'keyring'")
-        elif self.credential_source == "key_path":
-            # secret_ref is a file path; a password does not belong here.
+        elif self.credential_source in ("key_path", "ssh_default"):
+            # key_path: secret_ref is a file path. ssh_default: this machine's own SSH
+            # keys/agent, secret_ref an unused label (CR-24). No password for either.
             if self.password is not None:
                 raise ValueError("a password is only accepted for credential_source 'keyring'")
         elif self.credential_source == "keyring":
@@ -1131,6 +1132,26 @@ def _serialized(func: _F) -> _F:
     return wrapper  # type: ignore[return-value]
 
 
+#: The key files the ``ssh`` command (and asyncssh) look for by default, in ~/.ssh.
+_DEFAULT_SSH_KEY_FILES = (
+    "id_ed25519_sk", "id_ecdsa_sk", "id_ed448", "id_ed25519", "id_ecdsa", "id_rsa", "id_dsa",
+)
+
+
+def _default_ssh_identity_present() -> bool | None:
+    """For ``ssh_default`` (CR-24): True when a default key file exists in ~/.ssh; None
+    when none does but an agent is configured (it may hold keys — this cannot tell);
+    False when there is neither. True means a key exists here, NOT that the host
+    accepts it — only a connection can say that."""
+    try:
+        ssh_dir = Path.home() / ".ssh"
+        if any((ssh_dir / name).is_file() for name in _DEFAULT_SSH_KEY_FILES):
+            return True
+    except (OSError, RuntimeError):
+        return None
+    return None if os.environ.get("SSH_AUTH_SOCK") else False
+
+
 def _credential_present(record: RemoteEnvironmentRecord) -> bool | None:
     """Whether this environment's credential is present — read per source, never the
     value (adr/0001). Three-state, honouring the second constitution rule:
@@ -1139,12 +1160,16 @@ def _credential_present(record: RemoteEnvironmentRecord) -> bool | None:
     - key_path: the key file at secret_ref exists.
     - keyring: an entry exists in the OS keyring. ``None`` (not False) when this
       machine has NO keyring backend — "cannot tell" is not "not set".
+    - ssh_default: a default key file exists in ~/.ssh (see
+      ``_default_ssh_identity_present``).
     """
     if record.credential_source == "keyring":
         try:
             return credential_store.has_password(record.environment_id)
         except KeyringUnavailableError:
             return None  # no backend here — unknown, never "absent"
+    if record.credential_source == "ssh_default":
+        return _default_ssh_identity_present()
     if record.credential_source == "key_path":
         if not record.secret_ref:
             return False

@@ -691,3 +691,41 @@ def test_a_row_from_before_the_project_column_migrates_unbound(tmp_path):
     conn.commit()
     conn.close()
     assert RemoteEnvironmentStore(db_path).require("old").project_id is None
+
+
+# --- ssh_default: this machine's own SSH keys / agent (CR-24) ------------------------
+
+def test_ssh_default_registers_with_nothing_to_store(client, monkeypatch, tmp_path):
+    from agora.api import settings_router
+
+    (tmp_path / ".ssh").mkdir()
+    (tmp_path / ".ssh" / "id_rsa").write_text("key", encoding="utf-8")
+    monkeypatch.setattr(settings_router.Path, "home", staticmethod(lambda: tmp_path))
+    resp = client.post(
+        "/api/remote-environments",
+        json=_payload(credential_source="ssh_default", secret_ref="ssh-default"),
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["credential_source"] == "ssh_default"
+    assert resp.json()["credential_present"] is True  # a default key file exists here
+
+
+def test_ssh_default_refuses_a_password(client):
+    resp = client.post(
+        "/api/remote-environments",
+        json=_payload(credential_source="ssh_default", secret_ref="ssh-default", password="x"),
+    )
+    assert resp.status_code == 422
+
+
+def test_ssh_default_presence_is_three_state(monkeypatch, tmp_path):
+    from agora.api import settings_router
+
+    monkeypatch.setattr(settings_router.Path, "home", staticmethod(lambda: tmp_path))
+    monkeypatch.delenv("SSH_AUTH_SOCK", raising=False)
+    assert settings_router._default_ssh_identity_present() is False   # no key, no agent
+    monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/agent.sock")
+    assert settings_router._default_ssh_identity_present() is None    # an agent: cannot tell
+    (tmp_path / ".ssh").mkdir()
+    (tmp_path / ".ssh" / "id_ed25519").write_text("key", encoding="utf-8")
+    assert settings_router._default_ssh_identity_present() is True

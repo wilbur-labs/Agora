@@ -138,9 +138,16 @@ export function RemoteEnvironmentForm({
             <option value="env_var">{t("environments.form.sourceEnvVar")}</option>
             <option value="key_path">{t("environments.form.sourceKeyPath")}</option>
             <option value="keyring">{t("environments.form.sourceKeyring")}</option>
+            <option value="ssh_default">{t("environments.form.sourceSshDefault")}</option>
           </select>
         </Field>
-        {input.credential_source === "keyring" ? (
+        {input.credential_source === "ssh_default" ? (
+          <Field label={t("environments.form.sshDefaultLabel")} hint={t("environments.form.sshDefaultHint")}>
+            <p className="rounded-md border border-dashed px-3 py-2 text-sm text-muted-foreground">
+              {t("environments.form.sshDefaultBody")}
+            </p>
+          </Field>
+        ) : input.credential_source === "keyring" ? (
           <Field
             label={t("environments.form.passwordLabel")}
             hint={isEdit ? t("environments.form.passwordHintEdit") : t("environments.form.passwordHint")}

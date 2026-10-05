@@ -100,9 +100,9 @@ export function validateEnvironmentInput(
     ["remote_project_root", "environments.form.errors.projectRootRequired"],
     ["project_id", "environments.form.errors.projectRequired"],
   ];
-  // A keyring credential hides the secret_ref field (it is only a label there, filled
-  // in by `toSubmission`), so requiring it would block on a field the person cannot see.
-  if (input.credential_source !== "keyring") {
+  // keyring and ssh_default hide the secret_ref field (only a label there, filled in by
+  // `toSubmission`), so requiring it would block on a field the person cannot see.
+  if (!hidesSecretRef(input.credential_source)) {
     required.push(["secret_ref", "environments.form.errors.secretRefRequired"]);
   }
   for (const [field, messageKey] of required) {
@@ -158,6 +158,17 @@ export function validateEnvironmentInput(
  * For keyring the server only needs a non-empty label; the password is keyed by the
  * environment id, not by this. */
 export const KEYRING_SECRET_REF_LABEL = "os-keyring";
+/** The label an ssh_default environment's unused `secret_ref` gets (CR-24). */
+export const SSH_DEFAULT_SECRET_REF_LABEL = "ssh-default";
+
+/** Sources whose `secret_ref` is not something the person types. */
+export function hidesSecretRef(source: RemoteEnvironmentInput["credential_source"]): boolean {
+  return source === "keyring" || source === "ssh_default";
+}
+
+function autoLabelOf(source: RemoteEnvironmentInput["credential_source"]): string | null {
+  return source === "keyring" ? KEYRING_SECRET_REF_LABEL : source === "ssh_default" ? SSH_DEFAULT_SECRET_REF_LABEL : null;
+}
 
 /** Switch the credential source. Leaving keyring drops the typed password (its input is
  * hidden from then on, and the server refuses a password for any other source) and the
@@ -168,20 +179,18 @@ export function withCredentialSource(
 ): RemoteEnvironmentInput {
   if (source === input.credential_source) return input;
   const next = { ...input, credential_source: source };
-  if (input.credential_source === "keyring") {
-    next.password = null;
-    if (next.secret_ref === KEYRING_SECRET_REF_LABEL) next.secret_ref = "";
-  }
+  if (input.credential_source === "keyring") next.password = null;
+  const label = autoLabelOf(input.credential_source);
+  if (label !== null && next.secret_ref === label) next.secret_ref = "";
   return next;
 }
 
 /** What is actually sent: a password only for keyring, and a keyring label filled in
  * when the (hidden) secret_ref is blank. */
 export function toSubmission(input: RemoteEnvironmentInput): RemoteEnvironmentInput {
-  if (input.credential_source !== "keyring") return { ...input, password: null };
-  return input.secret_ref.trim()
-    ? input
-    : { ...input, secret_ref: KEYRING_SECRET_REF_LABEL };
+  const body = input.credential_source === "keyring" ? input : { ...input, password: null };
+  const label = autoLabelOf(input.credential_source);
+  return label !== null && !body.secret_ref.trim() ? { ...body, secret_ref: label } : body;
 }
 
 /** Whether POSIX `path` lies strictly inside `root`, compared by path components

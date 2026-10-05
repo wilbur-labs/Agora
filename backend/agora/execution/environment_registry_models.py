@@ -29,7 +29,10 @@ from .adapters import HostKeyMode, RemoteAdapterConfig
 #:   keyring  — a password kept in the OS keyring (never in the DB); secret_ref is
 #:              unused for connection but retained as a label.
 #: ``env_var`` is the default so rows registered in slice 1 keep working unchanged.
-CredentialSource = Literal["env_var", "key_path", "keyring"]
+#:   ssh_default — this machine's own SSH setup, like the ``ssh`` command: the default
+#:              key files in ~/.ssh (unencrypted ones) and an agent when SSH_AUTH_SOCK is
+#:              set. Nothing is stored or typed; secret_ref is an unused label (CR-24).
+CredentialSource = Literal["env_var", "key_path", "keyring", "ssh_default"]
 
 #: The registry key rule, stated once so the Pydantic request field, this
 #: validator and the frontend form all enforce the *same* thing: must start with

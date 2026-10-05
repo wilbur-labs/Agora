@@ -279,7 +279,9 @@ export default function EnvironmentsPage() {
                         : t("environments.remoteList.hostKeyStrict")}
                     </span>
                     <span className="font-mono">
-                      {env.credential_source === "keyring"
+                      {env.credential_source === "ssh_default"
+                        ? t("environments.remoteList.credentialViaSshDefault")
+                        : env.credential_source === "keyring"
                         ? t("environments.remoteList.credentialViaKeyring")
                         : env.credential_source === "key_path"
                         ? t("environments.remoteList.credentialViaKeyPath", { path: env.secret_ref })

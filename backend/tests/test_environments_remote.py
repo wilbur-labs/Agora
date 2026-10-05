@@ -845,3 +845,9 @@ def test_a_stalled_probe_channel_open_does_not_block_launch(monkeypatch):
     env = _env(monkeypatch, _StallingConn(captured_env=captured))
     _run(asyncio.wait_for(env.launch(["claude"]), timeout=5))
     assert captured["__cmd__"] == "env " + _agent_path_word(None) + " claude"
+
+
+def test_ssh_default_passes_no_credential_so_asyncssh_uses_its_defaults():
+    """CR-24: like the ssh command — the default key files and an agent; nothing typed."""
+    env = RemoteEnvironment(host="h", user="u", secret_ref="ssh-default", credential_source="ssh_default")
+    assert env._credentials() == {}
