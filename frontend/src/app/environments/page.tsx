@@ -46,6 +46,7 @@ export default function EnvironmentsPage() {
   // Which projects an environment can belong to (one environment = one project). null
   // = the list could not be read; the form then says so instead of offering nothing.
   const [projectChoices, setProjectChoices] = useState<{ project_id: string; name: string }[] | null>(null);
+  const [currentProject, setCurrentProject] = useState<string | null>(null);
 
   function reloadRemotes() {
     listRemoteEnvironments()
@@ -55,7 +56,10 @@ export default function EnvironmentsPage() {
 
   useEffect(() => {
     listProjects()
-      .then((data) => setProjectChoices(data.items.map((p) => ({ project_id: p.project_id, name: p.name }))))
+      .then((data) => {
+        setProjectChoices(data.items.map((p) => ({ project_id: p.project_id, name: p.name })));
+        setCurrentProject(data.items.some((p) => p.project_id === data.current) ? data.current : null);
+      })
       .catch(() => setProjectChoices(null));
   }, []);
 
@@ -220,6 +224,8 @@ export default function EnvironmentsPage() {
             <RemoteEnvironmentForm
               existing={formTarget === "new" ? undefined : formTarget}
               projects={projectChoices}
+              defaultProjectId={currentProject}
+              takenIds={new Set((remotes ?? []).map((env) => env.environment_id))}
               onSaved={() => { setFormTarget(null); reloadRemotes(); }}
               onCancel={() => setFormTarget(null)}
             />

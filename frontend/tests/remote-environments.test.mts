@@ -8,6 +8,11 @@ import {
   KEYRING_SECRET_REF_LABEL,
   SSH_DEFAULT_SECRET_REF_LABEL,
   OWN_PLACE,
+  unusedId,
+  advancedHasError,
+  autoFilled,
+  defaultWorkspaceFor,
+  environmentIdFrom,
   remotePathWithin,
   dispatchEnvironmentChoices,
   dispatchEnvironmentOf,
@@ -85,7 +90,6 @@ test("every missing required field is reported at once, not one at a time", () =
     "project_id",
     "remote_project_root",
     "remote_workspace",
-    "secret_ref",
     "ssh_host",
     "ssh_user",
   ]);
@@ -136,6 +140,7 @@ test("tofu with a known_hosts path is accepted", () => {
 test("a secret_ref outside the AGORA_ namespace is rejected, mirroring the backend", () => {
   const base = {
     environment_id: "e", label: "x", ssh_host: "h", ssh_user: "u",
+    credential_source: "env_var" as const,
     remote_workspace: "/p/w", remote_project_root: "/p",
   };
   // A bare name (would let the server's presence probe reach any env var).
@@ -202,11 +207,11 @@ test("toEnvironmentInput drops read-only fields, keeps editable ones, blanks pas
   assert.equal(back.password, null);
 });
 
-test("emptyEnvironmentInput defaults to strict host key, port 22, env_var source", () => {
+test("emptyEnvironmentInput defaults to strict host key, port 22, this machine's SSH keys", () => {
   const blank = emptyEnvironmentInput();
   assert.equal(blank.host_key_mode, "strict");
   assert.equal(blank.ssh_port, 22);
-  assert.equal(blank.credential_source, "env_var");
+  assert.equal(blank.credential_source, "ssh_default");
   assert.equal(blank.password, null);
 });
 
@@ -356,4 +361,61 @@ test("ssh_default needs no secret_ref and sends no password (CR-24)", () => {
 test("leaving ssh_default drops its auto label", () => {
   const draft = { ...input(), credential_source: "ssh_default" as const, secret_ref: SSH_DEFAULT_SECRET_REF_LABEL };
   assert.equal(withCredentialSource(draft, "env_var").secret_ref, "");
+});
+
+// --- registering with only what the person knows (CR-26) ---------------------------
+
+test("environmentIdFrom turns a host or label into a valid id", () => {
+  assert.equal(environmentIdFrom("10.36.94.35"), "10-36-94-35");
+  assert.equal(environmentIdFrom("AI-Server"), "ai-server");
+  assert.equal(environmentIdFrom("sharp@AI 服务器"), "sharp-ai");
+  assert.equal(environmentIdFrom("--.x"), "x");
+  assert.equal(environmentIdFrom(""), "");
+});
+
+test("defaultWorkspaceFor puts worktrees inside the project root", () => {
+  assert.equal(defaultWorkspaceFor("/workplace/ai-projects/MindRAG/"), "/workplace/ai-projects/MindRAG/.agora/workspaces");
+  assert.equal(defaultWorkspaceFor("relative/path"), "");
+  assert.equal(defaultWorkspaceFor("/"), "");
+});
+
+test("autoFilled derives everything but host, account, project and root", () => {
+  const filled = autoFilled(
+    { ...emptyEnvironmentInput(), ssh_host: "10.36.94.35", ssh_user: "sharp", remote_project_root: "/home/sharp/p" },
+    new Set(),
+    { defaultProjectId: "agora" },
+  );
+  assert.equal(filled.environment_id, "agora-10-36-94-35");
+  assert.equal(filled.label, "sharp@10.36.94.35");
+  assert.equal(filled.remote_workspace, "/home/sharp/p/.agora/workspaces");
+  assert.equal(filled.project_id, "agora");
+  assert.equal(filled.credential_source, "ssh_default");
+  assert.deepEqual(validateEnvironmentInput(filled), []);  // registrable as is
+});
+
+test("autoFilled never overwrites what the person typed", () => {
+  const typed = { ...emptyEnvironmentInput(), ssh_host: "h", label: "My box", environment_id: "", remote_workspace: "/r/ws", remote_project_root: "/r" };
+  const filled = autoFilled(typed, new Set(["label", "remote_workspace"] as const), { defaultProjectId: "agora" });
+  assert.equal(filled.label, "My box");
+  assert.equal(filled.environment_id, "agora-my-box");  // derived from the label they chose
+  assert.equal(filled.remote_workspace, "/r/ws");
+  const chosen = autoFilled({ ...typed, project_id: "" }, new Set(["project_id"] as const), { defaultProjectId: "agora" });
+  assert.equal(chosen.project_id, "");  // cleared on purpose: not refilled
+});
+
+test("advancedHasError opens the folded section only for its own fields", () => {
+  assert.equal(advancedHasError([{ field: "remote_workspace", messageKey: "x" }]), true);
+  assert.equal(advancedHasError([{ field: "ssh_host", messageKey: "x" }]), false);
+});
+
+test("a second project on the same host gets its own id; taken ids are stepped around", () => {
+  const base = { ...emptyEnvironmentInput(), ssh_host: "10.36.94.35", ssh_user: "sharp", remote_project_root: "/p" };
+  const a = autoFilled({ ...base, project_id: "mindrag" }, new Set(["project_id"] as const));
+  const b = autoFilled({ ...base, project_id: "lora" }, new Set(["project_id"] as const));
+  assert.notEqual(a.environment_id, b.environment_id);
+  const again = autoFilled({ ...base, project_id: "mindrag" }, new Set(["project_id"] as const), {
+    takenIds: new Set([a.environment_id]),
+  });
+  assert.equal(again.environment_id, `${a.environment_id}-2`);
+  assert.equal(unusedId("x", new Set(["x", "x-2"])), "x-3");
 });

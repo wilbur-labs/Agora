@@ -182,7 +182,7 @@ export function ContinueAction({
     };
     read();
     return () => { controller.abort(); if (timer !== undefined) window.clearTimeout(timer); };
-  }, [open, task.project_id, adapter]);
+  }, [open, task.project_id, task.task_id, adapter]);
 
   const readiness = workspaceReadiness({
     // "No answer yet" is carried by `status === null`; the panel resets both

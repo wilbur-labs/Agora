@@ -206,6 +206,81 @@ export function remotePathWithin(path: string, root: string): boolean {
   return parent.every((part, i) => child[i] === part);
 }
 
+// --- registering with only what the person knows (CR-26) -----------------------------
+//
+// Three things only the person knows: which host (and account), which project, and where
+// that project lives on the host. Everything else is derived until they edit it.
+
+/** Fields kept under "advanced"; the form opens that section when one of them errs. */
+export const ADVANCED_FIELDS: readonly (keyof RemoteEnvironmentInput)[] = [
+  "environment_id", "label", "ssh_port", "credential_source", "secret_ref", "password",
+  "remote_workspace", "host_key_mode", "known_hosts_path", "cleanup_worktree",
+];
+
+/** A valid environment id from free text: `10.36.94.35` -> `10-36-94-35`,
+ * `AI-Server` -> `ai-server`. Empty when nothing usable is left. */
+export function environmentIdFrom(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^[^a-z0-9]+/, "")
+    .replace(/-+$/, "")
+    .slice(0, 64);
+}
+
+/** The worktree directory for a project root: `<root>/.agora/workspaces` — inside the
+ * root, as the remote provisioner requires. Empty for a root that is not absolute. */
+export function defaultWorkspaceFor(root: string): string {
+  const trimmed = root.trim().replace(/\/+$/, "");
+  return trimmed.startsWith("/") && trimmed.length > 1 ? `${trimmed}/.agora/workspaces` : "";
+}
+
+/** `base`, or `base-2`, `base-3`… — the first not in `taken`. */
+export function unusedId(base: string, taken: ReadonlySet<string>): string {
+  if (!base || !taken.has(base)) return base;
+  for (let n = 2; ; n += 1) {
+    const suffix = `-${n}`;
+    const candidate = `${base.slice(0, 64 - suffix.length)}${suffix}`;
+    if (!taken.has(candidate)) return candidate;
+  }
+}
+
+/** `input` with every field the person has not edited derived from the ones they have.
+ * `defaultProjectId` is the project to assume when none is chosen (the current one);
+ * `takenIds` are the registered environment ids — one host serves one environment per
+ * project, so the derived id carries the project and steps around ids already taken. */
+export function autoFilled(
+  input: RemoteEnvironmentInput,
+  edited: ReadonlySet<keyof RemoteEnvironmentInput>,
+  { defaultProjectId = null, takenIds = new Set<string>() }: {
+    defaultProjectId?: string | null; takenIds?: ReadonlySet<string>;
+  } = {},
+): RemoteEnvironmentInput {
+  const next = { ...input };
+  if (!edited.has("project_id") && !input.project_id && defaultProjectId) {
+    next.project_id = defaultProjectId;
+  }
+  if (!edited.has("label")) {
+    next.label = input.ssh_user.trim() && input.ssh_host.trim()
+      ? `${input.ssh_user.trim()}@${input.ssh_host.trim()}`
+      : input.ssh_host.trim();
+  }
+  if (!edited.has("environment_id")) {
+    const place = edited.has("label") ? next.label : input.ssh_host;
+    const base = environmentIdFrom(place.trim() ? [next.project_id, place].filter(Boolean).join("-") : "");
+    next.environment_id = unusedId(base, takenIds);
+  }
+  if (!edited.has("remote_workspace")) {
+    next.remote_workspace = defaultWorkspaceFor(input.remote_project_root);
+  }
+  return next;
+}
+
+/** Whether any error sits in a field folded under "advanced" (so the form opens it). */
+export function advancedHasError(errors: FieldError[]): boolean {
+  return errors.some((e) => (ADVANCED_FIELDS as readonly string[]).includes(e.field));
+}
+
 /** A blank input for a new environment, with the safe defaults (strict host key, port 22). */
 export function emptyEnvironmentInput(): RemoteEnvironmentInput {
   return {
@@ -217,7 +292,8 @@ export function emptyEnvironmentInput(): RemoteEnvironmentInput {
     remote_workspace: "",
     remote_project_root: "",
     secret_ref: "",
-    credential_source: "env_var",
+    // Like the ssh command: nothing to type (CR-24). The commonest case, so the default.
+    credential_source: "ssh_default",
     password: null,
     host_key_mode: "strict",
     known_hosts_path: null,
