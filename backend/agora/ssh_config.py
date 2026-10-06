@@ -18,7 +18,6 @@ from __future__ import annotations
 import fnmatch
 import glob
 import re
-import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -70,12 +69,44 @@ def _split(line: str) -> tuple[str, str] | None:
 
 
 def _words(value: str) -> list[str]:
-    """Words of a value, quote-aware, with an unquoted ``#`` ending the line as a comment
-    (``Host box # production`` names one host, not four)."""
-    try:
-        return shlex.split(value, comments=True, posix=True)
-    except ValueError:
-        return value.split("#", 1)[0].split()
+    r"""Words of a value, split as OpenSSH does: whitespace separates, ``"`` / ``'`` group,
+    a backslash escapes only a quote, a backslash or a space (so ``C:\Users\me`` keeps its
+    separators — POSIX shlex dropped them, review), and an unquoted ``#`` starting a
+    word ends the line as a comment (``Host box # production`` names one host)."""
+    words: list[str] = []
+    current: list[str] = []
+    started = False
+    quote: str | None = None
+    i = 0
+    while i < len(value):
+        ch = value[i]
+        if quote is not None:
+            if ch == "\\" and i + 1 < len(value) and value[i + 1] in "\\\"'":
+                current.append(value[i + 1])  # escapes work inside quotes too (review)
+                i += 1
+            elif ch == quote:
+                quote = None
+            else:
+                current.append(ch)
+        elif ch in "\"'":
+            quote, started = ch, True
+        elif ch == "\\" and i + 1 < len(value) and value[i + 1] in "\\\"' ":
+            current.append(value[i + 1])
+            started = True
+            i += 1
+        elif ch.isspace():
+            if started:
+                words.append("".join(current))
+                current, started = [], False
+        elif ch == "#" and not started:
+            break
+        else:
+            current.append(ch)
+            started = True
+        i += 1
+    if started:
+        words.append("".join(current))
+    return words
 
 
 def _read_blocks(
@@ -107,7 +138,11 @@ def _read_blocks(
                 pattern = str(target if target.is_absolute() else ssh_dir / target)
                 for included in sorted(glob.glob(pattern)):
                     _read_blocks(Path(included), ssh_dir, depth + 1, blocks, inner)
-            # The lines after an Include belong to the block it sat in, still.
+            # The lines after an Include still belong to the block it sat in — but they
+            # come AFTER the included ones, so they continue in a new block appended
+            # behind them: "first value wins" then follows file order, as in ssh (review).
+            current = _Block(patterns=current.patterns, values={}, scope=scope)
+            blocks.append(current)
         elif key in _WANTED:
             words = _words(value)
             if words:

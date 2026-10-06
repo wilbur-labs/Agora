@@ -118,3 +118,40 @@ def test_an_include_inside_a_match_block_never_applies(tmp_path):
     config = _write(ssh / "config", "Host a\n  HostName 1.1.1.1\nMatch exec true\n  Include m.conf\n")
     (a,) = read_ssh_config(config).hosts
     assert a.user is None
+
+
+def test_a_value_after_an_include_does_not_beat_the_included_one(tmp_path):
+    """review (CR-27): ssh reads in file order; the included `User first` comes first."""
+    ssh = tmp_path / ".ssh"
+    _write(ssh / "defaults.conf", "User first\n")
+    config = _write(ssh / "config", "Host box\n  HostName 10.0.0.1\n  Include defaults.conf\n  User later\n  Port 2201\n")
+    (box,) = read_ssh_config(config).hosts
+    assert (box.user, box.port) == ("first", 2201)
+
+
+def test_windows_paths_keep_their_backslashes(tmp_path):
+    r"""review (CR-27): POSIX shlex turned C:\Users\a\.ssh\k into C:Usersa.sshk."""
+    config = _write(tmp_path / ".ssh" / "config", (
+        'Host w\n  IdentityFile C:\\Users\\alice\\.ssh\\id_ed25519\n'
+        'Host q\n  IdentityFile "C:\\Program Files\\keys\\k"\n'
+    ))
+    by = {h.alias: h for h in read_ssh_config(config).hosts}
+    assert by["w"].identity_file == "C:\\Users\\alice\\.ssh\\id_ed25519"
+    assert by["q"].identity_file == "C:\\Program Files\\keys\\k"
+
+
+def test_escapes_and_quotes_follow_openssh(tmp_path):
+    from agora.ssh_config import _words
+
+    assert _words('a\\ b "c d" \'e f\' g # tail') == ["a b", "c d", "e f", "g"]
+    assert _words('x#y') == ["x#y"]  # only a # that starts a word is a comment
+    assert _words('"" z') == ["", "z"]
+
+
+def test_escapes_inside_quotes_match_ssh_g():
+    r"""review: `"/home/me/key\"prod"` is /home/me/key"prod for ssh -G."""
+    from agora.ssh_config import _words
+
+    assert _words(r'"/home/me/key\"prod"') == ['/home/me/key"prod']
+    assert _words(r'"C:\\keys\\k"') == [r"C:\keys\k"]
+    assert _words(r'"C:\Users\a"') == [r"C:\Users\a"]  # a lone backslash stays
