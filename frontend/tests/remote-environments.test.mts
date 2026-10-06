@@ -8,6 +8,7 @@ import {
   KEYRING_SECRET_REF_LABEL,
   SSH_DEFAULT_SECRET_REF_LABEL,
   OWN_PLACE,
+  applySshHost,
   unusedId,
   advancedHasError,
   autoFilled,
@@ -418,4 +419,39 @@ test("a second project on the same host gets its own id; taken ids are stepped a
   });
   assert.equal(again.environment_id, `${a.environment_id}-2`);
   assert.equal(unusedId("x", new Set(["x", "x-2"])), "x-3");
+});
+
+// --- picking a host from ~/.ssh/config (CR-25) --------------------------------------
+
+test("picking a config host fills address, account and port, and marks them chosen", () => {
+  const { input: picked, edited } = applySshHost(emptyEnvironmentInput(), {
+    alias: "AI-Server", hostname: "10.36.94.14", user: "sharp", port: null, identity_file: null,
+  });
+  assert.equal(picked.ssh_host, "10.36.94.14");
+  assert.equal(picked.ssh_user, "sharp");
+  assert.equal(picked.ssh_port, 22);
+  assert.equal(picked.credential_source, "ssh_default");
+  assert.deepEqual(edited, ["ssh_host", "ssh_user", "ssh_port"]);
+});
+
+test("a config IdentityFile becomes a key-path credential; a later pick without one undoes it", () => {
+  const { input: withKey } = applySshHost(emptyEnvironmentInput(), {
+    alias: "vps", hostname: "vps.example.test", user: "u", port: 2222, identity_file: "~/.ssh/vps_ed25519",
+  });
+  assert.equal(withKey.credential_source, "key_path");
+  assert.equal(withKey.secret_ref, "~/.ssh/vps_ed25519");
+  assert.equal(withKey.ssh_port, 2222);
+  const { input: plain } = applySshHost(withKey, { alias: "box", hostname: null, user: null, port: null, identity_file: null });
+  assert.equal(plain.ssh_host, "box");  // no HostName: ssh resolves the alias itself
+  assert.equal(plain.credential_source, "ssh_default");
+  assert.equal(plain.secret_ref, "");
+});
+
+test("picking another host does not keep the previous host's port or account", () => {
+  const { input: first } = applySshHost(emptyEnvironmentInput(), {
+    alias: "vps", hostname: "vps", user: "admin", port: 2222, identity_file: null,
+  });
+  const { input: second } = applySshHost(first, { alias: "box", hostname: "10.0.0.5", user: null, port: null, identity_file: null });
+  assert.equal(second.ssh_port, 22);
+  assert.equal(second.ssh_user, "");
 });

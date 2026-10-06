@@ -28,6 +28,7 @@ from agora.tasks.router import get_project_registry, get_task_store
 from agora.tasks.store import TaskStore
 from agora.execution.adapters import build_adapter_registry
 from agora.execution import credential_store
+from agora.ssh_config import read_ssh_config
 from agora.execution.remote_wiring import remote_path_within
 from agora.execution.credential_store import KeyringUnavailableError
 from agora.execution.dispatcher import token_capturable_adapters
@@ -1206,6 +1207,23 @@ def _remote_environment_view(record: RemoteEnvironmentRecord) -> dict[str, Any]:
         "cleanup_worktree": record.cleanup_worktree,
         "created_at": record.created_at,
         "updated_at": record.updated_at,
+    }
+
+
+@router.get("/ssh-config/hosts")
+def list_ssh_config_hosts() -> dict[str, Any]:
+    """The hosts in this machine's ``~/.ssh/config``, to pre-fill a registration (CR-25).
+    Read-only, and never used to connect. ``status``: ``absent`` (no file), ``unreadable``
+    (exists but could not be read — not "no hosts"), or ``ok``."""
+    read = read_ssh_config()
+    return {
+        "status": read.status,
+        "error": read.error,
+        "hosts": [
+            {"alias": h.alias, "hostname": h.hostname, "user": h.user, "port": h.port,
+             "identity_file": h.identity_file}
+            for h in read.hosts
+        ],
     }
 
 

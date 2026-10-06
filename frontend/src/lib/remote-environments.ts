@@ -13,7 +13,7 @@
  *    person is told what is wrong before the round trip, not the same rules re-decided
  *    (the server remains the authority; this is an early, friendlier echo).
  */
-import type { RemoteEnvironment, RemoteEnvironmentInput } from "./control-plane";
+import type { RemoteEnvironment, RemoteEnvironmentInput, SshConfigHost } from "./control-plane";
 
 /**
  * What this build can honestly say about a registered environment. Deliberately not
@@ -274,6 +274,35 @@ export function autoFilled(
     next.remote_workspace = defaultWorkspaceFor(input.remote_project_root);
   }
   return next;
+}
+
+/** The fields choosing an ~/.ssh/config host fills in (CR-25): the address (HostName, or
+ * the alias itself when none is set — ssh resolves it the same way), the account and port
+ * as the config gives them — and when it gives none, reset (empty account, port 22) rather
+ * than kept from a host picked before — and its IdentityFile as a key-path credential.
+ * These count as the person's choice: derivation never overwrites them. */
+export function applySshHost(
+  input: RemoteEnvironmentInput,
+  host: SshConfigHost,
+): { input: RemoteEnvironmentInput; edited: (keyof RemoteEnvironmentInput)[] } {
+  const next = {
+    ...input,
+    ssh_host: host.hostname || host.alias,
+    ssh_user: host.user ?? "",
+    ssh_port: host.port ?? 22,
+  };
+  const edited: (keyof RemoteEnvironmentInput)[] = ["ssh_host", "ssh_user", "ssh_port"];
+  if (host.identity_file) {
+    next.credential_source = "key_path";
+    next.secret_ref = host.identity_file;
+    next.password = null;
+    edited.push("credential_source", "secret_ref");
+  } else if (input.credential_source === "key_path") {
+    // A key path left over from a previously picked host does not belong to this one.
+    next.credential_source = "ssh_default";
+    next.secret_ref = "";
+  }
+  return { input: next, edited };
 }
 
 /** Whether any error sits in a field folded under "advanced" (so the form opens it). */

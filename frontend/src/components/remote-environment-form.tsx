@@ -12,18 +12,21 @@
  * `lib/remote-environments.ts` with node tests; this component only renders. A keyring
  * password is the only credential value it ever holds, write-only (adr/0001).
  */
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { ApiError } from "@/lib/control-plane";
 import {
   createRemoteEnvironment,
+  listSshConfigHosts,
   updateRemoteEnvironment,
+  type SshConfigHosts,
   type RemoteEnvironment,
   type RemoteEnvironmentInput,
 } from "@/lib/control-plane";
 import {
   advancedHasError,
+  applySshHost,
   autoFilled,
   emptyEnvironmentInput,
   toEnvironmentInput,
@@ -60,6 +63,28 @@ export function RemoteEnvironmentForm({
   // Fields the person typed into: those are never overwritten by derivation.
   const [edited, setEdited] = useState<ReadonlySet<keyof RemoteEnvironmentInput>>(new Set());
   const [advancedOpen, setAdvancedOpen] = useState(isEdit);
+  // This machine's ~/.ssh/config hosts, to pick one instead of typing (CR-25). "failed"
+  // = the request itself failed; the server's own absent/unreadable are kept as said.
+  const [sshHosts, setSshHosts] = useState<SshConfigHosts | "loading" | "failed">("loading");
+  const [pickedAlias, setPickedAlias] = useState("");
+  useEffect(() => {
+    if (isEdit) return;
+    let alive = true;
+    listSshConfigHosts()
+      .then((read) => { if (alive) setSshHosts(read); })
+      .catch(() => { if (alive) setSshHosts("failed"); });
+    return () => { alive = false; };
+  }, [isEdit]);
+
+  function pickSshHost(alias: string) {
+    setPickedAlias(alias);
+    if (typeof sshHosts !== "object") return;
+    const host = sshHosts.hosts.find((h) => h.alias === alias);
+    if (!host) return;
+    const applied = applySshHost(autoFilled(input, edited, { defaultProjectId, takenIds }), host);
+    setInput(applied.input);
+    setEdited((prev) => new Set([...prev, ...applied.edited]));
+  }
   const [errors, setErrors] = useState<FieldError[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -117,6 +142,32 @@ export function RemoteEnvironmentForm({
       <h3 className="text-base font-semibold">
         {isEdit ? t("environments.form.editTitle") : t("environments.form.addTitle")}
       </h3>
+
+      {/* Pick a host from ~/.ssh/config: address, account, port (and key) filled in. */}
+      {!isEdit && (
+        <Field label={t("environments.form.sshConfigLabel")} hint={
+          sshHosts === "loading" ? t("environments.form.sshConfigLoading")
+            : sshHosts === "failed" ? t("environments.form.sshConfigFailed")
+            : sshHosts.status === "absent" ? t("environments.form.sshConfigAbsent")
+            : sshHosts.status === "unreadable" ? t("environments.form.sshConfigUnreadable", { error: sshHosts.error ?? "" })
+            : sshHosts.hosts.length === 0 ? t("environments.form.sshConfigEmpty")
+            : t("environments.form.sshConfigHint")
+        }>
+          <select
+            className="w-full rounded-md border px-3 py-2 text-sm"
+            value={pickedAlias}
+            disabled={typeof sshHosts !== "object" || sshHosts.hosts.length === 0}
+            onChange={(e) => pickSshHost(e.target.value)}
+          >
+            <option value="">{t("environments.form.sshConfigPick")}</option>
+            {typeof sshHosts === "object" && sshHosts.hosts.map((h) => (
+              <option key={h.alias} value={h.alias}>
+                {h.alias}{h.hostname ? ` — ${h.user ? `${h.user}@` : ""}${h.hostname}${h.port ? `:${h.port}` : ""}` : ""}
+              </option>
+            ))}
+          </select>
+        </Field>
+      )}
 
       {/* What only the person knows. */}
       <div className="grid gap-4 sm:grid-cols-2">

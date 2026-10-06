@@ -348,6 +348,26 @@ export interface RemoteEnvironmentInput {
   project_id: string;
 }
 
+/** A host from this machine's ~/.ssh/config (CR-25) — only to pre-fill a registration. */
+export interface SshConfigHost {
+  alias: string;
+  hostname: string | null;
+  user: string | null;
+  port: number | null;
+  identity_file: string | null;
+}
+
+/** `status`: "absent" (no file), "unreadable" (exists, could not be read — not "none"), "ok". */
+export interface SshConfigHosts {
+  status: "absent" | "unreadable" | "ok";
+  error: string | null;
+  hosts: SshConfigHost[];
+}
+
+export function listSshConfigHosts(): Promise<SshConfigHosts> {
+  return request("/api/ssh-config/hosts");
+}
+
 export function listRemoteEnvironments(): Promise<{ environments: RemoteEnvironment[] }> {
   return request("/api/remote-environments");
 }
