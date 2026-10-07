@@ -29,6 +29,15 @@ export const common = {
       tabs: "Screens",
       // Runs execute on this machine until remote execution (W3-a) lands; the platform
       // name beside it comes from the same probe as the CLI versions.
+      instance: {
+        stable: "v{version} · stable",
+        dev: "v{version} · DEVELOPMENT",
+        unknown: "v{version} · release not identified",
+        failed: "Agora version could not be read",
+        stableTitle: "The stable install: this code is exactly a release tag. Upgrades happen only when you approve them.",
+        devTitle: "A development checkout, not a release. It can change or break at any time; your daily Agora is the stable one.",
+        unknownTitle: "This server did not say which installation it is. Treat it as not a release.",
+      },
       environmentLocal: "This machine",
       environmentTitle: "Every run executes on this machine. Choosing an environment comes with remote execution (W3-a).",
       versions: {
@@ -107,6 +116,15 @@ export const common = {
     },
     shell: {
       tabs: "屏幕",
+      instance: {
+        stable: "v{version} · 稳定版",
+        dev: "v{version} · 开发版",
+        unknown: "v{version} · 未标明版本",
+        failed: "读不到 Agora 版本",
+        stableTitle: "稳定版：代码恰好是一个发布 tag。只有你同意时才会升级。",
+        devTitle: "开发中的检出，不是发布版本，随时可能改动或出错。你日常用的是稳定版。",
+        unknownTitle: "这个服务没有说明自己是哪一份安装，按「不是发布版本」看待。",
+      },
       environmentLocal: "本机",
       environmentTitle: "Run 现在都在本机执行。选环境这一项随远端执行（W3-a）一起来。",
       versions: {

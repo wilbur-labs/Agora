@@ -12,7 +12,8 @@ import {
   Sun,
 } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
-import type { RuntimeCapabilities } from "@/lib/control-plane";
+import { fetchHealth, type RuntimeCapabilities } from "@/lib/control-plane";
+import { instanceBadgeOf, type AgoraHealth } from "@/lib/instance";
 import { isProbeSuperseded, probeRuntimes, subscribeRuntimes } from "@/lib/runtime-probe";
 import { SHELL_TABS, cliStripOf } from "@/lib/shell";
 import { cn } from "@/lib/utils";
@@ -59,6 +60,16 @@ export function TopBar({ active }: { active: string }) {
   const { locale, toggleLocale, t } = useI18n();
   const [runtimes, setRuntimes] = useState<RuntimeCapabilities | null>(null);
   const [probeFailed, setProbeFailed] = useState(false);
+  const [health, setHealth] = useState<AgoraHealth | null | "failed">(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchHealth()
+      .then((data) => { if (!cancelled) setHealth(data); })
+      .catch(() => { if (!cancelled) setHealth("failed"); });
+    return () => { cancelled = true; };
+  }, []);
+  const badge = instanceBadgeOf(health);
 
   useEffect(() => {
     let cancelled = false;
@@ -86,6 +97,21 @@ export function TopBar({ active }: { active: string }) {
         <span className="grid size-8 place-items-center rounded-lg bg-primary text-primary-foreground"><Network className="size-4" /></span>
         <span className="text-sm font-bold">{t("common.brand.name")}</span>
       </Link>
+      {badge.kind !== "pending" && (
+        <span
+          className={cn(
+            "rounded-md px-2 py-0.5 font-mono text-xs",
+            badge.kind === "stable"
+              ? "bg-muted text-muted-foreground"
+              : "bg-amber-100 font-semibold text-amber-900 dark:bg-amber-900/40 dark:text-amber-200",
+          )}
+          title={badge.kind === "failed" ? undefined : t(`common.shell.instance.${badge.kind}Title`)}
+        >
+          {badge.kind === "failed"
+            ? t("common.shell.instance.failed")
+            : t(`common.shell.instance.${badge.kind}`, { version: badge.version ?? "?" })}
+        </span>
+      )}
 
       <nav className="flex items-center gap-1 overflow-x-auto" aria-label={t("common.shell.tabs")}>
         {SHELL_TABS.map(({ href, key, label }) => (

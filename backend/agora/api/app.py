@@ -1,4 +1,5 @@
 """FastAPI application."""
+import os
 import sys
 from pathlib import Path
 from contextlib import asynccontextmanager
@@ -292,9 +293,20 @@ for _legacy_ui_path in _RETIRED_UI_PATHS:
 _frontend_out = Path(__file__).resolve().parent.parent.parent.parent / "frontend" / "out"
 
 
+#: Which installation this is, as the launcher determined it (CR-31): ``stable`` only
+#: when the code sits exactly on a release tag with a clean tree, ``dev`` otherwise.
+#: Anything else — including no launcher at all — is ``unknown``, never a guess.
+_INSTANCES = {"stable", "dev"}
+
+
+def instance_of(environ=None) -> str:
+    value = (environ if environ is not None else os.environ).get("AGORA_INSTANCE", "").strip()
+    return value if value in _INSTANCES else "unknown"
+
+
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": __version__}
+    return {"status": "ok", "version": __version__, "instance": instance_of()}
 
 
 if _frontend_out.is_dir():

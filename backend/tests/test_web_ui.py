@@ -20,7 +20,7 @@ class TestCurrentProductSurface:
         response = client.get("/health")
 
         assert response.status_code == 200
-        assert response.json() == {"status": "ok", "version": __version__}
+        assert response.json() == {"status": "ok", "version": __version__, "instance": "unknown"}
         assert app.version == __version__
         assert app.description == "Local-first Task delivery control plane"
 

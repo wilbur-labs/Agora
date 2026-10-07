@@ -165,6 +165,11 @@ export async function apiErrorFrom(response: Response): Promise<ApiError> {
   return new ApiError(response.status, message, code);
 }
 
+/** Agora's own /health: its version and which installation it is (CR-31). */
+export async function fetchHealth(): Promise<import("./instance").AgoraHealth> {
+  return request("/health");
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${getApiBase()}${path}`, {
     ...init,

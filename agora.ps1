@@ -19,6 +19,16 @@
       logs      show the last 40 lines of the backend log
       build     rebuild frontend/out (corepack pnpm build)
       shortcut  create "Agora.lnk" on the Desktop that runs "up"
+      upgrade   (stable install only) move this install to a release tag:
+                  -To v1.2.0   the tag. Backs the database up first; any failure
+                               puts the old version and the old database back.
+      rollback  (stable install only) go back to the version before the last
+                upgrade, restoring the database taken then. Needs -Yes.
+
+    Which install is this? "stable" only when the code is exactly a v* release tag
+    with a clean tree; anything else is "dev". The backend is told (AGORA_INSTANCE)
+    and the top bar shows it. This launcher only ever touches the Agora started
+    from THIS directory: another checkout's server on the same port is left alone.
 
     Runtime state lives in .agora/launcher/ (pid file and logs per port; gitignored).
 
@@ -29,14 +39,16 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('up', 'down', 'status', 'logs', 'build', 'shortcut', 'help')]
+    [ValidateSet('up', 'down', 'status', 'logs', 'build', 'shortcut', 'upgrade', 'rollback', 'help')]
     [string]$Command = 'help',
     [switch]$Build,
     [switch]$NoBrowser,
     [switch]$Pause,
     [int]$Port = 8000,
     [int]$StartTimeoutSec = 60,
-    [int]$StopGraceSec = 10
+    [int]$StopGraceSec = 10,
+    [string]$To,
+    [switch]$Yes
 )
 
 $ErrorActionPreference = 'Stop'
@@ -51,6 +63,8 @@ $OutLog    = Join-Path $StateDir "api-$Port.out.log"
 $ErrLog    = Join-Path $StateDir "api-$Port.err.log"
 $Url       = "http://127.0.0.1:$Port"
 $AppModule = 'agora.api.app:app'
+$JournalFile = Join-Path $StateDir 'upgrade-journal.json'
+$HistoryFile = Join-Path $StateDir 'release-history.jsonl'
 
 function Write-Step([string]$Message) { Write-Host "[agora] $Message" }
 function Write-Fail([string]$Message) { Write-Host "[agora] $Message" -ForegroundColor Red }
@@ -102,10 +116,76 @@ function Test-IsDescendantOf([int]$ProcessId, [int]$AncestorId) {
 }
 
 function Test-IsAgoraProcess([int]$ProcessId) {
-    # "Ours" means: it is running the Agora API module on this port. Anything
-    # else is a stranger and this launcher refuses to touch it.
+    # "Ours" means: it is running the Agora API module on this port, FROM THIS
+    # DIRECTORY (its command line names this checkout's backend). The stable
+    # install and a development checkout run side by side; 'down' in one must
+    # never stop the other (CR-31). Anything else is a stranger.
     $cmd = Get-CommandLine $ProcessId
-    return (($cmd -like "*$AppModule*") -and ($cmd -like "*--port*$Port*"))
+    $here = $cmd.IndexOf("$Backend\", [StringComparison]::OrdinalIgnoreCase) -ge 0
+    return ($here -and ($cmd -like "*$AppModule*") -and ($cmd -like "*--port*$Port*"))
+}
+
+function Test-IsOtherAgora([int]$ProcessId) {
+    # Agora on this port, but started from another directory.
+    $cmd = Get-CommandLine $ProcessId
+    return (($cmd -like "*$AppModule*") -and -not (Test-IsAgoraProcess $ProcessId))
+}
+
+function Invoke-Tool([string]$Exe, [string[]]$Arguments, [string]$WorkDir = $Root) {
+    # A native tool whose stderr must not become a terminating error (git prints
+    # progress there). Returns @{ Code; Output }.
+    $ErrorActionPreference = 'Continue'
+    Push-Location $WorkDir
+    try {
+        $out = & $Exe @Arguments 2>&1 | ForEach-Object { "$_" }
+        $code = $LASTEXITCODE
+    } finally { Pop-Location }
+    return @{ Code = $code; Output = (@($out) -join "`n") }
+}
+
+function Set-OwnConfig {
+    # Always this directory's config.yaml, so this install's database. Pinned, not
+    # just cleared: the backend reads .env again with setdefault, so a copied .env
+    # naming another install's config would otherwise win (CR-31 review).
+    [Environment]::SetEnvironmentVariable('AGORA_CONFIG_PATH', (Join-Path $Root 'config.yaml'), 'Process')
+}
+
+function Get-InstallProcesses {
+    # Every Agora server started from THIS directory, on any port: an upgrade or
+    # a restore must not run while one of them still uses this code and database.
+    $needle = "$Backend\"
+    @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+        $cmd = [string]$_.CommandLine
+        $cmd.IndexOf($needle, [StringComparison]::OrdinalIgnoreCase) -ge 0 -and $cmd -like "*$AppModule*"
+    })
+}
+
+function Stop-Install {
+    Do-Down
+    foreach ($p in Get-InstallProcesses) {
+        Write-Step "Stopping this install's server on another port (pid $($p.ProcessId)) ..."
+        [void](Stop-Tree ([int]$p.ProcessId))
+    }
+    $left = Get-InstallProcesses
+    if ($left.Count -gt 0) { throw "Agora from $Root is still running (pid $(($left | ForEach-Object { $_.ProcessId }) -join ', ')); stop it first." }
+}
+
+function Assert-BackupPresent($Entry) {
+    # A recorded backup that is gone is not "no backup": restoring nothing and then
+    # starting older code on a newer database is the one outcome to refuse.
+    if ($Entry.backup -and -not (Test-Path $Entry.backup)) {
+        throw "The database backup recorded for this upgrade is missing: $($Entry.backup). Nothing was changed."
+    }
+}
+
+function Get-InstanceKind {
+    # 'stable' only when HEAD is exactly a v* tag and nothing differs from it.
+    # Wrongly saying 'dev' about a release is harmless; the reverse is not.
+    $tag = Invoke-Tool 'git' @('describe', '--exact-match', '--tags', '--match', 'v*', 'HEAD')
+    if ($tag.Code -ne 0) { return 'dev' }
+    $dirty = Invoke-Tool 'git' @('status', '--porcelain')
+    if ($dirty.Code -ne 0 -or $dirty.Output.Trim()) { return 'dev' }
+    return 'stable'
 }
 
 function Read-LauncherPid {
@@ -209,6 +289,12 @@ function Show-LogTail([int]$Lines = 30) {
 }
 
 function Do-Up {
+    # While an upgrade is unfinished, which code may meet which database is the
+    # journal's decision: an ordinary start (the desktop shortcut) could run new
+    # code on the old database behind recovery's back (CR-31 review).
+    if ((Test-Path $JournalFile) -and -not $script:Recovering) {
+        throw "An upgrade did not finish ($JournalFile). Run '.\agora.ps1 rollback' to recover before starting Agora."
+    }
     $running = Get-RunningAgora
     if ($null -ne $running) {
         Write-Step "Already running at $Url (pid $($running.Listener.Id), version $($running.Health.version))."
@@ -221,6 +307,9 @@ function Do-Up {
     if ($null -ne $holder) {
         if (Test-IsAgoraProcess $holder.Id) {
             throw "Port $Port is held by an Agora process (pid $($holder.Id)) that does not answer /health. Run '.\agora.ps1 down' and try again, or check '.\agora.ps1 logs'."
+        }
+        if (Test-IsOtherAgora $holder.Id) {
+            throw "Port $Port is held by another Agora install (pid $($holder.Id)): $(Get-CommandLine $holder.Id). This launcher only manages the one in $Root. Use -Port <other>, or stop it from its own directory."
         }
         throw "Port $Port is held by pid $($holder.Id) ($($holder.ProcessName)), which is not Agora. Stop it or use -Port <other>."
     }
@@ -239,8 +328,11 @@ function Do-Up {
 
     New-Item -ItemType Directory -Force -Path $StateDir | Out-Null
     Import-DotEnv
+    Set-OwnConfig
+    $instance = Get-InstanceKind
+    [Environment]::SetEnvironmentVariable('AGORA_INSTANCE', $instance, 'Process')
 
-    Write-Step "Starting backend via $($runner.Label) on $Url ..."
+    Write-Step "Starting the $instance install from $Root via $($runner.Label) on $Url ..."
     $proc = Start-Process -FilePath $runner.Exe -ArgumentList $runner.Args -WorkingDirectory $Backend `
         -WindowStyle Hidden -PassThru -RedirectStandardOutput $OutLog -RedirectStandardError $ErrLog
     try {
@@ -264,7 +356,7 @@ function Do-Up {
             # child), not from another instance that won the port meanwhile.
             $listener = Get-Listener
             if ($null -ne $listener -and (Test-IsDescendantOf $listener.Id $proc.Id)) {
-                Write-Step "Agora is up at $Url (pid $($proc.Id), version $($health.version))."
+                Write-Step "Agora is up at $Url (pid $($proc.Id), version $($health.version), $($health.instance))."
                 Open-Browser
                 return
             }
@@ -382,6 +474,8 @@ function Do-Down {
     if ($null -ne $holder) {
         if (Test-IsAgoraProcess $holder.Id) {
             if ($null -eq $launcherPid) { $targets += @{ Id = $holder.Id; Why = "listening on port $Port" } }
+        } elseif (Test-IsOtherAgora $holder.Id) {
+            Write-Fail "Port $Port is held by another Agora install (pid $($holder.Id)), not the one in $Root. Leaving it alone."
         } else {
             Write-Fail "Port $Port is held by pid $($holder.Id) ($($holder.ProcessName)), which is not Agora. Leaving it alone."
         }
@@ -414,10 +508,12 @@ function Do-Status {
     $running = Get-RunningAgora
     $holder = Get-Listener
     if ($null -ne $running) {
-        Write-Step "RUNNING at $Url (pid $($running.Listener.Id), version $($running.Health.version))."
+        Write-Step "RUNNING at $Url (pid $($running.Listener.Id), version $($running.Health.version), $($running.Health.instance))."
     } elseif ($null -ne $holder) {
         if (Test-IsAgoraProcess $holder.Id) {
             Write-Fail "Port $Port is held by an Agora process (pid $($holder.Id)) that does not answer /health (starting, or stuck)."
+        } elseif (Test-IsOtherAgora $holder.Id) {
+            Write-Step "NOT RUNNING from $Root. Port $Port is used by another Agora install (pid $($holder.Id))."
         } else {
             Write-Fail "NOT RUNNING. Port $Port is held by pid $($holder.Id) ($($holder.ProcessName)), not Agora."
         }
@@ -469,7 +565,7 @@ function Do-Shortcut {
         # else's and stays untouched.
         $existing = $shell.CreateShortcut($lnk)
         $isOurs = (([string]$existing.TargetPath) -like '*\powershell.exe' -or [string]$existing.TargetPath -eq 'powershell.exe') -and
-                  (([string]$existing.Arguments) -like "*-File `"$scriptPath`" up*")
+                  (([string]$existing.Arguments) -like "*-File `"*\agora.ps1`" up*")
         if (-not $isOurs) {
             throw "$lnk already exists and points somewhere else (target: $($existing.TargetPath) $($existing.Arguments)). Remove or rename it first."
         }
@@ -486,6 +582,230 @@ function Do-Shortcut {
     Write-Step "Created $lnk"
 }
 
+function Get-CodeVersion {
+    $init = Get-Content (Join-Path $Backend 'agora\__init__.py') -Raw
+    if ($init -match '__version__\s*=\s*"([^"]+)"') { return $Matches[1] }
+    throw "Could not read __version__ from backend\agora\__init__.py."
+}
+
+function Get-DatabasePath {
+    # Asked of Agora itself, so this is the file the server really uses.
+    $python = Join-Path $Backend '.venv\Scripts\python.exe'
+    $code = 'from agora.config.settings import get_config, resolve_control_plane_db_path; print(resolve_control_plane_db_path(get_config()))'
+    Set-OwnConfig
+    $r = Invoke-Tool $python @('-c', $code) $Backend
+    if ($r.Code -ne 0) { throw "Could not resolve the database path: $($r.Output)" }
+    return (($r.Output -split "`n") | Where-Object { $_.Trim() } | Select-Object -Last 1).Trim()
+}
+
+function Backup-Database([string]$Database, [string]$Backup) {
+    # SQLite's own backup API: a consistent copy including anything still in the
+    # WAL, then an integrity check of the copy. A failed check is a failed backup.
+    New-Item -ItemType Directory -Force -Path (Split-Path $Backup) | Out-Null
+    $python = Join-Path $Backend '.venv\Scripts\python.exe'
+    # No double quotes in the code: Windows PowerShell 5.1 strips them when it
+    # passes arguments to a native program (review, CR-31).
+    $code = 'import sqlite3,sys; s=sqlite3.connect(sys.argv[1]); d=sqlite3.connect(sys.argv[2]); s.backup(d); r=d.execute(''pragma integrity_check'').fetchone()[0]; d.close(); s.close(); print(r); sys.exit(0 if r==''ok'' else 3)'
+    $r = Invoke-Tool $python @('-c', $code, $Database, $Backup) $Backend
+    if ($r.Code -ne 0) { throw "Database backup failed or did not verify: $($r.Output)" }
+    Write-Step "Database backed up to $Backup (integrity ok)."
+}
+
+function Restore-Database([string]$Database, [string]$Backup, [string]$KeepAs) {
+    # The current file (and its -wal/-shm) is kept beside it, never deleted, then
+    # the backup takes its place with no stale WAL left to replay over it.
+    Move-DatabaseAside $Database $KeepAs
+    Copy-Item $Backup $Database
+    Write-Step "Database restored from $Backup (the replaced one is kept as $KeepAs)."
+}
+
+function Sync-Dependencies {
+    $uv = Get-Command uv -ErrorAction SilentlyContinue
+    if ($null -eq $uv) { throw "'uv' is not on PATH; it installs the backend's locked dependencies." }
+    Write-Step 'Installing backend dependencies (uv sync --locked) ...'
+    $r = Invoke-Tool $uv.Source @('sync', '--locked') $Backend
+    if ($r.Code -ne 0) { throw "uv sync failed: $($r.Output)" }
+    Write-Step 'Installing frontend dependencies (pnpm install --frozen-lockfile) ...'
+    $r = Invoke-Tool 'cmd.exe' @('/c', 'corepack pnpm install --frozen-lockfile') $Frontend
+    if ($r.Code -ne 0) { throw "pnpm install failed: $($r.Output)" }
+}
+
+function Save-Journal($Journal) {
+    # Written beside it and swapped in, so an interruption leaves the previous
+    # valid journal rather than half of a new one (CR-31 review).
+    New-Item -ItemType Directory -Force -Path $StateDir | Out-Null
+    $tmp = "$JournalFile.tmp"
+    $Journal | ConvertTo-Json | Set-Content -Path $tmp -Encoding UTF8
+    if (Test-Path $JournalFile) { [IO.File]::Replace($tmp, $JournalFile, [NullString]::Value) }  # a plain $null arrives as '' on PS 5.1
+    else { [IO.File]::Move($tmp, $JournalFile) }
+}
+
+function Move-DatabaseAside([string]$Database, [string]$KeepAs) {
+    foreach ($suffix in @('', '-wal', '-shm')) {
+        $f = "$Database$suffix"
+        if (Test-Path $f) { Move-Item -Force $f "$KeepAs$suffix" }
+    }
+}
+
+function Complete-Upgrade($Journal) {
+    # History first, journal last: an interruption in between leaves a journal
+    # marked 'done', which this finishes again instead of rolling anything back.
+    $recorded = $false
+    if (Test-Path $HistoryFile) {
+        $recorded = @(Get-Content $HistoryFile | Where-Object { $_.Trim() } | ForEach-Object { $_ | ConvertFrom-Json } |
+            Where-Object { $_.action -eq 'upgrade' -and $_.started -eq $Journal.started }).Count -gt 0
+    }
+    if (-not $recorded) {
+        Add-History ([ordered]@{ at = (Get-Date).ToString('o'); action = 'upgrade'; started = $Journal.started; from = $Journal.from_version; from_commit = $Journal.from_commit; to = $Journal.to; database = $Journal.database; backup = $Journal.backup })
+    }
+    Remove-Item $JournalFile -Force
+}
+
+function Add-History($Entry) {
+    New-Item -ItemType Directory -Force -Path $StateDir | Out-Null
+    Add-Content -Path $HistoryFile -Value ($Entry | ConvertTo-Json -Compress) -Encoding UTF8
+}
+
+function Start-AndVerify([string]$Version) {
+    $script:NoBrowser = $true
+    $script:Recovering = $true
+    Do-Up
+    $h = Get-Health
+    if ($null -eq $h -or $h.version -ne $Version -or $h.instance -ne 'stable') {
+        throw "After starting, /health says version '$($h.version)', install '$($h.instance)'; expected $Version, stable."
+    }
+}
+
+function Move-Code([string]$Ref, [string]$Version) {
+    $r = Invoke-Tool 'git' @('checkout', '--detach', $Ref)
+    if ($r.Code -ne 0) { throw "git checkout $Ref failed: $($r.Output)" }
+    Sync-Dependencies
+    Invoke-FrontendBuild
+    Start-AndVerify $Version
+}
+
+function Undo-Upgrade($Journal) {
+    # Puts back exactly what THIS journal recorded: its commit, and its backup if
+    # the new code may have touched the database (it was started).
+    Write-Step "Rolling back to $($Journal.from_version) ($($Journal.from_commit)) ..."
+    # From checkout on, new code was on disk and could have run (an upgrade's own
+    # start, or anything started by hand), so the database goes back too.
+    $touched = $Journal.phase -in @('checkout', 'dependencies', 'build', 'start')
+    if ($touched) { Assert-BackupPresent $Journal }
+    Stop-Install
+    if ($touched) {
+        $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+        $keep = "$($Journal.database).failed-$($Journal.to)-$stamp"
+        if ($Journal.backup) { Restore-Database $Journal.database $Journal.backup $keep }
+        else {
+            # There was no database before; whatever the new code created goes aside.
+            Move-DatabaseAside $Journal.database $keep
+        }
+    }
+    Move-Code $Journal.from_commit $Journal.from_version
+    Remove-Item $JournalFile -Force
+    Add-History ([ordered]@{ at = (Get-Date).ToString('o'); action = 'upgrade-rolled-back'; from = $Journal.from_version; to = $Journal.to; backup = $Journal.backup })
+}
+
+function Assert-StableInstall {
+    if ((Get-InstanceKind) -ne 'stable') {
+        throw "This is not a stable install (HEAD is not exactly a v* tag with a clean tree): $Root. Upgrades and rollbacks only move the stable install."
+    }
+}
+
+function Do-Upgrade {
+    if (-not $To) { throw "upgrade needs -To <tag>, e.g. -To v1.2.0" }
+    if (Test-Path $JournalFile) { throw "An earlier upgrade did not finish ($JournalFile). Run '.\agora.ps1 rollback' first." }
+    Assert-StableInstall
+    $fetch = Invoke-Tool 'git' @('fetch', 'origin', '--tags')
+    if ($fetch.Code -ne 0) { throw "git fetch failed (nothing was changed): $($fetch.Output)" }
+    $target = Invoke-Tool 'git' @('rev-parse', '--verify', '--quiet', "refs/tags/$To^{commit}")
+    if ($target.Code -ne 0) { throw "There is no tag $To (nothing was changed)." }
+    $journal = [ordered]@{
+        started = (Get-Date).ToString('o')
+        from_commit = (Invoke-Tool 'git' @('rev-parse', 'HEAD')).Output.Trim()
+        from_version = Get-CodeVersion
+        to = $To
+        database = Get-DatabasePath
+        backup = $null
+        phase = 'stop'
+    }
+    $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+    $journal.backup = Join-Path (Join-Path (Split-Path $journal.database) 'backups') "agora-$($journal.from_version)-before-$To-$stamp.db"
+    # Written before anything stops, so every later failure knows what to restore.
+    Save-Journal $journal
+    try {
+        Stop-Install
+        $journal.phase = 'backup'; Save-Journal $journal
+        if (Test-Path $journal.database) { Backup-Database $journal.database $journal.backup } else { $journal.backup = $null }
+        $journal.phase = 'checkout'; Save-Journal $journal
+        $r = Invoke-Tool 'git' @('checkout', '--detach', $To)
+        if ($r.Code -ne 0) { throw "git checkout $To failed: $($r.Output)" }
+        $journal.phase = 'dependencies'; Save-Journal $journal
+        Sync-Dependencies
+        $journal.phase = 'build'; Save-Journal $journal
+        Invoke-FrontendBuild
+        $journal.phase = 'start'; Save-Journal $journal
+        Start-AndVerify ($To.TrimStart('v'))
+    } catch {
+        Write-Fail "Upgrade to $To failed during '$($journal.phase)': $($_.Exception.Message)"
+        try { Undo-Upgrade $journal }
+        catch { throw "Upgrade to $To failed, and rolling back failed too: $($_.Exception.Message). $JournalFile is kept; fix the cause and run '.gora.ps1 rollback -Yes'." }
+        throw "Upgrade to $To failed and was rolled back to $($journal.from_version)."
+    }
+    $journal.phase = 'done'; Save-Journal $journal
+    Complete-Upgrade $journal
+    Write-Step "Upgraded $($journal.from_version) -> $To. Database backup: $($journal.backup)"
+}
+
+function Do-Rollback {
+    if (Test-Path $JournalFile) {
+        # An upgrade stopped half way (power cut, closed window): finish undoing it.
+        $journal = Get-Content $JournalFile -Raw | ConvertFrom-Json
+        if ($journal.phase -eq 'done') {
+            # The upgrade itself finished; only its bookkeeping did not.
+            Complete-Upgrade $journal
+            Write-Step "Recorded the finished upgrade $($journal.from_version) -> $($journal.to). Run rollback again to undo it."
+            return
+        }
+        Write-Fail "An upgrade $($journal.from_version) -> $($journal.to) stopped during '$($journal.phase)'. Rolling back returns to $($journal.from_version)."
+        if ($journal.phase -in @('checkout', 'dependencies', 'build', 'start')) {
+            Write-Fail "  * The database goes back to the backup taken before that upgrade; anything written since is lost (the current file is kept beside it)."
+            Write-Fail "  * Remote environment passwords changed or deleted since then are NOT restored; re-enter them."
+        }
+        if (-not $Yes) { throw "Nothing was changed. Run '.\agora.ps1 rollback -Yes' to proceed." }
+        Undo-Upgrade $journal
+        return
+    }
+    Assert-StableInstall
+    $last = $null
+    if (Test-Path $HistoryFile) {
+        # A failed upgrade that already undid itself changes nothing; the version
+        # in use is still the one the last real upgrade or rollback left.
+        $last = Get-Content $HistoryFile | Where-Object { $_.Trim() } | ForEach-Object { $_ | ConvertFrom-Json } |
+            Where-Object { $_.action -in @('upgrade', 'rollback') } | Select-Object -Last 1
+    }
+    if ($null -eq $last) { throw "No upgrade is recorded in $HistoryFile; there is nothing to roll back to." }
+    if ($last.action -ne 'upgrade') { throw "The last recorded action is '$($last.action)' ($($last.from) -> $($last.to)), not an upgrade; there is nothing to roll back." }
+    Write-Fail "Rolling back $($last.to) -> $($last.from) restores the database backed up before that upgrade."
+    Write-Fail "  * Everything written to Agora since $($last.to) was installed is lost (the current file is kept beside it)."
+    Write-Fail "  * Remote environment passwords changed or deleted since then are NOT restored; re-enter them."
+    Assert-BackupPresent $last
+    if (-not $Yes) { throw "Nothing was changed. Run '.\agora.ps1 rollback -Yes' to proceed." }
+    Stop-Install
+    $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+    if ($last.backup) {
+        Restore-Database $last.database $last.backup "$($last.database).before-rollback-$stamp"
+    } else {
+        # That upgrade started with no database; the older code starts without one too.
+        Move-DatabaseAside $last.database "$($last.database).before-rollback-$stamp"
+        Write-Fail "That upgrade started with no database; the current one is kept as $($last.database).before-rollback-$stamp."
+    }
+    Move-Code $last.from_commit $last.from
+    Add-History ([ordered]@{ at = (Get-Date).ToString('o'); action = 'rollback'; from = $last.to; to = $last.from; backup = $last.backup })
+    Write-Step "Rolled back to $($last.from)."
+}
+
 function Do-Help {
     Get-Help $PSCommandPath -Detailed | Out-String | Write-Host
 }
@@ -498,6 +818,8 @@ try {
         'logs'     { Do-Logs }
         'build'    { Invoke-FrontendBuild }
         'shortcut' { Do-Shortcut }
+        'upgrade'  { Do-Upgrade }
+        'rollback' { Do-Rollback }
         default    { Do-Help }
     }
     $exit = 0
