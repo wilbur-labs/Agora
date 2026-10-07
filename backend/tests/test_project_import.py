@@ -238,3 +238,41 @@ def test_registration_is_all_or_nothing_when_agora_folders_cannot_be_made(api, t
     resp = client.post("/api/projects/register", json={"project_id": "blocked", "root": str(repo)})
     assert resp.status_code == 422 and "nothing was registered" in resp.text
     assert "blocked" not in registry.list_projects()
+
+
+def test_an_unresolvable_path_is_its_own_problem_not_the_scans(tmp_path, monkeypatch):
+    """CR-28: one path whose resolution raises must not hide the other candidates."""
+    from agora.projects import import_candidates
+
+    good = _git_repo(tmp_path / "good")
+    bad = tmp_path / "bad"
+    src = tmp_path / "claude"
+    _task(src, "good", f"task:\n  title: g\nprimary_repo: {good.as_posix()}\n")
+    _task(src, "bad", f"task:\n  title: b\nprimary_repo: {bad.as_posix()}\n")
+    real = import_candidates._key
+
+    def key(path):
+        if path.name == "bad":
+            raise OSError("share unreachable")
+        return real(path)
+
+    monkeypatch.setattr(import_candidates, "_key", key)
+    candidates, _ = find_candidates([src], {})
+    by = {c.tasks[0].task: c for c in candidates}
+    assert by["good"].status == "ok"
+    assert by["bad"].status == "unreadable"
+
+
+def test_a_long_title_is_bounded_to_what_registration_accepts(api, tmp_path):
+    """CR-28: an 'ok' candidate must always be importable as offered."""
+    client, registry = api
+    repo = _git_repo(tmp_path / "long")
+    src = tmp_path / "claude"
+    _task(src, "long", f"task:\n  title: {'x' * 260}\nprimary_repo: {repo.as_posix()}\n")
+    candidates, _ = find_candidates([src], {})
+    (candidate,) = candidates
+    assert len(candidate.suggested_name) == 200
+    resp = client.post("/api/projects/register", json={
+        "project_id": candidate.suggested_id, "root": candidate.root, "name": candidate.suggested_name,
+    })
+    assert resp.status_code == 201, resp.text

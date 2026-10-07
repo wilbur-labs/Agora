@@ -199,7 +199,13 @@ def find_candidates(
                     status = "placeholder" if _PLACEHOLDER.search(raw) else "not_this_machine"
                     elsewhere.append(Candidate(raw_path=raw, root=None, status=status, tasks=[ref]))
                     continue
-                key = _key(local)
+                try:
+                    key = _key(local)
+                except (OSError, RuntimeError):
+                    # One path that cannot even be resolved (an unreachable share) is
+                    # that candidate's problem, not the whole scan's (review, CR-28).
+                    elsewhere.append(Candidate(raw_path=raw, root=str(local), status="unreadable", tasks=[ref]))
+                    continue
                 if key in by_key:
                     if all(t.task != ref.task or t.source != ref.source for t in by_key[key].tasks):
                         by_key[key].tasks.append(ref)
@@ -225,8 +231,10 @@ def _classify(raw, local: Path, key: str, registered, taken: set[str], ref) -> C
         return Candidate(raw_path=raw, root=root, status=git_status, tasks=[ref])
     suggested = _suggest_id(local, taken)
     taken.add(suggested)
+    # Bounded to what registration accepts (200), so an "ok" is always importable (CR-28).
+    name = (ref.title or local.name)[:200]
     return Candidate(raw_path=raw, root=root, status="ok", suggested_id=suggested,
-                     suggested_name=ref.title or local.name, tasks=[ref])
+                     suggested_name=name, tasks=[ref])
 
 
 def exclude_agora_worktrees(root: Path) -> bool:
