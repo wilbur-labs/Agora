@@ -139,6 +139,30 @@ export function dispatchTargetOf<S extends StreamStepLike>(
   return { kind: "none", reason: allDone ? "allDone" : "noneStartable" };
 }
 
+/**
+ * When no step can take a line (none planned or running, or all done) the line becomes
+ * the next step itself (CR-36). The empty stream says "say what to do and it starts";
+ * a project imported with its goal but no steps used to refuse exactly that.
+ * "unknown" is not here: an order that could not be read whole may hold a step this
+ * line belongs to, and guessing would add a duplicate.
+ */
+export function startsNewStep(target: DispatchTarget<StreamStepLike>): boolean {
+  return target.kind === "none" && (target.reason === "noneStartable" || target.reason === "allDone");
+}
+
+/** The step a line becomes: its first line as the title, the whole line as what to do.
+ *  `submittedAt` makes each submission its own step: placement is idempotent by content,
+ *  and "继续" said again after an earlier "继续" step finished must start a new step, not
+ *  land on the finished one (review). */
+export const NEW_STEP_TITLE_CHARS = 60;
+
+export function newStepOf(text: string, submittedAt: string): { title: string; description: string; kind: string } {
+  const line = text.trim();
+  const first = line.split(/\r?\n/)[0].trim();
+  const title = [...first].length > NEW_STEP_TITLE_CHARS ? `${[...first].slice(0, NEW_STEP_TITLE_CHARS - 1).join("")}…` : first;
+  return { title, description: `${line}\n\n(${submittedAt})`, kind: "custom" };
+}
+
 /** The one line in the header: what is happening right now. */
 export type StreamStatus<R extends StreamRunLike> =
   | { kind: "running"; run: R; step: number | null; also: number }

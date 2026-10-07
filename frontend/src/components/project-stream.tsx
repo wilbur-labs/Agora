@@ -40,7 +40,7 @@ import { listTaskEvents } from "@/lib/control-plane";
 import { nextStepAfter, noNextStepIsCertain, reviewFixPrompt } from "@/lib/auto-advance";
 import { reviewFailure, stoodInFor } from "@/lib/review-failure";
 import {
-  activeRunsOf, composeIntentOf, dispatchTargetOf, streamItemsOf, streamStatusOf,
+  activeRunsOf, composeIntentOf, dispatchTargetOf, newStepOf, startsNewStep, streamItemsOf, streamStatusOf,
   visibleTranscriptLines,
   type StreamItem,
 } from "@/lib/project-stream";
@@ -510,6 +510,11 @@ export function ProjectStream({
     return target ? t("workspace.stream.compose.envRemote", { target }) : t("workspace.stream.compose.envLocal");
   };
   const target = dispatchTargetOf(steps, busyTasks, rowsWhole);
+  // CR-36: the identity of a line that is becoming a new step, kept until that line is
+  // sent. A retry of the same words after a failure (placement done, dispatch not; or a
+  // lost answer) re-sends the same card, which placement recognises, instead of making a
+  // second step (review).
+  const pendingNewStep = useRef<{ text: string; at: string } | null>(null);
   const send = async () => {
     const intent = composeIntentOf(draft);
     if (intent === null || sending) return;
@@ -562,21 +567,43 @@ export function ProjectStream({
         setNotice({ text: t("workspace.stream.compose.busy", { adapter: adapterLabel(activeRunsOf(runs).find((run) => run.task_id === target.step.task_id)?.adapter ?? adapter), step: target.step.step }), tone: "warn" });
         return;
       }
-      if (target.kind === "none") {
+      if (target.kind === "none" && !startsNewStep(target)) {
         setNotice({ text: t(`workspace.stream.compose.${target.reason}`), tone: "warn" });
         return;
       }
       const placed = dispatchEnvironmentOf(environmentChoice, environments, projectId);
       if (!placed.ok) { setNotice({ text: t("workspace.stream.compose.envGone"), tone: "bad" }); return; }
       const echoKey = show();
-      const stop = await ensureWorkspace(adapter, placed.environmentId, target.step.task_id);
-      if (stop !== null) { undo.current?.(); setNotice({ text: stop, tone: "bad" }); return; }
-      const fresh = await getTask(target.step.task_id);
-      const run = await createRun({ ...(placed.environmentId ? { environment_id: placed.environmentId } : {}), task_id: target.step.task_id, adapter, kind: "work", prompt: intent.text, timeout_seconds: CONTINUE_TIMEOUT_SECONDS, expected_task_version: fresh.version, actor: "user" });
+      // CR-36: nothing can take the line, so it becomes the next step — through the same
+      // placement the accepted idea cards use (planned, once per identical card), first
+      // in the order, then dispatched like any other line.
+      let stepTaskId: string;
+      let sentText: string;
+      if (target.kind === "none") {
+        if (pendingNewStep.current?.text !== intent.text) {
+          pendingNewStep.current = { text: intent.text, at: new Date().toISOString() };
+        }
+        const created = await placeIdeaTask(projectId, newStepOf(intent.text, pendingNewStep.current.at), 1);
+        if (created.state !== "planned" && created.state !== "running") {
+          // Placement returned an existing step that can no longer take work.
+          throw new Error(t("workspace.stream.compose.newStepNotStartable", { title: created.title, state: created.state }));
+        }
+        stepTaskId = created.task_id;
+        // No step number: placement counts live steps only, the stream numbers them all.
+        sentText = t("workspace.stream.compose.sentNew", { adapter: adapterLabel(adapter), title: created.title });
+      } else {
+        stepTaskId = target.step.task_id;
+        sentText = t("workspace.stream.compose.sent", { adapter: adapterLabel(adapter), step: target.step.step });
+      }
+      const stop = await ensureWorkspace(adapter, placed.environmentId, stepTaskId);
+      if (stop !== null) { undo.current?.(); setNotice({ text: stop, tone: "bad" }); void load(); onChanged(); return; }
+      const fresh = await getTask(stepTaskId);
+      const run = await createRun({ ...(placed.environmentId ? { environment_id: placed.environmentId } : {}), task_id: stepTaskId, adapter, kind: "work", prompt: intent.text, timeout_seconds: CONTINUE_TIMEOUT_SECONDS, expected_task_version: fresh.version, actor: "user" });
       if (!alive.current) return;
       undo.current = null;
       patch(echoKey, { runId: run.run_id });
-      push({ type: "auto", key: `k${Date.now()}`, at: now(), text: t("workspace.stream.compose.sent", { adapter: adapterLabel(adapter), step: target.step.step }), runId: run.run_id });
+      pendingNewStep.current = null;
+      push({ type: "auto", key: `k${Date.now()}`, at: now(), text: sentText, runId: run.run_id });
       void load(); onChanged();
     } catch (err) {
       if (!alive.current) return;
@@ -587,7 +614,9 @@ export function ProjectStream({
       // back leaves a run the server did start. Reading the list now draws it as its
       // record if it exists, rather than leaving it to the next poll to surface (and
       // for work, the busy gate refuses a second dispatch onto that step meanwhile).
-      void load();
+      // The steps are the page's: a step this send created must reach it too, so the
+      // retry goes to that step rather than through placement again (CR-36 review).
+      void load(); onChanged();
     } finally {
       if (alive.current) setSending(false);
     }
@@ -1166,12 +1195,14 @@ export function ProjectStream({
             {composeIntentOf(draft)?.kind === "dispatch"
               ? (target.kind === "step" ? t("workspace.stream.compose.to", { step: target.step.step, title: target.step.title })
                 : target.kind === "busy" ? t("workspace.stream.compose.busyShort", { step: target.step.step })
+                : startsNewStep(target) ? t("workspace.stream.compose.toNewStep")
                 : t(`workspace.stream.compose.${target.reason}`))
               : composeIntentOf(draft)?.kind === "note" ? t("workspace.stream.compose.noteHint")
               : composeIntentOf(draft)?.kind === "idea" ? t("workspace.stream.compose.ideaHint")
               /* An empty box: where the next line would go, said the same way as a line. */
               : (target.kind === "step" ? t("workspace.stream.compose.to", { step: target.step.step, title: target.step.title })
                 : target.kind === "busy" ? t("workspace.stream.compose.busyShort", { step: target.step.step })
+                : startsNewStep(target) ? t("workspace.stream.compose.toNewStep")
                 : t(`workspace.stream.compose.${target.reason}`))}
           </span>
           <Button size="sm" onClick={() => void send()} disabled={sending || composeIntentOf(draft) === null}>

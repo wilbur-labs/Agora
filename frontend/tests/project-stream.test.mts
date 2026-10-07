@@ -116,3 +116,23 @@ test("a turn is never left with nothing to draw", () => {
   assert.deepEqual(visibleTranscriptLines("half a li", true), ["half a li"]);
   assert.deepEqual(visibleTranscriptLines("", true), [""]);
 });
+
+test("CR-36: a line becomes a new step only when no step can take it and the order was read whole", async () => {
+  const { startsNewStep } = await import("../src/lib/project-stream.ts");
+  assert.equal(startsNewStep({ kind: "none", reason: "noneStartable" }), true);
+  assert.equal(startsNewStep({ kind: "none", reason: "allDone" }), true);
+  assert.equal(startsNewStep({ kind: "none", reason: "unknown" }), false);
+});
+
+test("CR-36: the new step is titled by the line's first line, bounded, and keeps the whole line", async () => {
+  const { newStepOf, NEW_STEP_TITLE_CHARS } = await import("../src/lib/project-stream.ts");
+  const at = "2026-10-07T08:00:00.000Z";
+  assert.deepEqual(newStepOf("  修好 work-chat 图标启动不了  ", at), { title: "修好 work-chat 图标启动不了", description: `修好 work-chat 图标启动不了\n\n(${at})`, kind: "custom" });
+  const long = "长".repeat(100);
+  const step = newStepOf(`${long}\n第二行`, at);
+  assert.equal([...step.title].length, NEW_STEP_TITLE_CHARS);
+  assert.ok(step.title.endsWith("…"));
+  assert.ok(step.description.startsWith(`${long}\n第二行`));
+  // The same words said twice are two submissions, so two steps (review).
+  assert.notDeepEqual(newStepOf("继续", at), newStepOf("继续", "2026-10-07T09:00:00.000Z"));
+});
