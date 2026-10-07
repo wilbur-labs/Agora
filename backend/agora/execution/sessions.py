@@ -464,7 +464,7 @@ class AgentSessionStore:
             db.commit()
 
     def _connect(self) -> sqlite3.Connection:
-        db = sqlite3.connect(str(self.db_path), timeout=10)
+        db = sqlite3.connect(str(self.db_path), timeout=60)
         db.row_factory = sqlite3.Row
         try:
             db.execute("PRAGMA journal_mode = WAL")

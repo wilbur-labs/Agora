@@ -44,7 +44,12 @@ class TaskStore:
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
-        db = sqlite3.connect(str(self.db_path), timeout=10)
+        # 60 s, not 10: one methodology completion-review claim re-validates its whole
+        # history inside the write transaction and holds the lock ~9-10 s on a work PC,
+        # so a 10 s wait failed with "database is locked" (CR-33). Waiting is the right
+        # behaviour for a local single-user store; shortening that transaction is the
+        # real fix and stays open as CR-33.
+        db = sqlite3.connect(str(self.db_path), timeout=60)
         db.row_factory = sqlite3.Row
         db.execute("PRAGMA foreign_keys = ON")
         db.execute("PRAGMA journal_mode = WAL")

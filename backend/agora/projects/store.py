@@ -128,7 +128,7 @@ class ProjectStore:
         self._initialize()
 
     def _connect(self, *, isolation_level: str | None = "") -> sqlite3.Connection:
-        db = sqlite3.connect(str(self.db_path), timeout=10, isolation_level=isolation_level)
+        db = sqlite3.connect(str(self.db_path), timeout=60, isolation_level=isolation_level)
         db.row_factory = sqlite3.Row
         db.execute("PRAGMA foreign_keys = ON")
         db.execute("PRAGMA journal_mode = WAL")
