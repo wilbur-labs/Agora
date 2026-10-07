@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { AlertTriangle, ArrowRight, ChevronRight, CircleCheck, FileCheck2, FolderPlus, Pencil, Plus, RefreshCw, Sparkles, Target, X } from "lucide-react";
 import { DeliveryShell } from "@/components/delivery-shell";
+import { ImportProjectsPanel } from "@/components/import-projects-panel";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
 import {
@@ -122,6 +123,7 @@ export default function PortfolioPage() {
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [showCreate, setShowCreate] = useState(false);
   const [showNewProject, setShowNewProject] = useState(false);
+  const [showImport, setShowImport] = useState(false);
   const [registeredProjects, setRegisteredProjects] = useState<string[]>([]);
   const [projectFilter, setProjectFilter] = useState("all");
   const [showArchived, setShowArchived] = useState(false);
@@ -341,6 +343,7 @@ export default function PortfolioPage() {
             <Button variant="outline" size="lg" onClick={load} disabled={loading} aria-label={t("portfolio.actions.refresh")}>
               <RefreshCw className={cn("size-4", loading && "animate-spin")} />
             </Button>
+            <Button size="lg" onClick={() => setShowImport(true)}><FolderPlus /> {t("portfolio.actions.importProjects")}</Button>
             <Button variant="outline" size="lg" onClick={() => setShowNewProject(true)}><FolderPlus /> {t("portfolio.actions.newProject")}</Button>
             {/* Off for a project this page can see has no goal (CR-61): the block below
                 says tasks are settled in the conversation, and a button beside it that
@@ -456,6 +459,9 @@ export default function PortfolioPage() {
           onClose={() => setShowCreate(false)}
           onCreated={(task) => { setTasks((current) => [task, ...current]); setShowCreate(false); }}
         />
+      )}
+      {showImport && (
+        <ImportProjectsPanel onClose={() => setShowImport(false)} onImported={load} />
       )}
       {showNewProject && (
         <NewProjectPanel

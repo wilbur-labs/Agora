@@ -774,6 +774,35 @@ export function createProject(
   });
 }
 
+/** A repository a workspace task record names (CR-52), one per repository. */
+export interface ImportCandidate {
+  raw_path: string;
+  root: string | null;
+  status: "ok" | "registered" | "not_this_machine" | "placeholder" | "missing" | "not_git" | "unreadable";
+  registered_as: string | null;
+  suggested_id: string | null;
+  suggested_name: string | null;
+  tasks: { source: string; task: string; title: string | null }[];
+}
+
+export interface ImportCandidates {
+  candidates: ImportCandidate[];
+  /** Task files that could not be read — listed, not skipped. */
+  unreadable: { source: string; task: string; reason: string }[];
+}
+
+export function listImportCandidates(): Promise<ImportCandidates> {
+  return request("/api/projects/import-candidates");
+}
+
+/** Register an existing git repository on this machine as a project, where it is. */
+export function registerExistingProject(projectId: string, root: string, name?: string): Promise<ProjectListItem> {
+  return request("/api/projects/register", {
+    method: "POST",
+    body: JSON.stringify({ project_id: projectId, root, name: name || null }),
+  });
+}
+
 export function setProjectAgents(projectId: string, worker_agent: AdapterName, reviewer_agent: AdapterName): Promise<ProjectListItem> {
   return request(`/api/projects/${encodeURIComponent(projectId)}/agents`, {
     method: "PUT",

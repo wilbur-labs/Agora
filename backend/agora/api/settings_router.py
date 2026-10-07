@@ -29,6 +29,9 @@ from agora.tasks.store import TaskStore
 from agora.execution.adapters import build_adapter_registry
 from agora.execution import credential_store
 from agora.ssh_config import read_ssh_config
+from agora.projects.import_candidates import (
+    exclude_agora_worktrees, find_candidates, git_worktree_root_status,
+)
 from agora.execution.remote_wiring import remote_path_within
 from agora.execution.credential_store import KeyringUnavailableError
 from agora.execution.dispatcher import token_capturable_adapters
@@ -427,6 +430,84 @@ def list_projects(
             for pid, project in sorted(registry.list_projects().items())
         ],
     }
+
+
+class RegisterProjectRequest(BaseModel):
+    """An existing git repository on this machine, registered as a project as it is."""
+
+    project_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+    root: str = Field(min_length=1, max_length=4096)
+    name: str | None = Field(default=None, max_length=200)
+
+
+def _registered_roots(registry: ProjectRegistry) -> dict[str, str]:
+    return {
+        os.path.normcase(str(Path(project.root).resolve(strict=False))): project_id
+        for project_id, project in registry.list_projects().items()
+    }
+
+
+@router.get("/projects/import-candidates")
+def list_project_import_candidates(
+    registry: ProjectRegistry = Depends(get_project_registry),
+) -> dict[str, Any]:
+    """The repositories the registered workspaces' task records name (CR-52), one per
+    repository, each saying whether it can be registered as is — and if not, why.
+    Task files that could not be read are listed, not skipped."""
+    candidates, unreadable = find_candidates(
+        [Path(root) for root in registry.workspace_sources()], _registered_roots(registry),
+    )
+    return {"candidates": [c.payload() for c in candidates], "unreadable": unreadable}
+
+
+@router.post("/projects/register", status_code=status.HTTP_201_CREATED)
+def register_existing_project(
+    request: RegisterProjectRequest,
+    registry: ProjectRegistry = Depends(get_project_registry),
+) -> dict[str, Any]:
+    """Register an EXISTING git repository on this machine as a project (CR-52), where it
+    is. Nothing in the repository is created, initialised or committed; Agora adds only
+    its own (empty) ``.agora/`` folders and a local ``.git/info/exclude`` entry so the
+    worktrees it builds later stay out of ``git status``. Worktrees are provisioned when
+    work is first dispatched, not now."""
+    root = Path(request.root).expanduser()
+    probe = probe_path(root)
+    if probe.unknown:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"Cannot inspect {root}: {probe.reason()}")
+    if probe.absent or not probe.is_dir():
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"Not a directory on this machine: {root}")
+    git_status = git_worktree_root_status(root)
+    if git_status == "unreadable":
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"Could not ask git about {root}")
+    if git_status != "ok":
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f"Not the root of a git repository: {root} — Agora registers existing repositories "
+            f"as they are and never git-inits one",
+        )
+    already = _registered_roots(registry).get(os.path.normcase(str(root.resolve(strict=False))))
+    if already is not None:
+        raise HTTPException(status.HTTP_409_CONFLICT, f"Already registered as project {already}")
+    if request.project_id in registry.list_projects():
+        raise HTTPException(status.HTTP_409_CONFLICT, f"Project already exists: {request.project_id}")
+    # Agora's own folders first: if they cannot be created (read-only repository, a FILE
+    # named .agora), nothing is registered — a project must never be stored while the
+    # response says it was not (review).
+    try:
+        for sub in ("research", "decisions", "specs", "workspaces/claude", "workspaces/codex", "workspaces/kiro"):
+            (root / ".agora" / sub).mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f"Cannot create Agora's .agora/ folders in {root}: {type(exc).__name__} — nothing was registered",
+        ) from None
+    try:
+        project = registry.add(request.project_id, root, request.name)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from None
+    summary = _project_summary(project)
+    summary["worktrees_excluded"] = exclude_agora_worktrees(Path(project.root))
+    return summary
 
 
 @router.post("/projects", status_code=status.HTTP_201_CREATED)
