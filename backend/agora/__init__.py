@@ -3,4 +3,4 @@
 
 # One of four places that must agree: backend/pyproject.toml, backend/uv.lock and
 # frontend/package.json. tests/test_version.py fails when they drift (CR-31).
-__version__ = "1.1.0"
+__version__ = "1.2.0"
