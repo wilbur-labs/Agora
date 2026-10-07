@@ -987,6 +987,26 @@ export function setProjectCharter(projectId: string, charter: Charter): Promise<
   });
 }
 
+// --- goals already written in the workspaces' task records (CR-35) -------------------
+export interface RecordedGoal {
+  source: string;
+  task: string;
+  title: string | null;
+  /** As the person wrote it; null when the record names this repository but states no goal. */
+  goal: string | null;
+  found_in: "task.yaml" | "RESUME.md" | null;
+}
+
+export interface RecordedGoals {
+  project_id: string;
+  goals: RecordedGoal[];
+  unreadable: { source: string; task: string; reason: string }[];
+}
+
+export function listRecordedGoals(projectId: string): Promise<RecordedGoals> {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/recorded-goals`);
+}
+
 // --- project kickoff (W10) ------------------------------------------------------------
 //
 // The record lives in the project's repository (`.agora/kickoff.json`); every read

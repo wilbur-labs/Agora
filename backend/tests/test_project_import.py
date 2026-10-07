@@ -312,3 +312,70 @@ def test_one_repository_spelled_two_ways_is_still_one(tmp_path, on_windows):
                      f"repos:\n  - name: wc\n    path: \"{back}\"\n")
     (candidate,) = find_candidates([src], {})[0]
     assert candidate.suggested_name == "Work Chat"
+
+
+def test_recorded_goals_come_from_either_workspace_shape(tmp_path):
+    """CR-35: an imported project should not start its goal from nothing."""
+    from agora.projects.import_candidates import recorded_goals
+
+    repo = _git_repo(tmp_path / "sh")
+    claude = tmp_path / "claude"
+    kiro = tmp_path / "kiro"
+    _task(claude, "signal-hunt", f"task:\n  title: SH\n  goal: >-\n    find chances\n    in signals\nprimary_repo: {repo.as_posix()}\n")
+    _task(kiro, "sh", f"name: sh\nproject_path: {repo.as_posix()}\n")
+    (kiro / "tasks" / "sh" / "RESUME.md").write_text(
+        "# sh\n\n## 项目概要\n\n目标：把现场的信号\n变成机会。\n\n## 现状\n", encoding="utf-8")
+    _task(kiro, "blank", f"name: blank\nproject_path: {repo.as_posix()}\n")
+    _task(claude, "other", f"task:\n  title: O\n  goal: elsewhere\nprimary_repo: {(tmp_path / 'other').as_posix()}\n")
+    goals, unreadable = recorded_goals([claude, kiro], repo)
+    by = {g.task: g for g in goals}
+    assert set(by) == {"signal-hunt", "sh", "blank"}  # "other" names another repository
+    assert by["signal-hunt"].goal == "find chances in signals" and by["signal-hunt"].found_in == "task.yaml"
+    assert by["sh"].goal == "把现场的信号变成机会。" and by["sh"].found_in == "RESUME.md"
+    assert by["blank"].goal is None and by["blank"].found_in is None
+    assert unreadable == []
+
+
+def test_a_template_goal_is_not_a_goal(tmp_path):
+    from agora.projects.import_candidates import recorded_goals
+
+    repo = _git_repo(tmp_path / "r")
+    src = tmp_path / "claude"
+    _task(src, "t", f"task:\n  title: T\n  goal: <edit-me>\nprimary_repo: {repo.as_posix()}\n")
+    (goal,) = recorded_goals([src], repo)[0]
+    assert goal.goal is None
+
+
+def test_recorded_goals_endpoint(api, tmp_path):
+    client, registry = api
+    repo = _git_repo(tmp_path / "wc")
+    src = tmp_path / "claude"
+    _task(src, "wc", f"task:\n  title: WC\n  goal: answer questions about my work\nprimary_repo: {repo.as_posix()}\n")
+    registry.register_workspace_source(src)
+    assert client.post("/api/projects/register", json={"project_id": "wc", "root": str(repo)}).status_code == 201
+    body = client.get("/api/projects/wc/recorded-goals").json()
+    assert [g["goal"] for g in body["goals"]] == ["answer questions about my work"]
+    assert client.get("/api/projects/nope/recorded-goals").status_code == 404
+
+
+def test_a_template_goal_in_task_yaml_falls_back_to_the_resume(tmp_path):
+    """review: an unfilled `<edit-me>` must not hide the goal the RESUME states."""
+    from agora.projects.import_candidates import recorded_goals
+
+    repo = _git_repo(tmp_path / "r")
+    src = tmp_path / "claude"
+    _task(src, "t", f"task:\n  title: T\n  goal: <edit-me>\nprimary_repo: {repo.as_posix()}\n")
+    (src / "tasks" / "t" / "RESUME.md").write_text("目标：真正的目标\n", encoding="utf-8")
+    (goal,) = recorded_goals([src], repo)[0]
+    assert goal.goal == "真正的目标" and goal.found_in == "RESUME.md"
+
+
+def test_angle_brackets_in_a_real_goal_are_kept(tmp_path):
+    """review: only an unfilled template marker is a placeholder."""
+    from agora.projects.import_candidates import recorded_goals
+
+    repo = _git_repo(tmp_path / "r")
+    src = tmp_path / "claude"
+    _task(src, "t", f"task:\n  title: T\n  goal: Build a <canvas> based editor\nprimary_repo: {repo.as_posix()}\n")
+    (goal,) = recorded_goals([src], repo)[0]
+    assert goal.goal == "Build a <canvas> based editor"

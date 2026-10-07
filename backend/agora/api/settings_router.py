@@ -30,7 +30,7 @@ from agora.execution.adapters import build_adapter_registry
 from agora.execution import credential_store
 from agora.ssh_config import read_ssh_config
 from agora.projects.import_candidates import (
-    exclude_agora_worktrees, find_candidates, git_worktree_root_status,
+    exclude_agora_worktrees, find_candidates, git_worktree_root_status, recorded_goals,
 )
 from agora.execution.remote_wiring import remote_path_within
 from agora.execution.credential_store import KeyringUnavailableError
@@ -458,6 +458,22 @@ def list_project_import_candidates(
         [Path(root) for root in registry.workspace_sources()], _registered_roots(registry),
     )
     return {"candidates": [c.payload() for c in candidates], "unreadable": unreadable}
+
+
+@router.get("/projects/{project_id}/recorded-goals")
+def list_recorded_goals(
+    project_id: str,
+    registry: ProjectRegistry = Depends(get_project_registry),
+) -> dict[str, Any]:
+    """The goals already written for this project's repository in the workspaces' task
+    records (CR-35), so an imported project does not start its goal from nothing. Read
+    only: adopting one goes through the charter editor, where the person confirms it."""
+    try:
+        project = registry.get(project_id)
+    except (KeyError, LookupError):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Unknown project: {project_id}") from None
+    goals, unreadable = recorded_goals([Path(root) for root in registry.workspace_sources()], Path(project.root))
+    return {"project_id": project_id, "goals": [g.payload() for g in goals], "unreadable": unreadable}
 
 
 @router.post("/projects/register", status_code=status.HTTP_201_CREATED)

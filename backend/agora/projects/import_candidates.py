@@ -169,16 +169,10 @@ def _suggest_id(root: Path, taken: set[str]) -> str:
     return candidate
 
 
-def find_candidates(
-    source_roots: list[Path], registered: dict[str, str],
-) -> tuple[list[Candidate], list[dict[str, str]]]:
-    """Candidates from every ``<source>/tasks/*/task.yaml``, one per repository, plus
-    the task files that could not be read (said, not skipped). ``registered`` maps a
-    normcased project root to its project id."""
-    by_key: dict[str, Candidate] = {}
-    elsewhere: list[Candidate] = []
-    unreadable: list[dict[str, str]] = []
-    taken = set(registered.values())
+def _task_documents(source_roots: list[Path], unreadable: list[dict[str, str]]):
+    """Every ``<source>/tasks/*/task.yaml`` that parses to a mapping, as
+    ``(source, task_dir, document)``. What cannot be read is appended to
+    ``unreadable`` — said, not skipped."""
     for source in source_roots:
         tasks_dir = Path(source) / "tasks"
         try:
@@ -200,39 +194,52 @@ def find_candidates(
             except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
                 unreadable.append({"source": str(source), "task": task_dir.name, "reason": type(exc).__name__})
                 continue
-            if not isinstance(document, dict):
+            if isinstance(document, dict):
+                yield source, task_dir, document
+
+
+def find_candidates(
+    source_roots: list[Path], registered: dict[str, str],
+) -> tuple[list[Candidate], list[dict[str, str]]]:
+    """Candidates from every ``<source>/tasks/*/task.yaml``, one per repository, plus
+    the task files that could not be read (said, not skipped). ``registered`` maps a
+    normcased project root to its project id."""
+    by_key: dict[str, Candidate] = {}
+    elsewhere: list[Candidate] = []
+    unreadable: list[dict[str, str]] = []
+    taken = set(registered.values())
+    for source, task_dir, document in _task_documents(source_roots, unreadable):
+        ref = CandidateTask(source=str(source), task=task_dir.name, title=_title_of(document))
+        seen_here: set[str] = set()
+        named = _paths_in(document)
+        # A task naming several repositories: its title describes the task, not any one
+        # of them, so each is named after itself (CR-29).
+        identities = {raw: _identity(raw) for raw, _ in named}
+        several = len(set(identities.values())) > 1
+        for raw, repo_name in named:
+            if raw.strip() in seen_here:  # primary_repo and repos[].path often repeat
                 continue
-            ref = CandidateTask(source=str(source), task=task_dir.name, title=_title_of(document))
-            seen_here: set[str] = set()
-            named = _paths_in(document)
-            # A task naming several repositories: its title describes the task, not any one
-            # of them, so each is named after itself (CR-29).
-            identities = {raw: _identity(raw) for raw, _ in named}
-            several = len(set(identities.values())) > 1
-            for raw, repo_name in named:
-                if raw.strip() in seen_here:  # primary_repo and repos[].path often repeat
-                    continue
-                seen_here.add(raw.strip())
-                local = local_path_of(raw)
-                if local is None:
-                    status = "placeholder" if _PLACEHOLDER.search(raw) else "not_this_machine"
-                    elsewhere.append(Candidate(raw_path=raw, root=None, status=status, tasks=[ref]))
-                    continue
-                try:
-                    key = _key(local)
-                except (OSError, RuntimeError):
-                    # One path that cannot even be resolved (an unreachable share) is
-                    # that candidate's problem, not the whole scan's (review, CR-28).
-                    elsewhere.append(Candidate(raw_path=raw, root=str(local), status="unreadable", tasks=[ref]))
-                    continue
-                if key in by_key:
-                    if all(t.task != ref.task or t.source != ref.source for t in by_key[key].tasks):
-                        by_key[key].tasks.append(ref)
-                    continue
-                repo_name = repo_name or next(
-                    (n for r, n in named if n and identities[r] == identities[raw]), None)
-                name = (repo_name or local.name) if several else (ref.title or local.name)
-                by_key[key] = _classify(raw, local, key, registered, taken, ref, name)
+            seen_here.add(raw.strip())
+            local = local_path_of(raw)
+            if local is None:
+                status = "placeholder" if _PLACEHOLDER.search(raw) else "not_this_machine"
+                elsewhere.append(Candidate(raw_path=raw, root=None, status=status, tasks=[ref]))
+                continue
+            try:
+                key = _key(local)
+            except (OSError, RuntimeError):
+                # One path that cannot even be resolved (an unreachable share) is
+                # that candidate's problem, not the whole scan's (review, CR-28).
+                elsewhere.append(Candidate(raw_path=raw, root=str(local), status="unreadable", tasks=[ref]))
+                continue
+            if key in by_key:
+                if all(t.task != ref.task or t.source != ref.source for t in by_key[key].tasks):
+                    by_key[key].tasks.append(ref)
+                continue
+            repo_name = repo_name or next(
+                (n for r, n in named if n and identities[r] == identities[raw]), None)
+            name = (repo_name or local.name) if several else (ref.title or local.name)
+            by_key[key] = _classify(raw, local, key, registered, taken, ref, name)
     return list(by_key.values()) + elsewhere, unreadable
 
 
@@ -256,6 +263,89 @@ def _classify(raw, local: Path, key: str, registered, taken: set[str], ref, name
     # Bounded to what registration accepts (200), so an "ok" is always importable (CR-28).
     return Candidate(raw_path=raw, root=root, status="ok", suggested_id=suggested,
                      suggested_name=name[:200], tasks=[ref])
+
+
+#: kiro-workspace keeps a task's goal in RESUME.md, as a line "目标：…" (CR-35).
+_RESUME_GOAL = re.compile(r"^\s*(?:[-*]\s*)?(?:\*\*)?目标(?:\*\*)?\s*[：:]\s*(?P<first>.*)$")
+#: An unfilled template goal: the whole value is one `<…>` marker, or an `<edit-me…>`.
+#: Not any angle bracket — "a <canvas> based editor" is a real goal (review).
+_GOAL_PLACEHOLDER = re.compile(r"^\s*<[^>]+>\s*$|<edit-me")
+_CJK_END = re.compile(r"[\u3000-\u30ff\u3400-\u9fff\uff00-\uffef]$")
+
+
+@dataclass
+class RecordedGoal:
+    source: str
+    task: str
+    title: str | None
+    #: The goal as the person wrote it, or None when the record states none.
+    goal: str | None
+    #: Where it was read: "task.yaml" or "RESUME.md"; None with no goal.
+    found_in: str | None
+
+    def payload(self) -> dict[str, Any]:
+        return {"source": self.source, "task": self.task, "title": self.title,
+                "goal": self.goal, "found_in": self.found_in}
+
+
+def _goal_in_manifest(document: dict[str, Any]) -> str | None:
+    task = document.get("task")
+    for value in ((task or {}).get("goal") if isinstance(task, dict) else None, document.get("goal")):
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _goal_in_resume(text: str) -> str | None:
+    """The first "目标：" line of a RESUME.md and its continuation lines (a wrapped
+    paragraph), up to a blank line, a heading or a list item."""
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        match = _RESUME_GOAL.match(line)
+        if not match:
+            continue
+        goal = match.group("first").strip()
+        for following in lines[i + 1:]:
+            stripped = following.strip()
+            if not stripped or stripped[0] in "#-*>|":
+                break
+            # Chinese wraps mid-sentence with no space; English needs one.
+            goal += ("" if _CJK_END.search(goal) else " ") + stripped
+        return goal.strip() or None
+    return None
+
+
+def recorded_goals(
+    source_roots: list[Path], project_root: Path,
+) -> tuple[list[RecordedGoal], list[dict[str, str]]]:
+    """The goals the person already wrote down for this repository: one per task record
+    (in any registered workspace) that names it. A record that names it but states no
+    goal is listed with ``goal=None`` — the page says so instead of hiding the task."""
+    unreadable: list[dict[str, str]] = []
+    want = _identity(str(project_root))
+    found: list[RecordedGoal] = []
+    for source, task_dir, document in _task_documents(source_roots, unreadable):
+        if all(_identity(raw) != want for raw, _ in _paths_in(document)):
+            continue
+        goal, found_in = _goal_in_manifest(document), "task.yaml"
+        if goal is not None and _GOAL_PLACEHOLDER.search(goal):
+            goal = None  # an unfilled template; the RESUME may still say it (review)
+        if goal is None:
+            found_in = "RESUME.md"
+            resume = task_dir / "RESUME.md"
+            probe = probe_path(resume)
+            if probe.unknown:
+                unreadable.append({"source": str(source), "task": task_dir.name, "reason": probe.reason()})
+            elif probe.is_file():
+                try:
+                    goal = _goal_in_resume(resume.read_text(encoding="utf-8"))
+                except (OSError, UnicodeDecodeError) as exc:
+                    unreadable.append({"source": str(source), "task": task_dir.name, "reason": type(exc).__name__})
+        if goal is not None and _GOAL_PLACEHOLDER.search(goal):
+            goal = None  # a template's "<edit-me>" is not a goal
+        found.append(RecordedGoal(source=str(source), task=task_dir.name, title=_title_of(document),
+                                  goal=goal, found_in=found_in if goal else None))
+    return found, unreadable
 
 
 def exclude_agora_worktrees(root: Path) -> bool:

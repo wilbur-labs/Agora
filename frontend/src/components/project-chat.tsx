@@ -24,6 +24,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Loader2, RefreshCw, Sparkles } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { RecordedGoals } from "@/components/recorded-goals";
 import { useI18n } from "@/lib/i18n";
 import {
   adoptKickoff,
@@ -298,6 +299,7 @@ export function ProjectChat({
             <Muted tone="warn">{t(`portfolio.kickoff.unreadable.${step.reason}`)}</Muted>
           )}
 
+          {step.kind === "start" && <RecordedGoals key={projectId} projectId={projectId} onAdopted={onAdopted} />}
           {step.kind === "start" && (
             <Bubble who="agent" t={t}>
               <p>{t("projectChat.brief.ask")}</p>
