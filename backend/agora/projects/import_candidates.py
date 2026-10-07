@@ -115,18 +115,20 @@ def git_worktree_root_status(root: Path) -> str:
     return "ok" if same else "not_git"  # inside another repository, not its own root
 
 
-def _paths_in(document: dict[str, Any]) -> list[str]:
-    """Every repository path a task.yaml names: claude-workspace's ``primary_repo`` and
-    ``repos[].path``, kiro-workspace's ``project_path``. First the primary one."""
-    found: list[str] = []
+def _paths_in(document: dict[str, Any]) -> list[tuple[str, str | None]]:
+    """Every repository path a task.yaml names, with the ``repos[].name`` it was given if
+    any: claude-workspace's ``primary_repo`` and ``repos[].path``, kiro-workspace's
+    ``project_path``. First the primary one."""
+    found: list[tuple[str, str | None]] = []
     for value in (document.get("primary_repo"), document.get("project_path")):
         if isinstance(value, str) and value.strip():
-            found.append(value)
+            found.append((value, None))
     repos = document.get("repos")
     if isinstance(repos, list):
         for repo in repos:
             if isinstance(repo, dict) and isinstance(repo.get("path"), str) and repo["path"].strip():
-                found.append(repo["path"])
+                name = repo.get("name")
+                found.append((repo["path"], name.strip() if isinstance(name, str) and name.strip() else None))
     return found
 
 
@@ -142,6 +144,18 @@ def _title_of(document: dict[str, Any]) -> str | None:
 
 def _key(path: Path) -> str:
     return os.path.normcase(str(path.resolve(strict=False)))
+
+
+def _identity(raw: str) -> str:
+    """Which repository a path names, so ``E:/x``, ``E:\\x`` and ``/e/x`` count as one;
+    a path that cannot be resolved here stands for itself."""
+    local = local_path_of(raw)
+    if local is not None:
+        try:
+            return _key(local)
+        except (OSError, RuntimeError):
+            pass
+    return raw.strip()
 
 
 def _suggest_id(root: Path, taken: set[str]) -> str:
@@ -190,7 +204,12 @@ def find_candidates(
                 continue
             ref = CandidateTask(source=str(source), task=task_dir.name, title=_title_of(document))
             seen_here: set[str] = set()
-            for raw in _paths_in(document):
+            named = _paths_in(document)
+            # A task naming several repositories: its title describes the task, not any one
+            # of them, so each is named after itself (CR-29).
+            identities = {raw: _identity(raw) for raw, _ in named}
+            several = len(set(identities.values())) > 1
+            for raw, repo_name in named:
                 if raw.strip() in seen_here:  # primary_repo and repos[].path often repeat
                     continue
                 seen_here.add(raw.strip())
@@ -210,11 +229,14 @@ def find_candidates(
                     if all(t.task != ref.task or t.source != ref.source for t in by_key[key].tasks):
                         by_key[key].tasks.append(ref)
                     continue
-                by_key[key] = _classify(raw, local, key, registered, taken, ref)
+                repo_name = repo_name or next(
+                    (n for r, n in named if n and identities[r] == identities[raw]), None)
+                name = (repo_name or local.name) if several else (ref.title or local.name)
+                by_key[key] = _classify(raw, local, key, registered, taken, ref, name)
     return list(by_key.values()) + elsewhere, unreadable
 
 
-def _classify(raw, local: Path, key: str, registered, taken: set[str], ref) -> Candidate:
+def _classify(raw, local: Path, key: str, registered, taken: set[str], ref, name: str) -> Candidate:
     root = str(local.resolve(strict=False))
     if key in registered:
         return Candidate(raw_path=raw, root=root, status="registered",
@@ -232,9 +254,8 @@ def _classify(raw, local: Path, key: str, registered, taken: set[str], ref) -> C
     suggested = _suggest_id(local, taken)
     taken.add(suggested)
     # Bounded to what registration accepts (200), so an "ok" is always importable (CR-28).
-    name = (ref.title or local.name)[:200]
     return Candidate(raw_path=raw, root=root, status="ok", suggested_id=suggested,
-                     suggested_name=name, tasks=[ref])
+                     suggested_name=name[:200], tasks=[ref])
 
 
 def exclude_agora_worktrees(root: Path) -> bool:

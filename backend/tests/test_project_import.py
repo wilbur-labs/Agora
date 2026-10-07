@@ -276,3 +276,39 @@ def test_a_long_title_is_bounded_to_what_registration_accepts(api, tmp_path):
         "project_id": candidate.suggested_id, "root": candidate.root, "name": candidate.suggested_name,
     })
     assert resp.status_code == 201, resp.text
+
+
+def test_a_task_naming_several_repositories_names_each_after_itself(tmp_path):
+    """CR-29: workflow-polish lists two repos; both were offered under the task's title."""
+    a = _git_repo(tmp_path / "claude-workspace")
+    b = _git_repo(tmp_path / "kiro-workspace")
+    src = tmp_path / "claude"
+    _task(src, "workflow-polish", (
+        "task:\n  title: two workspaces\n"
+        f"repos:\n  - name: claude-ws\n    path: {a.as_posix()}\n"
+        f"  - path: {b.as_posix()}\n"
+    ))
+    candidates, _ = find_candidates([src], {})
+    names = sorted(c.suggested_name for c in candidates)
+    assert names == ["claude-ws", "kiro-workspace"]
+
+
+def test_a_single_repository_task_keeps_its_title(tmp_path):
+    repo = _git_repo(tmp_path / "wc")
+    src = tmp_path / "claude"
+    _task(src, "wc", f"task:\n  title: Work Chat\nprimary_repo: {repo.as_posix()}\n"
+                     f"repos:\n  - name: wc\n    path: {repo.as_posix()}\n")
+    (candidate,) = find_candidates([src], {})[0]
+    assert candidate.suggested_name == "Work Chat"
+
+
+@pytest.mark.skipif(not __import__("os").name == "nt", reason="Windows path spellings")
+def test_one_repository_spelled_two_ways_is_still_one(tmp_path, on_windows):
+    """CR-29 review: E:/x and E:\\x are one repository, so the task's title stays."""
+    repo = _git_repo(tmp_path / "wc")
+    src = tmp_path / "claude"
+    back = str(repo).replace("\\", "\\\\")
+    _task(src, "wc", f"task:\n  title: Work Chat\nprimary_repo: {repo.as_posix()}\n"
+                     f"repos:\n  - name: wc\n    path: \"{back}\"\n")
+    (candidate,) = find_candidates([src], {})[0]
+    assert candidate.suggested_name == "Work Chat"
