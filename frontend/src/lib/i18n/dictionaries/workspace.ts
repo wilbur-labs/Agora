@@ -279,6 +279,38 @@ export const workspace = {
     // The Continue action that sits with the Resume Brief: it acts on what that
     // panel says, so its wording lives next to the recap's.
     // The project conversation (W12): one stream per project, one box.
+    terminal: {
+      open: "Terminal",
+      title: "Terminal",
+      loading: "Reading where this project can open…",
+      targetsFailed: "Could not read this project's task records; the repository choices still work.",
+      asTask: "As task {task} (claude-workspace)",
+      asTaskHint: "Like `cw open`: Claude starts with this task's RESUME, CRs and review gate.",
+      inRepo: {
+        claude: "Claude Code in the repository",
+        codex: "Codex in the repository",
+        kiro: "Kiro in the repository",
+        shell: "PowerShell in the repository",
+      },
+      authRequired: "Terminals open only for whoever started this Agora. Open it from the desktop shortcut (or `agora.ps1 up`) once, then try again.",
+      startFailed: "The terminal did not start: {reason}",
+      listFailed: "Could not read the terminals.",
+      gone: "That terminal is no longer held by this server (it ended, or the server restarted).",
+      close: "Close terminal",
+      state: {
+        running: "running",
+        exited: "ended (exit {code})",
+        exitedUnknown: "ended (exit code unknown)",
+        exitedWith: "The program ended (exit {code}). Scroll back to read it; open a new terminal to continue.",
+        ended: "ended",
+      },
+      stream: {
+        connecting: "Connecting…",
+        closed: "Disconnected from the terminal. It may still be running: reload this tab to reconnect.",
+        tooSlow: "This window fell too far behind and was disconnected; reload to catch up from the saved output.",
+        refused: "The server refused this terminal (not signed in for terminals, or it no longer exists).",
+      },
+    },
     stream: {
       title: "Project conversation",
       you: "You",
@@ -1198,6 +1230,38 @@ export const workspace = {
         answered: "已回应 {count} 项",
         handedOff: "工作已交付",
         noted: "新增 {count} 条说明",
+      },
+    },
+    terminal: {
+      open: "终端",
+      title: "终端",
+      loading: "正在读这个项目能在哪儿打开……",
+      targetsFailed: "读不到这个项目的任务记录；下面在仓库里打开的几项照常可用。",
+      asTask: "按任务打开：{task}（claude-workspace）",
+      asTaskHint: "等于 `cw open`：Claude 带着这个任务的 RESUME、CR 和评审关卡启动。",
+      inRepo: {
+        claude: "在仓库里开 Claude Code",
+        codex: "在仓库里开 Codex",
+        kiro: "在仓库里开 Kiro",
+        shell: "在仓库里开 PowerShell",
+      },
+      authRequired: "终端只对启动这个 Agora 的人开放。请从桌面快捷方式（或 `agora.ps1 up`）打开一次 Agora，再试。",
+      startFailed: "终端没起来：{reason}",
+      listFailed: "读不到终端列表。",
+      gone: "这个终端已经不在了（程序结束了，或服务重启过）。",
+      close: "关闭终端",
+      state: {
+        running: "运行中",
+        exited: "已结束（退出码 {code}）",
+        exitedUnknown: "已结束（退出码不明）",
+        exitedWith: "程序已结束（退出码 {code}）。可以往上翻看输出；要继续请新开一个终端。",
+        ended: "已结束",
+      },
+      stream: {
+        connecting: "正在连接……",
+        closed: "和终端的连接断了。终端可能还在运行：刷新这个标签页即可重连。",
+        tooSlow: "这个窗口落后太多被断开了；刷新后会从保存的输出接上。",
+        refused: "服务端拒绝了这个终端（没有终端权限，或终端已不存在）。",
       },
     },
     stream: {

@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { ThemeProvider } from "@/components/theme-provider";
+import { TerminalCodeRedeemer } from "@/components/terminal-code-redeemer";
 import { LocaleProvider } from "@/lib/i18n";
 import "./globals.css";
 
@@ -30,6 +31,7 @@ export default function RootLayout({
       <body className="min-h-full flex flex-col">
         <ThemeProvider>
           <LocaleProvider>{children}</LocaleProvider>
+          <TerminalCodeRedeemer />
         </ThemeProvider>
       </body>
     </html>

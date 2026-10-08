@@ -18,6 +18,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, RefreshCw, Send } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { TerminalLauncher } from "@/components/terminal-launcher";
 import { InlineGateBlock, type GateOutcome } from "@/components/inline-gate";
 import { DeliverablesBlock, type DeliverablesRead } from "@/components/run-deliverables";
 import { relTime } from "@/components/timeline-entry";
@@ -864,6 +865,7 @@ export function ProjectStream({
         <b className="font-medium text-foreground">{projectName}</b>
         <span>· {t("workspace.stream.title")}</span>
         <span className="ml-auto">{headerPill}</span>
+        <TerminalLauncher projectId={projectId} />
       </div>
 
       <div ref={streamRef} onScroll={onStreamScroll} className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-4">

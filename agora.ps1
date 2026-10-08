@@ -290,9 +290,33 @@ function Invoke-FrontendBuild {
     Write-Step 'Frontend built.'
 }
 
+function Get-TerminalToken {
+    # The install's terminal token (CR-30), from the file only this account can read.
+    # Opening the browser through /api/terminal-auth turns it into a cookie, so the
+    # person who started Agora can open terminals and nobody else on the machine can.
+    $python = Join-Path $Backend '.venv\Scripts\python.exe'
+    if (-not (Test-Path $python)) { return $null }
+    Set-OwnConfig
+    $code = 'from agora.config.settings import get_config, resolve_control_plane_db_path; from agora.terminal.auth import load_or_create_token; print(load_or_create_token(resolve_control_plane_db_path(get_config()).parent))'
+    $r = Invoke-Tool $python @('-c', $code) $Backend
+    if ($r.Code -ne 0) { Write-Fail "Terminal token unavailable; terminals stay locked: $($r.Output)"; return $null }
+    return (($r.Output -split "`n") | Where-Object { $_.Trim() } | Select-Object -Last 1).Trim()
+}
+
 function Open-Browser {
     if ($NoBrowser) { return }
-    Start-Process $Url | Out-Null
+    $target = $Url
+    $token = Get-TerminalToken
+    if ($token) {
+        # The token goes in a header, never a URL (URLs reach access logs and history):
+        # it buys a one-time, 60-second launch code, and that is what the browser opens.
+        try {
+            $r = Invoke-WebRequest -UseBasicParsing -Method Post -Uri "$Url/api/terminal-launch-code" -Headers @{ 'X-Agora-Terminal-Token' = $token } -TimeoutSec 5
+            $code = ($r.Content | ConvertFrom-Json).code
+            if ($code) { $target = "$Url/?terminal_code=$([uri]::EscapeDataString($code))" }
+        } catch { Write-Fail "No terminal launch code ($($_.Exception.Message)); terminals stay locked in this browser." }
+    }
+    Start-Process $target | Out-Null
 }
 
 function Show-LogTail([int]$Lines = 30) {

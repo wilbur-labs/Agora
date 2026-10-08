@@ -31,6 +31,7 @@ from agora.control_plane.router import (
 )
 from agora.api.settings_router import router as settings_router
 from agora.api.kickoff_router import router as kickoff_router
+from agora.api.terminal_router import get_terminal_manager, router as terminal_router
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
@@ -98,6 +99,10 @@ async def lifespan(_: FastAPI):
     supervisor = get_workflow_supervisor()
     supervisor.start()
     yield
+    # Terminals end with the server: their process trees are in job objects that die
+    # with it anyway; closing them first lets each one report its exit (CR-30).
+    if get_terminal_manager.cache_info().currsize:
+        get_terminal_manager().close_all()
     await supervisor.shutdown()
     if get_execution_dispatcher.cache_info().currsize:
         await get_execution_dispatcher().shutdown()
@@ -123,6 +128,7 @@ app.include_router(control_plane_router, prefix="/api")
 app.include_router(task_discovery_router, prefix="/api")
 app.include_router(settings_router, prefix="/api")
 app.include_router(kickoff_router, prefix="/api")
+app.include_router(terminal_router, prefix="/api")
 
 
 # Field names whose VALUE must never be reflected back in a 422 body. FastAPI's default

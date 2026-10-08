@@ -6,6 +6,10 @@ requires-python = ">=3.10"
 dependencies = [
     "fastapi>=0.115.0",
     "uvicorn>=0.32.0",
+    # uvicorn serves WebSockets only with a WebSocket library installed; without it the
+    # embedded terminal's stream (CR-30) is refused as an "unsupported upgrade" — and
+    # TestClient, which bypasses uvicorn, would never show it.
+    "websockets>=12.0",
     "httpx>=0.27.0",
     "pyyaml>=6.0",
     "pydantic>=2.9.0",
@@ -30,6 +34,10 @@ dependencies = [
     # secret in the clear. A key PATH is not a secret and stays in the DB; only a
     # password uses this.
     "keyring>=25.0",
+    # The embedded terminal (CR-30) needs a real pseudo-terminal: claude / codex / kiro are
+    # interactive TUIs. ConPTY through pywinpty on Windows, ptyprocess elsewhere.
+    "pywinpty>=2.0; sys_platform == 'win32'",
+    "ptyprocess>=0.7; sys_platform != 'win32'",
 ]
 
 [project.optional-dependencies]
