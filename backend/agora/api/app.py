@@ -315,7 +315,10 @@ def instance_of(environ=None) -> str:
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": __version__, "instance": instance_of()}
+    # Which configuration file this server was started with, so a launcher asked for the
+    # development install never mistakes a normal server on that port for it (CR-31).
+    config = Path(os.environ.get("AGORA_CONFIG_PATH", "").strip() or "config.yaml").name
+    return {"status": "ok", "version": __version__, "instance": instance_of(), "config": config}
 
 
 if _frontend_out.is_dir():

@@ -21,6 +21,8 @@ Two rules this module upholds, both from adr/0001:
 """
 from __future__ import annotations
 
+import os
+
 import keyring
 from keyring.errors import NoKeyringError
 
@@ -30,6 +32,13 @@ from keyring.errors import NoKeyringError
 #: database — two Agora configurations under one account that register the same id
 #: share one entry (one overwrites or deletes the other's password).
 _SERVICE = "agora-remote-env"
+
+
+def _service() -> str:
+    """The namespace: ``AGORA_KEYRING_SERVICE`` when set (a development install uses its
+    own, so it never reads, overwrites or deletes the stable install's passwords — CR-31),
+    the shared default otherwise."""
+    return os.environ.get("AGORA_KEYRING_SERVICE", "").strip() or _SERVICE
 
 
 def credential_key(environment_id: str) -> str:
@@ -75,7 +84,7 @@ def set_password(environment_id: str, password: str) -> None:
     never stores it anywhere else."""
     _guard()
     try:
-        keyring.set_password(_SERVICE, credential_key(environment_id), password)
+        keyring.set_password(_service(), credential_key(environment_id), password)
     except NoKeyringError as exc:
         raise KeyringUnavailableError(str(exc)) from exc
     except Exception as exc:
@@ -94,7 +103,7 @@ def get_password(environment_id: str) -> str | None:
     ``None`` — one is "cannot look", the other is "looked, nothing there")."""
     _guard()
     try:
-        return keyring.get_password(_SERVICE, credential_key(environment_id))
+        return keyring.get_password(_service(), credential_key(environment_id))
     except NoKeyringError as exc:
         raise KeyringUnavailableError(str(exc)) from exc
     except Exception as exc:
@@ -118,7 +127,7 @@ def delete_password(environment_id: str) -> None:
     store) — a delete that did not happen is never reported as done."""
     _guard()
     try:
-        keyring.delete_password(_SERVICE, credential_key(environment_id))
+        keyring.delete_password(_service(), credential_key(environment_id))
     except NoKeyringError as exc:
         raise KeyringUnavailableError(str(exc)) from exc
     except Exception as exc:
@@ -128,7 +137,7 @@ def delete_password(environment_id: str) -> None:
         # Look before calling it done — only a read that finds nothing makes it
         # absent, which keeps deleting an absent entry idempotent.
         try:
-            still_there = keyring.get_password(_SERVICE, credential_key(environment_id)) is not None
+            still_there = keyring.get_password(_service(), credential_key(environment_id)) is not None
         except Exception:
             still_there = True  # cannot look, so cannot claim it is gone
         if still_there:

@@ -19,6 +19,9 @@
       logs      show the last 40 lines of the backend log
       build     rebuild frontend/out (corepack pnpm build)
       shortcut  create "Agora.lnk" on the Desktop that runs "up"
+      -Dev      with up/down/status: this checkout as a development install on port
+                8001, with config.dev.yaml (own database, a sandbox project instead of
+                this repository) and its own keyring namespace. Never the stable data.
       upgrade   (stable install only) move this install to a release tag:
                   -To v1.2.0   the tag. Backs the database up first; any failure
                                puts the old version and the old database back.
@@ -48,10 +51,17 @@ param(
     [int]$StartTimeoutSec = 60,
     [int]$StopGraceSec = 10,
     [string]$To,
-    [switch]$Yes
+    [switch]$Yes,
+    [switch]$Dev
 )
 
 $ErrorActionPreference = 'Stop'
+
+# -Dev: this checkout as a development install (CR-31 slice 2): config.dev.yaml (its own
+# database and sandbox project), its own keyring namespace, port 8001 unless -Port says.
+if ($Dev -and -not $PSBoundParameters.ContainsKey('Port')) { $Port = 8001 }
+$ConfigName = 'config.yaml'
+if ($Dev) { $ConfigName = 'config.dev.yaml' }
 
 $Root      = $PSScriptRoot
 $Backend   = Join-Path $Root 'backend'
@@ -147,7 +157,13 @@ function Set-OwnConfig {
     # Always this directory's config.yaml, so this install's database. Pinned, not
     # just cleared: the backend reads .env again with setdefault, so a copied .env
     # naming another install's config would otherwise win (CR-31 review).
-    [Environment]::SetEnvironmentVariable('AGORA_CONFIG_PATH', (Join-Path $Root 'config.yaml'), 'Process')
+    # Both modes set the namespace explicitly: a value left in this shell by an earlier
+    # '-Dev' run must not carry into a normal start (review).
+    $configName = $ConfigName
+    $keyring = 'agora-remote-env'
+    if ($Dev) { $keyring = 'agora-remote-env-dev' }
+    [Environment]::SetEnvironmentVariable('AGORA_KEYRING_SERVICE', $keyring, 'Process')
+    [Environment]::SetEnvironmentVariable('AGORA_CONFIG_PATH', (Join-Path $Root $configName), 'Process')
 }
 
 function Get-InstallProcesses {
@@ -288,6 +304,22 @@ function Show-LogTail([int]$Lines = 30) {
     }
 }
 
+function Initialize-DevSandbox {
+    # The development install's one project (config.dev.yaml) must be a git repository of
+    # its own, or provisioning a worktree for it fails (review). Never this checkout.
+    $sandbox = Join-Path $Root '.agora\dev\sandbox'
+    New-Item -ItemType Directory -Force -Path $sandbox | Out-Null
+    # Done means a commit exists, not that .git does: an init whose commit failed is
+    # resumed rather than left unborn (review).
+    if ((Test-Path (Join-Path $sandbox '.git')) -and (Invoke-Tool 'git' @('rev-parse', '--verify', '-q', 'HEAD') $sandbox).Code -eq 0) { return }
+    Set-Content -Path (Join-Path $sandbox 'README.md') -Value '# Agora development sandbox' -Encoding ascii
+    foreach ($a in @(@('init', '-q'), @('add', 'README.md'), @('-c', 'user.name=agora', '-c', 'user.email=agora@localhost', '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'sandbox'))) {
+        $r = Invoke-Tool 'git' $a $sandbox
+        if ($r.Code -ne 0) { throw "Could not initialise the development sandbox ($sandbox): $($r.Output)" }
+    }
+    Write-Step "Initialised the development sandbox repository at $sandbox."
+}
+
 function Do-Up {
     # While an upgrade is unfinished, which code may meet which database is the
     # journal's decision: an ordinary start (the desktop shortcut) could run new
@@ -296,6 +328,15 @@ function Do-Up {
         throw "An upgrade did not finish ($JournalFile). Run '.\agora.ps1 rollback' to recover before starting Agora."
     }
     $running = Get-RunningAgora
+    # A server that does not say its configuration (older than this launcher) is only
+    # reused for a normal start; the development install must be positively itself (review).
+    $mismatch = $running.Health.config -and $running.Health.config -ne $ConfigName
+    $unknownForDev = $Dev -and -not $running.Health.config
+    if ($null -ne $running -and ($mismatch -or $unknownForDev)) {
+        $said = $running.Health.config
+        if (-not $said) { $said = 'an unstated configuration' }
+        throw "The Agora on port $Port runs with $said, not $ConfigName. Stop it ('.\agora.ps1 down -Port $Port') or pick another port."
+    }
     if ($null -ne $running) {
         Write-Step "Already running at $Url (pid $($running.Listener.Id), version $($running.Health.version))."
         if ($Build) { Invoke-FrontendBuild }
@@ -320,6 +361,7 @@ function Do-Up {
     }
 
     $runner = Get-Runner
+    if ($Dev) { Initialize-DevSandbox }
 
     if ($Build -or -not (Test-Path $OutIndex)) {
         if (-not $Build) { Write-Step "frontend\out is missing; building it once." }

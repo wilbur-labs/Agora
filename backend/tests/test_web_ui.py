@@ -20,7 +20,9 @@ class TestCurrentProductSurface:
         response = client.get("/health")
 
         assert response.status_code == 200
-        assert response.json() == {"status": "ok", "version": __version__, "instance": "unknown"}
+        body = response.json()
+        assert {k: body[k] for k in ("status", "version", "instance")} == {"status": "ok", "version": __version__, "instance": "unknown"}
+        assert body["config"].endswith(".yaml")
         assert app.version == __version__
         assert app.description == "Local-first Task delivery control plane"
 

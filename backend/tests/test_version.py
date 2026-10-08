@@ -32,5 +32,6 @@ def test_instance_is_only_what_the_launcher_said():
 
 def test_health_reports_version_and_instance(monkeypatch):
     monkeypatch.setenv("AGORA_INSTANCE", "stable")
+    monkeypatch.setenv("AGORA_CONFIG_PATH", str(REPO / "config.dev.yaml"))
     body = TestClient(app).get("/health").json()
-    assert body == {"status": "ok", "version": __version__, "instance": "stable"}
+    assert body == {"status": "ok", "version": __version__, "instance": "stable", "config": "config.dev.yaml"}
