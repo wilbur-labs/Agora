@@ -53,8 +53,9 @@ import {
 import { cn } from "@/lib/utils";
 import { CapabilitySlot } from "@/components/capability-slot";
 import { useI18n } from "@/lib/i18n";
-import type { NavCapability } from "@/lib/nav-capability";
+import { featureAbsent, type NavCapability } from "@/lib/nav-capability";
 import type { ProjectGate } from "@/lib/project-chat";
+import type { RailRow } from "@/lib/project-rail";
 
 export interface ProjectNavProject {
   project_id: string;
@@ -83,6 +84,9 @@ export interface ProjectNavProps {
    *  failed — the switcher then shows only the project in context rather than claiming
    *  this is the whole list. */
   projects: readonly ProjectNavProject[];
+  /** CR-39/40: every project with whether it waits for the person. null until the
+   *  projects read lands (or when it failed) — the column then keeps the select. */
+  rail?: readonly RailRow[] | null;
   /** Enters another project. Not a filter: it changes which project the page is inside. */
   onSwitchProject: (projectId: string) => void;
   /** Whether this project may be given work at all (CR-61). A project with no goal shows
@@ -176,6 +180,7 @@ export function ProjectNav({
   projectRoot,
   capabilities,
   projects,
+  rail,
   onSwitchProject,
   gate,
   onSettleGoal,
@@ -204,7 +209,9 @@ export function ProjectNav({
         <div className="text-[0.6875rem] uppercase tracking-wide text-muted-foreground">
           {t("workspace.nav.projectsLabel")}
         </div>
-        {projectId ? (
+        {rail && rail.length > 0 ? (
+          <ProjectRail rows={rail} current={projectId} onSwitch={onSwitchProject} />
+        ) : projectId ? (
           <>
             {/* One box, as the design draws it: the project's name with "換項目" as the
                 caret. A native select — the list is only there while you are choosing,
@@ -252,7 +259,9 @@ export function ProjectNav({
                 project has; they do not throw you onto another page — which is what
                 they did, and what "到处跳转" was about. The panels they will open live
                 in this window, and until they exist a row states its count and stops. */}
-            {(["overview", "runs", "goals", "changeRequests", "decisions", "defects", "skills", "files"] as const).map((key) => {
+            {(["overview", "runs", "goals", "changeRequests", "decisions", "defects", "skills", "files"] as const)
+              .filter((key) => key === "overview" || key === "goals" || !featureAbsent(capabilities[key]))
+              .map((key) => {
               const target = ROW_VIEW[key];
               const capability = key === "overview" || key === "goals" ? undefined : capabilities[key];
               return (
@@ -349,3 +358,49 @@ export function ProjectNav({
     </aside>
   );
 }
+
+/**
+ * CR-39/40 (user, 2026-10-08: "切换项目也不方便，不知道哪个项目已经进入到我审批的阶段了"):
+ * every project, one click away, the ones waiting for the person first. Replaces the
+ * select: seven projects fit, and a select can say nothing about each one.
+ */
+function ProjectRail({ rows, current, onSwitch }: { rows: readonly RailRow[]; current: string | null; onSwitch: (id: string) => void }) {
+  const { t } = useI18n();
+  return (
+    <ul className="mt-1 max-h-[40vh] space-y-0.5 overflow-y-auto">
+      {rows.map((row) => {
+        const active = row.project_id === current;
+        return (
+          <li key={row.project_id}>
+            <button
+              type="button"
+              onClick={() => { if (!active) onSwitch(row.project_id); }}
+              aria-current={active ? "page" : undefined}
+              title={row.name}
+              className={cn(
+                "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm",
+                active ? "bg-primary/10 font-semibold text-foreground" : "hover:bg-accent",
+              )}
+            >
+              <span className="min-w-0 flex-1 truncate">{row.name}</span>
+              <RailBadge row={row} t={t} />
+            </button>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+function RailBadge({ row, t }: { row: RailRow; t: (key: string, values?: Record<string, string | number>) => string }) {
+  if (row.status === "waiting") {
+    return (
+      <span className="shrink-0 rounded-full bg-amber-500 px-2 py-0.5 text-[0.75rem] font-semibold text-white">
+        {t("workspace.projectRail.waiting", { count: `${row.waiting}${row.waitingAtLeast ? "+" : ""}` })}
+      </span>
+    );
+  }
+  const tone = row.status === "running" ? "text-primary" : row.status === "noGoal" ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground";
+  return <span className={cn("shrink-0 text-[0.75rem]", tone)}>{t(`workspace.projectRail.${row.status}`)}</span>;
+}
+

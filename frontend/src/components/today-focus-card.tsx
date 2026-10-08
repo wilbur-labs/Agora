@@ -22,17 +22,17 @@
  * are per task and nothing rolls one up per project.
  */
 
+import { useLayoutEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { ArrowDownToLine, ArrowRight, Eye, Sparkles } from "lucide-react";
 
 import { Button, buttonVariants } from "@/components/ui/button";
-import { CapabilitySlot } from "@/components/capability-slot";
 import { ProgressSnapshotBar } from "@/components/progress-snapshot-bar";
 import { useI18n } from "@/lib/i18n";
 import type { ProjectDashboard, ProjectListItem } from "@/lib/control-plane";
 import { workspaceProjectStripOf } from "@/lib/portfolio-bucket";
 import { progressBarOf } from "@/lib/progress-snapshot";
-import { TODAY_CARD_DEFECTS, TODAY_CARD_NO_READER, goalLineOf } from "@/lib/today-focus";
+import { goalLineOf } from "@/lib/today-focus";
 import { cn } from "@/lib/utils";
 
 export interface TodayFocusCardProps {
@@ -82,26 +82,13 @@ export function TodayFocusCard({
         <h3 className="truncate text-lg font-bold leading-tight" title={project.project_id}>
           {project.name}
         </h3>
-        {/* Milestone · environment · git state: the mockup's second line. None of the
-            three has a reader yet, so each is the sentence saying so, labelled. */}
-        <dl className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-          <Field label={t("today.card.fields.milestone")}>
-            <CapabilitySlot capability={TODAY_CARD_NO_READER.milestone} />
-          </Field>
-          <Field label={t("today.card.fields.environment")}>
-            <CapabilitySlot capability={TODAY_CARD_NO_READER.environment} />
-          </Field>
-          <Field label={t("today.card.fields.gitState")}>
-            <CapabilitySlot capability={TODAY_CARD_NO_READER.gitState} />
-          </Field>
-        </dl>
+        {/* Milestone · environment · git state are not drawn until each has a reader
+            (CR-38, user: "界面也不整洁"): a row whose only content is "this feature does
+            not exist yet" is a promise, not information. A field that exists but could
+            not be read is still said — that is the honesty rule, and it is untouched. */}
       </header>
 
       <dl className="space-y-2 text-sm">
-        <Row label={t("today.card.fields.lastTime")}>
-          <CapabilitySlot capability={TODAY_CARD_NO_READER.lastTime} className="text-xs" />
-        </Row>
-
         <Row label={t("today.card.fields.now")} emphasis>
           {strip === null ? (
             <span className="text-xs text-muted-foreground">
@@ -139,16 +126,10 @@ export function TodayFocusCard({
           </Row>
         )}
 
-        <Row label={t("today.card.fields.defects")}>
-          <CapabilitySlot capability={TODAY_CARD_DEFECTS} className="text-xs" />
-        </Row>
-        <Row label={t("today.card.fields.discovery")}>
-          <CapabilitySlot capability={TODAY_CARD_NO_READER.discovery} className="text-xs" />
-        </Row>
 
         <Row label={t("today.card.fields.goal")}>
           {goal.kind === "goal" ? (
-            <span className="leading-relaxed">{goal.text}</span>
+            <FoldedGoal text={goal.text} />
           ) : (
             // No link here any more. The way in used to be a few words at the end of this
             // line, and the owner looked at this card repeatedly without ever seeing it
@@ -252,15 +233,6 @@ export function TodayProjectRow({
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="flex items-baseline gap-1.5">
-      <dt className="shrink-0">{label}</dt>
-      <dd className="min-w-0">{children}</dd>
-    </div>
-  );
-}
-
 function Row({ label, emphasis = false, children }: { label: string; emphasis?: boolean; children: React.ReactNode }) {
   return (
     <div className="grid grid-cols-[4.5rem_1fr] gap-x-3">
@@ -271,3 +243,34 @@ function Row({ label, emphasis = false, children }: { label: string; emphasis?: 
     </div>
   );
 }
+
+/** A long goal shows three lines and opens on click (CR-38): the card is for "what now",
+ *  and a whole charter paragraph pushed everything else below the fold. */
+function FoldedGoal({ text }: { text: string }) {
+  const { t } = useI18n();
+  const [open, setOpen] = useState(false);
+  // Whether the clamp actually hides something, measured — not guessed from the length
+  // (newlines and narrow cards clip short text too; review).
+  const box = useRef<HTMLSpanElement>(null);
+  const [clipped, setClipped] = useState(false);
+  useLayoutEffect(() => {
+    const el = box.current;
+    if (!el || open) return;
+    const measure = () => setClipped(el.scrollHeight > el.clientHeight + 1);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [text, open]);
+  return (
+    <span className="block">
+      <span ref={box} className={cn("block whitespace-pre-wrap leading-relaxed", !open && "line-clamp-3")}>{text}</span>
+      {(clipped || open) && (
+        <button type="button" className="mt-1 text-xs text-primary hover:underline" onClick={() => setOpen((v) => !v)}>
+          {open ? t("today.card.goalLess") : t("today.card.goalMore")}
+        </button>
+      )}
+    </span>
+  );
+}
+

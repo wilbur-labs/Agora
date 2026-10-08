@@ -40,6 +40,10 @@ export const common = {
         unknownTitle: "This server did not say which installation it is. Treat it as not a release.",
       },
       environmentLocal: "This machine",
+      waiting: "Waiting for you: {count}",
+      waitingUnknown: "Waiting: unread",
+      cliChip: "CLI",
+      cliProblem: "CLI !",
       environmentTitle: "Every run executes on this machine. Choosing an environment comes with remote execution (W3-a).",
       versions: {
         pending: "probing the CLIs…",
@@ -128,6 +132,10 @@ export const common = {
         unknownTitle: "这个服务没有说明自己是哪一份安装，按「不是发布版本」看待。",
       },
       environmentLocal: "本机",
+      waiting: "等你处理 {count}",
+      waitingUnknown: "等你处理：读不到",
+      cliChip: "CLI",
+      cliProblem: "CLI 有问题",
       environmentTitle: "Run 现在都在本机执行。选环境这一项随远端执行（W3-a）一起来。",
       versions: {
         pending: "正在探测 CLI…",

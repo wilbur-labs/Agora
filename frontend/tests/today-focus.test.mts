@@ -238,15 +238,17 @@ test("the Today page places tiers, states capacity and reads refusals through th
   assert.ok(!source.includes("?? 0"), "the page must not read a missing number as zero");
 });
 
-test("the focus card renders every no-reader field through the shared slot and never blanks one", async () => {
+test("the focus card draws no row for a feature that does not exist yet, and never blanks a fact", async () => {
+  // CR-38 (user, 2026-10-08: "界面也不整洁"): milestone / environment / git / last time /
+  // discovery / defects have no reader yet; a row saying so on every card is a promise,
+  // not information. The facts the card does draw still come from the shared judgements
+  // below and never read a missing number as zero.
   const { readFile } = await import("node:fs/promises");
   const card = await readFile(new URL("../src/components/today-focus-card.tsx", import.meta.url), "utf8");
   const source = card.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
-  assert.ok(source.includes("CapabilitySlot"), "the card must use the shared capability slot");
   for (const field of Object.keys(TODAY_CARD_NO_READER)) {
-    assert.ok(source.includes(`TODAY_CARD_NO_READER.${field}`), `the card must render the ${field} slot`);
+    assert.ok(!source.includes(`TODAY_CARD_NO_READER.${field}`), `the ${field} placeholder must not be drawn`);
   }
-  assert.ok(source.includes("TODAY_CARD_DEFECTS"), "the card must render the defects slot");
   // The next-step, blocking count and progress come from the existing judgements.
   for (const call of ["workspaceProjectStripOf(", "progressBarOf("]) {
     assert.ok(source.includes(call), `the card must derive from ${call}`);

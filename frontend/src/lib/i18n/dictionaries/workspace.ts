@@ -279,6 +279,13 @@ export const workspace = {
     // The Continue action that sits with the Resume Brief: it acts on what that
     // panel says, so its wording lives next to the recap's.
     // The project conversation (W12): one stream per project, one box.
+    projectRail: {
+      waiting: "waiting for you {count}",
+      running: "running",
+      noGoal: "no goal yet",
+      idle: "idle",
+      unknown: "status unknown",
+    },
     terminal: {
       open: "Terminal",
       title: "Terminal",
@@ -1231,6 +1238,13 @@ export const workspace = {
         handedOff: "工作已交付",
         noted: "新增 {count} 条说明",
       },
+    },
+    projectRail: {
+      waiting: "等你处理 {count}",
+      running: "运行中",
+      noGoal: "未定目标",
+      idle: "空闲",
+      unknown: "状态读不全",
     },
     terminal: {
       open: "终端",

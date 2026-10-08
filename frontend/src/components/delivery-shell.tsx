@@ -12,7 +12,8 @@ import {
   Sun,
 } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
-import { fetchHealth, type RuntimeCapabilities } from "@/lib/control-plane";
+import { fetchHealth, listOpenAttention, type RuntimeCapabilities } from "@/lib/control-plane";
+import { waitingTotalOf } from "@/lib/project-rail";
 import { instanceBadgeOf, type AgoraHealth } from "@/lib/instance";
 import { isProbeSuperseded, probeRuntimes, subscribeRuntimes } from "@/lib/runtime-probe";
 import { SHELL_TABS, cliStripOf } from "@/lib/shell";
@@ -71,6 +72,23 @@ export function TopBar({ active }: { active: string }) {
     return () => { cancelled = true; };
   }, []);
   const badge = instanceBadgeOf(health);
+  // CR-40: how many things wait for the person, across every project. null = unread.
+  const [waiting, setWaiting] = useState<{ count: number; atLeast: boolean } | null | "failed">(null);
+  useEffect(() => {
+    // Re-read every 30 s and whenever the window comes back into focus: approvals arrive
+    // and get answered while a page stays open, and a badge that kept its first count
+    // would contradict the page under it (review).
+    let cancelled = false;
+    const read = () => {
+      listOpenAttention()
+        .then((page) => { if (!cancelled) setWaiting(waitingTotalOf(page)); })
+        .catch(() => { if (!cancelled) setWaiting("failed"); });
+    };
+    read();
+    const timer = window.setInterval(read, 30_000);
+    window.addEventListener("focus", read);
+    return () => { cancelled = true; window.clearInterval(timer); window.removeEventListener("focus", read); };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -138,22 +156,39 @@ export function TopBar({ active }: { active: string }) {
           {runtimes?.platform ? ` · ${runtimes.platform}` : ""}
         </span>
 
-        {/* The three CLIs. Each line is a sentence from lib/shell.ts — "not installed",
-            "could not be probed", "version unknown" — never a blank beside a name. */}
-        <span className="hidden font-mono md:inline" aria-live="polite">
-          {strip.kind === "pending"
+        {/* CR-40: what waits for the person, everywhere — a way into it, not a number to
+            decode. Unread is said as such; a cut read is a floor. */}
+        {waiting !== null && (
+          <Link
+            href="/attention"
+            className={cn(
+              "rounded-full px-2.5 py-0.5 text-sm font-semibold",
+              waiting === "failed" ? "bg-muted text-muted-foreground"
+                : waiting.count > 0 ? "bg-amber-500 text-white" : "bg-muted text-muted-foreground",
+            )}
+          >
+            {waiting === "failed"
+              ? t("common.shell.waitingUnknown")
+              : t("common.shell.waiting", { count: `${waiting.count}${waiting.atLeast ? "+" : ""}` })}
+          </Link>
+        )}
+
+        {/* The three CLIs, folded into one chip (CR-38: the full strip crowded the bar).
+            Hover reads every line; a CLI that is missing or could not be probed turns the
+            chip amber, so folding it hides no problem. */}
+        <span
+          className={cn("rounded-md px-1.5 py-0.5 font-mono",
+            strip.kind === "failed" || (strip.kind !== "pending" && strip.lines.some(({ line }) => line.kind !== "version"))
+              ? "bg-amber-100 text-amber-900 dark:bg-amber-900/40 dark:text-amber-200" : "")}
+          aria-live="polite"
+          title={strip.kind === "pending"
             ? t("common.shell.versions.pending")
             : strip.kind === "failed"
               ? t("common.shell.versions.failed")
-              : strip.lines.map(({ adapter, line }, index) => (
-                <span key={adapter}>
-                  {index > 0 && " · "}
-                  {adapter}{" "}
-                  {line.kind === "version"
-                    ? line.version
-                    : <span className="italic">{t(`common.shell.versions.${line.kind}`)}</span>}
-                </span>
-              ))}
+              : strip.lines.map(({ adapter, line }) => `${adapter} ${line.kind === "version" ? line.version : t(`common.shell.versions.${line.kind}`)}`).join("\n")}
+        >
+          {strip.kind === "failed" || (strip.kind !== "pending" && strip.lines.some(({ line }) => line.kind !== "version"))
+            ? t("common.shell.cliProblem") : t("common.shell.cliChip")}
         </span>
 
         <span className="flex items-center gap-0.5">

@@ -64,6 +64,16 @@ export type NavNoReadReason =
    *  defects live as prose in a workspace RESUME, with no structured source here). */
   | "no_structured_source";
 
+/**
+ * A capability that is a missing FEATURE, not a missing or unreadable FACT: nothing to
+ * read exists yet. Not drawn as a row (CR-38: "界面也不整洁"). Everything else — none,
+ * unreadable, unreported, a source this repository lacks — is still said.
+ */
+export function featureAbsent(capability: NavCapability | undefined): boolean {
+  return capability !== undefined
+    && (capability.kind === "unbuilt" || (capability.kind === "noReader" && capability.reason === "reader_unbuilt"));
+}
+
 export type NavCapability =
   | { kind: "count"; value: number; caveat: NavCaveat | null }
   | { kind: "none" }

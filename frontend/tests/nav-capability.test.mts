@@ -202,3 +202,13 @@ test("skills says not-built and names the milestone", () => {
   // "not built yet" is a different sentence from "exists but unreadable".
   assert.notEqual(navCapabilityKey(NAV_SKILLS_UNBUILT), navCapabilityKey(NAV_DEFECTS_NO_SOURCE));
 });
+
+test("CR-38: a feature that does not exist yet is not drawn; a fact that cannot be read still is", async () => {
+  const { featureAbsent } = await import("../src/lib/nav-capability.ts");
+  assert.equal(featureAbsent({ kind: "unbuilt", milestone: "W5" }), true);
+  assert.equal(featureAbsent({ kind: "noReader", reason: "reader_unbuilt" }), true);
+  assert.equal(featureAbsent({ kind: "noReader", reason: "no_structured_source" }), false);
+  assert.equal(featureAbsent({ kind: "unreadable", reason: "too_large" } as never), false);
+  assert.equal(featureAbsent({ kind: "none" }), false);
+  assert.equal(featureAbsent(undefined), false);
+});

@@ -80,6 +80,7 @@ import {
 // capabilities rather than numbers: three of the eight resources have no read behind them
 // yet, and each has to say which kind of nothing that is.
 import { ProjectNav, type ProjectNavProject } from "@/components/project-nav";
+import { railOf, type RailProject, type RailRead } from "@/lib/project-rail";
 // The plan is the page's opening view (W11): the project's tasks as an ordered whole.
 // Every judgment behind it — step numbers, what a step waits on, whether it may be
 // continued — is in lib/task-plan.ts, which is testable without a browser (CR-18).
@@ -219,6 +220,40 @@ export default function WorkspacePage() {
   // when the read fails, exactly like the other four: an empty list would read as "this
   // is the only project", which is a claim a failed read cannot make.
   const [projects, setProjects] = useState<readonly ProjectNavProject[]>([]);
+  // CR-39/40: what the project rail says about each project. null = that read failed,
+  // which the rail shows as unknown rather than as "nothing waiting".
+  const [railProjects, setRailProjects] = useState<readonly RailProject[]>([]);
+  const [railAttention, setRailAttention] = useState<RailRead<{ project_id: string }> | null>(null);
+  const [railRuns, setRailRuns] = useState<RailRead<{ project_id: string | null }> | null>(null);
+  const railGeneration = useRef(0);
+  // The rail re-reads on its own every 30 s and on window focus (review): an approval
+  // raised in another project while this page stays open must show up beside that
+  // project, not only in the top bar. Same reads as the page load, nothing else touched.
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = async () => {
+      const token = ++railGeneration.current;
+      const [attentionRead, activeRunsRead, projectsRead] = await Promise.all([
+        settleRead(() => listOpenAttention()),
+        settleRead(() => readPage(MAX_PAGE, (limit) => listRuns({ states: ["queued", "running"], limit }))),
+        settleRead(() => listProjects()),
+      ]);
+      if (cancelled || token !== railGeneration.current) return;
+      setRailAttention(attentionRead.status === "fulfilled" ? attentionRead.value : null);
+      setRailRuns(activeRunsRead.status === "fulfilled" ? activeRunsRead.value : null);
+      if (projectsRead.status === "fulfilled") {
+        setRailProjects(projectsRead.value.items.map((project) => ({
+          project_id: project.project_id,
+          name: project.name,
+          hasGoal: project.charter ? Boolean((project.charter.goal ?? "").trim()) : null,
+        })));
+      }
+    };
+    const timer = window.setInterval(() => { void refresh(); }, 30_000);
+    const onFocus = () => { void refresh(); };
+    window.addEventListener("focus", onFocus);
+    return () => { cancelled = true; window.clearInterval(timer); window.removeEventListener("focus", onFocus); };
+  }, []);
   // Whether each read covered the whole list. Both start "pending": before a read has
   // settled there are no rows *and* no evidence, and calling that "complete" is what let
   // the plan say "this project has no tasks" out of nothing at all.
@@ -303,6 +338,7 @@ export default function WorkspacePage() {
   const loadRequest = useRef(0);
   const load = useCallback(async () => {
     const token = ++loadRequest.current;
+    const railToken = ++railGeneration.current;
     const stale = () => token !== loadRequest.current;
     setRefreshNonce((n) => n + 1);
     setLoading(true);
@@ -314,11 +350,13 @@ export default function WorkspacePage() {
       // open-attention read had failed when it had succeeded. Each read now
       // reports only about itself: `settleRead` never rejects, so there is no
       // combined failure left to infer a reach from.
-      const [tasksRead, projectsRead, attentionRead, runsRead] = await Promise.all([
+      const [tasksRead, projectsRead, attentionRead, runsRead, activeRunsRead] = await Promise.all([
         settleRead(() => readPage(TASK_PAGE_LIMIT, listTasks)),
         settleRead(() => listProjects()),
         settleRead(() => listOpenAttention()),
         settleRead(() => readPage(MAX_PAGE, (limit) => listRuns({ limit }))),
+        // The rail's "running" (CR-40): every unsettled run, one query, one snapshot.
+        settleRead(() => readPage(MAX_PAGE, (limit) => listRuns({ states: ["queued", "running"], limit }))),
       ]);
       // The generation guard is unchanged and still covers every write below,
       // including the spinner in `finally`: only the newest request may write.
@@ -357,6 +395,18 @@ export default function WorkspacePage() {
         ));
       }
       if (attentionRead.status === "fulfilled") setAttention(attentionRead.value.items);
+      // Only the newest rail read writes, whether from here or the rail's own refresh.
+      if (railToken === railGeneration.current) {
+        setRailAttention(attentionRead.status === "fulfilled" ? attentionRead.value : null);
+        setRailRuns(activeRunsRead.status === "fulfilled" ? activeRunsRead.value : null);
+        if (projectsRead.status === "fulfilled") {
+          setRailProjects(projectsRead.value.items.map((project) => ({
+            project_id: project.project_id,
+            name: project.name,
+            hasGoal: project.charter ? Boolean((project.charter.goal ?? "").trim()) : null,
+          })));
+        }
+      }
       if (runsRead.status === "fulfilled") setRuns([...runsRead.value.items]);
 
     } catch (err) {
@@ -762,6 +812,7 @@ export default function WorkspacePage() {
         projectRoot={null}
         capabilities={navCapabilities}
         projects={projects}
+        rail={railProjects.length > 0 ? railOf(railProjects, railAttention, railRuns) : null}
         // Entering a project drops the task selection, so the page opens on that
         // project's plan rather than on a task belonging to the one just left.
         onSwitchProject={openProject}
