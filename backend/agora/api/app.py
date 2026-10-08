@@ -9,6 +9,8 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
+
+from agora.api.local_guard import LocalOriginGuard, dev_origins
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -107,7 +109,10 @@ app = FastAPI(
     description="Local-first Task delivery control plane",
     lifespan=lifespan,
 )
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+# Only the origins a development install names (AGORA_DEV_ORIGINS, e.g. the Next dev
+# server on :3000). It was "*", which let any page the person opened call this API from
+# their browser (CR-34). Same-origin requests — the served UI — need no CORS at all.
+app.add_middleware(CORSMiddleware, allow_origins=dev_origins(), allow_methods=["*"], allow_headers=["*"])
 app.include_router(tasks_router, prefix="/api")
 app.include_router(requirements_router, prefix="/api")
 app.include_router(execution_router, prefix="/api")
@@ -290,6 +295,10 @@ for _legacy_ui_path in _RETIRED_UI_PATHS:
     )
 
 # Serve Next.js static export (frontend/out/) if available
+# Outermost, so it sees every request and WebSocket before anything else answers (CR-34).
+# Registered after every other middleware on purpose: the last one added runs first.
+app.add_middleware(LocalOriginGuard)
+
 _frontend_out = Path(__file__).resolve().parent.parent.parent.parent / "frontend" / "out"
 
 

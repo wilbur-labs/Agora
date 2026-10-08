@@ -95,6 +95,12 @@ this guard, so it is stated here and nowhere pretended to be reclaimable. Nothin
 ``agora/`` binds SQLite that way today; every store calls through the attribute.
 """
 from __future__ import annotations
+import os as _os
+
+# The test clients address the app as "testserver" / "agora.test"; the local-origin
+# guard (CR-34) accepts only loopback names unless told otherwise.
+_os.environ.setdefault("AGORA_ALLOWED_HOSTS", "testserver,agora.test")
+
 
 import os
 import sqlite3

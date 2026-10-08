@@ -6,6 +6,10 @@ services:
       - "8000:8000"
     env_file:
       - .env
+    environment:
+      # Agora answers only to loopback names unless told the names it is reached by
+      # (CR-34: DNS-rebinding guard). Add this server's hostname / IP, comma-separated.
+      AGORA_ALLOWED_HOSTS: ${AGORA_ALLOWED_HOSTS:-localhost,127.0.0.1}
     volumes:
       - ./config.yaml:/app/config.yaml:ro
       - ./data:/app/backend/data
