@@ -796,12 +796,12 @@ export default function WorkspacePage() {
             not a property of this project. The reads are unchanged, and each notice still
             names which outcome occurred: a failed read is not a reached cap. */}
         {attentionReach !== "complete" && projectTasks.length > 0 && (
-          <p className="mx-4 mt-4 shrink-0 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] leading-snug text-amber-700 dark:text-amber-400">
+          <p className="mx-4 mt-4 shrink-0 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[0.75rem] leading-snug text-amber-700 dark:text-amber-400">
             {t(RAIL_ATTENTION_NOTICE_KEY[attentionReach], { limit: OPEN_ATTENTION_PAGE_LIMIT })}
           </p>
         )}
         {staleOrigins.map((origin) => (
-          <p key={origin} className="mx-4 mt-2 shrink-0 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[11px] leading-snug text-amber-700 dark:text-amber-400">
+          <p key={origin} className="mx-4 mt-2 shrink-0 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[0.75rem] leading-snug text-amber-700 dark:text-amber-400">
             {t(RAIL_STALE_NOTICE_KEY[origin])}
           </p>
         ))}
@@ -811,11 +811,11 @@ export default function WorkspacePage() {
             the design draws it: `← 项目对话`. */}
         {selectedTask ? (
           <>
-            <div className="flex shrink-0 items-center gap-2 border-b px-4 py-3 text-[13px] text-muted-foreground">
+            <div className="flex shrink-0 items-center gap-2 border-b px-4 py-3 text-[0.875rem] text-muted-foreground">
               <button
                 type="button"
                 onClick={() => { if (currentProjectId !== null) openProject(currentProjectId); }}
-                className="rounded-lg border px-2 py-1 text-[12px] hover:bg-accent"
+                className="rounded-lg border px-2 py-1 text-[0.8125rem] hover:bg-accent"
               >
                 ← {t("workspace.crumb.backToChat")}
               </button>
@@ -963,26 +963,26 @@ function WorkspaceTasksPanel({ sources, readFailed, onOpenProject }: { sources: 
       >
         <ChevronDown className={cn("size-3 shrink-0 text-muted-foreground transition-transform", !open && "-rotate-90")} />
         <FolderOpen className="size-3.5 shrink-0 text-muted-foreground" />
-        <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{t("workspace.workspaceTasks.title")}</span>
-        {board.show === "sources" && <span className="text-[11px] text-muted-foreground">{board.count}</span>}
+        <span className="text-[0.75rem] font-semibold uppercase tracking-wide text-muted-foreground">{t("workspace.workspaceTasks.title")}</span>
+        {board.show === "sources" && <span className="text-[0.75rem] text-muted-foreground">{board.count}</span>}
       </button>
       {open && (
         <div className="mt-1 px-2">
           {board.show === "loading" ? (
-            <p className="px-1 py-2 text-[11px] text-muted-foreground">{t("workspace.workspaceTasks.loading")}</p>
+            <p className="px-1 py-2 text-[0.75rem] text-muted-foreground">{t("workspace.workspaceTasks.loading")}</p>
           ) : board.show === "unreadable" ? (
             // A failed list read. Never "none registered": a person with sources
             // registered must not be told they have none because one request lost.
-            <p className="px-1 py-2 text-[11px] text-amber-600 dark:text-amber-400">{t("workspace.workspaceTasks.unreadable")}</p>
+            <p className="px-1 py-2 text-[0.75rem] text-amber-600 dark:text-amber-400">{t("workspace.workspaceTasks.unreadable")}</p>
           ) : board.show === "none" ? (
             <div className="px-1 py-2">
-              <p className="text-[11px] text-muted-foreground">{t("workspace.workspaceTasks.none")}</p>
-              <Link href="/settings" className="mt-1 inline-block text-[11px] font-medium text-primary hover:underline">{t("workspace.workspaceTasks.manage")}</Link>
+              <p className="text-[0.75rem] text-muted-foreground">{t("workspace.workspaceTasks.none")}</p>
+              <Link href="/settings" className="mt-1 inline-block text-[0.75rem] font-medium text-primary hover:underline">{t("workspace.workspaceTasks.manage")}</Link>
             </div>
           ) : (
             <div className="space-y-3">
               {(sources ?? []).map((source) => <WorkspaceSourceBlock key={source.root} source={source} onOpenProject={onOpenProject} />)}
-              <Link href="/settings" className="inline-block px-1 text-[11px] font-medium text-primary hover:underline">{t("workspace.workspaceTasks.manage")}</Link>
+              <Link href="/settings" className="inline-block px-1 text-[0.75rem] font-medium text-primary hover:underline">{t("workspace.workspaceTasks.manage")}</Link>
             </div>
           )}
         </div>
@@ -999,17 +999,17 @@ function WorkspaceSourceBlock({ source, onOpenProject }: { source: WorkspaceSour
   const verdict = sourceVerdictOf(source);
   return (
     <div className="rounded-lg border bg-background/40 p-2">
-      <p className="break-all font-mono text-[10px] text-muted-foreground">{source.root}</p>
+      <p className="break-all font-mono text-[0.6875rem] text-muted-foreground">{source.root}</p>
       {verdict.show === "unavailable" ? (
-        <p className="mt-1 text-[11px] text-amber-600 dark:text-amber-400">{t(SOURCE_REASON_KEY[verdict.reason])}</p>
+        <p className="mt-1 text-[0.75rem] text-amber-600 dark:text-amber-400">{t(SOURCE_REASON_KEY[verdict.reason])}</p>
       ) : verdict.show === "empty" ? (
-        <p className="mt-1 text-[11px] text-muted-foreground">
+        <p className="mt-1 text-[0.75rem] text-muted-foreground">
           {t("workspace.workspaceTasks.emptyTasksDir")}
           {verdict.skipped.length > 0 ? ` ${t("workspace.workspaceTasks.skipped", { names: verdict.skipped.join(", ") })}` : ""}
         </p>
       ) : (
         <>
-          <p className="mt-1 text-[11px] text-muted-foreground">
+          <p className="mt-1 text-[0.75rem] text-muted-foreground">
             {verdict.show === "partial"
               ? t("workspace.workspaceTasks.taskCountAtLeast", { count: String(verdict.count) })
               : t("workspace.workspaceTasks.taskCount", { count: String(verdict.count) })}
@@ -1019,7 +1019,7 @@ function WorkspaceSourceBlock({ source, onOpenProject }: { source: WorkspaceSour
               above is a floor and the alternative is a task missing from the only place
               it shows. */}
           {verdict.show === "partial" && (
-            <p className="mt-1 text-[11px] text-amber-600 dark:text-amber-400">
+            <p className="mt-1 text-[0.75rem] text-amber-600 dark:text-amber-400">
               {t("workspace.workspaceTasks.unreadableEntries", { names: verdict.unreadable.join(", ") })}
             </p>
           )}
@@ -1063,7 +1063,7 @@ function WorkspaceTaskRow({ task, onOpenProject }: { task: WorkspaceTaskPayload;
               e.preventDefault();
               onOpenProject(onward.projectId);
             }}
-            className="inline-flex shrink-0 items-center gap-0.5 text-[11px] font-medium text-primary hover:underline"
+            className="inline-flex shrink-0 items-center gap-0.5 text-[0.75rem] font-medium text-primary hover:underline"
           >
             {t("workspace.workspaceTasks.openProject", { project: onward.projectId })}
             <ExternalLink className="size-2.5" />
@@ -1071,7 +1071,7 @@ function WorkspaceTaskRow({ task, onOpenProject }: { task: WorkspaceTaskPayload;
         )}
       </div>
       {/* Goal, or which of its files could not be read — not "no goal". */}
-      <p className="mt-0.5 truncate pl-4 text-[11px] text-muted-foreground">
+      <p className="mt-0.5 truncate pl-4 text-[0.75rem] text-muted-foreground">
         {task.manifest.available
           ? (task.manifest.goal ?? t("workspace.workspaceTasks.goalEmpty"))
           : <span className="text-amber-600 dark:text-amber-400">{t(MANIFEST_REASON_KEY[task.manifest.reason ?? "unreadable"])}</span>}
@@ -1087,7 +1087,7 @@ function WorkspaceTaskRow({ task, onOpenProject }: { task: WorkspaceTaskPayload;
       {open && (
         <div className="mt-1.5 space-y-1 pl-4">
           {([["workspace.workspaceTasks.currentState", currentState], ["workspace.workspaceTasks.nextStep", nextStep]] as const).map(([label, section]) => (
-            <p key={label} className="text-[11px]">
+            <p key={label} className="text-[0.75rem]">
               <span className="text-muted-foreground">{t(label)}: </span>
               {section.show === "text" ? (
                 <span className="whitespace-pre-wrap">{section.text}</span>
@@ -1131,7 +1131,7 @@ function WorkspaceTaskStanding({
     return null;
   }
   return (
-    <div className="mt-0.5 flex flex-wrap items-baseline gap-x-2 gap-y-0.5 pl-4 text-[11px]">
+    <div className="mt-0.5 flex flex-wrap items-baseline gap-x-2 gap-y-0.5 pl-4 text-[0.75rem]">
       {cr.show === "counts" ? (
         <span className="text-muted-foreground">
           {t("workspace.workspaceTasks.crOpen", { open: String(cr.open) })}
@@ -1176,7 +1176,7 @@ function WorkspaceTaskProgress({ progress }: { progress: TaskProgress }) {
   // snapshot from a fact about the file.
   if (progress.show === "resumeUnreadable") {
     return (
-      <span className="text-[11px] text-amber-600 dark:text-amber-400">
+      <span className="text-[0.75rem] text-amber-600 dark:text-amber-400">
         {t("workspace.workspaceTasks.progress.unreadable")}
       </span>
     );
@@ -1199,7 +1199,7 @@ function WorkspaceTaskProgress({ progress }: { progress: TaskProgress }) {
         });
     return (
       <span className="inline-flex items-center gap-2" title={counts}>
-        <span className="text-[11px] font-semibold tabular-nums">{bar.donePct}%</span>
+        <span className="text-[0.75rem] font-semibold tabular-nums">{bar.donePct}%</span>
         <span className="inline-flex h-1.5 w-24 overflow-hidden rounded-full bg-muted align-middle" role="img" aria-label={counts}>
           {/* Solid: done. Translucent: in progress — its own segment, never folded
               into the percentage above (🔵 is not half credit). Absent entirely on a
@@ -1217,7 +1217,7 @@ function WorkspaceTaskProgress({ progress }: { progress: TaskProgress }) {
   // and read (`dashboardLoaded: true`) — but the shared `ProgressBar` type carries it,
   // so it is handled rather than asserted away: a dash, never a false "no snapshot".
   if (bar.kind === "loading") {
-    return <span className="text-[11px] text-muted-foreground">—</span>;
+    return <span className="text-[0.75rem] text-muted-foreground">—</span>;
   }
   // No number, and the sentence differs by which non-answer it is — decided by
   // `progressBarOf`, worded here. An empty snapshot (tracks nothing yet), a task that
@@ -1226,7 +1226,7 @@ function WorkspaceTaskProgress({ progress }: { progress: TaskProgress }) {
   // are read failures, the muted ones are settled facts about the task.
   const isFailure = bar.kind === "unknown";
   return (
-    <span className={cn("text-[11px]", isFailure ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground")}>
+    <span className={cn("text-[0.75rem]", isFailure ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground")}>
       {t(WORKSPACE_PROGRESS_KEY[bar.because])}
     </span>
   );
@@ -2074,7 +2074,7 @@ function TaskWorkspace({ task, projectGate, refreshNonce, sideHost, advance, onS
         <h5 className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t("workspace.side.goal")}</h5>
         {/* Three answers, kept apart: the read failed, it has not landed, the project
             has no goal. An empty string here would otherwise read as "no goal". */}
-        <p className="text-[12px] leading-relaxed text-muted-foreground">
+        <p className="text-[0.8125rem] leading-relaxed text-muted-foreground">
           {dashError ? t("workspace.panels.unavailable")
             : dashboard === null ? "—"
             : dashboard.charter.goal.trim() === "" ? t("workspace.side.goalNone")
@@ -2088,12 +2088,12 @@ function TaskWorkspace({ task, projectGate, refreshNonce, sideHost, advance, onS
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       {/* What the page just did on its own, said where it landed. */}
       {advanceHere && (
-        <p className="mx-4 mt-3 shrink-0 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-[12px] leading-snug text-emerald-700 dark:text-emerald-400" aria-live="polite">
+        <p className="mx-4 mt-3 shrink-0 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-[0.8125rem] leading-snug text-emerald-700 dark:text-emerald-400" aria-live="polite">
           {advanceHere.lines.map((line) => t(line.key, line.vars)).join(" ")}
         </p>
       )}
       {gateNote && (
-        <p className="mx-4 mt-3 shrink-0 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[12px] leading-snug text-amber-700 dark:text-amber-400" aria-live="polite">
+        <p className="mx-4 mt-3 shrink-0 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[0.8125rem] leading-snug text-amber-700 dark:text-amber-400" aria-live="polite">
           {t(gateNote.key, gateNote.vars)}
         </p>
       )}
@@ -2332,7 +2332,7 @@ function ResumeBrief(
   return (
     <div className="px-5 py-2.5">
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+        <p className="text-[0.75rem] font-semibold uppercase tracking-wide text-muted-foreground">
           {heading}
         </p>
         {recap.items.length === 0 && (
@@ -2351,12 +2351,12 @@ function ResumeBrief(
           ))}
         </ul>
         {recap.more > 0 && (
-          <span className="text-[11px] text-muted-foreground">
+          <span className="text-[0.75rem] text-muted-foreground">
             {t("workspace.recap.more", { n: recap.more })}
           </span>
         )}
         {recap.partial && (
-          <span className="text-[11px] text-muted-foreground">{t("workspace.recap.partial")}</span>
+          <span className="text-[0.75rem] text-muted-foreground">{t("workspace.recap.partial")}</span>
         )}
       </div>
     </div>
@@ -2422,7 +2422,7 @@ function OutcomeSummary({ task, trustLine, next, blocker, delivery, deliveryErro
       <div className="mt-3 grid gap-3">
         {/* What it did — the concrete outcome, not a log. */}
         <div className="rounded-xl border bg-muted/30 p-3">
-          <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{t("workspace.summary.did")}</p>
+          <p className="text-[0.75rem] font-medium uppercase tracking-wide text-muted-foreground">{t("workspace.summary.did")}</p>
           {outcomeNotice === null ? (
             <div className="mt-1 space-y-1">
               {outcomeLine && <p className="text-sm leading-relaxed">{outcomeLine}</p>}
@@ -2452,14 +2452,14 @@ function OutcomeSummary({ task, trustLine, next, blocker, delivery, deliveryErro
           {producedUncertain && (
             /* The success below is real; its primacy is not — the same sentence the
                right column shows over a settled run it cannot prove is the newest. */
-            <p className="mt-1 text-[11px] leading-snug text-muted-foreground">{t("workspace.column.maybeNotLatest")}</p>
+            <p className="mt-1 text-[0.75rem] leading-snug text-muted-foreground">{t("workspace.column.maybeNotLatest")}</p>
           )}
         </div>
 
         {/* Trust + next step stacked. */}
         <div className="space-y-3">
           <div>
-            <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{t("workspace.summary.trust")}</p>
+            <p className="text-[0.75rem] font-medium uppercase tracking-wide text-muted-foreground">{t("workspace.summary.trust")}</p>
             {/* The third place this number lived. `verified_weight / total_weight`
                 marks every criterion of the task's *current* spec verified from any
                 historical worker success, with no binding to the revision those
@@ -2476,7 +2476,7 @@ function OutcomeSummary({ task, trustLine, next, blocker, delivery, deliveryErro
             </p>
           </div>
           <div>
-            <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{t("workspace.summary.next")}</p>
+            <p className="text-[0.75rem] font-medium uppercase tracking-wide text-muted-foreground">{t("workspace.summary.next")}</p>
             {blockerText ? (
               <p className="mt-0.5 text-sm font-medium text-orange-600 dark:text-orange-400">{blockerText}</p>
             ) : blockerUnknown ? (
@@ -2684,7 +2684,7 @@ function RunColumnPane({
             {!column.latestCertain && (
               /* The history read was partial, so "this is the latest run" is not a
                  claim it can make. The run below is real; its primacy is not. */
-              <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-[11px] leading-snug text-amber-700 dark:text-amber-400">
+              <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-[0.75rem] leading-snug text-amber-700 dark:text-amber-400">
                 {t("workspace.column.maybeNotLatest")}
               </p>
             )}
@@ -2757,25 +2757,25 @@ function LiveRun({ run, alsoActive }: { run: ExecutionRun; alsoActive: number })
       <div className="flex flex-wrap items-center gap-2">
         <span className={cn("size-2 shrink-0 animate-pulse rounded-full", RUN_TONE[run.state])} />
         <span className="text-sm font-semibold">{t("workspace.column.live.header", { adapter: run.adapter })}</span>
-        <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">{te("runState", run.state)}</span>
-        <span className="ml-auto text-[11px] text-muted-foreground">{relTime(run.started_at ?? run.queued_at, t)}</span>
+        <span className="rounded bg-muted px-1.5 py-0.5 text-[0.75rem] font-medium text-muted-foreground">{te("runState", run.state)}</span>
+        <span className="ml-auto text-[0.75rem] text-muted-foreground">{relTime(run.started_at ?? run.queued_at, t)}</span>
       </div>
       {alsoActive > 0 && (
         /* More than one run of this task has not settled. The column shows the
            newest; saying how many others there are keeps it from reading as "this
            is the only thing happening". */
-        <p className="text-[11px] text-muted-foreground">{t("workspace.column.live.alsoActive", { count: alsoActive })}</p>
+        <p className="text-[0.75rem] text-muted-foreground">{t("workspace.column.live.alsoActive", { count: alsoActive })}</p>
       )}
       {run.prompt && (
         <div>
-          <button onClick={() => setShowPrompt((v) => !v)} className="flex items-center gap-1 text-[11px] font-medium text-muted-foreground hover:text-foreground">
+          <button onClick={() => setShowPrompt((v) => !v)} className="flex items-center gap-1 text-[0.75rem] font-medium text-muted-foreground hover:text-foreground">
             <ChevronDown className={cn("size-3 transition-transform", showPrompt && "rotate-180")} /> {t("workspace.timeline.run.prompt")}
           </button>
           {showPrompt && <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted/50 p-2 text-xs leading-relaxed">{run.prompt}</pre>}
         </div>
       )}
       <div>
-        <p className="mb-1 text-[11px] font-medium text-muted-foreground">{t("workspace.timeline.run.output")}</p>
+        <p className="mb-1 text-[0.75rem] font-medium text-muted-foreground">{t("workspace.timeline.run.output")}</p>
         {out ? (
           <pre ref={outRef} className="max-h-[28rem] overflow-auto whitespace-pre rounded-lg bg-zinc-950 p-3 text-xs leading-relaxed text-zinc-100">{out}</pre>
         ) : (
@@ -2786,7 +2786,7 @@ function LiveRun({ run, alsoActive }: { run: ExecutionRun; alsoActive: number })
       </div>
       {err && (
         <div>
-          <p className="mb-1 text-[11px] font-medium text-muted-foreground">{t("workspace.timeline.run.stderr")}</p>
+          <p className="mb-1 text-[0.75rem] font-medium text-muted-foreground">{t("workspace.timeline.run.stderr")}</p>
           <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-red-500/5 p-2 text-xs leading-relaxed text-red-700 dark:text-red-300">{err}</pre>
         </div>
       )}
@@ -2829,8 +2829,8 @@ function SettledRunChanges({ run }: { run: ExecutionRun }) {
       <div className="flex flex-wrap items-center gap-2">
         <span className={cn("size-2 shrink-0 rounded-full", RUN_TONE[run.state])} />
         <span className="text-sm font-semibold">{t("workspace.column.changes.header", { adapter: run.adapter })}</span>
-        <span className={cn("rounded px-1.5 py-0.5 text-[11px] font-medium", failed ? "bg-red-500/10 text-red-600 dark:text-red-400" : "bg-muted text-muted-foreground")}>{te("runState", run.state)}</span>
-        <span className="ml-auto text-[11px] text-muted-foreground">{relTime(run.finished_at ?? run.started_at ?? run.queued_at, t)}</span>
+        <span className={cn("rounded px-1.5 py-0.5 text-[0.75rem] font-medium", failed ? "bg-red-500/10 text-red-600 dark:text-red-400" : "bg-muted text-muted-foreground")}>{te("runState", run.state)}</span>
+        <span className="ml-auto text-[0.75rem] text-muted-foreground">{relTime(run.finished_at ?? run.started_at ?? run.queued_at, t)}</span>
       </div>
       {failed && (run.error_message || run.stderr_tail) && (
         <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-red-500/5 p-2 text-xs leading-relaxed text-red-700 dark:text-red-300">{run.error_message || run.stderr_tail.trimEnd()}</pre>
@@ -2869,7 +2869,7 @@ function GateBlock({ verdict, review, attention, delivery, deliveryError, delive
   const reviewNotice = reviewStandingNotice(review, (state) => te("runState", state));
   return (
     <section className="space-y-2 rounded-xl border bg-card p-3">
-      <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{t("workspace.column.gate.label")}</p>
+      <p className="text-[0.75rem] font-medium uppercase tracking-wide text-muted-foreground">{t("workspace.column.gate.label")}</p>
       <p className={cn("text-sm font-medium",
         verdict.kind === "actionRequired" ? "text-orange-600 dark:text-orange-400"
           : verdict.kind === "clear" ? "text-emerald-600 dark:text-emerald-400"
@@ -2905,14 +2905,14 @@ function GateBlock({ verdict, review, attention, delivery, deliveryError, delive
                 handoff bound to the task), so the paths get their home back here. */}
             {delivery.files.length > 0 && (
               <>
-                <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{t("workspace.panels.changes.files")}</p>
+                <p className="text-[0.75rem] font-medium uppercase tracking-wide text-muted-foreground">{t("workspace.panels.changes.files")}</p>
                 <ul className="space-y-0.5">
                   {delivery.files.slice(0, HANDOFF_FILES_SHOWN).map((path) => (
-                    <li key={path} className="truncate font-mono text-[11px] text-muted-foreground" title={path}>{path}</li>
+                    <li key={path} className="truncate font-mono text-[0.75rem] text-muted-foreground" title={path}>{path}</li>
                   ))}
                 </ul>
                 {delivery.files.length > HANDOFF_FILES_SHOWN && (
-                  <p className="text-[11px] text-muted-foreground">
+                  <p className="text-[0.75rem] text-muted-foreground">
                     {t("workspace.panels.changes.moreFiles", { count: delivery.files.length - HANDOFF_FILES_SHOWN })}
                   </p>
                 )}
@@ -2922,7 +2922,7 @@ function GateBlock({ verdict, review, attention, delivery, deliveryError, delive
               /* The count comes from the handoff payload's own `file_count`, which can
                  exceed the paths it recorded. Say so rather than letting the shorter
                  list read as the whole delivery. */
-              <p className="text-[11px] text-muted-foreground">{t("workspace.timeline.run.partial")}</p>
+              <p className="text-[0.75rem] text-muted-foreground">{t("workspace.timeline.run.partial")}</p>
             )}
           </div>
         )
@@ -2946,7 +2946,7 @@ function AttentionList({ view }: { view: TaskAttentionView<AttentionItem> }) {
   return (
     <div className="space-y-1.5">
       {view.kind === "partial" && (
-        <p className="text-[11px] text-muted-foreground">{t("workspace.panels.attention.partial")}</p>
+        <p className="text-[0.75rem] text-muted-foreground">{t("workspace.panels.attention.partial")}</p>
       )}
       {view.items.length === 0 ? (
         <p className="text-xs text-muted-foreground">{t("workspace.panels.attention.partialEmpty")}</p>
@@ -2957,7 +2957,7 @@ function AttentionList({ view }: { view: TaskAttentionView<AttentionItem> }) {
               <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-orange-500" />
               <div className="min-w-0">
                 <p className="text-sm leading-snug">{item.title}</p>
-                <p className="text-[11px] text-muted-foreground">{te("attentionKind", item.kind)} · {te("urgency", item.urgency)}</p>
+                <p className="text-[0.75rem] text-muted-foreground">{te("attentionKind", item.kind)} · {te("urgency", item.urgency)}</p>
               </div>
             </li>
           ))}

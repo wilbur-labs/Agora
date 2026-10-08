@@ -25,6 +25,7 @@ export const common = {
       workflows: "Workflows",
       attention: "Attention",
     },
+    textSize: { label: "Text size", normal: "A", large: "A+", xlarge: "A++" },
     shell: {
       tabs: "Screens",
       // Runs execute on this machine until remote execution (W3-a) lands; the platform
@@ -114,6 +115,7 @@ export const common = {
       workflows: "工作流",
       attention: "关注事项",
     },
+    textSize: { label: "字号（标准 / 大 / 特大）", normal: "字 标准", large: "字 大", xlarge: "字 特大" },
     shell: {
       tabs: "屏幕",
       instance: {

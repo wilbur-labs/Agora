@@ -38,23 +38,23 @@ export function TaskCards({
             onClick={() => onSelectStep(row.task_id)}
             aria-current={open ? "true" : undefined}
             className={cn(
-              "flex min-w-0 items-center gap-2.5 rounded-lg border px-3 py-2 text-left text-[13px] transition-colors",
+              "flex min-w-0 items-center gap-2.5 rounded-lg border px-3 py-2 text-left text-[0.875rem] transition-colors",
               open ? "border-primary bg-primary/5" : "bg-muted/30 hover:border-foreground/30",
             )}
           >
-            <span className="shrink-0 tabular-nums text-[11px] text-muted-foreground">{row.step}</span>
-            <span className="shrink-0 rounded border px-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+            <span className="shrink-0 tabular-nums text-[0.75rem] text-muted-foreground">{row.step}</span>
+            <span className="shrink-0 rounded border px-1 text-[0.6875rem] uppercase tracking-wide text-muted-foreground">
               {row.kind}
             </span>
             <span className="min-w-0 flex-1">
               <span className={cn("block truncate", open && "font-medium")}>{row.title}</span>
             </span>
             {row.waiting.kind === "open" && (
-              <span className="shrink-0 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] text-amber-700 dark:text-amber-400">
+              <span className="shrink-0 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[0.6875rem] text-amber-700 dark:text-amber-400">
                 {t("workspace.side.needsYou")}
               </span>
             )}
-            <span className="shrink-0 text-[11px] capitalize text-muted-foreground">
+            <span className="shrink-0 text-[0.75rem] capitalize text-muted-foreground">
               {te("taskState", row.state)}
             </span>
           </button>

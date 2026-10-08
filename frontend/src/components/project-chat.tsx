@@ -264,7 +264,7 @@ export function ProjectChat({
             {t(step.kind === "adopted" ? "projectChat.crumb.project" : "projectChat.crumb.settling")}
           </span>
           <span className={cn(
-            "ml-auto rounded-full border px-2.5 py-0.5 text-[11px]",
+            "ml-auto rounded-full border px-2.5 py-0.5 text-[0.75rem]",
             step.kind === "adopted"
               ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
               : "border-primary/40 bg-primary/10 text-primary",
@@ -423,7 +423,7 @@ function Bubble({
       "max-w-full break-words rounded-xl border px-3.5 py-3 text-sm leading-relaxed sm:max-w-[62ch]",
       mine ? "self-end border-transparent bg-primary/10" : "bg-muted/40",
     )}>
-      <p className="mb-1.5 flex flex-wrap items-baseline gap-2 font-mono text-[11px] text-muted-foreground">
+      <p className="mb-1.5 flex flex-wrap items-baseline gap-2 font-mono text-[0.75rem] text-muted-foreground">
         <span className={cn("font-medium", mine ? "text-primary" : "text-foreground")}>
           {t(`projectChat.who.${who}`)}
         </span>
@@ -481,7 +481,7 @@ function RecordStream(props: {
     <>
       <Bubble who="agent" t={t}>
         <p>{t("projectChat.read.lead")}</p>
-        <div className="mt-2 rounded-lg bg-background/70 px-2.5 py-2 font-mono text-[11px] leading-relaxed text-muted-foreground">
+        <div className="mt-2 rounded-lg bg-background/70 px-2.5 py-2 font-mono text-[0.75rem] leading-relaxed text-muted-foreground">
           <div>{record.context.readme ? t("projectChat.read.readme") : t("projectChat.read.readmeNone")}</div>
           <div>{t("projectChat.read.tree", { count: record.context.tree_entries })}</div>
           <div>{t("projectChat.read.git", { count: record.context.git_log_entries })}</div>
@@ -508,7 +508,7 @@ function RecordStream(props: {
           <div key={question.id} className="contents">
             <Bubble who="agent" t={t}>
               <p>
-                <span className="mr-2 font-mono text-[11px] text-primary">
+                <span className="mr-2 font-mono text-[0.75rem] text-primary">
                   {t("projectChat.question.counter", { index: index + 1, total: record.questions.length })}
                 </span>
                 {question.question}
@@ -528,7 +528,7 @@ function RecordStream(props: {
                 onYouDecide={props.onYouDecide}
               />
               {isCurrent && !props.writingOwn && (
-                <p className="mt-2 text-[11px] text-muted-foreground">{t("projectChat.question.hint")}</p>
+                <p className="mt-2 text-[0.75rem] text-muted-foreground">{t("projectChat.question.hint")}</p>
               )}
             </Bubble>
             {answer.length > 0 && (
@@ -790,7 +790,7 @@ function ProposalCard({
                 />
                 <span>
                   <span className={cn(
-                    "mr-1.5 rounded px-1.5 py-0.5 font-mono text-[10px] uppercase",
+                    "mr-1.5 rounded px-1.5 py-0.5 font-mono text-[0.6875rem] uppercase",
                     task.kind === MOCKUP_TASK_KIND ? "bg-primary/15 text-primary" : "bg-muted text-muted-foreground",
                   )}>
                     {task.kind}
@@ -871,7 +871,7 @@ function RedoButton({
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
-      <p className="mb-1 text-[11px] uppercase tracking-wide text-muted-foreground">{label}</p>
+      <p className="mb-1 text-[0.75rem] uppercase tracking-wide text-muted-foreground">{label}</p>
       {children}
     </div>
   );
@@ -904,7 +904,7 @@ function IdeaTurnView({
             <>
               <p className="mt-2.5">{t("projectChat.idea.cardLead")}</p>
               <div className="mt-1.5 rounded-lg border bg-background/70 px-2.5 py-2 text-sm">
-                <span className="mr-1.5 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] uppercase text-muted-foreground">
+                <span className="mr-1.5 rounded bg-muted px-1.5 py-0.5 font-mono text-[0.6875rem] uppercase text-muted-foreground">
                   {proposal.task.kind}
                 </span>
                 <span className="font-medium">{proposal.task.title}</span>
@@ -936,7 +936,7 @@ function IdeaTurnView({
                     ))}
                   </div>
                   {proposal.order_truncated && (
-                    <p className="mt-1.5 text-[11px] text-muted-foreground">{t("projectChat.idea.orderTruncated")}</p>
+                    <p className="mt-1.5 text-[0.75rem] text-muted-foreground">{t("projectChat.idea.orderTruncated")}</p>
                   )}
                 </>
               ) : (
@@ -991,7 +991,7 @@ function Compose({
         className="w-full resize-y rounded-lg border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/40"
       />
       <div className="mt-2 flex items-center gap-2">
-        <span className="text-[11px] text-muted-foreground">{t("projectChat.who.agent")}</span>
+        <span className="text-[0.75rem] text-muted-foreground">{t("projectChat.who.agent")}</span>
         <Button
           className="ml-auto"
           size="sm"
@@ -1033,7 +1033,7 @@ export function DraftPanel({
           {fields.length === 0 && <p className="text-xs text-muted-foreground">{t("projectChat.draft.blank")}</p>}
           {fields.map((field) => (
             <div key={field.key}>
-              <p className="text-[11px] text-muted-foreground">
+              <p className="text-[0.75rem] text-muted-foreground">
                 {field.key === DRAFT_BRIEF_KEY ? t("projectChat.draft.brief") : field.label}
               </p>
               <p className={cn(
@@ -1077,7 +1077,7 @@ function Line({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex items-baseline justify-between gap-2">
       <span className="text-muted-foreground">{label}</span>
-      <span className="font-mono text-[11px]">{value}</span>
+      <span className="font-mono text-[0.75rem]">{value}</span>
     </div>
   );
 }

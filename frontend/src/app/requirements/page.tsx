@@ -184,7 +184,7 @@ function ClarifyPanel({ task, onUpdated, onError }: { task: TaskManifest; onUpda
           {questions.map((question, index) => (
             <div key={question.id} className="rounded-lg border bg-muted/20 p-3">
               <p className="text-sm font-medium">{index + 1}. {question.question}</p>
-              {question.why && <p className="mt-0.5 text-[11px] text-muted-foreground">{question.why}</p>}
+              {question.why && <p className="mt-0.5 text-[0.75rem] text-muted-foreground">{question.why}</p>}
               {question.suggestions && question.suggestions.length > 0 && (
                 <div className="mt-2 flex flex-wrap gap-1.5">
                   {question.suggestions.map((suggestion) => (
@@ -192,7 +192,7 @@ function ClarifyPanel({ task, onUpdated, onError }: { task: TaskManifest; onUpda
                       key={suggestion}
                       type="button"
                       onClick={() => { setAnswers((prev) => ({ ...prev, [question.id]: suggestion })); setSaved(false); }}
-                      className="rounded-full border px-2 py-0.5 text-[11px] text-muted-foreground transition-colors hover:border-primary hover:text-primary"
+                      className="rounded-full border px-2 py-0.5 text-[0.75rem] text-muted-foreground transition-colors hover:border-primary hover:text-primary"
                     >
                       {suggestion}
                     </button>

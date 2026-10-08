@@ -196,7 +196,7 @@ export function RunCreatePanel({
               <label key={item.name} className={`cursor-pointer rounded-xl border p-3 text-sm ${adapter === item.name ? "border-primary bg-primary/5" : "hover:bg-accent/50"}`}>
                 <input className="sr-only" type="radio" name="adapter" value={item.name} checked={adapter === item.name} onChange={() => setAdapter(item.name)} />
                 <span className="flex items-center gap-2 font-semibold"><Bot className="size-4" /> {adapterLabels[item.name]}</span>
-                <span className="mt-2 inline-flex rounded-full border px-2 py-0.5 text-[11px] font-medium">{item.attention_mode === "bidirectional" ? t("runs.createPanel.attentionApproval") : t("runs.createPanel.attentionCapture")}</span>
+                <span className="mt-2 inline-flex rounded-full border px-2 py-0.5 text-[0.75rem] font-medium">{item.attention_mode === "bidirectional" ? t("runs.createPanel.attentionApproval") : t("runs.createPanel.attentionCapture")}</span>
                 <span className="mt-2 block text-xs font-normal leading-relaxed text-muted-foreground">{item.detail}</span>
               </label>
             ))}

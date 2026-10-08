@@ -176,7 +176,7 @@ export default function EnvironmentsPage() {
                       />
                     </span>
                   </div>
-                  <p className="mt-0.5 break-all font-mono text-[11px] text-muted-foreground">{project.root}</p>
+                  <p className="mt-0.5 break-all font-mono text-[0.75rem] text-muted-foreground">{project.root}</p>
                   <p className="mt-1 text-xs text-muted-foreground">
                     {t("environments.projects.worktrees", {
                       ready: project.workspaces.filter((w) => w.exists === true).length,

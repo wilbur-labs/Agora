@@ -620,7 +620,7 @@ function ProjectCockpit({ dashboard, onEditCharter }: { dashboard: ProjectDashbo
               never counted. Beside a line reading "next action not determined", an
               exact count was the same unsupported precision the line had just given up.
               Shown as a floor instead — the observation is real, the total is not. */}
-          <div className="flex items-center gap-2 text-[11px]">
+          <div className="flex items-center gap-2 text-[0.75rem]">
             {next.attention_count > 0 && (
               <span className="inline-flex items-center gap-1 rounded-full bg-orange-500/10 px-2 py-0.5 font-medium text-orange-600 dark:text-orange-400">
                 <AlertTriangle className="size-3" />
@@ -638,7 +638,7 @@ function ProjectCockpit({ dashboard, onEditCharter }: { dashboard: ProjectDashbo
             )}
           </div>
         </div>
-        {next.partial && nextLine.kind !== "unknown" && <p className="mt-1 text-[11px] text-muted-foreground">{t("portfolio.cockpit.nextAction.partial")}</p>}
+        {next.partial && nextLine.kind !== "unknown" && <p className="mt-1 text-[0.75rem] text-muted-foreground">{t("portfolio.cockpit.nextAction.partial")}</p>}
       </div>
     </section>
   );
@@ -717,7 +717,7 @@ function TaskCard({ task, bucket, ask, latestRun, runsReach, dash, onAdvanced, o
     <article className={cn("rounded-xl border border-l-4 bg-card p-4 shadow-sm", meta.border, isArchived && "opacity-60")}>
       <div className="flex items-start justify-between gap-2">
         <Badge variant="outline">{task.project_id}</Badge>
-        <span className={cn("inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium", meta.pill)}>
+        <span className={cn("inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[0.75rem] font-medium", meta.pill)}>
           <span className={cn("size-1.5 rounded-full", meta.dot)} />
           {t(`portfolio.buckets.${bucket}`)}
         </span>
@@ -725,7 +725,7 @@ function TaskCard({ task, bucket, ask, latestRun, runsReach, dash, onAdvanced, o
       <h3 className="mt-3 font-semibold leading-snug">{task.title}</h3>
       {ask && <p className="mt-1 line-clamp-2 rounded-md bg-muted/50 px-2 py-1 text-xs leading-relaxed">{ask}</p>}
       {!ask && task.description && <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-muted-foreground">{task.description}</p>}
-      <div className="mt-2 flex items-center gap-2 text-[11px]">
+      <div className="mt-2 flex items-center gap-2 text-[0.75rem]">
         {/* "No runs yet" is a claim about the task; absence from a page the board did
             not fully read is not that claim. Which of the three this is is decided
             once, by taskRunsLineOf — asking `latestRun ?` here as well would be the
@@ -748,7 +748,7 @@ function TaskCard({ task, bucket, ask, latestRun, runsReach, dash, onAdvanced, o
         )}
       </div>
       {delivery && (delivery.commit || delivery.fileCount > 0) && (
-        <div className="mt-1 flex items-center gap-1.5 text-[11px] text-emerald-600 dark:text-emerald-400">
+        <div className="mt-1 flex items-center gap-1.5 text-[0.75rem] text-emerald-600 dark:text-emerald-400">
           <FileCheck2 className="size-3" />
           <span className="text-muted-foreground">
             {t("portfolio.card.delivery", { count: delivery.fileCount })}
@@ -757,7 +757,7 @@ function TaskCard({ task, bucket, ask, latestRun, runsReach, dash, onAdvanced, o
         </div>
       )}
       {dash && dash.next_action.action !== "none" && (
-        <p className={cn("mt-2 flex items-center gap-1 text-[11px] font-medium", dash.next_action.attention ? "text-orange-600 dark:text-orange-400" : "text-primary")}>
+        <p className={cn("mt-2 flex items-center gap-1 text-[0.75rem] font-medium", dash.next_action.attention ? "text-orange-600 dark:text-orange-400" : "text-primary")}>
           <ArrowRight className="size-3 shrink-0" />
           {t("portfolio.cockpit.card.next", { action: te("nextAction", dash.next_action.action) })}
         </p>
@@ -820,9 +820,9 @@ function TaskCard({ task, bucket, ask, latestRun, runsReach, dash, onAdvanced, o
       {pending === "advance" && advance && (
         <div className="mt-3 space-y-2 rounded-lg border bg-muted/30 p-3">
           <p className="text-xs font-medium">{t("portfolio.card.confirm.question", { from: te("taskState", task.state), to: te("taskState", advance.to) })}</p>
-          <p className="text-[11px] leading-4 text-muted-foreground">{t(`portfolio.card.confirm.hint.${advance.to}`)}</p>
+          <p className="text-[0.75rem] leading-4 text-muted-foreground">{t(`portfolio.card.confirm.hint.${advance.to}`)}</p>
           {advance.to === "review" && (
-            <a href={`/runs?project=${encodeURIComponent(task.project_id)}`} className="inline-block text-[11px] font-medium text-primary hover:underline">{t("portfolio.card.confirm.viewRuns")}</a>
+            <a href={`/runs?project=${encodeURIComponent(task.project_id)}`} className="inline-block text-[0.75rem] font-medium text-primary hover:underline">{t("portfolio.card.confirm.viewRuns")}</a>
           )}
           <div className="flex items-center justify-end gap-2 pt-1">
             <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => { setPending(null); setError(null); }}>{t("portfolio.card.confirm.cancel")}</Button>
@@ -834,7 +834,7 @@ function TaskCard({ task, bucket, ask, latestRun, runsReach, dash, onAdvanced, o
       {pending === "archive" && (
         <div className="mt-3 space-y-2 rounded-lg border bg-muted/40 p-3">
           <p className="text-xs font-medium">{t("portfolio.card.confirmArchive.question", { title: task.title })}</p>
-          <p className="text-[11px] leading-4 text-muted-foreground">{t("portfolio.card.confirmArchive.hint")}</p>
+          <p className="text-[0.75rem] leading-4 text-muted-foreground">{t("portfolio.card.confirmArchive.hint")}</p>
           <div className="flex items-center justify-end gap-2 pt-1">
             <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => { setPending(null); setError(null); }}>{t("portfolio.card.confirmArchive.keep")}</Button>
             <Button type="button" size="sm" disabled={busy} onClick={() => void run(() => archiveTask(task))}>{busy ? <RefreshCw className="animate-spin" /> : null}{t("portfolio.card.confirmArchive.confirm")}</Button>

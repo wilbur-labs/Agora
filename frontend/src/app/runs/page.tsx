@@ -246,7 +246,7 @@ export default function RunsPage() {
                   {visible.map((run) => (
                     <tr key={run.run_id} className={cn("border-t", selectedId === run.run_id && "bg-primary/5")}>
                       <th scope="row" className="px-4 py-3 font-medium"><button className="font-mono text-xs hover:underline" onClick={() => setSelectedId(run.run_id)}>{shortId(run.run_id)}</button><span className="mt-1 block font-sans text-xs font-normal text-muted-foreground">{run.project_id}</span></th>
-                      <td className="max-w-64 px-3 py-3"><span className="block truncate font-medium">{taskNames.get(run.task_id) ?? run.task_id}</span><span className="block truncate font-mono text-[11px] text-muted-foreground">{run.task_id}</span></td>
+                      <td className="max-w-64 px-3 py-3"><span className="block truncate font-medium">{taskNames.get(run.task_id) ?? run.task_id}</span><span className="block truncate font-mono text-[0.75rem] text-muted-foreground">{run.task_id}</span></td>
                       <td className="px-3 py-3 capitalize">{run.adapter}</td>
                       <td className="px-3 py-3"><StateBadge state={run.state} /></td>
                       <td className="px-3 py-3 text-xs text-muted-foreground"><span className="block">{formatDate(run.queued_at)}</span><span className="block">{duration(run)}</span></td>
@@ -363,7 +363,7 @@ function RunDeliverables({ run }: { run: ExecutionRun }) {
         </p>
       )}
       {delivered?.truncated && (
-        <p className="mb-1 text-[10px] text-amber-600">{t("runs.page.deliverables.partial")}</p>
+        <p className="mb-1 text-[0.6875rem] text-amber-600">{t("runs.page.deliverables.partial")}</p>
       )}
       {files !== null && files.length > 0 && (
         <ul className="divide-y rounded-lg border">
@@ -378,16 +378,16 @@ function RunDeliverables({ run }: { run: ExecutionRun }) {
                     aria-expanded={openPath === file.path}
                   >
                     <span className="min-w-0 flex-1 truncate font-mono">{file.path}</span>
-                    <span className="shrink-0 rounded-full border px-2 py-0.5 text-[10px] capitalize text-muted-foreground">{file.status}</span>
-                    {file.size !== null && <span className="shrink-0 text-[10px] text-muted-foreground">{formatBytes(file.size)}</span>}
+                    <span className="shrink-0 rounded-full border px-2 py-0.5 text-[0.6875rem] capitalize text-muted-foreground">{file.status}</span>
+                    {file.size !== null && <span className="shrink-0 text-[0.6875rem] text-muted-foreground">{formatBytes(file.size)}</span>}
                   </button>
                 ) : (
                   // No digest, or the worktree is gone: the path is still what the
                   // run delivered, but an open control here could only fail.
                   <span className="flex min-w-0 flex-1 items-center gap-2 text-muted-foreground">
                     <span className="min-w-0 flex-1 truncate font-mono">{file.path}</span>
-                    <span className="shrink-0 rounded-full border px-2 py-0.5 text-[10px] capitalize">{file.status}</span>
-                    {file.size !== null && <span className="shrink-0 text-[10px]">{formatBytes(file.size)}</span>}
+                    <span className="shrink-0 rounded-full border px-2 py-0.5 text-[0.6875rem] capitalize">{file.status}</span>
+                    {file.size !== null && <span className="shrink-0 text-[0.6875rem]">{formatBytes(file.size)}</span>}
                   </span>
                 )}
                 {openable(file) && (
@@ -395,7 +395,7 @@ function RunDeliverables({ run }: { run: ExecutionRun }) {
                     href={deliverableRawUrl(run.run_id, file.path)}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="shrink-0 rounded-md border px-2 py-1 text-[11px] font-medium text-primary hover:bg-accent"
+                    className="shrink-0 rounded-md border px-2 py-1 text-[0.75rem] font-medium text-primary hover:bg-accent"
                   >
                     {t("runs.page.deliverables.open")}
                   </a>
@@ -407,8 +407,8 @@ function RunDeliverables({ run }: { run: ExecutionRun }) {
                     <p className="text-xs text-muted-foreground">{t("runs.page.deliverables.opening")}</p>
                   ) : (
                     <>
-                      <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-relaxed">{content}</pre>
-                      {contentTruncated && <p className="mt-1 text-[10px] text-amber-600">{t("runs.page.deliverables.truncated")}</p>}
+                      <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words text-[0.75rem] leading-relaxed">{content}</pre>
+                      {contentTruncated && <p className="mt-1 text-[0.6875rem] text-amber-600">{t("runs.page.deliverables.truncated")}</p>}
                     </>
                   )}
                 </div>

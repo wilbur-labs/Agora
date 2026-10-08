@@ -112,7 +112,7 @@ export function TimelineEntry({ event, spec, gate, onGateAnswered, t, te }: {
       <div className={cn("rounded-xl border px-3 py-2", open ? "min-w-0 flex-1" : "max-w-[85%]", isYou ? "bg-primary/5" : "bg-card")}>
         <div className={cn("flex items-baseline gap-2", isYou && "flex-row-reverse")}>
           <span className="text-xs font-semibold">{view.title}</span>
-          <span className="text-[10px] text-muted-foreground">{relTime(event.created_at, t)}</span>
+          <span className="text-[0.6875rem] text-muted-foreground">{relTime(event.created_at, t)}</span>
         </div>
         {view.detail && <p className={cn("mt-0.5 whitespace-pre-wrap text-sm leading-relaxed", isYou && "text-right")}>{view.detail}</p>}
         {spec && <SpecBlock spec={spec} t={t} />}
@@ -129,7 +129,7 @@ function SpecBlock({ spec, t }: { spec: RequirementSpec; t: Translate }) {
   const reqs = [...spec.functional, ...spec.non_functional];
   return (
     <div className="mt-1.5">
-      <button onClick={() => setOpen((v) => !v)} className="flex items-center gap-1 text-[11px] font-medium text-primary hover:underline">
+      <button onClick={() => setOpen((v) => !v)} className="flex items-center gap-1 text-[0.75rem] font-medium text-primary hover:underline">
         <ChevronDown className={cn("size-3 transition-transform", open && "rotate-180")} /> {open ? t("workspace.timeline.spec.hide") : t("workspace.timeline.spec.view")}
       </button>
       {open && (

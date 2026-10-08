@@ -150,10 +150,10 @@ function RuntimesCard({ runtimes, loading }: { runtimes: RuntimeCapabilities | n
         {runtimes?.adapters.map((adapter) => <RuntimeTile key={adapter.adapter} adapter={adapter} />)}
         {!runtimes && loading && [0, 1, 2].map((i) => <div key={i} className="h-32 animate-pulse rounded-lg border bg-muted/40" />)}
       </div>
-      <p className="mt-4 rounded-lg bg-amber-500/5 px-3 py-2 text-[11px] leading-5 text-amber-700 dark:text-amber-300">
+      <p className="mt-4 rounded-lg bg-amber-500/5 px-3 py-2 text-[0.75rem] leading-5 text-amber-700 dark:text-amber-300">
         {t("settings.runtimes.authNote")}
       </p>
-      <p className="mt-2 rounded-lg bg-muted/50 px-3 py-2 text-[11px] leading-5 text-muted-foreground">
+      <p className="mt-2 rounded-lg bg-muted/50 px-3 py-2 text-[0.75rem] leading-5 text-muted-foreground">
         {t("settings.activity.tokenNote")}
       </p>
     </Section>
@@ -175,7 +175,7 @@ function RuntimeTile({ adapter }: { adapter: RuntimeCapability }) {
         )}
       </div>
       <p className="mt-1 font-mono text-xs text-muted-foreground">{adapter.version ?? t("settings.runtimes.versionUnknown")}</p>
-      <p className="mt-0.5 text-[11px] text-muted-foreground">{adapter.provider}</p>
+      <p className="mt-0.5 text-[0.75rem] text-muted-foreground">{adapter.provider}</p>
       {installed ? (
         <>
           <AuthLine adapter={adapter} />
@@ -185,7 +185,7 @@ function RuntimeTile({ adapter }: { adapter: RuntimeCapability }) {
           </Badge>
         </>
       ) : (
-        <p className="mt-3 text-[11px] text-destructive">{t("settings.runtimes.notInstalledHint")}</p>
+        <p className="mt-3 text-[0.75rem] text-destructive">{t("settings.runtimes.notInstalledHint")}</p>
       )}
     </div>
   );
@@ -205,7 +205,7 @@ function AuthLine({ adapter }: { adapter: RuntimeCapability }) {
       ? "text-destructive"
       : "text-muted-foreground";
   return (
-    <p className={cn("mt-2 flex items-center gap-1.5 text-[11px]", tone)}>
+    <p className={cn("mt-2 flex items-center gap-1.5 text-[0.75rem]", tone)}>
       <span className={cn("size-1.5 rounded-full", authed === true ? "bg-emerald-500" : authed === false ? "bg-destructive" : "bg-muted-foreground/50")} />
       {label}{adapter.auth_method ? ` · ${adapter.auth_method}` : ""}
     </p>
@@ -220,7 +220,7 @@ function TokenLine({ adapter }: { adapter: RuntimeCapability }) {
   // the payload had just been fixed to carry.
   const capture = adapter.token_capture;
   return (
-    <p className={cn("mt-1 text-[11px]", capture === "supported" ? "text-foreground" : "text-muted-foreground")}>
+    <p className={cn("mt-1 text-[0.75rem]", capture === "supported" ? "text-foreground" : "text-muted-foreground")}>
       {capture === "supported"
         ? t("settings.runtimes.tokensUsed", { value: adapter.tokens_used.toLocaleString() })
         : capture === "unsupported"
@@ -271,7 +271,7 @@ function WorkspacesCard({ overview, onReload, onError }: { overview: SettingsOve
             </Button>
           </div>
         </label>
-        <p className="mt-1.5 text-[11px] text-muted-foreground">{t("settings.workspaces.baseHint")}</p>
+        <p className="mt-1.5 text-[0.75rem] text-muted-foreground">{t("settings.workspaces.baseHint")}</p>
       </div>
       <ProjectImportNotice status={overview?.projects.import_status ?? null} />
       <div className="space-y-4">
@@ -283,13 +283,13 @@ function WorkspacesCard({ overview, onReload, onError }: { overview: SettingsOve
               {project.project_id === overview.projects.current && <Badge variant="secondary">{t("settings.workspaces.current")}</Badge>}
               <StatusDot ok={project.root_is_git} on={t("settings.workspaces.git")} off={t("settings.workspaces.notGit")} unknown={t("settings.workspaces.gitUnknown")} />
             </div>
-            <p className="mt-2 break-all font-mono text-[11px] text-muted-foreground">{project.root}</p>
-            <p className="mt-1 text-[11px] text-muted-foreground">{t("settings.workspaces.agents", { worker: project.worker_agent, reviewer: project.reviewer_agent })}</p>
+            <p className="mt-2 break-all font-mono text-[0.75rem] text-muted-foreground">{project.root}</p>
+            <p className="mt-1 text-[0.75rem] text-muted-foreground">{t("settings.workspaces.agents", { worker: project.worker_agent, reviewer: project.reviewer_agent })}</p>
             <div className="mt-3 space-y-1.5">
               {project.workspaces.map((ws) => (
                 <div key={ws.adapter} className="flex flex-wrap items-center gap-2 text-xs">
                   <span className="w-14 shrink-0 capitalize text-muted-foreground">{ws.adapter}</span>
-                  <span className="break-all font-mono text-[11px]">{ws.path}</span>
+                  <span className="break-all font-mono text-[0.75rem]">{ws.path}</span>
                   <StatusDot
                     ok={ws.exists === null || ws.writable === null ? null : ws.exists && ws.writable}
                     on={ws.writable ? t("settings.workspaces.writable") : t("settings.workspaces.exists")}
@@ -412,7 +412,7 @@ function WorkSourcesCard({ onError }: { onError: (msg: string | null) => void })
             </Button>
           </div>
         </label>
-        <p className="mt-1.5 text-[11px] text-muted-foreground">{t("settings.sources.addHint")}</p>
+        <p className="mt-1.5 text-[0.75rem] text-muted-foreground">{t("settings.sources.addHint")}</p>
         {/* The probe's answer, before anything is stored. Registration is only offered
             when there is something to register — a directory with no `tasks/` gets its
             own sentence and no button, because the fix is to pick another folder. */}
@@ -448,7 +448,7 @@ function WorkSourcesCard({ onError }: { onError: (msg: string | null) => void })
                   {t("settings.sources.forget")}
                 </Button>
               </div>
-              <p className="mt-2 text-[11px] text-muted-foreground">{t("settings.sources.forgetHint")}</p>
+              <p className="mt-2 text-[0.75rem] text-muted-foreground">{t("settings.sources.forgetHint")}</p>
             </div>
           ))}
         </div>
@@ -512,12 +512,12 @@ function ProjectImportNotice({ status }: { status: ProjectImportStatus | null })
   return (
     <div className="mb-4 space-y-2">
       {status.error && (
-        <p className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-[11px] leading-5 text-destructive">
+        <p className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-[0.75rem] leading-5 text-destructive">
           {t("settings.workspaces.importError", { source: status.source, reason: status.error })}
         </p>
       )}
       {conflicts.length > 0 && (
-        <p className="rounded-lg bg-amber-500/5 px-3 py-2 text-[11px] leading-5 text-amber-700 dark:text-amber-300">
+        <p className="rounded-lg bg-amber-500/5 px-3 py-2 text-[0.75rem] leading-5 text-amber-700 dark:text-amber-300">
           {t("settings.workspaces.importConflicts", {
             count: conflicts.length,
             source: status.source,
@@ -566,7 +566,7 @@ function ActivityCard({ overview }: { overview: SettingsOverview | null }) {
           <CountRow label={t("settings.activity.byAdapter")} counts={runs.by_adapter} />
         </div>
       )}
-      {runs?.truncated && <p className="mt-2 text-[11px] text-muted-foreground">{t("settings.activity.truncated", { limit: 500 })}</p>}
+      {runs?.truncated && <p className="mt-2 text-[0.75rem] text-muted-foreground">{t("settings.activity.truncated", { limit: 500 })}</p>}
     </Section>
   );
 }
@@ -593,7 +593,7 @@ function CodeHostCard() {
 function Stat({ label, value, ok }: { label: string; value: string; ok?: boolean }) {
   return (
     <div className="rounded-lg border bg-muted/20 p-3">
-      <dt className="text-[11px] text-muted-foreground">{label}</dt>
+      <dt className="text-[0.75rem] text-muted-foreground">{label}</dt>
       <dd className={cn("mt-1 text-lg font-semibold tabular-nums", ok === false && "text-destructive", ok === true && "text-emerald-600 dark:text-emerald-400")}>{value}</dd>
     </div>
   );
@@ -618,7 +618,7 @@ function StatusDot({ ok, on, off, unknown }: { ok: boolean | null; on: string; o
   const tone = ok === null ? "text-amber-600 dark:text-amber-400" : ok ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground";
   const dot = ok === null ? "bg-amber-500" : ok ? "bg-emerald-500" : "bg-muted-foreground/50";
   return (
-    <span className={cn("flex items-center gap-1 text-[11px]", tone)}>
+    <span className={cn("flex items-center gap-1 text-[0.75rem]", tone)}>
       <span className={cn("size-1.5 rounded-full", dot)} />
       {label}
     </span>

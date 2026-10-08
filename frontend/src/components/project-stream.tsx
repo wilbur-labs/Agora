@@ -103,7 +103,7 @@ function Prose({ text, className }: { text: string; className?: string }) {
       {parts.map((part, index) => {
         if (part.trim() === "") return null;
         return index % 2 === 1
-          ? <pre key={index} className="max-w-full overflow-x-auto rounded bg-zinc-950 px-2.5 py-2 font-mono text-[11.5px] leading-relaxed text-zinc-200">{part.replace(/\n$/, "")}</pre>
+          ? <pre key={index} className="max-w-full overflow-x-auto rounded bg-zinc-950 px-2.5 py-2 font-mono text-[0.75rem] leading-relaxed text-zinc-200">{part.replace(/\n$/, "")}</pre>
           : <p key={index} className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{part.trim()}</p>;
       })}
     </div>
@@ -129,7 +129,7 @@ function TermBlock({ lines }: { lines: string[] }) {
     if (el) el.scrollTop = el.scrollHeight;
   }, [text]);
   return (
-    <pre ref={ref} className="max-h-44 max-w-full overflow-auto rounded bg-zinc-950 px-2.5 py-2 font-mono text-[11.5px] leading-relaxed text-zinc-200 whitespace-pre-wrap [overflow-wrap:anywhere]">{text}</pre>
+    <pre ref={ref} className="max-h-44 max-w-full overflow-auto rounded bg-zinc-950 px-2.5 py-2 font-mono text-[0.75rem] leading-relaxed text-zinc-200 whitespace-pre-wrap [overflow-wrap:anywhere]">{text}</pre>
   );
 }
 
@@ -657,7 +657,7 @@ export function ProjectStream({
     const tone = live ? "border-primary/50 bg-primary/10 text-primary" : run.state === "succeeded" ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400" : "border-destructive/40 bg-destructive/10 text-destructive";
     const ms = turnDurationMs(run);
     return (
-      <span className={cn("inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 font-mono text-[10px]", tone)}>
+      <span className={cn("inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 font-mono text-[0.6875rem]", tone)}>
         {live && <span className="size-1.5 animate-pulse rounded-full bg-current" />}
         {te("runState", run.state)}{run.exit_code !== null && run.state !== "running" ? ` · ${t("workspace.stream.run.exit", { code: run.exit_code })}` : ""}{ms !== null ? ` · ${formatDuration(ms)}` : ""}
       </span>
@@ -668,31 +668,31 @@ export function ProjectStream({
     const open = expanded[run.run_id];
     return (
       <div key={run.run_id} className="max-w-[64ch] overflow-hidden rounded-lg border bg-muted/30">
-        <button type="button" onClick={() => toggleRun(run)} className="flex w-full flex-wrap items-center gap-x-2.5 gap-y-1 px-3 py-2 text-left text-[13px] text-muted-foreground hover:bg-accent/50" aria-expanded={open !== undefined}>
+        <button type="button" onClick={() => toggleRun(run)} className="flex w-full flex-wrap items-center gap-x-2.5 gap-y-1 px-3 py-2 text-left text-[0.875rem] text-muted-foreground hover:bg-accent/50" aria-expanded={open !== undefined}>
           <b className="font-medium text-foreground">{adapterLabel(run.adapter)}</b>
-          <span className="font-mono text-[11px]">{run.run_id.slice(0, 12)}</span>
+          <span className="font-mono text-[0.75rem]">{run.run_id.slice(0, 12)}</span>
           <span>{step === null ? t("workspace.stream.run.stepUnknown") : t("workspace.stream.run.step", { step })}</span>
-          {run.role === "review" && <span className="rounded border px-1 text-[10px] uppercase tracking-wide">{t("workspace.stream.run.review")}</span>}
-          {run.role === "chat" && <span className="rounded border px-1 text-[10px] uppercase tracking-wide">{t("workspace.stream.run.chat")}</span>}
+          {run.role === "review" && <span className="rounded border px-1 text-[0.6875rem] uppercase tracking-wide">{t("workspace.stream.run.review")}</span>}
+          {run.role === "chat" && <span className="rounded border px-1 text-[0.6875rem] uppercase tracking-wide">{t("workspace.stream.run.chat")}</span>}
           {/* Where THIS run ran, from its record — not where its adapter points today. */}
-          {remoteTargetLabel(run.remote) && <span className="rounded border px-1 font-mono text-[10px]" title={run.remote?.workspace ?? undefined}>{remoteTargetLabel(run.remote)}</span>}
+          {remoteTargetLabel(run.remote) && <span className="rounded border px-1 font-mono text-[0.6875rem]" title={run.remote?.workspace ?? undefined}>{remoteTargetLabel(run.remote)}</span>}
           {statePill(run)}
-          {nested.length > 0 && <span className="text-[11px]">{t("workspace.stream.run.nested", { count: nested.length })}</span>}
-          {because && <span className="text-[11px] italic">{t(`workspace.stream.run.unplaced.${because}`)}</span>}
-          <span className="ml-auto inline-flex items-center gap-1 font-mono text-[11px]"><ChevronDown className={cn("size-3 transition-transform", open && "rotate-180")} />{open ? t("workspace.stream.run.collapse") : t("workspace.stream.run.expand")}</span>
+          {nested.length > 0 && <span className="text-[0.75rem]">{t("workspace.stream.run.nested", { count: nested.length })}</span>}
+          {because && <span className="text-[0.75rem] italic">{t(`workspace.stream.run.unplaced.${because}`)}</span>}
+          <span className="ml-auto inline-flex items-center gap-1 font-mono text-[0.75rem]"><ChevronDown className={cn("size-3 transition-transform", open && "rotate-180")} />{open ? t("workspace.stream.run.collapse") : t("workspace.stream.run.expand")}</span>
         </button>
         {open && (
-          <div className="space-y-2 border-t px-3 py-2.5 text-[12px] text-muted-foreground">
+          <div className="space-y-2 border-t px-3 py-2.5 text-[0.8125rem] text-muted-foreground">
             {open.run === "loading" && <p>{t("workspace.stream.loading")}</p>}
             {open.run === "failed" && <p>{t("workspace.stream.run.readFailed")}</p>}
             {open.run !== null && typeof open.run === "object" && (
               <>
-                <p className="font-mono text-[11px]">{t("workspace.stream.run.prompt")}</p>
-                <pre className="max-h-40 overflow-auto whitespace-pre-wrap rounded bg-background px-2.5 py-2 font-mono text-[11px] leading-relaxed">{open.run.prompt}</pre>
-                <p className="font-mono text-[11px]">{t("workspace.stream.run.output")}</p>
+                <p className="font-mono text-[0.75rem]">{t("workspace.stream.run.prompt")}</p>
+                <pre className="max-h-40 overflow-auto whitespace-pre-wrap rounded bg-background px-2.5 py-2 font-mono text-[0.75rem] leading-relaxed">{open.run.prompt}</pre>
+                <p className="font-mono text-[0.75rem]">{t("workspace.stream.run.output")}</p>
                 {open.run.stdout_tail.trim() === "" && open.run.stderr_tail.trim() === ""
                   ? <p>{t("workspace.stream.run.noOutput")}</p>
-                  : <pre className="max-h-80 overflow-auto whitespace-pre-wrap rounded bg-zinc-950 px-2.5 py-2 font-mono text-[11px] leading-relaxed text-zinc-200">{open.run.stdout_tail}{open.run.stderr_tail.trim() !== "" ? `\n--- stderr ---\n${open.run.stderr_tail}` : ""}</pre>}
+                  : <pre className="max-h-80 overflow-auto whitespace-pre-wrap rounded bg-zinc-950 px-2.5 py-2 font-mono text-[0.75rem] leading-relaxed text-zinc-200">{open.run.stdout_tail}{open.run.stderr_tail.trim() !== "" ? `\n--- stderr ---\n${open.run.stderr_tail}` : ""}</pre>}
                 {open.run.error_message && <p className="text-destructive">{open.run.error_message}</p>}
               </>
             )}
@@ -741,7 +741,7 @@ export function ProjectStream({
     const unknown = del === "failed" || del.source === "none";
     if (!changed && !unknown) return null;
     return (
-      <div className="min-w-0 max-w-[64ch] rounded-xl border bg-card px-3 py-2 text-[12px]">
+      <div className="min-w-0 max-w-[64ch] rounded-xl border bg-card px-3 py-2 text-[0.8125rem]">
         {changed && <p className="mb-1 text-amber-700 dark:text-amber-400">{t("workspace.stream.answerChanged")}</p>}
         <DeliverablesBlock runId={runId} delivered={del} onLoad={() => loadFiles(runId)} t={t} compact />
       </div>
@@ -827,7 +827,7 @@ export function ProjectStream({
   };
 
   const chatLine = (run: RunSummary, held: ExecutionRun | "failed" | undefined) => {
-    const quiet = "text-[12px] text-muted-foreground";
+    const quiet = "text-[0.8125rem] text-muted-foreground";
     if (run.state === "queued" || run.state === "running") {
       return <p className={cn(quiet, "inline-flex items-center gap-1.5")}><span className="size-1.5 animate-pulse rounded-full bg-primary" />{t("workspace.stream.answering", { adapter: adapterLabel(run.adapter) })}</p>;
     }
@@ -854,14 +854,14 @@ export function ProjectStream({
 
   // --- render -------------------------------------------------------------------------
   const headerPill = status.kind === "running"
-    ? <span className="inline-flex items-center gap-1.5 rounded-full border border-primary/50 bg-primary/10 px-2 py-0.5 font-mono text-[10px] text-primary"><span className="size-1.5 animate-pulse rounded-full bg-current" />{t("workspace.stream.status.running", { adapter: adapterLabel(status.run.adapter), step: status.step ?? "?" })}{status.also > 0 ? ` +${status.also}` : ""}</span>
-    : status.kind === "waiting" ? <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 font-mono text-[10px] text-amber-700 dark:text-amber-400">{t("workspace.stream.status.waiting", { count: status.count })}</span>
-    : status.kind === "idle" ? <span className="rounded-full border px-2 py-0.5 font-mono text-[10px] text-muted-foreground">{t("workspace.stream.status.idle")}</span>
-    : <span className="rounded-full border px-2 py-0.5 font-mono text-[10px] text-muted-foreground">{t("workspace.stream.status.unknown")}</span>;
+    ? <span className="inline-flex items-center gap-1.5 rounded-full border border-primary/50 bg-primary/10 px-2 py-0.5 font-mono text-[0.6875rem] text-primary"><span className="size-1.5 animate-pulse rounded-full bg-current" />{t("workspace.stream.status.running", { adapter: adapterLabel(status.run.adapter), step: status.step ?? "?" })}{status.also > 0 ? ` +${status.also}` : ""}</span>
+    : status.kind === "waiting" ? <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 font-mono text-[0.6875rem] text-amber-700 dark:text-amber-400">{t("workspace.stream.status.waiting", { count: status.count })}</span>
+    : status.kind === "idle" ? <span className="rounded-full border px-2 py-0.5 font-mono text-[0.6875rem] text-muted-foreground">{t("workspace.stream.status.idle")}</span>
+    : <span className="rounded-full border px-2 py-0.5 font-mono text-[0.6875rem] text-muted-foreground">{t("workspace.stream.status.unknown")}</span>;
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <div className="flex shrink-0 items-center gap-2.5 border-b px-4 py-3 text-[13px] text-muted-foreground">
+      <div className="flex shrink-0 items-center gap-2.5 border-b px-4 py-3 text-[0.875rem] text-muted-foreground">
         <b className="font-medium text-foreground">{projectName}</b>
         <span>· {t("workspace.stream.title")}</span>
         <span className="ml-auto">{headerPill}</span>
@@ -869,12 +869,12 @@ export function ProjectStream({
       </div>
 
       <div ref={streamRef} onScroll={onStreamScroll} className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-4">
-        {runsFailed && <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[12px] text-amber-700 dark:text-amber-400">{t("workspace.stream.runsUnreadable")}</p>}
-        {gatesFailed && <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[12px] text-amber-700 dark:text-amber-400">{t("workspace.stream.gatesUnreadable")}</p>}
-        {runsCapped && <p className="text-center text-[11px] text-muted-foreground">{t("workspace.stream.runsCapped", { limit: RUNS_LIMIT })}</p>}
-        {gatesCapped && <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[12px] text-amber-700 dark:text-amber-400">{t("workspace.stream.gatesCapped", { limit: GATES_LIMIT })}</p>}
-        {runs === null && !runsFailed && <p className="text-[12px] text-muted-foreground">{t("workspace.stream.loading")}</p>}
-        {runs !== null && merged.length === 0 && <p className="text-[13px] text-muted-foreground">{t("workspace.stream.empty")}</p>}
+        {runsFailed && <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[0.8125rem] text-amber-700 dark:text-amber-400">{t("workspace.stream.runsUnreadable")}</p>}
+        {gatesFailed && <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[0.8125rem] text-amber-700 dark:text-amber-400">{t("workspace.stream.gatesUnreadable")}</p>}
+        {runsCapped && <p className="text-center text-[0.75rem] text-muted-foreground">{t("workspace.stream.runsCapped", { limit: RUNS_LIMIT })}</p>}
+        {gatesCapped && <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[0.8125rem] text-amber-700 dark:text-amber-400">{t("workspace.stream.gatesCapped", { limit: GATES_LIMIT })}</p>}
+        {runs === null && !runsFailed && <p className="text-[0.8125rem] text-muted-foreground">{t("workspace.stream.loading")}</p>}
+        {runs !== null && merged.length === 0 && <p className="text-[0.875rem] text-muted-foreground">{t("workspace.stream.empty")}</p>}
         {merged.map((item) => {
           if (item.type === "run") {
             // The exchange around the run: what the person said (its prompt) above the
@@ -900,8 +900,8 @@ export function ProjectStream({
             return (
               <div key={item.key} className="space-y-2">
                 {record && record.prompt.trim() !== "" && (
-                  <div className="ml-auto w-fit min-w-0 max-w-[56ch] rounded-xl border border-r-4 border-r-primary bg-primary/5 px-3 py-2 text-[14px] leading-relaxed">
-                    <div className="mb-1 font-mono text-[10px] text-muted-foreground">{t("workspace.stream.you")} · {relTime(record.queued_at, t)}</div>
+                  <div className="ml-auto w-fit min-w-0 max-w-[56ch] rounded-xl border border-r-4 border-r-primary bg-primary/5 px-3 py-2 text-[0.9375rem] leading-relaxed">
+                    <div className="mb-1 font-mono text-[0.6875rem] text-muted-foreground">{t("workspace.stream.you")} · {relTime(record.queued_at, t)}</div>
                     {displayPromptOf(record) === record.prompt.trim()
                       ? <Prose text={record.prompt} />
                       : (
@@ -909,7 +909,7 @@ export function ProjectStream({
                            agent actually received is one fold away, not hidden. */
                         <details>
                           <summary className="cursor-pointer">{displayPromptOf(record)}</summary>
-                          <div className="mt-2 text-[12px] text-muted-foreground"><Prose text={record.prompt} /></div>
+                          <div className="mt-2 text-[0.8125rem] text-muted-foreground"><Prose text={record.prompt} /></div>
                         </details>
                       )}
                   </div>
@@ -919,8 +919,8 @@ export function ProjectStream({
                     ran, what came back — growing while it runs, unchanged once it has
                     ended. No card, no summary (CR-99). What could not be read is said. */}
                 {!chat && (
-                  <div className="min-w-0 max-w-[72ch] rounded-xl border bg-card px-3 py-2 text-[13.5px] leading-relaxed">
-                    <div className="mb-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono text-[10px] text-muted-foreground">
+                  <div className="min-w-0 max-w-[72ch] rounded-xl border bg-card px-3 py-2 text-[0.875rem] leading-relaxed">
+                    <div className="mb-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono text-[0.6875rem] text-muted-foreground">
                       <span className="font-medium text-foreground">{adapterLabel(item.unit.run.adapter)}</span>
                       {item.step !== null && <span>{t("workspace.stream.run.step", { step: item.step })}</span>}
                       {live
@@ -942,9 +942,9 @@ export function ProjectStream({
                              prefetched, so the turn is opened on demand — its record,
                              its transcript and its files together. */
                           ? (reading.has(item.unit.run.run_id)
-                            ? <p className="text-[12px] text-muted-foreground">{t("workspace.stream.loading")}</p>
-                            : <button type="button" onClick={() => { readExchange(item.unit.run); setOpened((held) => new Set(held).add(item.unit.run.run_id)); void pull(item.unit.run.run_id); }} className="text-[12px] text-muted-foreground underline-offset-2 hover:underline">{t(full === "failed" ? "workspace.stream.answerReadFailed" : "workspace.stream.answerRead")}</button>)
-                          : <p className="text-[12px] text-muted-foreground">{t("workspace.stream.run.noOutput")}</p>}
+                            ? <p className="text-[0.8125rem] text-muted-foreground">{t("workspace.stream.loading")}</p>
+                            : <button type="button" onClick={() => { readExchange(item.unit.run); setOpened((held) => new Set(held).add(item.unit.run.run_id)); void pull(item.unit.run.run_id); }} className="text-[0.8125rem] text-muted-foreground underline-offset-2 hover:underline">{t(full === "failed" ? "workspace.stream.answerReadFailed" : "workspace.stream.answerRead")}</button>)
+                          : <p className="text-[0.8125rem] text-muted-foreground">{t("workspace.stream.run.noOutput")}</p>}
                     {/* Under the text, where the eye already is. Shown for the whole of a
                         live turn, not only once it has written something: claude does not
                         serve the words of its thinking in this mode (measured 2026-09-22),
@@ -954,28 +954,28 @@ export function ProjectStream({
                         (kiro review, 2026-09-22). The wording is the only thing that
                         changes with it; the pulse is the point. */}
                     {live && (
-                      <p className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                      <p className="flex items-center gap-1.5 text-[0.75rem] text-muted-foreground">
                         <span className="inline-block size-1.5 animate-pulse rounded-full bg-primary" />
                         {t(turnText === "" ? "workspace.stream.transcriptWaiting" : "workspace.stream.transcriptWorking")}
                       </p>
                     )}
-                    {!live && record?.error_message && <p className="mt-1 text-[12px] text-destructive">{record.error_message}</p>}
+                    {!live && record?.error_message && <p className="mt-1 text-[0.8125rem] text-destructive">{record.error_message}</p>}
                     {/* What the turn changed — listed once it has ended, as the terminal
                         would print a diff summary. Nothing listed means nothing changed
                         only when the read settled as such; the block says the rest. */}
                     {!live && expanded[item.unit.run.run_id]?.deliverables !== undefined && expanded[item.unit.run.run_id]?.deliverables !== null && (
-                      <div className="mt-2 border-t pt-2 text-[12px]">
+                      <div className="mt-2 border-t pt-2 text-[0.8125rem]">
                         <DeliverablesBlock runId={item.unit.run.run_id} delivered={expanded[item.unit.run.run_id].deliverables} onLoad={() => loadFiles(item.unit.run.run_id)} t={t} compact />
                       </div>
                     )}
                   </div>
                 )}
                 {chat && record && reply !== "" && !live && (
-                  <div className="min-w-0 max-w-[64ch] rounded-xl border bg-card px-3 py-2 text-[14px] leading-relaxed">
-                    <div className="mb-1 font-mono text-[10px] text-muted-foreground">{t("workspace.stream.reply", { adapter: adapterLabel(record.adapter) })} · {relTime(record.finished_at ?? record.queued_at, t)}</div>
+                  <div className="min-w-0 max-w-[64ch] rounded-xl border bg-card px-3 py-2 text-[0.9375rem] leading-relaxed">
+                    <div className="mb-1 font-mono text-[0.6875rem] text-muted-foreground">{t("workspace.stream.reply", { adapter: adapterLabel(record.adapter) })} · {relTime(record.finished_at ?? record.queued_at, t)}</div>
                     <Prose text={reply} />
                     {chat && (
-                      <div className="mt-2 border-t pt-1.5 font-mono text-[10px] text-muted-foreground">
+                      <div className="mt-2 border-t pt-1.5 font-mono text-[0.6875rem] text-muted-foreground">
                         {answerMeta(item.unit.run, record)}
                         {/* A run that did not end well may still have said something; the
                             reason it ended lives here, under the partial answer, as the
@@ -1017,8 +1017,8 @@ export function ProjectStream({
                   if (verdict === "" && reviewTurn === "" && !reviewLive && review.state === "succeeded") return null;
                   const cut = verdict.length > REPLY_FOLD ? verdict.slice(verdict.length - REPLY_FOLD) : verdict;
                   return (
-                    <div key={review.run_id} className="min-w-0 max-w-[64ch] rounded-xl border border-l-4 border-l-amber-500 bg-card px-3 py-2 text-[14px] leading-relaxed">
-                      <div className="mb-1 flex flex-wrap items-center gap-x-2 font-mono text-[10px] text-muted-foreground">
+                    <div key={review.run_id} className="min-w-0 max-w-[64ch] rounded-xl border border-l-4 border-l-amber-500 bg-card px-3 py-2 text-[0.9375rem] leading-relaxed">
+                      <div className="mb-1 flex flex-wrap items-center gap-x-2 font-mono text-[0.6875rem] text-muted-foreground">
                         <span>{t("workspace.stream.reviewReply", { adapter: adapterLabel(review.adapter) })}</span>
                         {standIn && <span className="text-amber-700 dark:text-amber-400">{t("workspace.stream.reviewStoodIn", { adapter: adapterLabel(standIn.adapter) })}</span>}
                         {reviewLive
@@ -1033,14 +1033,14 @@ export function ProjectStream({
                       </div>
                       {verdict !== "" && !reviewLive
                         ? <>
-                            {verdict.length > REPLY_FOLD && <p className="mb-1 text-[11px] text-muted-foreground">{t("workspace.stream.replyFolded")}</p>}
+                            {verdict.length > REPLY_FOLD && <p className="mb-1 text-[0.75rem] text-muted-foreground">{t("workspace.stream.replyFolded")}</p>}
                             <Prose text={cut} />
                           </>
                         : reviewTurn !== ""
                           ? <TranscriptView text={reviewTurn} holdLastLine={reviewHold} />
-                          : <p className="text-[12px] text-muted-foreground">{t(reviewLive ? "workspace.stream.transcriptWaiting" : "workspace.stream.run.noOutput")}</p>}
+                          : <p className="text-[0.8125rem] text-muted-foreground">{t(reviewLive ? "workspace.stream.transcriptWaiting" : "workspace.stream.run.noOutput")}</p>}
                       {failure && (
-                        <p className="mt-1 text-[13px] text-destructive">
+                        <p className="mt-1 text-[0.875rem] text-destructive">
                           {failure.kind === "quota"
                             ? t(failure.when ? "workspace.stream.reviewQuotaUntil" : "workspace.stream.reviewQuota", { adapter: adapterLabel(review.adapter), when: failure.when ?? "" })
                             : t("workspace.stream.reviewFailedBecause", { adapter: adapterLabel(review.adapter), reason: failure.text })}
@@ -1057,17 +1057,17 @@ export function ProjectStream({
             const responded = item.item.state !== "open";
             return (
               <div key={item.key} className={cn("max-w-[64ch] rounded-xl border px-3 py-2", responded ? "bg-card" : "border-l-4 border-l-amber-500 bg-card")}>
-                <div className="flex flex-wrap items-baseline gap-2 text-[12px] text-muted-foreground">
+                <div className="flex flex-wrap items-baseline gap-2 text-[0.8125rem] text-muted-foreground">
                   <span className="font-semibold text-foreground">{t(responded ? "workspace.timeline.events.attentionResponded" : "workspace.timeline.events.attentionRaised")}</span>
                   {item.step !== null && <span>{t("workspace.stream.run.step", { step: item.step })}</span>}
-                  <span className="text-[10px]">{relTime(item.item.created_at, t)}</span>
-                  {responded && item.item.response_action && <span className="rounded-full border px-2 py-0.5 font-mono text-[10px]">{te("responseAction", item.item.response_action)}</span>}
+                  <span className="text-[0.6875rem]">{relTime(item.item.created_at, t)}</span>
+                  {responded && item.item.response_action && <span className="rounded-full border px-2 py-0.5 font-mono text-[0.6875rem]">{te("responseAction", item.item.response_action)}</span>}
                 </div>
                 {responded
                   ? (
-                    <details className="mt-1 text-[13px]">
+                    <details className="mt-1 text-[0.875rem]">
                       <summary className="cursor-pointer">{item.item.title}{item.item.response ? <span className="text-muted-foreground"> · {item.item.response}</span> : null}</summary>
-                      <div className="mt-2 text-[12px] text-muted-foreground"><Prose text={item.item.body} /></div>
+                      <div className="mt-2 text-[0.8125rem] text-muted-foreground"><Prose text={item.item.body} /></div>
                     </details>
                   )
                   : <InlineGateBlock gate={{ kind: "open", item: item.item }} t={t} te={te} onAnswered={(outcome) => void handleGate(outcome)} />}
@@ -1076,8 +1076,8 @@ export function ProjectStream({
           }
           if (item.type === "user" || item.type === "note") {
             return (
-              <div key={item.key} className="ml-auto w-fit min-w-0 max-w-[56ch] rounded-xl border border-r-4 border-r-primary bg-primary/5 px-3 py-2 text-[14px] leading-relaxed">
-                <div className="mb-1 font-mono text-[10px] text-muted-foreground">
+              <div key={item.key} className="ml-auto w-fit min-w-0 max-w-[56ch] rounded-xl border border-r-4 border-r-primary bg-primary/5 px-3 py-2 text-[0.9375rem] leading-relaxed">
+                <div className="mb-1 font-mono text-[0.6875rem] text-muted-foreground">
                   {t("workspace.stream.you")} · {relTime(item.at, t)}
                   {item.type === "note" && <> · {t("workspace.stream.noteTag")}{item.step !== null ? ` · ${t("workspace.stream.run.step", { step: item.step })}` : ""}</>}
                 </div>
@@ -1086,13 +1086,13 @@ export function ProjectStream({
             );
           }
           if (item.type === "auto") {
-            return <div key={item.key} className={cn("min-w-0 max-w-[64ch] rounded-xl border border-l-4 bg-card px-3 py-2 text-[13px] leading-relaxed", item.tone === "warn" ? "border-l-amber-500" : "border-l-primary")}><div className="mb-1 font-mono text-[10px] text-muted-foreground">{t("workspace.stream.auto")} · {relTime(item.at, t)}</div><Prose text={item.text} /></div>;
+            return <div key={item.key} className={cn("min-w-0 max-w-[64ch] rounded-xl border border-l-4 bg-card px-3 py-2 text-[0.875rem] leading-relaxed", item.tone === "warn" ? "border-l-amber-500" : "border-l-primary")}><div className="mb-1 font-mono text-[0.6875rem] text-muted-foreground">{t("workspace.stream.auto")} · {relTime(item.at, t)}</div><Prose text={item.text} /></div>;
           }
           if (item.type === "idea") {
             const p = item.proposal;
             return (
-              <div key={item.key} className="min-w-0 max-w-[64ch] rounded-xl border border-l-4 border-l-primary bg-card px-3 py-2 text-[13px] leading-relaxed [overflow-wrap:anywhere]">
-                <div className="mb-1 font-mono text-[10px] text-muted-foreground">{t("workspace.stream.auto")} · {relTime(item.at, t)}</div>
+              <div key={item.key} className="min-w-0 max-w-[64ch] rounded-xl border border-l-4 border-l-primary bg-card px-3 py-2 text-[0.875rem] leading-relaxed [overflow-wrap:anywhere]">
+                <div className="mb-1 font-mono text-[0.6875rem] text-muted-foreground">{t("workspace.stream.auto")} · {relTime(item.at, t)}</div>
                 {item.busy && p === null && <p className="text-muted-foreground">{t("workspace.stream.idea.thinking")}</p>}
                 {item.error && <p className="text-destructive">{t("workspace.stream.idea.failed", { reason: item.error })}</p>}
                 {p && (
@@ -1101,13 +1101,13 @@ export function ProjectStream({
                     <p className="mt-1">{t(`workspace.stream.idea.verdict.${p.verdict}`, { position: p.position ?? "?" })} <span className="text-muted-foreground">{p.why}</span></p>
                     {p.verdict === "task" && p.task && item.placed === null && (
                       <>
-                        <p className="mt-1.5 rounded-lg border bg-muted/30 px-2.5 py-1.5"><b className="font-medium">{p.task.title}</b><span className="block text-[12px] text-muted-foreground">{p.task.description}</span></p>
+                        <p className="mt-1.5 rounded-lg border bg-muted/30 px-2.5 py-1.5"><b className="font-medium">{p.task.title}</b><span className="block text-[0.8125rem] text-muted-foreground">{p.task.description}</span></p>
                         <div className="mt-2 flex flex-wrap gap-2">
                           <Button size="sm" onClick={() => void placeIdea(item.key, p, p.position)} disabled={item.busy}>{t("workspace.stream.idea.placeHere", { position: p.position ?? "?" })}</Button>
                           <Button size="sm" variant="outline" onClick={() => void placeIdea(item.key, p, null)} disabled={item.busy}>{t("workspace.stream.idea.placeLast")}</Button>
                           <Button size="sm" variant="ghost" onClick={() => patch(item.key, { placed: t("workspace.stream.idea.skipped") })} disabled={item.busy}>{t("workspace.stream.idea.skip")}</Button>
                         </div>
-                        {p.order_truncated && <p className="mt-1 text-[11px] text-muted-foreground">{t("projectChat.ideas.orderTruncated")}</p>}
+                        {p.order_truncated && <p className="mt-1 text-[0.75rem] text-muted-foreground">{t("projectChat.ideas.orderTruncated")}</p>}
                       </>
                     )}
                     {item.placed && <p className="mt-1.5 text-emerald-700 dark:text-emerald-400">{item.placed}</p>}
@@ -1118,8 +1118,8 @@ export function ProjectStream({
           }
           if (item.type === "advance") {
             return (
-              <div key={item.key} className="min-w-0 max-w-[64ch] rounded-xl border border-l-4 border-l-emerald-500 bg-card px-3 py-2 text-[13px] leading-relaxed [overflow-wrap:anywhere]">
-                <div className="mb-1 font-mono text-[10px] text-muted-foreground">{t("workspace.stream.auto")} · {relTime(item.at, t)}</div>
+              <div key={item.key} className="min-w-0 max-w-[64ch] rounded-xl border border-l-4 border-l-emerald-500 bg-card px-3 py-2 text-[0.875rem] leading-relaxed [overflow-wrap:anywhere]">
+                <div className="mb-1 font-mono text-[0.6875rem] text-muted-foreground">{t("workspace.stream.auto")} · {relTime(item.at, t)}</div>
                 <p>{t(item.committed && item.commit ? "workspace.stream.advance.done" : "workspace.stream.advance.doneNothing", { step: item.doneStep ?? "?", title: item.doneTitle, commit: item.commit?.slice(0, 7) ?? "" })}</p>
                 {item.next === null
                   ? <p className="mt-1 text-muted-foreground">{t(item.nextCertain ? "workspace.stream.advance.noNext" : "workspace.stream.advance.noNextUncertain")}</p>
@@ -1127,15 +1127,15 @@ export function ProjectStream({
                     <>
                       <p className="mt-1.5"><b className="font-medium">{t("workspace.stream.advance.next", { step: item.next.step, title: item.next.title })}</b></p>
                       {item.editing
-                        ? <textarea value={item.seed} onChange={(e) => patch(item.key, { seed: e.target.value })} className="mt-1.5 min-h-24 w-full resize-y rounded-lg border bg-background p-2 font-mono text-[12px] leading-relaxed" aria-label={t("workspace.stream.advance.seed")} />
-                        : <pre className="mt-1.5 max-h-40 overflow-auto whitespace-pre-wrap break-words border-l-2 border-primary/50 pl-2.5 font-mono text-[12px] leading-relaxed text-muted-foreground [overflow-wrap:anywhere]">{item.seed}</pre>}
+                        ? <textarea value={item.seed} onChange={(e) => patch(item.key, { seed: e.target.value })} className="mt-1.5 min-h-24 w-full resize-y rounded-lg border bg-background p-2 font-mono text-[0.8125rem] leading-relaxed" aria-label={t("workspace.stream.advance.seed")} />
+                        : <pre className="mt-1.5 max-h-40 overflow-auto whitespace-pre-wrap break-words border-l-2 border-primary/50 pl-2.5 font-mono text-[0.8125rem] leading-relaxed text-muted-foreground [overflow-wrap:anywhere]">{item.seed}</pre>}
                       {item.started
                         ? <p className="mt-1.5 text-emerald-700 dark:text-emerald-400">{t("workspace.stream.advance.started")}</p>
                         : (
                           <div className="mt-2 flex flex-wrap items-center gap-2">
                             <Button size="sm" onClick={() => void startNext(item.key, item.next!, item.seed)}>{t("workspace.stream.advance.start", { step: item.next.step })}</Button>
                             <Button size="sm" variant="ghost" onClick={() => patch(item.key, { editing: !item.editing })}>{item.editing ? t("workspace.stream.advance.editDone") : t("workspace.stream.advance.edit")}</Button>
-                            <span className="text-[11px] text-muted-foreground">{t("workspace.stream.advance.with", { adapter: adapterLabel(adapter) })}</span>
+                            <span className="text-[0.75rem] text-muted-foreground">{t("workspace.stream.advance.with", { adapter: adapterLabel(adapter) })}</span>
                           </div>
                         )}
                       {item.error && <p className="mt-1 text-destructive">{t("workspace.stream.compose.sendFailed", { reason: item.error })}</p>}
@@ -1161,15 +1161,15 @@ export function ProjectStream({
             void send();
           }}
           placeholder={t("workspace.stream.compose.placeholder")}
-          className="min-h-16 w-full resize-y rounded-lg border bg-background px-3 py-2 text-[14px] leading-relaxed outline-none focus:border-ring"
+          className="min-h-16 w-full resize-y rounded-lg border bg-background px-3 py-2 text-[0.9375rem] leading-relaxed outline-none focus:border-ring"
           disabled={sending}
         />
-        <div className="flex flex-wrap items-center gap-2 text-[12px] text-muted-foreground">
+        <div className="flex flex-wrap items-center gap-2 text-[0.8125rem] text-muted-foreground">
           <select
             id="project-stream-adapter"
             value={adapter}
             onChange={(e) => { setAdapter(e.target.value as ExecutionAdapter); setAdapterChosen(true); }}
-            className="rounded-md border bg-background px-2 py-1 text-[12px]"
+            className="rounded-md border bg-background px-2 py-1 text-[0.8125rem]"
             aria-label={t("workspace.stream.compose.adapter")}
           >
             {(adapters ?? [{ name: adapter } as AdapterCapability]).map((item) => <option key={item.name} value={item.name}>{adapterLabel(item.name)}</option>)}
@@ -1178,7 +1178,7 @@ export function ProjectStream({
             id="project-stream-environment"
             value={environmentChoice}
             onChange={(e) => setEnvironmentChoice(e.target.value)}
-            className="max-w-[16rem] rounded-md border bg-background px-2 py-1 text-[12px]"
+            className="max-w-[16rem] rounded-md border bg-background px-2 py-1 text-[0.8125rem]"
             aria-label={t("workspace.stream.compose.environment")}
             title={t("workspace.stream.compose.envTitle")}
           >
@@ -1211,7 +1211,7 @@ export function ProjectStream({
             {sending ? <RefreshCw className="size-3.5 animate-spin" /> : <Send className="size-3.5" />}{t("workspace.stream.compose.send")}
           </Button>
         </div>
-        {notice && <p className={cn("text-[12px]", notice.tone === "bad" ? "text-destructive" : notice.tone === "warn" ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground")} role={notice.tone === "bad" ? "alert" : undefined}>{notice.text}</p>}
+        {notice && <p className={cn("text-[0.8125rem]", notice.tone === "bad" ? "text-destructive" : notice.tone === "warn" ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground")} role={notice.tone === "bad" ? "alert" : undefined}>{notice.text}</p>}
       </div>
     </div>
   );

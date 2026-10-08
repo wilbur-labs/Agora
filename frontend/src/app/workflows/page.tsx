@@ -96,7 +96,7 @@ export default function WorkflowsPage() {
           <div className="max-h-[72vh] overflow-y-auto" aria-busy={loading}>
             {items.map((item) => <button key={item.workflow_id} disabled={acting} aria-pressed={selectedId === item.workflow_id} onClick={() => { selectedRef.current = item.workflow_id; setSelectedId(item.workflow_id); setDispatchResult(null); }} className={cn("block w-full border-b p-4 text-left hover:bg-accent/50 disabled:opacity-60", selectedId === item.workflow_id && "bg-primary/5")}>
               <span className="flex items-start justify-between gap-2"><strong className="text-sm">{item.title}</strong><StateBadge state={item.state} /></span>
-              <span className="mt-2 block font-mono text-[11px] text-muted-foreground">{shortId(item.workflow_id)}</span>
+              <span className="mt-2 block font-mono text-[0.75rem] text-muted-foreground">{shortId(item.workflow_id)}</span>
               <span className="mt-1 block text-xs text-muted-foreground">{t("workflows.page.list.summary", { steps: item.step_count, ready: item.ready_count, mode: item.auto_dispatch ? t("workflows.page.list.autoMode", { max: item.max_concurrent_runs }) : t("workflows.page.list.manualMode"), version: item.version })}</span>
             </button>)}
             {!loading && !items.length && <div className="p-10 text-center text-sm text-muted-foreground"><GitBranch className="mx-auto mb-3 size-8 opacity-40" />{t("workflows.page.list.empty")}</div>}

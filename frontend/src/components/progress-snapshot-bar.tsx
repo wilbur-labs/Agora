@@ -78,7 +78,7 @@ export function ProgressSnapshotBar(
           <span className="h-full bg-emerald-500/40" style={{ width: `${bar.inProgressPct}%` }} />
         )}
       </span>
-      {!compact && <span className="mt-1.5 block text-[11px] text-muted-foreground">{counts}</span>}
+      {!compact && <span className="mt-1.5 block text-[0.75rem] text-muted-foreground">{counts}</span>}
     </span>
   );
 }

@@ -52,7 +52,7 @@ export function InlineGateBlock({ gate, t, te, onAnswered }: {
   if (gate.kind === "notAGate" || gate.kind === "settled") return null;
   if (gate.kind === "open") return <OpenGate item={gate.item} t={t} te={te} onAnswered={onAnswered} />;
   return (
-    <p className="mt-1 text-[11px] leading-snug text-muted-foreground">
+    <p className="mt-1 text-[0.75rem] leading-snug text-muted-foreground">
       {t(`workspace.timeline.gate.${gate.kind}`)}
       {gate.kind !== "loading" && (
         <>
@@ -116,20 +116,20 @@ function OpenGate({ item, t, te, onAnswered }: {
   return (
     <div className="mt-2 space-y-2 rounded-lg border bg-muted/30 p-2.5">
       <div className="flex flex-wrap items-baseline gap-2">
-        <span className="rounded border px-1 text-[10px] uppercase tracking-wide text-muted-foreground">{te("attentionKind", item.kind)}</span>
+        <span className="rounded border px-1 text-[0.6875rem] uppercase tracking-wide text-muted-foreground">{te("attentionKind", item.kind)}</span>
         <span className="text-sm font-medium">{item.title}</span>
-        <span className="text-[10px] text-muted-foreground">{te("urgency", item.urgency)}</span>
+        <span className="text-[0.6875rem] text-muted-foreground">{te("urgency", item.urgency)}</span>
       </div>
       <p className="whitespace-pre-wrap text-xs leading-relaxed">{shown}</p>
       {long && (
-        <button type="button" onClick={() => setExpanded((v) => !v)} className="flex items-center gap-1 text-[11px] font-medium text-primary hover:underline">
+        <button type="button" onClick={() => setExpanded((v) => !v)} className="flex items-center gap-1 text-[0.75rem] font-medium text-primary hover:underline">
           <ChevronDown className={cn("size-3 transition-transform", expanded && "rotate-180")} />
           {expanded ? t("workspace.timeline.gate.hideBody") : t("workspace.timeline.gate.showBody")}
         </button>
       )}
       {approval ? (
         <>
-          <p className="text-[11px] text-muted-foreground">{t("workspace.timeline.gate.approvalHint")}</p>
+          <p className="text-[0.75rem] text-muted-foreground">{t("workspace.timeline.gate.approvalHint")}</p>
           <div className="flex flex-wrap items-center gap-2">
             {/* One click, sent at once. */}
             <Button size="sm" onClick={() => void submit("approve")} disabled={busy}>
@@ -167,7 +167,7 @@ function OpenGate({ item, t, te, onAnswered }: {
       ) : (
         <>
           {item.options.length > 0 && (
-            <label className="block text-[11px] text-muted-foreground">
+            <label className="block text-[0.75rem] text-muted-foreground">
               {t("attention.form.suggestedAnswer")}
               <select
                 className="mt-1 block w-full rounded-md border bg-background p-1.5 text-xs"
@@ -179,7 +179,7 @@ function OpenGate({ item, t, te, onAnswered }: {
               </select>
             </label>
           )}
-          <p className="text-[11px] text-muted-foreground">{t("workspace.timeline.gate.answerHint")}</p>
+          <p className="text-[0.75rem] text-muted-foreground">{t("workspace.timeline.gate.answerHint")}</p>
           <textarea
             value={response}
             onChange={(e) => setResponse(e.target.value)}
@@ -195,11 +195,11 @@ function OpenGate({ item, t, te, onAnswered }: {
         </>
       )}
       <div className="flex flex-wrap items-center gap-2">
-        <Link href="/attention" className="inline-flex items-center gap-1 text-[11px] font-medium text-primary hover:underline">
+        <Link href="/attention" className="inline-flex items-center gap-1 text-[0.75rem] font-medium text-primary hover:underline">
           {t("workspace.timeline.gate.openFull")} <ExternalLink className="size-3" />
         </Link>
-        {notice && <span className="text-[11px] text-muted-foreground" aria-live="polite">{notice}</span>}
-        {error && <span className="text-[11px] text-destructive" role="alert">{t("workspace.timeline.gate.failed", { reason: error })}</span>}
+        {notice && <span className="text-[0.75rem] text-muted-foreground" aria-live="polite">{notice}</span>}
+        {error && <span className="text-[0.75rem] text-destructive" role="alert">{t("workspace.timeline.gate.failed", { reason: error })}</span>}
       </div>
     </div>
   );

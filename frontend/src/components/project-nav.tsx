@@ -147,7 +147,7 @@ function NavRow({
     </>
   );
   const className = cn(
-    "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[13px] hover:bg-accent",
+    "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[0.875rem] hover:bg-accent",
     active && "bg-accent font-medium",
   );
 
@@ -201,7 +201,7 @@ export function ProjectNav({
              and only the project in context appears — silence about the rest, rather
              than a short list that reads as the whole. */}
       <div className="border-b px-4 pb-3">
-        <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+        <div className="text-[0.6875rem] uppercase tracking-wide text-muted-foreground">
           {t("workspace.nav.projectsLabel")}
         </div>
         {projectId ? (
@@ -227,18 +227,18 @@ export function ProjectNav({
                   <option key={project.project_id} value={project.project_id}>{project.name}</option>
                 ))}
               </select>
-              <span className="pointer-events-none absolute inset-y-0 right-2.5 flex items-center text-[11px] text-muted-foreground">
+              <span className="pointer-events-none absolute inset-y-0 right-2.5 flex items-center text-[0.75rem] text-muted-foreground">
                 ▾ {t("workspace.nav.switchProject")}
               </span>
             </div>
             {projectRoot && (
-              <div className="mt-1 truncate text-[11px] text-muted-foreground" title={projectRoot}>
+              <div className="mt-1 truncate text-[0.75rem] text-muted-foreground" title={projectRoot}>
                 {projectRoot}
               </div>
             )}
           </>
         ) : (
-          <p className="text-[11px] leading-snug text-muted-foreground">
+          <p className="text-[0.75rem] leading-snug text-muted-foreground">
             {t("workspace.nav.noProject")}
           </p>
         )}
@@ -276,18 +276,18 @@ export function ProjectNav({
                machine and implying the project is pinned to it. */}
         {current !== undefined && (
           <>
-            <div className="px-4 pb-1 pt-4 text-[10px] uppercase tracking-wide text-muted-foreground">
+            <div className="px-4 pb-1 pt-4 text-[0.6875rem] uppercase tracking-wide text-muted-foreground">
               {t("workspace.nav.executor")}
             </div>
-            <div className="flex justify-between px-4 py-1 text-[12px] text-muted-foreground">
+            <div className="flex justify-between px-4 py-1 text-[0.8125rem] text-muted-foreground">
               <span>{current.worker_agent}</span>
               <b className="font-medium text-foreground">{t("workspace.nav.asWorker")}</b>
             </div>
-            <div className="flex justify-between px-4 py-1 text-[12px] text-muted-foreground">
+            <div className="flex justify-between px-4 py-1 text-[0.8125rem] text-muted-foreground">
               <span>{current.reviewer_agent}</span>
               <b className="font-medium text-foreground">{t("workspace.nav.asReviewer")}</b>
             </div>
-            <div className="px-4 pb-1 pt-3 text-[10px] uppercase tracking-wide text-muted-foreground">
+            <div className="px-4 pb-1 pt-3 text-[0.6875rem] uppercase tracking-wide text-muted-foreground">
               {t("workspace.nav.environment")}
             </div>
             {/* Where each executor runs, read from its configuration (W3-a U5): a remote
@@ -296,18 +296,18 @@ export function ProjectNav({
                 says that rather than "local". */}
             {environments && environments.length > 0 ? (
               <>
-                <p className="px-4 pb-1 text-[11px] leading-snug text-muted-foreground">{t("workspace.nav.environmentByAdapter")}</p>
+                <p className="px-4 pb-1 text-[0.75rem] leading-snug text-muted-foreground">{t("workspace.nav.environmentByAdapter")}</p>
                 {environments.map((row) => (
-                  <div key={row.adapter} className="flex justify-between gap-2 px-4 py-1 text-[12px] text-muted-foreground">
+                  <div key={row.adapter} className="flex justify-between gap-2 px-4 py-1 text-[0.8125rem] text-muted-foreground">
                     <span>{row.adapter}</span>
-                    <b className="min-w-0 truncate font-mono text-[11px] font-medium text-foreground" title={row.target ?? undefined}>
+                    <b className="min-w-0 truncate font-mono text-[0.75rem] font-medium text-foreground" title={row.target ?? undefined}>
                       {row.target ?? t("workspace.nav.environmentLocal")}
                     </b>
                   </div>
                 ))}
               </>
             ) : (
-              <p className="px-4 pb-1 text-[11px] leading-snug text-muted-foreground">
+              <p className="px-4 pb-1 text-[0.75rem] leading-snug text-muted-foreground">
                 {t("workspace.nav.environmentUnknown")}
               </p>
             )}
@@ -320,7 +320,7 @@ export function ProjectNav({
                so the unknown case says the charter could not be read rather than making
                it. The way onward is the conversation, which is where a goal is settled. */}
         {gate.kind !== "open" && (
-          <div className="mx-2 mt-4 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-2 text-[11px] leading-relaxed text-amber-700 dark:text-amber-400">
+          <div className="mx-2 mt-4 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-2 text-[0.75rem] leading-relaxed text-amber-700 dark:text-amber-400">
             <p>{t(gate.kind === "noCharter" ? "projectChat.gate.noCharter" : "projectChat.gate.unknown")}</p>
             {gate.kind === "noCharter" && (
               <button type="button" onClick={onSettleGoal} className="mt-1 font-medium underline">
@@ -338,7 +338,7 @@ export function ProjectNav({
         <button
           type="button"
           onClick={() => setOtherOpen((v) => !v)}
-          className="flex w-full items-center gap-1.5 px-3 py-2 text-[11px] text-muted-foreground hover:bg-accent"
+          className="flex w-full items-center gap-1.5 px-3 py-2 text-[0.75rem] text-muted-foreground hover:bg-accent"
           aria-expanded={otherOpen}
         >
           {otherOpen ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}

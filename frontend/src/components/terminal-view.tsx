@@ -10,6 +10,7 @@ import "@xterm/xterm/css/xterm.css";
 
 import { getApiBase } from "@/lib/api";
 import { readTerminalToken, terminalStreamUrl } from "@/lib/terminal";
+import { readUiScale, terminalFontSize } from "@/lib/ui-scale";
 import { useI18n } from "@/lib/i18n";
 
 type Status = "connecting" | "open" | "exited" | "closed" | "tooSlow" | "refused";
@@ -32,7 +33,7 @@ export function TerminalView({ terminalId, onExit }: { terminalId: string; onExi
         cursorBlink: true,
         scrollback: 10000,
         fontFamily: "Cascadia Mono, Consolas, 'Courier New', monospace",
-        fontSize: 13,
+        fontSize: terminalFontSize(readUiScale()),
         theme: { background: "#0b0f14" },
       });
       const fit = new FitAddon();

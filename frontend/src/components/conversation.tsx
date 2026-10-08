@@ -768,7 +768,7 @@ export function Conversation({
                    that happened; promoting them silently would file a review as a turn
                    of its own. */
                 <div key={item.key} className="rounded-lg border border-dashed p-2">
-                  <p className="mb-1 text-[11px] leading-snug text-muted-foreground">
+                  <p className="mb-1 text-[0.75rem] leading-snug text-muted-foreground">
                     {t(UNPLACED_TURN_KEY[item.unplaced.because], { limit: shown })}
                   </p>
                   <TurnCard unit={{ run: item.unplaced.run, nested: [] }} {...cardProps} />
@@ -923,7 +923,7 @@ function SessionBadge({
       <div className="flex flex-wrap items-center gap-2">
         <span className={cn("rounded-full px-2.5 py-0.5 text-xs font-semibold", tone)}>{label}</span>
         {verdict.kind === "active" && (
-          <span className="font-mono text-[11px] text-muted-foreground">
+          <span className="font-mono text-[0.75rem] text-muted-foreground">
             {t("conversation.session.idLabel")} {verdict.sessionId.slice(0, 8)}
           </span>
         )}
@@ -1021,7 +1021,7 @@ function TurnCard({ unit, transcriptOf, deliverablesOf, onLoadTranscript, onLoad
           sentence in the block. */}
       {!live && (
         <div className="border-t px-3 py-2">
-          <p className="mb-1 text-[11px] font-medium text-muted-foreground">{t("conversation.turn.files")}</p>
+          <p className="mb-1 text-[0.75rem] font-medium text-muted-foreground">{t("conversation.turn.files")}</p>
           <DeliverablesBlock runId={run.run_id} delivered={delivered} onLoad={() => onLoadFiles(run.run_id)} t={t} compact />
         </div>
       )}
@@ -1043,7 +1043,7 @@ function TurnCard({ unit, transcriptOf, deliverablesOf, onLoadTranscript, onLoad
       )}
 
       {(worktree !== null || nested.total > 0) && (
-        <footer className="flex flex-wrap gap-x-3 gap-y-1 border-t bg-muted/20 px-3 py-1.5 text-[11px] text-muted-foreground">
+        <footer className="flex flex-wrap gap-x-3 gap-y-1 border-t bg-muted/20 px-3 py-1.5 text-[0.75rem] text-muted-foreground">
           {worktree !== null && <span className="font-mono">{t("conversation.turn.worktree", { name: worktree })}</span>}
           {nested.total > 0 && (
             <span>{t("conversation.turn.nested", { count: nested.total, reviews: nested.reviews, others: nested.others })}</span>
@@ -1116,7 +1116,7 @@ function NestedTurn({ run, transcript, delivered, onLoad, onLoadFiles, onStop }:
       {open && <TranscriptBody transcript={transcript} live={live} onLoad={onLoad} />}
       {open && !live && (
         <div className="border-t border-border/50 px-3 py-2">
-          <p className="mb-1 text-[11px] font-medium text-muted-foreground">{t("conversation.turn.files")}</p>
+          <p className="mb-1 text-[0.75rem] font-medium text-muted-foreground">{t("conversation.turn.files")}</p>
           <DeliverablesBlock runId={run.run_id} delivered={delivered} onLoad={onLoadFiles} t={t} compact />
         </div>
       )}
@@ -1158,7 +1158,7 @@ function TranscriptBody({ transcript, live, onLoad }: { transcript: Transcript |
         </p>
       )}
       {rest.join("\n").trim() ? (
-        <pre className="max-h-80 overflow-auto whitespace-pre-wrap rounded bg-zinc-950 px-3 py-2 font-mono text-[11.5px] leading-relaxed text-zinc-200">
+        <pre className="max-h-80 overflow-auto whitespace-pre-wrap rounded bg-zinc-950 px-3 py-2 font-mono text-[0.75rem] leading-relaxed text-zinc-200">
           {rest.join("\n")}
           {live && <span className="animate-pulse">▌</span>}
         </pre>
@@ -1206,7 +1206,7 @@ function StatePill({ state, exitCode }: { state: string; exitCode: number | null
     : state === "queued" ? t("conversation.turn.queued")
     : exitCode !== null ? t("conversation.turn.exit", { code: exitCode })
     : state;
-  return <span className={cn("rounded-full px-2 py-0.5 text-[11px] font-semibold", tone)}>{label}</span>;
+  return <span className={cn("rounded-full px-2 py-0.5 text-[0.75rem] font-semibold", tone)}>{label}</span>;
 }
 
 function Notice({ tone, children }: { tone: "warn" | "error"; children: React.ReactNode }) {

@@ -27,7 +27,7 @@ export function CapabilitySlot(
     return (
       <span
         className={cn(
-          "shrink-0 text-[11px] tabular-nums",
+          "shrink-0 text-[0.75rem] tabular-nums",
           caveat ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground",
           className,
         )}
@@ -57,7 +57,7 @@ export function CapabilitySlot(
 
   return (
     <span
-      className={cn("shrink-0 truncate text-[10px] italic text-muted-foreground/80", className)}
+      className={cn("shrink-0 truncate text-[0.6875rem] italic text-muted-foreground/80", className)}
       title={why}
     >
       {t(key, {

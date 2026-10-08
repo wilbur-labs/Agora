@@ -17,6 +17,7 @@ import { instanceBadgeOf, type AgoraHealth } from "@/lib/instance";
 import { isProbeSuperseded, probeRuntimes, subscribeRuntimes } from "@/lib/runtime-probe";
 import { SHELL_TABS, cliStripOf } from "@/lib/shell";
 import { cn } from "@/lib/utils";
+import { applyUiScale, DEFAULT_UI_SCALE, nextUiScale, readUiScale, type UiScale } from "@/lib/ui-scale";
 
 // The app shell: mockup v2's top bar over every screen.
 //
@@ -170,6 +171,7 @@ export function TopBar({ active }: { active: string }) {
               <Icon className="size-4" />
             </Link>
           ))}
+          <TextSizeButton />
           <button
             className="rounded-lg p-2 text-muted-foreground hover:bg-accent hover:text-foreground"
             onClick={toggleLocale}
@@ -188,6 +190,24 @@ export function TopBar({ active }: { active: string }) {
         </span>
       </div>
     </header>
+  );
+}
+
+/** CR-37: one click per step through the three text sizes; the label says the current one. */
+function TextSizeButton() {
+  const { t } = useI18n();
+  const [scale, setScale] = useState<UiScale>(DEFAULT_UI_SCALE);
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- read the stored choice once in the browser
+  useEffect(() => { setScale(readUiScale()); }, []);
+  return (
+    <button
+      className="rounded-lg px-2 py-1 text-sm font-semibold text-muted-foreground hover:bg-accent hover:text-foreground"
+      onClick={() => { const next = nextUiScale(scale); applyUiScale(next); setScale(next); }}
+      aria-label={t("common.textSize.label")}
+      title={t("common.textSize.label")}
+    >
+      {t(`common.textSize.${scale}`)}
+    </button>
   );
 }
 

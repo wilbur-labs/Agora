@@ -73,7 +73,7 @@ export function HumanActions({ projection, respondingItemId, approvingPlan, disp
                 <CircleDot className="mt-0.5 size-4 text-amber-600" />
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-medium">{action.title}</p>
-                  <p className="mt-1 font-mono text-[11px] text-muted-foreground">{action.kind} · {action.source_id}</p>
+                  <p className="mt-1 font-mono text-[0.75rem] text-muted-foreground">{action.kind} · {action.source_id}</p>
                   {item && item.state === "open" && (
                     <AttentionResponseForm
                       item={item}
@@ -168,7 +168,7 @@ function CandidateDispositionForm({ candidate, busy, active, onDispose }: {
         void onDispose(candidate, action, reason, operationKey);
       }}
     >
-      <div className="flex flex-wrap gap-2 text-[11px] text-muted-foreground">
+      <div className="flex flex-wrap gap-2 text-[0.75rem] text-muted-foreground">
         <Badge variant="outline">{t("controlPlane.candidateForm.advisoryOnly")}</Badge>
         <Badge variant="outline">{t("controlPlane.candidateForm.notFormal")}</Badge>
         <Badge variant="outline">{candidate.runtime}</Badge>
@@ -179,9 +179,9 @@ function CandidateDispositionForm({ candidate, busy, active, onDispose }: {
         <p className="font-medium">{candidate.decision_value}</p>
         <p className="whitespace-pre-wrap text-muted-foreground">{candidate.analysis}</p>
         {candidate.source_refs.length > 0 && (
-          <p className="text-[11px] text-muted-foreground">{t("controlPlane.candidateForm.sources", { refs: candidate.source_refs.join(", ") })}</p>
+          <p className="text-[0.75rem] text-muted-foreground">{t("controlPlane.candidateForm.sources", { refs: candidate.source_refs.join(", ") })}</p>
         )}
-        <p className="break-all font-mono text-[10px] text-muted-foreground">{t("controlPlane.candidateForm.sha", { hash: candidate.content_sha256 })}</p>
+        <p className="break-all font-mono text-[0.6875rem] text-muted-foreground">{t("controlPlane.candidateForm.sha", { hash: candidate.content_sha256 })}</p>
       </div>
       <Field label={t("controlPlane.candidateForm.disposition")}>
         <select
@@ -204,7 +204,7 @@ function CandidateDispositionForm({ candidate, busy, active, onDispose }: {
         />
       </Field>
       <div className="flex items-center justify-between gap-3">
-        <p className="text-[11px] leading-4 text-muted-foreground">
+        <p className="text-[0.75rem] leading-4 text-muted-foreground">
           {t("controlPlane.candidateForm.note")}
         </p>
         <Button type="submit" size="sm" disabled={busy || !reason.trim()}>
@@ -249,7 +249,7 @@ function PlanApprovalForm({ projection, busy, active, onApprove }: {
         void onApprove(reason, operationKey);
       }}
     >
-      <div className="flex flex-wrap gap-2 text-[11px] text-muted-foreground">
+      <div className="flex flex-wrap gap-2 text-[0.75rem] text-muted-foreground">
         <Badge variant="outline">{t("controlPlane.planForm.taskVersion", { version: projection.task_state_version ?? "—" })}</Badge>
         <Badge variant="outline">{t("controlPlane.planForm.planVersion", { version: projection.plan.version })}</Badge>
         <span>{t("controlPlane.planForm.gatesNote")}</span>
@@ -264,7 +264,7 @@ function PlanApprovalForm({ projection, busy, active, onApprove }: {
         />
       </Field>
       <div className="flex items-center justify-between gap-3">
-        <p className="text-[11px] leading-4 text-muted-foreground">{t("controlPlane.planForm.note")}</p>
+        <p className="text-[0.75rem] leading-4 text-muted-foreground">{t("controlPlane.planForm.note")}</p>
         <Button type="submit" size="sm" disabled={busy || !reason.trim()}>
           {active ? <RefreshCw className="animate-spin" /> : <ShieldCheck />}
           {active ? t("controlPlane.planForm.approving") : t("controlPlane.planForm.approve")}
@@ -314,7 +314,7 @@ function AttentionResponseForm({ item, busy, active, onRespond }: {
       }}
     >
       {item.body && <p className="text-xs leading-5 text-muted-foreground">{item.body}</p>}
-      <div className="flex flex-wrap gap-2 text-[11px] text-muted-foreground">
+      <div className="flex flex-wrap gap-2 text-[0.75rem] text-muted-foreground">
         <Badge variant="outline">{item.kind}</Badge>
         <Badge variant="outline">{t("controlPlane.attentionForm.version", { version: item.version })}</Badge>
         <span>{item.assignee ? t("controlPlane.attentionForm.assignedTo", { assignee: item.assignee }) : t("controlPlane.attentionForm.anyResponder")}</span>
@@ -349,7 +349,7 @@ function AttentionResponseForm({ item, busy, active, onRespond }: {
         />
       </Field>
       <div className="flex items-center justify-between gap-3">
-        <p className="text-[11px] leading-4 text-muted-foreground">{t("controlPlane.attentionForm.note")}</p>
+        <p className="text-[0.75rem] leading-4 text-muted-foreground">{t("controlPlane.attentionForm.note")}</p>
         <Button type="submit" size="sm" disabled={busy || (requiresText && !response.trim())}>
           {active ? <RefreshCw className="animate-spin" /> : <Send />}
           {active ? t("controlPlane.attentionForm.sending") : attentionActionLabel(action, t)}

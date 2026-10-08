@@ -126,6 +126,9 @@
   }
   html {
     @apply font-sans;
+    /* CR-37: every size is in rem, so this one value scales the whole interface.
+       Set before first paint from the person's choice (lib/ui-scale.ts). */
+    font-size: calc(100% * var(--ui-scale, 1.125));
   }
 }
 

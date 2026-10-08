@@ -65,7 +65,7 @@ export default function TerminalPage() {
       {Array.isArray(rows) && selected && !current && <p className="p-4 text-sm text-muted-foreground">{t("workspace.terminal.gone")}</p>}
       {current && (
         <>
-          <p className="shrink-0 truncate border-b px-3 py-1 font-mono text-[11px] text-muted-foreground" title={current.cwd}>
+          <p className="shrink-0 truncate border-b px-3 py-1 font-mono text-[0.75rem] text-muted-foreground" title={current.cwd}>
             {current.cwd} · {t(`workspace.terminal.state.${terminalStateOf(current)}`, { code: String(current.exit_code ?? "?") })}
           </p>
           <div className="min-h-0 flex-1">

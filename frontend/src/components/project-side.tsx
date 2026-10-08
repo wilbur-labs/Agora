@@ -46,10 +46,10 @@ export function ProjectSide({ mode, rows, headline, goal, activeRuns, openGates,
   const order = rows.length === 0 ? null : (
     <ol className="grid gap-1 rounded-lg border p-3">
       {rows.map((row) => (
-        <li key={row.task_id} className={cn("grid grid-cols-[14px_1.4em_1fr] items-baseline gap-1.5 text-[12px]",
+        <li key={row.task_id} className={cn("grid grid-cols-[14px_1.4em_1fr] items-baseline gap-1.5 text-[0.8125rem]",
           row.standing === "done" ? "text-muted-foreground line-through decoration-border" : row.running ? "font-medium text-foreground" : "text-muted-foreground")}>
-          <span className={cn("font-mono text-[11px]", row.standing === "done" ? "text-emerald-600 dark:text-emerald-400" : row.running ? "text-primary" : "")}>{row.standing === "done" ? "✓" : row.running ? "▶" : "○"}</span>
-          <span className="font-mono text-[11px] text-muted-foreground">{row.step}</span>
+          <span className={cn("font-mono text-[0.75rem]", row.standing === "done" ? "text-emerald-600 dark:text-emerald-400" : row.running ? "text-primary" : "")}>{row.standing === "done" ? "✓" : row.running ? "▶" : "○"}</span>
+          <span className="font-mono text-[0.75rem] text-muted-foreground">{row.step}</span>
           <span className="min-w-0 truncate">{row.title}</span>
         </li>
       ))}
@@ -57,9 +57,9 @@ export function ProjectSide({ mode, rows, headline, goal, activeRuns, openGates,
   );
 
   const heading = (label: string, action?: { label: string; view: string }) => (
-    <h5 className="mb-1.5 flex items-baseline justify-between text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+    <h5 className="mb-1.5 flex items-baseline justify-between text-[0.75rem] font-semibold uppercase tracking-wide text-muted-foreground">
       <span>{label}</span>
-      {action && <button type="button" onClick={() => onSelectView(action.view)} className="text-[11px] font-medium normal-case tracking-normal text-primary hover:underline">{action.label}</button>}
+      {action && <button type="button" onClick={() => onSelectView(action.view)} className="text-[0.75rem] font-medium normal-case tracking-normal text-primary hover:underline">{action.label}</button>}
     </h5>
   );
 
@@ -69,7 +69,7 @@ export function ProjectSide({ mode, rows, headline, goal, activeRuns, openGates,
         <>
           <section className="min-w-0">
             {heading(t("workspace.side.goal"), { label: t("workspace.side.goalFull"), view: "goal" })}
-            <div className="rounded-lg border p-3 text-[12px] leading-relaxed">
+            <div className="rounded-lg border p-3 text-[0.8125rem] leading-relaxed">
               {goal.kind === "text" && <p className="line-clamp-4 whitespace-pre-wrap">{goal.text}</p>}
               {goal.kind === "none" && <p className="text-muted-foreground">{t("workspace.side.goalNone")}</p>}
               {goal.kind === "unreadable" && <p className="text-muted-foreground">{t("workspace.side.goalUnreadable")}</p>}
@@ -80,9 +80,9 @@ export function ProjectSide({ mode, rows, headline, goal, activeRuns, openGates,
           <section className="min-w-0">
             {heading(t("workspace.side.progress"), { label: t("workspace.side.progressDetail"), view: "order" })}
             <div className="rounded-lg border p-3">
-              <div className="flex items-baseline justify-between text-[12px]">
+              <div className="flex items-baseline justify-between text-[0.8125rem]">
                 <span>{t(headline.totalKnown ? "workspace.side.progressLine" : "workspace.side.progressLineNotWhole", { total: headline.total, done })}{running > 0 ? t("workspace.side.progressRunning", { running }) : ""}</span>
-                {headline.totalKnown && headline.total > 0 && <span className="font-mono text-[11px] text-muted-foreground">{Math.round((done / headline.total) * 100)}%</span>}
+                {headline.totalKnown && headline.total > 0 && <span className="font-mono text-[0.75rem] text-muted-foreground">{Math.round((done / headline.total) * 100)}%</span>}
               </div>
               {headline.totalKnown && headline.total > 0 && (
                 <div className="my-2 flex h-1.5 overflow-hidden rounded-full bg-muted">
@@ -90,20 +90,20 @@ export function ProjectSide({ mode, rows, headline, goal, activeRuns, openGates,
                   <i className="block h-full bg-primary/50" style={{ width: `${(running / headline.total) * 100}%` }} />
                 </div>
               )}
-              {order ?? <p className="text-[12px] text-muted-foreground">{t("workspace.detail.order.none")}</p>}
+              {order ?? <p className="text-[0.8125rem] text-muted-foreground">{t("workspace.detail.order.none")}</p>}
             </div>
           </section>
 
           <section className="min-w-0">
             {heading(t("workspace.side.now"))}
-            <div className="rounded-lg border p-3 text-[12px]">
+            <div className="rounded-lg border p-3 text-[0.8125rem]">
               {activeRuns === null && <p className="text-muted-foreground">{t("workspace.side.nowUnknown")}</p>}
               {activeRuns !== null && activeRuns.length === 0 && <p className="text-muted-foreground">{t("workspace.side.nowNone")}</p>}
               {activeRuns !== null && activeRuns.map((run, index) => (
                 <div key={`${run.task_id}-${index}`} className="grid gap-0.5">
-                  <div className="flex justify-between gap-2 border-b border-dashed py-0.5"><span>{te("adapter", run.adapter)}</span><span className="font-mono text-[11px] text-muted-foreground">{stepOf(run.task_id) === null ? t("workspace.stream.run.stepUnknown") : t("workspace.stream.run.step", { step: stepOf(run.task_id)! })}</span></div>
-                  <div className="flex justify-between gap-2 border-b border-dashed py-0.5"><span>{t("workspace.side.nowEnv")}</span><span className="min-w-0 truncate font-mono text-[11px] text-muted-foreground">{run.remote ? `${run.remote.user}@${run.remote.host}${run.remote.port !== 22 ? `:${run.remote.port}` : ""}` : envOf ? envOf(run.adapter) : "—"}</span></div>
-                  <div className="flex justify-between gap-2 py-0.5"><span>{t("workspace.side.nowAfter")}</span><span className="font-mono text-[11px] text-muted-foreground">{t("workspace.side.nowAfterAuto")}</span></div>
+                  <div className="flex justify-between gap-2 border-b border-dashed py-0.5"><span>{te("adapter", run.adapter)}</span><span className="font-mono text-[0.75rem] text-muted-foreground">{stepOf(run.task_id) === null ? t("workspace.stream.run.stepUnknown") : t("workspace.stream.run.step", { step: stepOf(run.task_id)! })}</span></div>
+                  <div className="flex justify-between gap-2 border-b border-dashed py-0.5"><span>{t("workspace.side.nowEnv")}</span><span className="min-w-0 truncate font-mono text-[0.75rem] text-muted-foreground">{run.remote ? `${run.remote.user}@${run.remote.host}${run.remote.port !== 22 ? `:${run.remote.port}` : ""}` : envOf ? envOf(run.adapter) : "—"}</span></div>
+                  <div className="flex justify-between gap-2 py-0.5"><span>{t("workspace.side.nowAfter")}</span><span className="font-mono text-[0.75rem] text-muted-foreground">{t("workspace.side.nowAfterAuto")}</span></div>
                 </div>
               ))}
             </div>
@@ -111,10 +111,10 @@ export function ProjectSide({ mode, rows, headline, goal, activeRuns, openGates,
 
           <section className="min-w-0">
             {heading(t("workspace.side.waiting"))}
-            <div className="rounded-lg border p-3 text-[12px]">
+            <div className="rounded-lg border p-3 text-[0.8125rem]">
               {openGates === null && <p className="text-muted-foreground">{t("workspace.side.waitingUnknown")}</p>}
               {openGates === 0 && <p className="text-muted-foreground">{t("workspace.side.waitingNone")}</p>}
-              {openGates !== null && openGates > 0 && <p><span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 font-mono text-[10px] text-amber-700 dark:text-amber-400">{openGates}</span> <button type="button" onClick={() => onSelectView("chat")} className="text-primary hover:underline">{t("workspace.side.waitingCount", { count: openGates })}</button></p>}
+              {openGates !== null && openGates > 0 && <p><span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 font-mono text-[0.6875rem] text-amber-700 dark:text-amber-400">{openGates}</span> <button type="button" onClick={() => onSelectView("chat")} className="text-primary hover:underline">{t("workspace.side.waitingCount", { count: openGates })}</button></p>}
             </div>
           </section>
         </>

@@ -375,11 +375,11 @@ export function ContinueAction({
     <div className="space-y-2 px-5 pb-3 pt-1.5">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <p className="text-xs font-semibold">{t("workspace.continue.panelTitle")}</p>
-        <span className="text-[11px] tabular-nums text-muted-foreground">
+        <span className="text-[0.75rem] tabular-nums text-muted-foreground">
           {t("workspace.continue.count", { n: prompt.length, limit: CONTINUE_PROMPT_LIMIT })}
         </span>
       </div>
-      <p className="text-[11px] leading-relaxed text-muted-foreground">{t("workspace.continue.panelHint")}</p>
+      <p className="text-[0.75rem] leading-relaxed text-muted-foreground">{t("workspace.continue.panelHint")}</p>
       <textarea
         value={prompt}
         onChange={(event) => setPrompt(event.target.value)}
@@ -387,10 +387,10 @@ export function ContinueAction({
         aria-label={t("workspace.continue.panelTitle")}
         className="min-h-44 w-full resize-y rounded-lg border bg-background p-2 font-mono text-xs leading-relaxed outline-none focus:border-ring"
       />
-      <p className="text-[11px] text-muted-foreground" aria-live="polite">{t(notice.key, notice.vars)}</p>
-      <p className="text-[11px] text-muted-foreground">{t("workspace.continue.adapterNote")}</p>
+      <p className="text-[0.75rem] text-muted-foreground" aria-live="polite">{t(notice.key, notice.vars)}</p>
+      <p className="text-[0.75rem] text-muted-foreground">{t("workspace.continue.adapterNote")}</p>
       {!decision.ready && entry.block && entry.block !== "dispatching" && (
-        <p className="text-[11px] text-muted-foreground">
+        <p className="text-[0.75rem] text-muted-foreground">
           {t(CONTINUE_BLOCK_KEY[entry.block], { state: te("taskState", task.state) })}
         </p>
       )}
@@ -424,7 +424,7 @@ export function ContinueAction({
             type="button"
             onClick={() => setPrompt(seededPrompt)}
             disabled={busy !== null}
-            className="text-[11px] font-medium text-primary hover:underline disabled:opacity-50"
+            className="text-[0.75rem] font-medium text-primary hover:underline disabled:opacity-50"
           >
             {t("workspace.continue.reseed")}
           </button>

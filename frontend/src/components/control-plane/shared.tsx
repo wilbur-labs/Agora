@@ -16,7 +16,7 @@ export function StatusBadge({ value, prominent = false, muted = false, tone, lab
   const normalized = value.toLowerCase();
   const positive = tone === "positive" || (tone === undefined && ["active", "ready", "completed", "passed", "valid", "succeeded"].some((item) => normalized.includes(item)));
   const negative = tone === "negative" || (tone === undefined && ["blocked", "failed", "stale", "cancelled", "reconciliation", "unavailable", "not initialized"].some((item) => normalized.includes(item)));
-  return <span className={cn("inline-flex w-fit items-center rounded-full border px-2 py-1 text-[11px] font-medium capitalize", prominent && "px-3 py-1.5 text-sm", muted && "bg-muted/40 text-muted-foreground", !muted && positive && "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300", !muted && negative && "border-amber-500/30 bg-amber-500/10 text-amber-800 dark:text-amber-200", !muted && !positive && !negative && "bg-muted/50 text-foreground")}>{label ?? value.replaceAll("_", " ")}</span>;
+  return <span className={cn("inline-flex w-fit items-center rounded-full border px-2 py-1 text-[0.75rem] font-medium capitalize", prominent && "px-3 py-1.5 text-sm", muted && "bg-muted/40 text-muted-foreground", !muted && positive && "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300", !muted && negative && "border-amber-500/30 bg-amber-500/10 text-amber-800 dark:text-amber-200", !muted && !positive && !negative && "bg-muted/50 text-foreground")}>{label ?? value.replaceAll("_", " ")}</span>;
 }
 
 export function EmptyState({ text, icon: Icon = CircleDot }: { text: string; icon?: typeof CircleDot }) {
