@@ -13,8 +13,11 @@
  * verdict (`PlanHeadline.totalKnown`); a run read that failed says so instead of
  * "nothing running"; an attention read that failed says so instead of "nothing".
  */
+import { useEffect, useState } from "react";
+import { PanelRightClose, PanelRightOpen } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n";
+import { foldedWaitingMark, readSideCollapsed, writeSideCollapsed } from "@/lib/side-collapse";
 import type { PlanHeadline, PlanRow } from "@/lib/task-plan";
 
 export interface SideRunLike { adapter: string; task_id: string; remote?: { host: string; port: number; user: string } | null }
@@ -42,6 +45,12 @@ export function ProjectSide({ mode, rows, headline, goal, activeRuns, openGates,
   const done = rows.filter((row) => row.standing === "done").length;
   const running = rows.filter((row) => row.running).length;
   const stepOf = (taskId: string) => rows.find((row) => row.task_id === taskId)?.step ?? null;
+  // Folding is for the adopted cards only: while the goal is being settled the column
+  // holds the draft of what will be written, which is not something to tuck away.
+  const [collapsed, setCollapsed] = useState(false);
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- read the stored choice once in the browser
+  useEffect(() => { setCollapsed(readSideCollapsed()); }, []);
+  const fold = (next: boolean) => { setCollapsed(next); writeSideCollapsed(next); };
 
   const order = rows.length === 0 ? null : (
     <ol className="grid gap-1 rounded-lg border p-3">
@@ -63,10 +72,31 @@ export function ProjectSide({ mode, rows, headline, goal, activeRuns, openGates,
     </h5>
   );
 
+  if (mode === "adopted" && collapsed) {
+    const waitingMark = foldedWaitingMark(openGates);
+    const runningNow = activeRuns === null ? "?" : activeRuns.length > 0 ? String(activeRuns.length) : null;
+    return (
+      <aside className="hidden h-full min-h-0 w-11 shrink-0 flex-col items-center gap-3 border-l py-4 lg:flex">
+        <button type="button" onClick={() => fold(false)} className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground" aria-label={t("workspace.side.expand")} title={t("workspace.side.expand")}><PanelRightOpen className="size-4" /></button>
+        {waitingMark !== null && (
+          <button type="button" onClick={() => fold(false)} title={openGates === null ? `${t("workspace.side.waiting")}: ${t("workspace.side.waitingUnknown")}` : t("workspace.side.waitingCount", { count: openGates })}
+            className={cn("rounded-full border px-1.5 py-0.5 font-mono text-[0.6875rem]", openGates === null ? "text-muted-foreground" : "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400")}>{waitingMark}</button>
+        )}
+        {runningNow !== null && (
+          <button type="button" onClick={() => fold(false)} title={activeRuns === null ? t("workspace.side.nowUnknown") : t("workspace.side.foldedRunning", { count: activeRuns.length })}
+            className="font-mono text-[0.6875rem] text-primary">▶{runningNow}</button>
+        )}
+      </aside>
+    );
+  }
+
   return (
     <aside className="hidden h-full min-h-0 w-80 min-w-0 shrink-0 flex-col gap-4 overflow-y-auto border-l px-4 py-4 lg:flex">
       {mode === "settling" ? draft(order) : (
         <>
+          <div className="-mb-2 flex justify-end">
+            <button type="button" onClick={() => fold(true)} className="rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground" aria-label={t("workspace.side.collapse")} title={t("workspace.side.collapse")}><PanelRightClose className="size-4" /></button>
+          </div>
           <section className="min-w-0">
             {heading(t("workspace.side.goal"), { label: t("workspace.side.goalFull"), view: "goal" })}
             <div className="rounded-lg border p-3 text-[0.8125rem] leading-relaxed">
