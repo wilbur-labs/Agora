@@ -197,6 +197,11 @@ function Assert-BackupPresent($Entry) {
 function Get-InstanceKind {
     # 'stable' only when HEAD is exactly a v* tag and nothing differs from it.
     # Wrongly saying 'dev' about a release is harmless; the reverse is not.
+    # A -Dev start is a development install whatever the code is: right after a release
+    # the checkout sits exactly on the new tag, and the sandbox then called itself the
+    # stable install - the very confusion between 8000 and 8001 the badge exists to
+    # prevent (CR-60).
+    if ($Dev) { return 'dev' }
     $tag = Invoke-Tool 'git' @('describe', '--exact-match', '--tags', '--match', 'v*', 'HEAD')
     if ($tag.Code -ne 0) { return 'dev' }
     $dirty = Invoke-Tool 'git' @('status', '--porcelain')
