@@ -12,6 +12,7 @@
  * entry exists), or that this machine cannot tell.
  */
 
+import { platformLabelOf } from "@/lib/shell";
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { AlertTriangle, CheckCircle2, HelpCircle, Pencil, Plus, Server, Trash2, XCircle } from "lucide-react";
@@ -98,7 +99,7 @@ export default function EnvironmentsPage() {
             <Server className="size-4" />
             <h2 className="text-base font-semibold">{t("environments.local.title")}</h2>
             <span className="font-mono text-xs text-muted-foreground">
-              {runtimes?.platform ?? t("environments.unknownShort")}
+              {runtimes?.platform ? platformLabelOf(runtimes.platform) : t("environments.unknownShort")}
             </span>
             <span className="ml-auto rounded-full bg-emerald-500/10 px-2.5 py-0.5 text-xs font-semibold text-emerald-700 dark:text-emerald-400">
               {t("environments.local.current")}

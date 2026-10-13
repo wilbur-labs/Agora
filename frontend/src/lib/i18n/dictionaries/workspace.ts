@@ -101,6 +101,9 @@ export const workspace = {
       collapse: "Hide this column",
       expand: "Show the goal, progress and what waits on you",
       foldedRunning: "{count} running",
+      rowDone: "Done",
+      rowRunning: "Running",
+      rowPending: "Not started",
       needsYou: "needs you",
       written: "What this step has written",
       done: "written",
@@ -454,7 +457,7 @@ export const workspace = {
     },
     // A left-column row opened in the centre (W12): the details, one view at a time.
     detail: {
-      back: "← Back to the conversation",
+      back: "Back to the conversation",
       goal: {
         title: "Goal & requirements",
         goal: "Goal",
@@ -1106,6 +1109,9 @@ export const workspace = {
       collapse: "收起右边栏",
       expand: "展开：目标、进度、等你",
       foldedRunning: "{count} 个在跑",
+      rowDone: "已完成",
+      rowRunning: "运行中",
+      rowPending: "未开始",
       needsYou: "等你",
       written: "这一步会写什么",
       done: "已写入",
@@ -1409,7 +1415,7 @@ export const workspace = {
       },
     },
     detail: {
-      back: "← 回到对话",
+      back: "回到对话",
       goal: {
         title: "目标与需求",
         goal: "目标",

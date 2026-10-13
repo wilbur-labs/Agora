@@ -16,7 +16,7 @@ import { waitingTotalOf } from "@/lib/project-rail";
 import { instanceBadgeOf, type AgoraHealth } from "@/lib/instance";
 import { isProbeSuperseded, probeRuntimes, subscribeRuntimes } from "@/lib/runtime-probe";
 import { AgoraMark } from "@/components/agora-mark";
-import { SHELL_TABS, cliStripOf } from "@/lib/shell";
+import { SHELL_TABS, cliStripOf, platformLabelOf } from "@/lib/shell";
 import { cn } from "@/lib/utils";
 import { applyUiScale, DEFAULT_UI_SCALE, nextUiScale, readUiScale, type UiScale } from "@/lib/ui-scale";
 
@@ -153,7 +153,7 @@ export function TopBar({ active }: { active: string }) {
         {/* The environment runs execute in. A label until W3-a, and it says so on hover. */}
         <span className="font-mono" title={t("common.shell.environmentTitle")}>
           {t("common.shell.environmentLocal")}
-          {runtimes?.platform ? ` · ${runtimes.platform}` : ""}
+          {runtimes?.platform ? ` · ${platformLabelOf(runtimes.platform)}` : ""}
         </span>
 
         {/* CR-40: what waits for the person, everywhere — a way into it, not a number to

@@ -9,6 +9,7 @@
  * log the server did not report is "could not be read", a project with no defect
  * source says so.
  */
+import { ArrowLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { relTime } from "@/components/timeline-entry";
 import { crLogViewOf } from "@/lib/cr-log";
@@ -194,7 +195,7 @@ export function ProjectDetail({
 
   return (
     <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
-      <Button size="sm" variant="ghost" onClick={onBack}>{t("workspace.detail.back")}</Button>
+      <Button size="sm" variant="ghost" onClick={onBack}><ArrowLeft />{t("workspace.detail.back")}</Button>
       <h2 className="mt-2 text-[1rem] font-semibold">{t(`workspace.detail.${view}.title`)}</h2>
       <div className="mt-3">{body}</div>
     </div>

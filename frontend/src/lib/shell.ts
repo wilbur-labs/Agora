@@ -69,3 +69,16 @@ export function cliStripOf(
     lines: probe.adapters.map((adapter) => ({ adapter: adapter.adapter, line: cliVersionLineOf(adapter) })),
   };
 }
+
+/**
+ * The OS name the bar shows next to 本机. The probe reports Python's `sys.platform`,
+ * which is `win32` on 64-bit Windows too — the name of the API, not the bitness — and
+ * read as "32-bit" by the person looking at it (CR-55). Known names become the OS's
+ * own; anything else is shown as reported rather than guessed at.
+ */
+export function platformLabelOf(platform: string): string {
+  if (platform === "win32" || platform === "cygwin" || platform === "msys") return "Windows";
+  if (platform === "darwin") return "macOS";
+  if (platform === "linux" || platform.startsWith("linux")) return "Linux";
+  return platform;
+}

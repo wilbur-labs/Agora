@@ -41,3 +41,11 @@ test("the shell renders the tabs from the one list, keeps the inventory and Sett
   const pageSource = page.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
   assert.ok(pageSource.includes("<TopBar"), "the workbench carries the same top bar as every other screen");
 });
+
+test("the platform next to 本机 is the OS's own name, never Python's win32", async () => {
+  const { platformLabelOf } = await import("../src/lib/shell.ts");
+  assert.equal(platformLabelOf("win32"), "Windows");
+  assert.equal(platformLabelOf("darwin"), "macOS");
+  assert.equal(platformLabelOf("linux"), "Linux");
+  assert.equal(platformLabelOf("freebsd14"), "freebsd14");
+});

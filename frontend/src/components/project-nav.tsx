@@ -235,7 +235,7 @@ export function ProjectNav({
                 ))}
               </select>
               <span className="pointer-events-none absolute inset-y-0 right-2.5 flex items-center text-[0.75rem] text-muted-foreground">
-                ▾ {t("workspace.nav.switchProject")}
+                <ChevronDown className="mr-0.5 size-3.5" />{t("workspace.nav.switchProject")}
               </span>
             </div>
             {projectRoot && (

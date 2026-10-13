@@ -21,7 +21,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Loader2, RefreshCw, Sparkles } from "lucide-react";
+import { Check, Loader2, RefreshCw, Sparkles } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { RecordedGoals } from "@/components/recorded-goals";
@@ -482,9 +482,9 @@ function RecordStream(props: {
       <Bubble who="agent" t={t}>
         <p>{t("projectChat.read.lead")}</p>
         <div className="mt-2 rounded-lg bg-background/70 px-2.5 py-2 font-mono text-[0.75rem] leading-relaxed text-muted-foreground">
-          <div>{record.context.readme ? t("projectChat.read.readme") : t("projectChat.read.readmeNone")}</div>
-          <div>{t("projectChat.read.tree", { count: record.context.tree_entries })}</div>
-          <div>{t("projectChat.read.git", { count: record.context.git_log_entries })}</div>
+          <div>{record.context.readme ? <span className="inline-flex items-center gap-1">{t("projectChat.read.readme")}<Check className="size-3 text-emerald-600 dark:text-emerald-400" /></span> : t("projectChat.read.readmeNone")}</div>
+          <div className="flex items-center gap-1">{t("projectChat.read.tree", { count: record.context.tree_entries })}<Check className="size-3 text-emerald-600 dark:text-emerald-400" /></div>
+          <div className="flex items-center gap-1">{t("projectChat.read.git", { count: record.context.git_log_entries })}<Check className="size-3 text-emerald-600 dark:text-emerald-400" /></div>
           {record.context.unread.length > 0 && (
             <div className="text-amber-600 dark:text-amber-400">
               {t("projectChat.read.unread", { items: record.context.unread.join("、") })}

@@ -61,7 +61,7 @@ export function ProjectionDashboard({ projection, respondingItemId, approvingPla
   const safeAction = projection.next_safe_action.value ?? projection.next_safe_action.unavailable_reason ?? t("controlPlane.dashboard.noSafeAction");
   return (
     <div className="space-y-5">
-      <section className="overflow-hidden rounded-2xl border bg-[radial-gradient(circle_at_top_right,var(--color-muted),transparent_42%)] shadow-sm">
+      <section className="overflow-hidden rounded-2xl border bg-card">
         <div className="grid gap-6 p-5 md:p-7 lg:grid-cols-[minmax(0,1.5fr)_minmax(300px,0.8fr)]">
           <div>
             <div className="flex flex-wrap items-center gap-2"><StatusBadge value={state ?? "unavailable"} label={state ? te("status", state) : t("controlPlane.dashboard.unavailable")} prominent /><Badge variant="outline">{t("controlPlane.dashboard.authority", { source: projection.task_state_source })}</Badge><Badge variant="outline">{t("controlPlane.dashboard.version", { version: projection.task_state_version ?? "—" })}</Badge>{projection.task_state_lifecycle === "reconciliation_required" && <Badge variant="destructive">{t("controlPlane.dashboard.reconciliationRequired")}</Badge>}</div>

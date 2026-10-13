@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import Link from "next/link";
 import {
   AlertTriangle,
+  ArrowLeft,
   ChevronDown,
   CircleCheck,
   ExternalLink,
@@ -866,9 +867,9 @@ export default function WorkspacePage() {
               <button
                 type="button"
                 onClick={() => { if (currentProjectId !== null) openProject(currentProjectId); }}
-                className="rounded-lg border px-2 py-1 text-[0.8125rem] hover:bg-accent"
+                className="flex items-center gap-1 rounded-lg border px-2 py-1 text-[0.8125rem] hover:bg-accent"
               >
-                ← {t("workspace.crumb.backToChat")}
+                <ArrowLeft className="size-3.5" />{t("workspace.crumb.backToChat")}
               </button>
               <span>/</span>
               <b className="min-w-0 truncate font-medium text-foreground">{selectedTask.title}</b>

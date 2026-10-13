@@ -14,7 +14,7 @@
  * "nothing running"; an attention read that failed says so instead of "nothing".
  */
 import { useEffect, useState } from "react";
-import { PanelRightClose, PanelRightOpen } from "lucide-react";
+import { Check, Circle, PanelRightClose, PanelRightOpen, Play } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/lib/i18n";
 import { foldedWaitingMark, readSideCollapsed, writeSideCollapsed } from "@/lib/side-collapse";
@@ -57,7 +57,7 @@ export function ProjectSide({ mode, rows, headline, goal, activeRuns, openGates,
       {rows.map((row) => (
         <li key={row.task_id} className={cn("grid grid-cols-[14px_1.4em_1fr] items-baseline gap-1.5 text-[0.8125rem]",
           row.standing === "done" ? "text-muted-foreground line-through decoration-border" : row.running ? "font-medium text-foreground" : "text-muted-foreground")}>
-          <span className={cn("font-mono text-[0.75rem]", row.standing === "done" ? "text-emerald-600 dark:text-emerald-400" : row.running ? "text-primary" : "")}>{row.standing === "done" ? "✓" : row.running ? "▶" : "○"}</span>
+          <span role="img" aria-label={t(row.standing === "done" ? "workspace.side.rowDone" : row.running ? "workspace.side.rowRunning" : "workspace.side.rowPending")} className={cn("self-center", row.standing === "done" ? "text-emerald-600 dark:text-emerald-400" : row.running ? "text-primary" : "")}>{row.standing === "done" ? <Check className="size-3.5" /> : row.running ? <Play className="size-3" /> : <Circle className="size-3" />}</span>
           <span className="font-mono text-[0.75rem] text-muted-foreground">{row.step}</span>
           <span className="min-w-0 truncate">{row.title}</span>
         </li>
@@ -84,7 +84,7 @@ export function ProjectSide({ mode, rows, headline, goal, activeRuns, openGates,
         )}
         {runningNow !== null && (
           <button type="button" onClick={() => fold(false)} title={activeRuns === null ? t("workspace.side.nowUnknown") : t("workspace.side.foldedRunning", { count: activeRuns.length })}
-            className="font-mono text-[0.6875rem] text-primary">▶{runningNow}</button>
+            className="flex items-center gap-0.5 font-mono text-[0.6875rem] text-primary"><Play className="size-3" />{runningNow}</button>
         )}
       </aside>
     );
