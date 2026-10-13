@@ -82,6 +82,7 @@ import {
 // yet, and each has to say which kind of nothing that is.
 import { ProjectNav, type ProjectNavProject } from "@/components/project-nav";
 import { railOf, type RailProject, type RailRead } from "@/lib/project-rail";
+import { LAST_PROJECT_KEY } from "@/lib/project-removal";
 // The plan is the page's opening view (W11): the project's tasks as an ordered whole.
 // Every judgment behind it — step numbers, what a step waits on, whether it may be
 // continued — is in lib/task-plan.ts, which is testable without a browser (CR-18).
@@ -383,9 +384,12 @@ export default function WorkspacePage() {
       if (projectsRead.status === "fulfilled") {
         // No project in context yet (nothing in the URL, nothing remembered): the
         // control plane's current project is the one. A functional update, so a
-        // project the URL or storage named meanwhile is not overwritten.
+        // project the URL or storage named meanwhile is not overwritten — unless that
+        // project is no longer registered (CR-56: removed, then reached again through a
+        // stale ?project= link or the back button), which would only produce failed reads.
         const fallback = projectsRead.value.current;
-        if (fallback) setProjectFilter((held) => (held === "all" ? fallback : held));
+        const known = new Set(projectsRead.value.items.map((project) => project.project_id));
+        setProjectFilter((held) => (held === "all" || !known.has(held) ? (fallback || "all") : held));
         setProjects(projectsRead.value.items.map(
           (project) => ({
             project_id: project.project_id,
@@ -1356,8 +1360,6 @@ const FOLLOW_UP_WINDOW_MS = 30_000;
 // comes back full, it may have been cut off, and a cut-off page cannot say "no
 // gate is open".
 const TASK_ATTENTION_LIMIT = MAX_PAGE;
-/** Per-viewer convenience: the project the workbench last showed (localStorage). */
-const LAST_PROJECT_KEY = "agora.workspace.project";
 /** The "runs" view's page (W12). One more is fetched so a full page is known to be cut. */
 const DETAIL_RUNS_LIMIT = 200;
 

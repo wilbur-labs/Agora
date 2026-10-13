@@ -31,6 +31,7 @@ from agora.execution import credential_store
 from agora.ssh_config import read_ssh_config
 from agora.projects.import_candidates import (
     exclude_agora_worktrees, find_candidates, git_worktree_root_status, recorded_goals,
+    tool_directory_check,
 )
 from agora.execution.remote_wiring import remote_path_within
 from agora.execution.credential_store import KeyringUnavailableError
@@ -54,7 +55,12 @@ from agora.orchestration.runtime_capabilities import (
 )
 from agora.projects import ProjectRegistry
 from agora.projects.models import TodayFocus
-from agora.projects.registry import TodayFocusFullError
+from agora.projects.registry import (
+    LastProjectError,
+    ProjectInUseError,
+    ProjectListedInImportSourceError,
+    TodayFocusFullError,
+)
 from agora.projects.workspace_tasks import (
     PROJECTS_UNREADABLE,
     ProjectRoots,
@@ -492,6 +498,21 @@ def register_existing_project(
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"Cannot inspect {root}: {probe.reason()}")
     if probe.absent or not probe.is_dir():
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"Not a directory on this machine: {root}")
+    # The same exclusion the candidate list applies (CR-56), here too — otherwise it is
+    # a filter on one screen, and any other caller of this endpoint walks past it.
+    tool = tool_directory_check(root, [Path(source) for source in registry.workspace_sources()])
+    if tool.is_tool:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f"{root} is Agora itself or a workspace tool's directory ({tool.kind}), "
+            "not a project; nothing was registered",
+        )
+    if tool.undecided:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f"Cannot tell whether {root} is Agora itself or a workspace tool "
+            f"({tool.reason()}); nothing was registered",
+        )
     git_status = git_worktree_root_status(root)
     if git_status == "unreadable":
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, f"Could not ask git about {root}")
@@ -524,6 +545,43 @@ def register_existing_project(
     summary = _project_summary(project)
     summary["worktrees_excluded"] = exclude_agora_worktrees(Path(project.root))
     return summary
+
+
+@router.delete("/projects/{project_id}")
+def remove_project(
+    project_id: str,
+    registry: ProjectRegistry = Depends(get_project_registry),
+) -> dict[str, Any]:
+    """Remove a project from Agora (CR-56): **the registration only — no file is
+    touched**, not the repository and not the ``.agora/`` folders registering added.
+
+    Protected the way every state-changing route here is: by ``LocalOriginGuard``
+    (CR-34), which refuses a cross-site browser request before any router sees it.
+
+    404 for an unknown id. 409 — with the reason, and the counts where there are counts —
+    when it is the last project, when rows in the control-plane database still name it,
+    or when the YAML import source would bring it back. Nothing is removed on any refusal.
+    """
+    try:
+        current = registry.remove_project(project_id)
+    except KeyError:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Unknown project: {project_id}") from None
+    except LastProjectError as exc:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, {"code": "last_project", "message": str(exc)},
+        ) from None
+    except ProjectInUseError as exc:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            {"code": "project_in_use", "message": str(exc), "counts": exc.counts,
+             "unreadable": exc.unreadable},
+        ) from None
+    except ProjectListedInImportSourceError as exc:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            {"code": "listed_in_import_source", "message": str(exc), "source": exc.source},
+        ) from None
+    return {"removed": project_id, "current_project_id": current}
 
 
 @router.post("/projects", status_code=status.HTTP_201_CREATED)

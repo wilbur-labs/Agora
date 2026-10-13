@@ -783,7 +783,9 @@ export function createProject(
 export interface ImportCandidate {
   raw_path: string;
   root: string | null;
-  status: "ok" | "registered" | "not_this_machine" | "placeholder" | "missing" | "not_git" | "unreadable";
+  /** `agora_tool`: Agora's own checkout or a workspace tool's directory (CR-56) — listed,
+   *  never offered. */
+  status: "ok" | "registered" | "not_this_machine" | "placeholder" | "missing" | "not_git" | "unreadable" | "agora_tool";
   registered_as: string | null;
   suggested_id: string | null;
   suggested_name: string | null;
@@ -806,6 +808,16 @@ export function registerExistingProject(projectId: string, root: string, name?: 
     method: "POST",
     body: JSON.stringify({ project_id: projectId, root, name: name || null }),
   });
+}
+
+/**
+ * Remove a project from Agora (CR-56) — the registration only; the server deletes no
+ * file. 404 for an unknown project; 409, with the reason and counts in the message, when
+ * it is the last project, still has tasks / runs / other rows, or is listed in the import
+ * file. Returns the control plane's current project afterwards.
+ */
+export function removeProject(projectId: string): Promise<{ removed: string; current_project_id: string }> {
+  return request(`/api/projects/${encodeURIComponent(projectId)}`, { method: "DELETE" });
 }
 
 export function setProjectAgents(projectId: string, worker_agent: AdapterName, reviewer_agent: AdapterName): Promise<ProjectListItem> {

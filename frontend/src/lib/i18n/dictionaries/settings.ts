@@ -120,6 +120,14 @@ export const settings = {
       readonly: "read-only",
       stateUnknown: "could not be read",
       current: "current",
+      remove: "Remove from Agora",
+      removeConfirm:
+        "Remove {name} from Agora? This removes Agora's registration only. No file in the repository is deleted — not even the .agora/ folders Agora created.",
+      removeYes: "Remove",
+      removeNo: "Cancel",
+      removing: "Removing…",
+      removeRefused: "Not removed: {message}",
+      removeFailed: "Could not remove: {message}",
     },
     activity: {
       title: "Run activity",
@@ -258,6 +266,14 @@ export const settings = {
       readonly: "只读",
       stateUnknown: "无法读取",
       current: "当前",
+      remove: "从 Agora 移除",
+      removeConfirm:
+        "从 Agora 移除 {name}？只会删掉 Agora 里的登记，不会删除仓库里的任何文件——连 Agora 自己建的 .agora/ 目录也不动。",
+      removeYes: "移除",
+      removeNo: "取消",
+      removing: "正在移除…",
+      removeRefused: "没有移除：{message}",
+      removeFailed: "移除失败：{message}",
     },
     activity: {
       title: "运行活动",

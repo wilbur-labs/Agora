@@ -21,6 +21,7 @@ from .importer import (
     ProjectImportResult,
     ProjectImportSourceMissing,
     import_projects_from_yaml,
+    read_project_yaml,
 )
 from .models import (
     DEFAULT_REVIEWER_AGENT,
@@ -38,7 +39,9 @@ from .store import (
     SETTING_TODAY_FOCUS,
     SETTING_WORKSPACE_SOURCES,
     TODAY_FOCUS_LIMIT,
+    LastProjectError,
     ProjectExistsError,
+    ProjectInUseError,
     ProjectStore,
 )
 
@@ -46,7 +49,10 @@ __all__ = [
     "DEFAULT_REVIEWER_AGENT",
     "DEFAULT_WORKER_AGENT",
     "KNOWN_AGENTS",
+    "LastProjectError",
     "Project",
+    "ProjectInUseError",
+    "ProjectListedInImportSourceError",
     "ProjectImportError",
     "ProjectImportSourceMissing",
     "ProjectRegistry",
@@ -64,6 +70,36 @@ class TodayFocusFullError(RuntimeError):
     def __init__(self, limit: int):
         super().__init__(f"Today's focus already holds {limit} projects")
         self.limit = limit
+
+
+class ProjectListedInImportSourceError(RuntimeError):
+    """The YAML import source lists this project, so removing it would not last.
+
+    Constructing a registry imports that file, and the import inserts every project it
+    lists that the store does not hold — a removed project would be back on the next
+    start (or the next request that builds a registry), with nothing saying why. The
+    file is the maintainer's and Agora never writes it, so the refusal names it instead.
+
+    Also raised, with ``readable=False``, when the file exists but could not be read:
+    whether it lists the project is then unknown, and unknown is not "it does not".
+    """
+
+    def __init__(self, project_id: str, source: Path, *, readable: bool = True, reason: str = ""):
+        self.project_id = project_id
+        self.source = str(source)
+        self.readable = readable
+        if readable:
+            message = (
+                f"Project {project_id} is listed in the import file {source}, which is "
+                "imported at every start and would bring it back; remove it from that file "
+                "first. Nothing was removed"
+            )
+        else:
+            message = (
+                f"The import file {source} could not be read ({reason}), so whether it would "
+                f"bring project {project_id} back at the next start is unknown. Nothing was removed"
+            )
+        super().__init__(message)
 
 
 class ProjectRegistry:
@@ -213,7 +249,9 @@ class ProjectRegistry:
 
         The pointer may never name a missing project. A *stored* pointer that does
         cannot be produced through this store — :meth:`ProjectStore.set_current_project_id`
-        fails closed and nothing deletes projects — so finding one means the
+        fails closed, and the one path that deletes a project
+        (:meth:`ProjectStore.delete_unreferenced`, behind :meth:`remove_project`) moves
+        the pointer in the same transaction as the delete — so finding one means the
         database was changed from outside, and repairing it without a word would
         hide that the current project is no longer the one that was selected. A
         *file* pointer naming a project the file does not list is a malformed
@@ -410,6 +448,47 @@ class ProjectRegistry:
 
         self.store.edit_setting_lines(SETTING_TODAY_FOCUS, drop)
         return self.today_focus()
+
+    def remove_project(self, project_id: str) -> str:
+        """Remove a project from Agora — the registration only. Returns the current
+        project afterwards.
+
+        **Touches no file.** The repository, its ``.agora/`` folders, the worktrees under
+        them and the ``.git/info/exclude`` line registering added all stay exactly where
+        they are; only Agora stops listing the project. The person asked for "Agora should
+        not be a project any more", not for anything to be deleted, and a removal that
+        cleaned up folders would be a file operation on a repository Agora was told to
+        stop looking at.
+
+        Refuses, changing nothing:
+
+        * ``KeyError`` — no such project;
+        * :class:`LastProjectError` — it is the only one (the pointer has to resolve, and
+          an empty store re-seeds defaults on the next start);
+        * :class:`ProjectInUseError` — tasks, runs, attention items, a remote environment
+          binding or any other row in the control-plane database still names it, with
+          the counts. Removing it anyway would leave those rows pointing at nothing;
+        * :class:`ProjectListedInImportSourceError` — the YAML import source lists it,
+          or exists and cannot be read. The import that runs whenever a registry is
+          built would put it straight back.
+
+        The checks that read the database and the delete are one transaction in the
+        store; see :meth:`ProjectStore.delete_unreferenced`, which also clears the
+        project from today's focus and moves the current-project pointer if it named it.
+        """
+        if not self.store.exists(project_id):
+            raise KeyError(project_id)
+        try:
+            document = read_project_yaml(self.registry_path, project_root=self.project_root)
+        except ProjectImportSourceMissing:
+            document = None
+        except ProjectImportError as exc:
+            raise ProjectListedInImportSourceError(
+                project_id, self.registry_path, readable=False, reason=exc.reason
+            ) from exc
+        if document is not None and any(p.project_id == project_id for p in document.projects):
+            raise ProjectListedInImportSourceError(project_id, self.registry_path)
+        return self.store.delete_unreferenced(project_id, preferred_current=self.default_project)
 
     def create_project(
         self,

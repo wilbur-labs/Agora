@@ -337,6 +337,7 @@ export const portfolio = {
         unreadable: "could not be inspected",
         not_this_machine: "another machine's path",
         placeholder: "template placeholder, never filled in",
+        agora_tool: "Agora itself or a workspace tool's directory; not imported as a project",
       },
     },
     newProject: {
@@ -627,6 +628,7 @@ export const portfolio = {
         unreadable: "无法检查",
         not_this_machine: "别的机器上的路径",
         placeholder: "模板占位，从没填过",
+        agora_tool: "Agora 自身或工作区工具目录，不作为项目导入",
       },
     },
     newProject: {

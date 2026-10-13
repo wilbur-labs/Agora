@@ -13,7 +13,9 @@ export interface ImportGroups {
   importable: ImportCandidate[];
   /** Already projects — shown so the list is complete, not offered again. */
   registered: ImportCandidate[];
-  /** On this machine but not importable as is (missing / not a repository / unreadable). */
+  /** On this machine but not importable as is (missing / not a repository / unreadable /
+   *  Agora itself or a workspace tool's directory — CR-56). Listed so the person can see
+   *  why a repository their records name is not offered; never ticked. */
   blocked: ImportCandidate[];
   /** Not on this machine at all (another machine's paths, unfilled templates). */
   elsewhere: ImportCandidate[];

@@ -73,6 +73,60 @@ class ProjectExistsError(ValueError):
     pass
 
 
+class LastProjectError(RuntimeError):
+    """Removing this project would leave the store with none.
+
+    Its own type because the refusal has its own reason: the current-project pointer
+    must always resolve, and an empty store re-seeds the default projects on the next
+    start — removing the last project would bring a different one back.
+    """
+
+    def __init__(self, project_id: str):
+        super().__init__(
+            f"Project {project_id} is the only project left; Agora needs at least one, "
+            "so nothing was removed"
+        )
+        self.project_id = project_id
+
+
+#: How a refusal names the tables people will recognise. Anything else is named as the
+#: table itself — a count with a raw table name is still the true answer.
+_REFERENCE_LABELS = {
+    "tasks": "task(s)",
+    "execution_runs": "run(s)",
+    "attention_items": "attention item(s)",
+    "remote_environments": "remote environment binding(s)",
+}
+
+
+class ProjectInUseError(RuntimeError):
+    """Rows elsewhere in the control-plane database still refer to this project.
+
+    ``counts`` is ``{table: rows}`` for every table with rows for it; ``unreadable``
+    names tables whose count could not be taken, which refuse the removal exactly as
+    rows do — a count that could not be taken is not zero.
+    """
+
+    def __init__(self, project_id: str, counts: dict[str, int], unreadable: list[str] | None = None):
+        self.project_id = project_id
+        self.counts = dict(sorted(counts.items()))
+        self.unreadable = sorted(unreadable or [])
+        parts = [
+            f"{count} {_REFERENCE_LABELS[table]}" if table in _REFERENCE_LABELS
+            else f"{count} row(s) in {table}"
+            for table, count in self.counts.items()
+        ]
+        message = f"Project {project_id} is still referenced"
+        if parts:
+            message = f"Project {project_id} still has {', '.join(parts)}"
+        if self.unreadable:
+            message += (
+                f"{'; and ' if parts else ' — '}these tables could not be checked: "
+                f"{', '.join(self.unreadable)}"
+            )
+        super().__init__(f"{message}; nothing was removed")
+
+
 @dataclass(frozen=True)
 class ProjectProvenance:
     """Where a project row came from, and what has happened to it since.
@@ -418,6 +472,134 @@ class ProjectStore:
                 raise KeyError(f"Unknown project: {project_id}")
         return self.require(project_id)
 
+    def delete_unreferenced(self, project_id: str, *, preferred_current: str | None = None) -> str:
+        """Delete one project row — never the last one, and only if nothing refers to it.
+
+        Removes Agora's *registration* and nothing else: no file, no folder, not even the
+        ``.agora/`` folders registering created. Everything that decides whether the
+        delete may happen runs inside one ``BEGIN IMMEDIATE`` transaction with the delete
+        itself, because each check is of the form "nothing refers to this row, so it may
+        go": checked in one transaction and deleted in another, a task or a run created
+        in between would be left pointing at a project that no longer exists, and nothing
+        would ever say so.
+
+        **What that covers, exactly:** a row committed before this transaction starts is
+        seen and refuses the delete. It does *not* cover a writer that checked the project
+        exists in its own earlier read, and inserts after this delete commits — tasks,
+        runs, attention items and remote environments are written that way and nothing
+        re-checks the parent inside the writer's transaction. Such a row is an orphan.
+        Deferred as CR-58 (single person, removal is rare); the fix is a parent re-check
+        in each writer's own transaction, or a foreign key.
+
+        **Which tables refer to a project is discovered, not listed.** Every table in this
+        database other than ``projects`` that has a ``project_id`` column is counted —
+        tasks, runs, attention items, remote environments, the control-plane and
+        orchestration tables, and whatever is added after this was written. A list kept
+        here would be right on the day it was written and wrong the first time a store
+        added a table without knowing this method existed.
+
+        A table whose count cannot be taken is not "no rows": it is reported back as
+        unreadable and the delete is refused, the same as a table that has rows.
+
+        Refuses, raising and changing nothing, when:
+
+        * the project is unknown — :class:`KeyError`;
+        * it is the only project — :class:`LastProjectError`. The current-project pointer
+          must always resolve, and a store emptied here would be re-seeded with default
+          projects on the next start, which is the opposite of removing;
+        * any table still has rows for it, or could not be counted —
+          :class:`ProjectInUseError`, carrying ``{table: count}`` and the unreadable tables.
+
+        On success it also, in the same transaction:
+
+        * drops the project from today's focus tier;
+        * deletes its per-project settings — keys of the form ``<name>:<project_id>``,
+          today only the kickoff's ``kickoff_adopted:<id>``. That marker says "this
+          control plane applied the seal *to this row*", which stops being true when the
+          row goes; left behind, a later project registered under the same id would
+          inherit a claim about a charter it never had;
+        * moves the current-project pointer if it named this project (or named nothing):
+          to ``preferred_current`` when that survives, else the first remaining id. No
+          warning is printed, unlike the startup repair in
+          ``ProjectRegistry._ensure_current_pointer`` — that one reports a pointer moved
+          by something outside Agora, and this move is the requested removal's own.
+
+        Returns the current-project id after the removal.
+        """
+        validate_project_id(project_id)
+        with self._immediate_transaction() as db:
+            if db.execute(
+                "SELECT 1 FROM projects WHERE project_id = ?", (project_id,)
+            ).fetchone() is None:
+                raise KeyError(f"Unknown project: {project_id}")
+            remaining = [
+                row["project_id"]
+                for row in db.execute(
+                    "SELECT project_id FROM projects WHERE project_id != ? ORDER BY project_id",
+                    (project_id,),
+                )
+            ]
+            if not remaining:
+                raise LastProjectError(project_id)
+
+            counts: dict[str, int] = {}
+            unreadable: list[str] = []
+            for table in _tables_with_project_id(db):
+                try:
+                    count = int(
+                        db.execute(
+                            f"SELECT COUNT(*) FROM {_quote_identifier(table)} WHERE project_id = ?",
+                            (project_id,),
+                        ).fetchone()[0]
+                    )
+                except sqlite3.DatabaseError:
+                    unreadable.append(table)
+                    continue
+                if count:
+                    counts[table] = count
+            if counts or unreadable:
+                raise ProjectInUseError(project_id, counts, unreadable)
+
+            db.execute("DELETE FROM projects WHERE project_id = ?", (project_id,))
+            now = utc_now()
+
+            # Today's focus — the same newline list `edit_setting_lines` keeps.
+            focus = db.execute(
+                "SELECT value FROM project_settings WHERE key = ?", (SETTING_TODAY_FOCUS,)
+            ).fetchone()
+            if focus is not None:
+                kept = [
+                    line.strip() for line in focus["value"].splitlines()
+                    if line.strip() and line.strip() != project_id
+                ]
+                db.execute(
+                    "UPDATE project_settings SET value = ?, updated_at = ? WHERE key = ?",
+                    ("\n".join(kept), now, SETTING_TODAY_FOCUS),
+                )
+
+            # Project ids cannot contain ':' (validate_project_id), so a key ending in
+            # ':<id>' names this project and no other.
+            suffix = f":{project_id}"
+            for row in db.execute("SELECT key FROM project_settings").fetchall():
+                if row["key"].endswith(suffix):
+                    db.execute("DELETE FROM project_settings WHERE key = ?", (row["key"],))
+
+            pointer = db.execute(
+                "SELECT value FROM project_settings WHERE key = ?", (SETTING_CURRENT_PROJECT,)
+            ).fetchone()
+            current = None if pointer is None else pointer["value"]
+            if current is None or current not in remaining:
+                current = preferred_current if preferred_current in remaining else remaining[0]
+                db.execute(
+                    """
+                    INSERT INTO project_settings (key, value, updated_at) VALUES (?, ?, ?)
+                    ON CONFLICT(key) DO UPDATE SET value = excluded.value,
+                                                   updated_at = excluded.updated_at
+                    """,
+                    (SETTING_CURRENT_PROJECT, current, now),
+                )
+        return current
+
     def _update(self, project_id: str, assignment: str, params: tuple[Any, ...]) -> None:
         """The one Agora-side write path for a project row.
 
@@ -628,3 +810,35 @@ def project_fields(project: Project) -> dict[str, Any]:
         "reviewer_agent": project.reviewer_agent,
         "charter": project.charter,
     }
+
+
+def _tables_with_project_id(db: sqlite3.Connection) -> list[str]:
+    """Every table in this database, other than ``projects``, with a ``project_id``
+    column — read from the schema at the moment of asking, so a table added by any store
+    is covered without this module knowing about it.
+
+    A table whose columns cannot be listed is returned anyway: the count that follows
+    will then fail and be reported as unreadable, rather than the table being skipped as
+    though it had been checked.
+    """
+    tables = [
+        row[0]
+        for row in db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        if not row[0].startswith("sqlite_")  # SQLite's own (sqlite_sequence, sqlite_stat1)
+    ]
+    found: list[str] = []
+    for table in sorted(tables):
+        if table == "projects":
+            continue
+        try:
+            columns = {row[1] for row in db.execute(f"PRAGMA table_info({_quote_identifier(table)})")}
+        except sqlite3.DatabaseError:
+            found.append(table)
+            continue
+        if "project_id" in columns:
+            found.append(table)
+    return found
+
+
+def _quote_identifier(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'

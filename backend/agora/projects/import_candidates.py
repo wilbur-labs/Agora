@@ -57,7 +57,9 @@ class Candidate:
     #: "placeholder" — template text never filled in (`<edit-me…>`, `/path/to/…`);
     #: "missing" — the path does not exist here;
     #: "not_git" — it exists but is not a git repository (Agora will not git-init it);
-    #: "unreadable" — it could not be inspected (never read as "missing").
+    #: "unreadable" — it could not be inspected (never read as "missing");
+    #: "agora_tool" — Agora's own checkout or a workspace tool's directory, which the
+    #: person does not want as a project (CR-56). Listed, never offered.
     status: str
     registered_as: str | None = None
     suggested_id: str | None = None
@@ -113,6 +115,74 @@ def git_worktree_root_status(root: Path) -> str:
     top = Path(done.stdout.strip())
     same = os.path.normcase(str(top.resolve(strict=False))) == os.path.normcase(str(root.resolve(strict=False)))
     return "ok" if same else "not_git"  # inside another repository, not its own root
+
+
+#: What marks a directory as one of the tools rather than a piece of the person's work
+#: (CR-56: "Agora 不应该再出现在项目里了" — and neither should the two workspaces).
+#: Markers, not names: the private repository, the stable worktree and the public
+#: repository are three checkouts under three names, and a folder called
+#: "claude-workspace" that is someone's ordinary repository is not the tool.
+_TOOL_MARKERS: tuple[tuple[tuple[str, ...], str], ...] = (
+    # Any Agora checkout carries its backend package.
+    (("backend", "agora", "__init__.py"), "agora_checkout"),
+    # claude-workspace's tool directory: its work-root resolver, and its CLI — the split
+    # layout (tool directory + .workroot) is found by either. Not `tasks/_template`: an
+    # ordinary repository may keep a task template of its own (review).
+    (("scripts", "workroot.sh"), "workspace_tool"),
+    (("scripts", "cw.sh"), "workspace_tool"),
+    # kiro-workspace's tool directory: its work-data helper.
+    (("scripts", "kwd.sh"), "workspace_tool"),
+)
+
+
+@dataclass(frozen=True)
+class ToolCheck:
+    """Whether a directory is one of the tools (Agora itself, a workspace tool).
+
+    ``kind`` is ``"agora_checkout"``, ``"workspace_source"``, ``"workspace_tool"``, or
+    None when every marker was looked for and none is there. ``unknown`` lists the
+    markers that could not be looked for: with no positive marker found and something
+    unknown, the answer is not "not a tool" — it is unknown, and callers refuse it the
+    way they refuse any directory that could not be inspected.
+    """
+
+    kind: str | None
+    unknown: tuple[str, ...] = ()
+
+    @property
+    def is_tool(self) -> bool:
+        return self.kind is not None
+
+    @property
+    def undecided(self) -> bool:
+        return self.kind is None and bool(self.unknown)
+
+    def reason(self) -> str:
+        return ", ".join(self.unknown)
+
+
+def tool_directory_check(root: Path, workspace_sources: list[Path]) -> ToolCheck:
+    """Is ``root`` Agora's own checkout or a workspace tool's directory? (CR-56)
+
+    A registered workspace source is a tool by definition — it is where the task records
+    live, not a project those records describe. That comparison needs no file access.
+    The rest is markers (``_TOOL_MARKERS``); a marker found is enough, and a marker
+    that could not be probed is reported rather than read as absent.
+    """
+    try:
+        key = _key(root)
+        if any(_key(Path(source)) == key for source in workspace_sources):
+            return ToolCheck("workspace_source")
+    except (OSError, RuntimeError):
+        pass  # the markers below still decide, or say they could not
+    unknown: list[str] = []
+    for parts, kind in _TOOL_MARKERS:
+        probe = probe_path(root.joinpath(*parts))
+        if probe.unknown:
+            unknown.append(f"{'/'.join(parts)}: {probe.reason()}")
+        elif not probe.absent:
+            return ToolCheck(kind)
+    return ToolCheck(None, tuple(unknown))
 
 
 def _paths_in(document: dict[str, Any]) -> list[tuple[str, str | None]]:
@@ -203,7 +273,10 @@ def find_candidates(
 ) -> tuple[list[Candidate], list[dict[str, str]]]:
     """Candidates from every ``<source>/tasks/*/task.yaml``, one per repository, plus
     the task files that could not be read (said, not skipped). ``registered`` maps a
-    normcased project root to its project id."""
+    normcased project root to its project id.
+
+    ``source_roots`` are also what makes a candidate a workspace source and therefore
+    ``agora_tool`` (CR-56): the workspaces being read are the registry's own list."""
     by_key: dict[str, Candidate] = {}
     elsewhere: list[Candidate] = []
     unreadable: list[dict[str, str]] = []
@@ -239,13 +312,16 @@ def find_candidates(
             repo_name = repo_name or next(
                 (n for r, n in named if n and identities[r] == identities[raw]), None)
             name = (repo_name or local.name) if several else (ref.title or local.name)
-            by_key[key] = _classify(raw, local, key, registered, taken, ref, name)
+            by_key[key] = _classify(raw, local, key, registered, taken, ref, name, source_roots)
     return list(by_key.values()) + elsewhere, unreadable
 
 
-def _classify(raw, local: Path, key: str, registered, taken: set[str], ref, name: str) -> Candidate:
+def _classify(raw, local: Path, key: str, registered, taken: set[str], ref, name: str,
+              source_roots: list[Path]) -> Candidate:
     root = str(local.resolve(strict=False))
     if key in registered:
+        # Before the tool check on purpose: an Agora checkout that is already a project
+        # is reported as the project it is, so it can be found and removed (CR-56).
         return Candidate(raw_path=raw, root=root, status="registered",
                          registered_as=registered[key], tasks=[ref])
     probe = probe_path(local)
@@ -255,6 +331,13 @@ def _classify(raw, local: Path, key: str, registered, taken: set[str], ref, name
         return Candidate(raw_path=raw, root=root, status="missing", tasks=[ref])
     if not probe.is_dir():
         return Candidate(raw_path=raw, root=root, status="not_git", tasks=[ref])
+    tool = tool_directory_check(local, source_roots)
+    if tool.is_tool:
+        return Candidate(raw_path=raw, root=root, status="agora_tool", tasks=[ref])
+    if tool.undecided:
+        # Could not tell whether it is a tool: not offered, and said as uninspectable
+        # rather than "ready" — the same as a directory that could not be probed.
+        return Candidate(raw_path=raw, root=root, status="unreadable", tasks=[ref])
     git_status = git_worktree_root_status(local)
     if git_status != "ok":
         return Candidate(raw_path=raw, root=root, status=git_status, tasks=[ref])

@@ -40,3 +40,10 @@ test("statusKeyOf and tasksLabelOf name the reason and where the record came fro
   ] }));
   assert.equal(label, "signal-hunt · Work, sh · kiro-workspace");
 });
+
+test("Agora itself and the workspace tools are listed as not importable, never offered (CR-56)", () => {
+  const g = importGroupsOf([c({ status: "agora_tool", suggested_id: null }), c({ status: "agora_tool" })]);
+  assert.equal(g.importable.length, 0);
+  assert.deepEqual(g.blocked.map((x) => x.status), ["agora_tool", "agora_tool"]);
+  assert.equal(statusKeyOf("agora_tool"), "portfolio.import.status.agora_tool");
+});

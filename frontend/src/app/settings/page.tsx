@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   Cpu,
   FolderGit2,
+  FolderMinus,
   FolderOpen,
   Gauge,
   GitFork,
@@ -21,6 +22,7 @@ import {
   pickProjectsFolder,
   probeWorkspaceSource,
   registerWorkspaceSource,
+  removeProject,
   setProjectsBase,
   unregisterWorkspaceSource,
   type ProjectImportStatus,
@@ -28,6 +30,7 @@ import {
   type RuntimeCapability,
   type SettingsOverview,
 } from "@/lib/control-plane";
+import { forgetRemovedProject, removalErrorOf } from "@/lib/project-removal";
 import { isProbeSuperseded, probeRuntimes } from "@/lib/runtime-probe";
 import {
   SOURCE_REASON_KEY,
@@ -283,6 +286,7 @@ function WorkspacesCard({ overview, onReload, onError }: { overview: SettingsOve
               {project.project_id === overview.projects.current && <Badge variant="secondary">{t("settings.workspaces.current")}</Badge>}
               <StatusDot ok={project.root_is_git} on={t("settings.workspaces.git")} off={t("settings.workspaces.notGit")} unknown={t("settings.workspaces.gitUnknown")} />
             </div>
+            <RemoveProject projectId={project.project_id} name={project.name} onRemoved={onReload} />
             <p className="mt-2 break-all font-mono text-[0.75rem] text-muted-foreground">{project.root}</p>
             <p className="mt-1 text-[0.75rem] text-muted-foreground">{t("settings.workspaces.agents", { worker: project.worker_agent, reviewer: project.reviewer_agent })}</p>
             <div className="mt-3 space-y-1.5">
@@ -303,6 +307,65 @@ function WorkspacesCard({ overview, onReload, onError }: { overview: SettingsOve
         ))}
       </div>
     </Section>
+  );
+}
+
+/**
+ * "Remove from Agora" for one project (CR-56): two steps, inline — the second says what
+ * removing means (the registration only; no file in the repository is deleted) before it
+ * can be done. A refusal is the server's own sentence, with its counts, verbatim.
+ *
+ * Nothing on this page is "the project being viewed"; the one place that comes back to a
+ * project by itself is the workbench, through its remembered last project, so that is what
+ * is forgotten when it named this one. The server has already moved its current-project
+ * pointer, which is where the workbench falls back to.
+ */
+function RemoveProject({ projectId, name, onRemoved }: { projectId: string; name: string; onRemoved: () => Promise<void> }) {
+  const { t } = useI18n();
+  const [step, setStep] = useState<"idle" | "confirm" | "removing">("idle");
+  const [failure, setFailure] = useState<string | null>(null);
+
+  const remove = async () => {
+    setStep("removing");
+    setFailure(null);
+    try {
+      await removeProject(projectId);
+      let storage: Storage | null = null;
+      try { storage = window.localStorage; } catch { /* unavailable: nothing remembered to forget */ }
+      forgetRemovedProject(storage, projectId);
+      await onRemoved();
+      // The removal itself succeeded. If the overview could not be re-read the card is
+      // still on screen from the old list; it must not stay frozen at "removing" (review).
+      setStep("idle");
+    } catch (err) {
+      const { refused, message } = removalErrorOf(err);
+      setFailure(t(refused ? "settings.workspaces.removeRefused" : "settings.workspaces.removeFailed", { message }));
+      setStep("idle");
+    }
+  };
+
+  return (
+    <div className="mt-2">
+      {step === "idle" ? (
+        <Button type="button" variant="outline" size="sm" onClick={() => { setFailure(null); setStep("confirm"); }}>
+          <FolderMinus />{t("settings.workspaces.remove")}
+        </Button>
+      ) : (
+        <div className="space-y-2 rounded-md border border-dashed p-3">
+          <p className="text-[0.8125rem]">{t("settings.workspaces.removeConfirm", { name: `${name} (${projectId})` })}</p>
+          <div className="flex gap-2">
+            <Button type="button" variant="destructive" size="sm" onClick={() => void remove()} disabled={step === "removing"}>
+              {step === "removing" ? <RefreshCw className="animate-spin" /> : <FolderMinus />}
+              {step === "removing" ? t("settings.workspaces.removing") : t("settings.workspaces.removeYes")}
+            </Button>
+            <Button type="button" variant="outline" size="sm" onClick={() => setStep("idle")} disabled={step === "removing"}>
+              {t("settings.workspaces.removeNo")}
+            </Button>
+          </div>
+        </div>
+      )}
+      {failure && <p className="mt-2 text-[0.75rem] text-red-700 dark:text-red-400">{failure}</p>}
+    </div>
   );
 }
 
