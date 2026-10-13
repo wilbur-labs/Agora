@@ -2,6 +2,14 @@ import type { Metadata } from "next";
 import { ThemeProvider } from "@/components/theme-provider";
 import { TerminalCodeRedeemer } from "@/components/terminal-code-redeemer";
 import { LocaleProvider } from "@/lib/i18n";
+// CR-55: fonts ship with the build (no network at runtime). Latin from Inter, CJK
+// from Noto Sans SC — kana included, so Japanese text on a page uses SC's glyph
+// forms too; one consistent face per screen is deliberate. Noto Sans JP is only
+// reached for characters SC lacks. Each is split by unicode-range, so a page
+// downloads only the slices it actually uses.
+import "@fontsource-variable/inter";
+import "@fontsource-variable/noto-sans-sc";
+import "@fontsource-variable/noto-sans-jp";
 import "./globals.css";
 
 export const metadata: Metadata = {

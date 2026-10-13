@@ -32,7 +32,10 @@ export function TerminalView({ terminalId, onExit }: { terminalId: string; onExi
       const term = new Terminal({
         cursorBlink: true,
         scrollback: 10000,
-        fontFamily: "Cascadia Mono, Consolas, 'Courier New', monospace",
+        // CR-55: CJK falls through to the bundled fonts, not the OS default (MS Gothic).
+        // Every common monospace face comes first: Noto covers ASCII too, and reaching it
+        // for Latin would break the cell grid on a machine without Consolas.
+        fontFamily: "Cascadia Mono, Consolas, Menlo, 'DejaVu Sans Mono', 'Liberation Mono', 'Noto Sans SC Variable', 'Noto Sans JP Variable', 'Microsoft YaHei UI', monospace",
         fontSize: terminalFontSize(readUiScale()),
         theme: { background: "#0b0f14" },
       });

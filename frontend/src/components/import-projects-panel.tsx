@@ -72,7 +72,7 @@ export function ImportProjectsPanel({ onClose, onImported }: { onClose: () => vo
   return (
     <div className="fixed inset-0 z-50 flex justify-end bg-black/35" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <div role="dialog" aria-modal="true" aria-labelledby="import-projects-title"
-        className="h-full w-full max-w-2xl space-y-5 overflow-y-auto bg-background p-6 shadow-2xl">
+        className="h-full w-full max-w-2xl space-y-5 overflow-y-auto border-l bg-background p-6 shadow-2xl">
         <div>
           <h2 id="import-projects-title" className="text-lg font-semibold">{t("portfolio.import.title")}</h2>
           <p className="mt-1 text-sm text-muted-foreground">{t("portfolio.import.body")}</p>

@@ -141,7 +141,7 @@ export function RunCreatePanel({
         role="dialog"
         aria-modal="true"
         aria-labelledby="new-run-title"
-        className="h-full w-full max-w-xl space-y-6 overflow-y-auto bg-background p-6 shadow-2xl"
+        className="h-full w-full max-w-xl space-y-6 overflow-y-auto border-l bg-background p-6 shadow-2xl"
         onSubmit={async (event) => {
           event.preventDefault();
           if (!selectedTask || !valid) return;

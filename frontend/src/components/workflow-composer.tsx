@@ -55,7 +55,7 @@ export function WorkflowComposer({ tasks, onClose, onCreated }: {
   const remove = (id: string) => setSteps((current) => current.filter((step) => step.id !== id).map((step) => ({ ...step, dependsOn: step.dependsOn.filter((dependency) => dependency !== id) })));
 
   return createPortal(<div className="fixed inset-0 z-50 flex justify-end bg-black/40" onMouseDown={(event) => event.target === event.currentTarget && !submitting && onClose()}>
-    <form ref={formRef} role="dialog" aria-modal="true" aria-labelledby="workflow-composer-title" className="h-full w-full max-w-3xl space-y-6 overflow-y-auto bg-background p-6 shadow-2xl" onSubmit={async (event) => {
+    <form ref={formRef} role="dialog" aria-modal="true" aria-labelledby="workflow-composer-title" className="h-full w-full max-w-3xl space-y-6 overflow-y-auto border-l bg-background p-6 shadow-2xl" onSubmit={async (event) => {
       event.preventDefault(); if (!valid || submittingRef.current) return;
       submittingRef.current = true; setSubmitting(true); setError(null);
       try {

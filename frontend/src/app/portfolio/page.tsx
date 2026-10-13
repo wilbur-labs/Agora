@@ -884,7 +884,7 @@ function CreateTaskPanel({ projects, onClose, onCreated }: { projects: string[];
         role="dialog"
         aria-modal="true"
         aria-labelledby="create-task-title"
-        className="h-full w-full max-w-lg space-y-5 overflow-y-auto bg-background p-6 shadow-2xl"
+        className="h-full w-full max-w-lg space-y-5 overflow-y-auto border-l bg-background p-6 shadow-2xl"
         onSubmit={async (event) => {
           event.preventDefault(); setSubmitting(true); setError(null);
           try { onCreated(await createTask({ project_id: projectId.trim(), title: title.trim(), description: description.trim(), risk })); }
@@ -923,7 +923,7 @@ function NewProjectPanel({ onClose, onCreated }: { onClose: () => void; onCreate
         role="dialog"
         aria-modal="true"
         aria-labelledby="create-project-title"
-        className="h-full w-full max-w-lg space-y-5 overflow-y-auto bg-background p-6 shadow-2xl"
+        className="h-full w-full max-w-lg space-y-5 overflow-y-auto border-l bg-background p-6 shadow-2xl"
         onSubmit={async (event) => {
           event.preventDefault(); setSubmitting(true); setError(null);
           try { await createProject(projectId.trim(), name.trim() || undefined, { worker_agent: worker, reviewer_agent: reviewer }); await onCreated(); }
@@ -1022,7 +1022,7 @@ function CharterPanel({ projectId, charter, onClose, onSaved }: { projectId: str
         role="dialog"
         aria-modal="true"
         aria-labelledby="charter-title"
-        className="h-full w-full max-w-lg space-y-5 overflow-y-auto bg-background p-6 shadow-2xl"
+        className="h-full w-full max-w-lg space-y-5 overflow-y-auto border-l bg-background p-6 shadow-2xl"
         onSubmit={async (event) => {
           event.preventDefault(); setSubmitting(true); setError(null);
           const next: Charter = { goal: goal.trim(), non_goals: toLines(nonGoals), success_criteria: toLines(success) };

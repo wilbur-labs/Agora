@@ -7,7 +7,6 @@ import {
   FolderKanban,
   Languages,
   Moon,
-  Network,
   Settings,
   Sun,
 } from "lucide-react";
@@ -16,6 +15,7 @@ import { fetchHealth, listOpenAttention, type RuntimeCapabilities } from "@/lib/
 import { waitingTotalOf } from "@/lib/project-rail";
 import { instanceBadgeOf, type AgoraHealth } from "@/lib/instance";
 import { isProbeSuperseded, probeRuntimes, subscribeRuntimes } from "@/lib/runtime-probe";
+import { AgoraMark } from "@/components/agora-mark";
 import { SHELL_TABS, cliStripOf } from "@/lib/shell";
 import { cn } from "@/lib/utils";
 import { applyUiScale, DEFAULT_UI_SCALE, nextUiScale, readUiScale, type UiScale } from "@/lib/ui-scale";
@@ -113,7 +113,7 @@ export function TopBar({ active }: { active: string }) {
   return (
     <header className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b bg-sidebar px-4 py-2">
       <Link href="/" className="flex items-center gap-2">
-        <span className="grid size-8 place-items-center rounded-lg bg-primary text-primary-foreground"><Network className="size-4" /></span>
+        <AgoraMark />
         <span className="text-sm font-bold">{t("common.brand.name")}</span>
       </Link>
       {badge.kind !== "pending" && (
