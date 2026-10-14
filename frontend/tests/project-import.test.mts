@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { ImportCandidate } from "../src/lib/control-plane.ts";
-import { importGroupsOf, statusKeyOf, tasksLabelOf } from "../src/lib/project-import.ts";
+import { emptyImportNoteOf, importGroupsOf, statusKeyOf, tasksLabelOf } from "../src/lib/project-import.ts";
 
 function c(overrides: Partial<ImportCandidate>): ImportCandidate {
   return {
@@ -46,4 +46,11 @@ test("Agora itself and the workspace tools are listed as not importable, never o
   assert.equal(g.importable.length, 0);
   assert.deepEqual(g.blocked.map((x) => x.status), ["agora_tool", "agora_tool"]);
   assert.equal(statusKeyOf("agora_tool"), "portfolio.import.status.agora_tool");
+});
+
+test("an empty import list says why: no source, partly unreadable, or truly none (CR-57)", () => {
+  const unread = [{ source: "F:/offline", task: "", reason: "FileNotFoundError" }];
+  assert.equal(emptyImportNoteOf({ candidates: [], unreadable: [], sources: 0 }), "noSources");
+  assert.equal(emptyImportNoteOf({ candidates: [], unreadable: unread, sources: 1 }), "partial");
+  assert.equal(emptyImportNoteOf({ candidates: [], unreadable: [], sources: 1 }), "none");
 });

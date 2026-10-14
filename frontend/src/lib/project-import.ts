@@ -6,7 +6,7 @@
  * names why a candidate cannot be imported — it never turns "could not inspect" into
  * "not there", and never offers a candidate the server did not call importable.
  */
-import type { ImportCandidate } from "./control-plane";
+import type { ImportCandidate, ImportCandidates } from "./control-plane";
 
 export interface ImportGroups {
   /** Existing git repositories on this machine, not yet projects. */
@@ -43,4 +43,15 @@ export function tasksLabelOf(candidate: ImportCandidate): string {
   return candidate.tasks
     .map((t) => `${t.task} · ${t.source.split(/[\\/]/).filter(Boolean).pop() ?? t.source}`)
     .join(", ");
+}
+
+/**
+ * What to say when nothing is importable (CR-57). Three different answers, never folded
+ * into one: no work source registered = nowhere to read from; some task records could
+ * not be read = there may be more than we saw; only when everything was read is it "none".
+ */
+export function emptyImportNoteOf(read: ImportCandidates): "noSources" | "partial" | "none" {
+  if (read.sources === 0) return "noSources";
+  if (read.unreadable.length > 0) return "partial";
+  return "none";
 }

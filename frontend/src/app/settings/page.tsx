@@ -133,9 +133,9 @@ export default function SettingsPage() {
   );
 }
 
-function Section({ icon: Icon, title, intro, children }: { icon: React.ElementType; title: string; intro: string; children: React.ReactNode }) {
+function Section({ icon: Icon, title, intro, id, children }: { icon: React.ElementType; title: string; intro: string; id?: string; children: React.ReactNode }) {
   return (
-    <section className="rounded-xl border bg-card p-5 md:p-6">
+    <section id={id} className="scroll-mt-20 rounded-xl border bg-card p-5 md:p-6">
       <div className="mb-4">
         <h2 className="flex items-center gap-2 text-sm font-semibold"><Icon className="size-4" /> {title}</h2>
         <p className="mt-1 text-xs leading-5 text-muted-foreground">{intro}</p>
@@ -456,7 +456,7 @@ function WorkSourcesCard({ onError }: { onError: (msg: string | null) => void })
   };
 
   return (
-    <Section icon={FolderOpen} title={t("settings.sources.title")} intro={t("settings.sources.intro")}>
+    <Section id="work-sources" icon={FolderOpen} title={t("settings.sources.title")} intro={t("settings.sources.intro")}>
       <div className="mb-4 rounded-lg border bg-muted/20 p-3">
         <label className="block space-y-1.5 text-sm font-medium">
           <span>{t("settings.sources.addLabel")}</span>

@@ -145,6 +145,14 @@ def test_candidates_endpoint_reads_the_registered_workspaces(api, tmp_path):
     body = client.get("/api/projects/import-candidates").json()
     (candidate,) = body["candidates"]
     assert candidate["status"] == "ok" and candidate["suggested_id"] == "pain-radar"
+    assert body["sources"] == 1
+
+
+def test_candidates_endpoint_says_when_no_work_source_is_registered(api):
+    # "Nowhere to read from" must be distinguishable from "nothing to import" (CR-57).
+    client, _registry = api
+    body = client.get("/api/projects/import-candidates").json()
+    assert body == {"candidates": [], "unreadable": [], "sources": 0}
 
 
 def test_register_adopts_an_existing_repository_without_touching_its_files(api, tmp_path):

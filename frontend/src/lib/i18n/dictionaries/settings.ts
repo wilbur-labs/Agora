@@ -97,7 +97,7 @@ export const settings = {
       },
     },
     workspaces: {
-      title: "Workspaces",
+      title: "Project location",
       intro: "Where each project and its per-agent worktrees live on disk.",
       baseLabel: "Projects root",
       baseHint: "New projects are created as subfolders here.",
@@ -243,7 +243,7 @@ export const settings = {
       },
     },
     workspaces: {
-      title: "工作区",
+      title: "项目存放位置",
       intro: "每个项目及其各 agent 工作树在磁盘上的落盘位置。",
       baseLabel: "项目根目录",
       baseHint: "新项目会作为子文件夹建在这里。",

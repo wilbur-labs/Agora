@@ -459,11 +459,12 @@ def list_project_import_candidates(
 ) -> dict[str, Any]:
     """The repositories the registered workspaces' task records name (CR-52), one per
     repository, each saying whether it can be registered as is — and if not, why.
-    Task files that could not be read are listed, not skipped."""
-    candidates, unreadable = find_candidates(
-        [Path(root) for root in registry.workspace_sources()], _registered_roots(registry),
-    )
-    return {"candidates": [c.payload() for c in candidates], "unreadable": unreadable}
+    Task files that could not be read are listed, not skipped. ``sources`` is how many
+    work sources are registered, so "nowhere to read from" is never shown as "nothing to
+    import" (CR-57); whether they could be read is in ``unreadable``."""
+    sources = [Path(root) for root in registry.workspace_sources()]
+    candidates, unreadable = find_candidates(sources, _registered_roots(registry))
+    return {"candidates": [c.payload() for c in candidates], "unreadable": unreadable, "sources": len(sources)}
 
 
 @router.get("/projects/{project_id}/recorded-goals")

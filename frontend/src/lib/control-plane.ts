@@ -796,6 +796,8 @@ export interface ImportCandidates {
   candidates: ImportCandidate[];
   /** Task files that could not be read — listed, not skipped. */
   unreadable: { source: string; task: string; reason: string }[];
+  /** How many work sources are registered; 0 means nowhere to read from, not "nothing" (CR-57). */
+  sources: number;
 }
 
 export function listImportCandidates(): Promise<ImportCandidates> {

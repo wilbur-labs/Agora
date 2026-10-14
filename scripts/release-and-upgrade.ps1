@@ -19,10 +19,13 @@
 #>
 param(
     [Parameter(Mandatory = $true)][ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version,
-    [string]$Stable = (Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'Agora-stable')
+    [string]$Stable
 )
 $ErrorActionPreference = 'Continue'
 $Root = Split-Path $PSScriptRoot -Parent
+# Default computed here, not in param(): Windows PowerShell 5.1 leaves $PSScriptRoot empty
+# while evaluating parameter defaults, and the script died before doing anything (CR-59).
+if (-not $Stable) { $Stable = Join-Path (Split-Path $Root -Parent) 'Agora-stable' }
 $logDir = Join-Path $Root '.agora\launcher'
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 $log = Join-Path $logDir "release-$Version.log"
@@ -42,8 +45,16 @@ $err = Join-Path $logDir "upgrade-$Version.err.log"
 Write-Host "[release-and-upgrade] upgrading $Stable to v$Version ..."
 $p = Start-Process powershell.exe -PassThru -WindowStyle Hidden -RedirectStandardOutput $out -RedirectStandardError $err `
     -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + (Join-Path $Stable 'agora.ps1') + '"'), 'upgrade', '-To', "v$Version")
+# Touch the handle before the process can exit: without it ExitCode reads back as $null
+# and a successful upgrade was reported as "upgrade FAILED (exit )" (CR-59).
+$null = $p.Handle
 $p.WaitForExit()
 Get-Content $out | Where-Object { $_ -match '^\[agora\]' } | Select-Object -Last 3
+if ($null -eq $p.ExitCode) {
+    Write-Host "[release-and-upgrade] upgrade finished but its exit code could not be read: result unknown."
+    Write-Host "  Read $out, and check http://127.0.0.1:8000/health reports $Version before using it."
+    exit 2
+}
 if ($p.ExitCode -ne 0) {
     # Whether the rollback itself succeeded is in the log, not in the exit code: say what to read.
     Write-Host "[release-and-upgrade] upgrade FAILED (exit $($p.ExitCode)). Read $out and $err to see whether it rolled back;"

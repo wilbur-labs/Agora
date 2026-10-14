@@ -18,7 +18,7 @@ import {
   type ImportCandidate,
   type ImportCandidates,
 } from "@/lib/control-plane";
-import { importGroupsOf, statusKeyOf, tasksLabelOf } from "@/lib/project-import";
+import { emptyImportNoteOf, importGroupsOf, statusKeyOf, tasksLabelOf } from "@/lib/project-import";
 import { useI18n } from "@/lib/i18n";
 
 type Outcome = { ok: true } | { ok: false; message: string };
@@ -84,7 +84,16 @@ export function ImportProjectsPanel({ onClose, onImported }: { onClose: () => vo
         {groups && (
           <>
             <Section title={t("portfolio.import.importable", { count: groups.importable.length })}>
-              {groups.importable.length === 0 && <p className="text-sm text-muted-foreground">{t("portfolio.import.none")}</p>}
+              {groups.importable.length === 0 && typeof read === "object" && (
+                emptyImportNoteOf(read) === "noSources" ? (
+                  <p className="text-sm text-muted-foreground">
+                    {t("portfolio.import.noSources")}{" "}
+                    <a href="/settings#work-sources" className="underline underline-offset-2">{t("portfolio.import.noSourcesLink")}</a>
+                  </p>
+                ) : (
+                  <p className="text-sm text-muted-foreground">{t(`portfolio.import.${emptyImportNoteOf(read)}`)}</p>
+                )
+              )}
               {groups.importable.map((c) => (
                 <label key={c.root} className="flex items-start gap-3 rounded-md border px-3 py-2 text-sm">
                   <input type="checkbox" className="mt-1" checked={chosen.has(c.root as string)}
