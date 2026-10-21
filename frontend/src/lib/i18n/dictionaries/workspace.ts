@@ -299,6 +299,8 @@ export const workspace = {
       targetsFailed: "Could not read this project's task records; the repository choices still work.",
       asTask: "As task {task} (claude-workspace)",
       asTaskHint: "Like `cw open`: Claude starts with this task's RESUME, CRs and review gate.",
+      asKiroTask: "As task {task} (kiro-workspace)",
+      asKiroTaskHint: "`kiro-cli chat --agent {agent}` in kiro-workspace: kiro starts with this task's RESUME, task.yaml and WORKFLOW.",
       inRepo: {
         claude: "Claude Code in the repository",
         codex: "Codex in the repository",
@@ -1299,6 +1301,8 @@ export const workspace = {
       targetsFailed: "读不到这个项目的任务记录；下面在仓库里打开的几项照常可用。",
       asTask: "按任务打开：{task}（claude-workspace）",
       asTaskHint: "等于 `cw open`：Claude 带着这个任务的 RESUME、CR 和评审关卡启动。",
+      asKiroTask: "按任务打开：{task}（kiro-workspace）",
+      asKiroTaskHint: "在 kiro-workspace 里运行 `kiro-cli chat --agent {agent}`：kiro 带着这个任务的 RESUME、task.yaml 和 WORKFLOW 启动。",
       inRepo: {
         claude: "在仓库里开 Claude Code",
         codex: "在仓库里开 Codex",

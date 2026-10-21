@@ -98,7 +98,8 @@ class TaskRef(BaseModel):
 class CreateTerminalRequest(BaseModel):
     project_id: str = Field(min_length=1, max_length=128)
     command: Literal["shell", "claude", "codex", "kiro"] = "shell"
-    #: Open as this claude-workspace task (``cw open``) instead of in the repository.
+    #: Open as this workspace task (claude: ``cw open``; kiro: its agent) instead of in
+    #: the repository.
     task: TaskRef | None = None
     rows: int = Field(default=30, ge=2, le=500)
     cols: int = Field(default=120, ge=10, le=1000)
@@ -127,8 +128,12 @@ async def create_terminal(request: CreateTerminalRequest, registry: ProjectRegis
             raise HTTPException(status.HTTP_404_NOT_FOUND, "No such task names this project's repository.")
         if found.tool_dir is None:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, found.reason or "No tool directory.")
-        cwd, label, argv = Path(found.tool_dir), f"{found.task} · claude (claude-workspace)", command_argv("claude")
-        env["CW_TASK"] = found.task
+        if found.workspace == "kiro":
+            cwd, label = Path(found.tool_dir), f"{found.task} · kiro (kiro-workspace)"
+            argv = command_argv("kiro", kiro_agent=found.agent)
+        else:
+            cwd, label, argv = Path(found.tool_dir), f"{found.task} · claude (claude-workspace)", command_argv("claude")
+            env["CW_TASK"] = found.task
     try:
         # Spawning blocks (pywinpty waits on a socket accept): off the event loop (review).
         session = await asyncio.to_thread(

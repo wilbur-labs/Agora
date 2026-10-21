@@ -65,9 +65,13 @@ export function TerminalLauncher({ projectId }: { projectId: string }) {
             <button key={`${choice.target.source}/${choice.target.task}`} type="button" disabled={busy || !choice.openable}
               onClick={() => void launch(choice)}
               className="block w-full rounded-md px-2 py-1.5 text-left hover:bg-accent disabled:opacity-60">
-              <span className="font-medium">{t("workspace.terminal.asTask", { task: choice.target.task })}</span>
+              <span className="font-medium">
+                {t(choice.target.workspace === "kiro" ? "workspace.terminal.asKiroTask" : "workspace.terminal.asTask", { task: choice.target.task })}
+              </span>
               <span className="block text-xs text-muted-foreground">
-                {choice.openable ? t("workspace.terminal.asTaskHint") : choice.target.reason}
+                {!choice.openable ? choice.target.reason
+                  : choice.target.workspace === "kiro" ? t("workspace.terminal.asKiroTaskHint", { agent: choice.target.agent ?? choice.target.task })
+                  : t("workspace.terminal.asTaskHint")}
               </span>
             </button>
           ) : (

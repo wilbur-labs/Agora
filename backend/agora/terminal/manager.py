@@ -167,18 +167,28 @@ def default_shell() -> list[str]:
     return [os.environ.get("SHELL") or "/bin/bash", "-i"]
 
 
-def command_argv(command: str) -> list[str]:
+def command_argv(command: str, *, kiro_agent: str | None = None) -> list[str]:
     """The program a terminal runs: a shell, or an agent CLI inside one so that quitting
-    the agent leaves the shell rather than closing the window. Only these four."""
+    the agent leaves the shell rather than closing the window. Only these four.
+
+    ``kiro_agent`` opens kiro on that agent profile (a kiro-workspace task). It goes into
+    the shell's command line, so only a name matching ``AGENT_NAME_RE`` is accepted."""
+    from agora.terminal.targets import AGENT_NAME_RE
+
     agents = {"claude": "claude", "codex": "codex", "kiro": "kiro-cli chat"}
     shell = default_shell()
     if command == "shell":
         return shell
     if command not in agents:
         raise ValueError(f"unknown terminal command {command!r}")
+    line = agents[command]
+    if kiro_agent is not None:
+        if command != "kiro" or not AGENT_NAME_RE.match(kiro_agent):
+            raise ValueError(f"unusable kiro agent {kiro_agent!r}")
+        line = f"{line} --agent {kiro_agent}"
     if os.name == "nt":
-        return [shell[0], "-NoLogo", "-NoExit", "-Command", agents[command]]
-    return [shell[0], "-ic", f"{agents[command]}; exec {shell[0]} -i"]
+        return [shell[0], "-NoLogo", "-NoExit", "-Command", line]
+    return [shell[0], "-ic", f"{line}; exec {shell[0]} -i"]
 
 
 def _kill_group(pty) -> None:

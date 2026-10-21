@@ -17,8 +17,8 @@ test("an ended terminal with no exit code says so", () => {
 
 test("tasks come first, and a task that cannot open is listed, not dropped", () => {
   const choices = launchChoicesOf({ project_id: "p", root: "r", tasks: [
-    { source: "E:/Work", task: "work-chat", title: null, tool_dir: "E:/tool", reason: null },
-    { source: "E:/Other", task: "x", title: null, tool_dir: null, reason: "no tool" },
+    { source: "E:/Work", task: "work-chat", title: null, tool_dir: "E:/tool", reason: null, workspace: "claude", agent: null },
+    { source: "E:/Other", task: "x", title: null, tool_dir: null, reason: "no tool", workspace: "kiro", agent: null },
   ] });
   assert.deepEqual(choices.slice(0, 2).map((c) => c.kind === "task" && c.openable), [true, false]);
   assert.deepEqual(choices.slice(2).map((c) => c.kind === "repo" && c.command), ["claude", "codex", "kiro", "shell"]);

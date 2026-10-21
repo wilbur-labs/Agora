@@ -209,3 +209,48 @@ def test_closing_a_terminal_records_that_it_ended(api, tmp_path):
     assert client.delete(f"/api/terminals/{terminal_id}").status_code == 200
     (row,) = client.get("/api/terminals").json()["terminals"]
     assert row["alive"] is False
+
+
+def _kiro_workspace(path: Path) -> Path:
+    (path / ".kiro" / "agents").mkdir(parents=True)
+    return path
+
+
+def test_a_kiro_task_opens_on_its_agent_in_the_kiro_workspace(tmp_path):
+    kiro = _kiro_workspace(tmp_path / "kiro-workspace")
+    repo = _git_repo(tmp_path / "repo")
+    _task(kiro, "wekan-server", f"name: Wekan\nproject_path: {repo.as_posix()}\n")
+    (kiro / ".kiro" / "agents" / "wekan-server.json").write_text(json.dumps({"name": "wekan-server"}), encoding="utf-8")
+
+    (target,) = task_targets([kiro], repo)
+
+    assert target.workspace == "kiro" and target.agent == "wekan-server"
+    assert Path(target.tool_dir) == kiro and target.reason is None
+    argv = command_argv("kiro", kiro_agent=target.agent)
+    assert "kiro-cli chat --agent wekan-server" in " ".join(argv)
+
+
+def test_a_kiro_task_without_an_agent_is_listed_with_why(tmp_path):
+    kiro = _kiro_workspace(tmp_path / "kiro-workspace")
+    repo = _git_repo(tmp_path / "repo")
+    _task(kiro, "no-agent", f"name: X\nproject_path: {repo.as_posix()}\n")
+
+    (target,) = task_targets([kiro], repo)
+
+    assert target.tool_dir is None and target.agent is None
+    assert "no-agent.json" in (target.reason or "")
+
+
+def test_an_agent_name_that_could_reach_the_shell_is_refused(tmp_path):
+    kiro = _kiro_workspace(tmp_path / "kiro-workspace")
+    repo = _git_repo(tmp_path / "repo")
+    _task(kiro, "evil", f"name: X\nproject_path: {repo.as_posix()}\n")
+    (kiro / ".kiro" / "agents" / "evil.json").write_text(json.dumps({"name": "x; rm -rf ~"}), encoding="utf-8")
+
+    (target,) = task_targets([kiro], repo)
+
+    assert target.tool_dir is None and "command line" in (target.reason or "")
+    with pytest.raises(ValueError):
+        command_argv("kiro", kiro_agent="x; rm -rf ~")
+    with pytest.raises(ValueError):
+        command_argv("claude", kiro_agent="wekan-server")

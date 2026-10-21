@@ -24,6 +24,9 @@ export interface TerminalTaskTarget {
   title: string | null;
   tool_dir: string | null;
   reason: string | null;
+  /** Which workspace the task is in: claude opens it like `cw open`, kiro on its agent. */
+  workspace: "claude" | "kiro";
+  agent: string | null;
 }
 
 export interface TerminalTargets {
