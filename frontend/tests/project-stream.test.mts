@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
-  activeRunsOf, composeIntentOf, dispatchTargetOf, stepNumberOf, streamItemsOf, streamStatusOf,
+  activeRunsOf, composeIntentOf, dispatchTargetOf, gateRouteOf, stepNumberOf, streamItemsOf, streamStatusOf,
   visibleTranscriptLines,
 } from "../src/lib/project-stream.ts";
 
@@ -135,4 +135,41 @@ test("CR-36: the new step is titled by the line's first line, bounded, and keeps
   assert.ok(step.description.startsWith(`${long}\n第二行`));
   // The same words said twice are two submissions, so two steps (review).
   assert.notDeepEqual(newStepOf("继续", at), newStepOf("继续", "2026-10-07T09:00:00.000Z"));
+});
+
+const gateItem = (id: string, task: string, kind: string, at: string, state = "open") => ({
+  item_id: id, task_id: task, kind, state, created_at: at,
+});
+
+test("the one box answers the oldest open question or blocker on its step (CR-63)", () => {
+  const gates = [
+    gateItem("g2", "t1", "blocker", "2026-10-20T10:02:00Z"),
+    gateItem("g1", "t1", "question", "2026-10-20T10:01:00Z"),
+    gateItem("g0", "t1", "question", "2026-10-20T10:00:00Z", "responded"),
+  ];
+  assert.deepEqual(gateRouteOf(gates, "t1", null), { item: gates[1], action: "answer" });
+});
+
+test("an open approval on the step turns the box into its rejection reason", () => {
+  const gates = [gateItem("a1", "t1", "approval", "2026-10-20T10:00:00Z")];
+  assert.deepEqual(gateRouteOf(gates, "t1", null), { item: gates[0], action: "reject" });
+  // A question waiting beside it is answered first: the approval keeps its card button.
+  const both = [...gates, gateItem("q1", "t1", "question", "2026-10-20T10:05:00Z")];
+  assert.equal(gateRouteOf(both, "t1", null)?.item.item_id, "q1");
+});
+
+test("items on other steps are answered only when picked, and a stale pick is dropped", () => {
+  const gates = [gateItem("q9", "t9", "question", "2026-10-20T10:00:00Z")];
+  assert.equal(gateRouteOf(gates, "t1", null), null);
+  assert.equal(gateRouteOf(gates, null, null), null);
+  assert.deepEqual(gateRouteOf(gates, "t1", "q9"), { item: gates[0], action: "answer" });
+  // Picked, then answered elsewhere: nothing is routed — not even to another item
+  // waiting on the step — so the words written for it go nowhere they were not meant.
+  const later = [gateItem("q9", "t9", "question", "2026-10-20T10:00:00Z", "responded"), gateItem("q1", "t1", "question", "2026-10-20T10:01:00Z")];
+  assert.equal(gateRouteOf(later, "t1", "q9"), null);
+  assert.equal(gateRouteOf(later, "t1", null)?.item.item_id, "q1");
+});
+
+test("an unread gate list routes nothing — the send goes out and the server decides", () => {
+  assert.equal(gateRouteOf(null, "t1", null), null);
 });

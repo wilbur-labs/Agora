@@ -140,6 +140,56 @@ export function dispatchTargetOf<S extends StreamStepLike>(
 }
 
 /**
+ * Which open item the one box answers (CR-63). Each gate card used to carry its own box,
+ * and the main box, sent while the step had an open item, was refused by the control
+ * plane with a one-line English 409 that flashed and put the words back — the person's
+ * "我输入问题也不回答我". Now there is one box, and when an item is waiting it says which
+ * item it answers before anything is sent:
+ *
+ *   - the item the person picked on its card, while it is still open — and nothing
+ *     else when that pick is gone: words written for one item are never moved onto
+ *     another (the caller says the pick is gone and sends nothing);
+ *   - else the oldest open question / blocker on the step the box would send to;
+ *   - else an open approval there — the words become the rejection reason, and the
+ *     send button says so (approving stays one click on the card);
+ *   - else nothing: the box sends to the agent as before.
+ *
+ * Items on other steps are answered only when picked: they do not stop a send to this
+ * step, so taking the box from it would be the wrong default. A caller whose gate list
+ * is cut passes no target: "the oldest" cannot be named from part of the list.
+ */
+export interface GateRouteLike extends StreamGateLike {
+  kind: string;
+}
+
+export interface GateRoute<G extends GateRouteLike> {
+  item: G;
+  action: "answer" | "reject";
+}
+
+export function gateRouteOf<G extends GateRouteLike>(
+  gates: readonly G[] | null,
+  targetTaskId: string | null,
+  chosenItemId: string | null,
+): GateRoute<G> | null {
+  if (gates === null) return null;
+  const open = gates.filter((gate) => gate.state === "open");
+  const routeOf = (item: G): GateRoute<G> => ({ item, action: item.kind === "approval" ? "reject" : "answer" });
+  if (chosenItemId !== null) {
+    const chosen = open.find((gate) => gate.item_id === chosenItemId);
+    return chosen ? routeOf(chosen) : null;
+  }
+  if (targetTaskId === null) return null;
+  const here = open
+    .filter((gate) => gate.task_id === targetTaskId)
+    .sort((a, b) => a.created_at.localeCompare(b.created_at));
+  const answerable = here.find((gate) => gate.kind !== "approval");
+  if (answerable) return routeOf(answerable);
+  const approval = here.find((gate) => gate.kind === "approval");
+  return approval ? routeOf(approval) : null;
+}
+
+/**
  * When no step can take a line (none planned or running, or all done) the line becomes
  * the next step itself (CR-36). The empty stream says "say what to do and it starts";
  * a project imported with its goal but no steps used to refuse exactly that.

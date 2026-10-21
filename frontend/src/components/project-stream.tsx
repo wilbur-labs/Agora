@@ -22,7 +22,7 @@ import { TerminalLauncher } from "@/components/terminal-launcher";
 import { InlineGateBlock, type GateOutcome } from "@/components/inline-gate";
 import { DeliverablesBlock, type DeliverablesRead } from "@/components/run-deliverables";
 import { relTime } from "@/components/timeline-entry";
-import { listAttention, type AttentionItem } from "@/lib/attention";
+import { listAttention, respondAttention, type AttentionItem } from "@/lib/attention";
 import {
   ApiError, appendTaskEvent, getTask, handoffTask, listRemoteEnvironments, placeIdeaTask, proposeFromIdea, transitionTask,
   type IdeaProposal, type TaskManifest,
@@ -35,16 +35,17 @@ import {
   remoteTargetLabel,
   type AdapterCapability, type ExecutionAdapter, type ExecutionRun, type RunSummary,
 } from "@/lib/execution";
-import { CONTINUE_ADAPTER, CONTINUE_TIMEOUT_SECONDS, provisionResultGate, seedContinuePrompt } from "@/lib/continue-run";
+import { CONTINUE_ADAPTER, CONTINUE_TIMEOUT_SECONDS, RUN_GATE_CODES, provisionResultGate, seedContinuePrompt } from "@/lib/continue-run";
 import { getWorkspaceStatus, provisionWorkspace } from "@/lib/workspaces";
 import { listTaskEvents } from "@/lib/control-plane";
 import { nextStepAfter, noNextStepIsCertain, reviewFixPrompt } from "@/lib/auto-advance";
 import { reviewFailure, stoodInFor } from "@/lib/review-failure";
 import {
-  activeRunsOf, composeIntentOf, dispatchTargetOf, newStepOf, startsNewStep, streamItemsOf, streamStatusOf,
+  activeRunsOf, composeIntentOf, dispatchTargetOf, gateRouteOf, newStepOf, startsNewStep, streamItemsOf, streamStatusOf,
   visibleTranscriptLines,
   type StreamItem,
 } from "@/lib/project-stream";
+import { gateReplyReachOf } from "@/lib/inline-gate";
 import { REVIEW_REQUESTER } from "@/lib/run-column";
 import { EMPTY_TRANSCRIPT, formatDuration, mergeTranscript, turnDurationMs, type Transcript } from "@/lib/conversation";
 import type { PlanRow } from "@/lib/task-plan";
@@ -194,6 +195,12 @@ export function ProjectStream({
   const [gates, setGates] = useState<AttentionItem[] | null>(null);
   const [gatesFailed, setGatesFailed] = useState(false);
   const [gatesCapped, setGatesCapped] = useState(false);
+  /** The waiting item the person pointed the box at from its card (CR-63). */
+  const [chosenGateId, setChosenGateId] = useState<string | null>(null);
+  /** How many gate cards have their own answer in flight; the box waits for them. */
+  const [cardsBusy, setCardsBusy] = useState(0);
+  /** Where the words in the box belong, fixed when the first one was typed (CR-63). */
+  const [boundTo, setBoundTo] = useState<{ to: "agent" } | { to: "gate"; id: string } | null>(null);
   const [active, setActive] = useState<RunSummary[] | null>(null);
   const [activeFailed, setActiveFailed] = useState(false);
   const [notes, setNotes] = useState<Extract<LocalItem, { type: "note" }>[]>([]);
@@ -511,14 +518,109 @@ export function ProjectStream({
     return target ? t("workspace.stream.compose.envRemote", { target }) : t("workspace.stream.compose.envLocal");
   };
   const target = dispatchTargetOf(steps, busyTasks, rowsWhole);
+  // CR-63: when an item is waiting, the one box answers it — said before sending.
+  const targetTaskId = target.kind === "none" ? null : target.step.task_id;
+  // A cut or unread gate list routes only what was picked: the oldest item on the step
+  // cannot be named from part of the list, and a send the server refuses says why.
+  const routeTarget = gatesCapped || gatesFailed ? null : targetTaskId;
+  // The words in the box belong to where the box pointed when the first one was typed.
+  // Polls, a newly raised item, an item settled elsewhere, a pick on another card — none
+  // of them move written words; only sending, clearing, or "send to the agent instead"
+  // does. (Each of those moves was a separate review finding until this one rule.)
+  const bound = draft.trim() === "" ? null : boundTo;
+  // An empty box holds nothing a stale pick could misplace, so a pick that is no longer
+  // open simply lapses there; only written words keep a gone item as their destination.
+  const chosenOpen = chosenGateId !== null && (gates ?? []).some((gate) => gate.item_id === chosenGateId && gate.state === "open");
+  const pickedId = bound?.to === "gate" ? bound.id : bound?.to === "agent" ? null : chosenOpen ? chosenGateId : null;
+  const route = bound?.to === "agent" ? null : gateRouteOf(gates, routeTarget, pickedId);
+  // Picked, then not among the open items: the words were written for that item, so they
+  // go nowhere until the person says where. Handled elsewhere only when the list is whole;
+  // a cut or unread list cannot say that.
+  const pickGone = pickedId !== null && route === null;
+  const pickGoneKey = gatesCapped || gatesFailed ? "workspace.stream.compose.pickUnread" : "workspace.stream.compose.pickGone";
+  // "Send to the agent instead" is offered only when dropping the pick really sends to
+  // the agent. With an item waiting on the step itself the server refuses new work there,
+  // so the box stays on that item rather than offering a way out that leads back in.
+  const agentReachable = !gatesCapped && !gatesFailed && gateRouteOf(gates, routeTarget, null) === null;
+  const canStopAnswering = pickedId !== null && agentReachable;
+  const routeStep = route === null ? null : steps.find((step) => step.task_id === route.item.task_id)?.step ?? null;
+  const routeReviewFix = route !== null && gateReplyReachOf(route.item, route.action) === "reviewFix";
+  const chooseGate = (itemId: string, fill?: string) => {
+    // While an answer is on its way the box is that answer's; a new pick would be undone
+    // (or inherit its words) when it comes back.
+    if (sending) return;
+    // Words already written for somewhere else are not handed to this item.
+    if (bound !== null && !(bound.to === "gate" && bound.id === itemId)) {
+      setNotice({ text: t("workspace.stream.compose.boxBusy"), tone: "warn" });
+      return;
+    }
+    setChosenGateId(itemId);
+    setBoundTo({ to: "gate", id: itemId });
+    if (fill !== undefined && draft.trim() === "") setDraft(fill);
+    document.getElementById("project-stream-box")?.focus();
+  };
+  const stopAnswering = () => {
+    setChosenGateId(null);
+    setBoundTo(draft.trim() === "" ? null : { to: "agent" });
+  };
+  const answerGate = async (chosen: NonNullable<typeof route>, text: string) => {
+    const key = `u${Date.now()}`;
+    atEnd.current = true;
+    push({ type: "user", key, at: now(), text });
+    setDraft("");
+    try {
+      await respondAttention(chosen.item.item_id, {
+        action: chosen.action, response: text, actor: "user", expected_version: chosen.item.version,
+      });
+      if (!alive.current) return;
+      setChosenGateId(null);
+      push({ type: "auto", key: `k${Date.now()}`, at: now(), text: t("workspace.stream.compose.answered", { title: chosen.item.title }) });
+      // A rejected review goes back to the worker exactly as the card's own button did.
+      await handleGate({ action: chosen.action, item: chosen.item, response: text });
+    } catch (err) {
+      if (!alive.current) return;
+      if (err instanceof ApiError && err.status >= 400 && err.status < 500) {
+        // Refused (changed elsewhere, too long, …), so not recorded: the words come back.
+        drop(key);
+        setDraft(text);
+        setBoundTo({ to: "gate", id: chosen.item.item_id });
+        setNotice({ text: t("workspace.stream.compose.sendFailed", { reason: err.status === 409 ? t("workspace.timeline.gate.conflict") : err.message }), tone: "bad" });
+      } else {
+        // No answer is not "not recorded": the line stays where it was shown and the
+        // box stays empty, so a retry is a decision, not a second answer by accident.
+        setNotice({ text: t("workspace.stream.compose.answerUnknown", { reason: err instanceof Error ? err.message : String(err) }), tone: "bad" });
+      }
+      void load(); onChanged();
+    }
+  };
   // CR-36: the identity of a line that is becoming a new step, kept until that line is
   // sent. A retry of the same words after a failure (placement done, dispatch not; or a
   // lost answer) re-sends the same card, which placement recognises, instead of making a
   // second step (review).
   const pendingNewStep = useRef<{ text: string; at: string } | null>(null);
   const send = async () => {
+    if (sending || cardsBusy > 0) return;
+    if (pickGone) {
+      // Nothing moves on its own: the hint offers "send to the agent instead".
+      setNotice({ text: t(pickGoneKey), tone: "warn" });
+      return;
+    }
+    if (route !== null) {
+      // An answer is sent as written: no "note:" / "idea:" reading, and a rejection may
+      // be wordless, as on the card.
+      const text = draft.trim();
+      if (route.action === "answer" && text === "") return;
+      setSending(true);
+      setNotice(null);
+      try {
+        await answerGate(route, text);
+      } finally {
+        if (alive.current) setSending(false);
+      }
+      return;
+    }
     const intent = composeIntentOf(draft);
-    if (intent === null || sending) return;
+    if (intent === null) return;
     setSending(true);
     setNotice(null);
     const echo = draft.trim();
@@ -532,7 +634,7 @@ export function ProjectStream({
       atEnd.current = true; // the person's own line takes them to the end
       push({ type: "user", key, at: now(), text: echo });
       setDraft("");
-      undo.current = () => { drop(key); setDraft(echo); undo.current = null; };
+      undo.current = () => { drop(key); setDraft(echo); setBoundTo({ to: "agent" }); undo.current = null; };
       return key;
     };
     try {
@@ -609,7 +711,11 @@ export function ProjectStream({
     } catch (err) {
       if (!alive.current) return;
       undo.current?.();
-      const reason = err instanceof ApiError && err.status === 409 ? t("workspace.stream.compose.conflict", { detail: err.message }) : (err instanceof Error ? err.message : String(err));
+      // An open item the gate list did not show (unread, cut, or raised a moment ago)
+      // is still refused by the server; that refusal is said in words, not as the 409.
+      const reason = err instanceof ApiError && err.code === RUN_GATE_CODES.attentionOpen ? t("workspace.stream.compose.gateOpen")
+        : err instanceof ApiError && err.status === 409 ? t("workspace.stream.compose.conflict", { detail: err.message })
+        : (err instanceof Error ? err.message : String(err));
       setNotice({ text: t("workspace.stream.compose.sendFailed", { reason }), tone: "bad" });
       // A failure is not proof that nothing was created: a response lost on the way
       // back leaves a run the server did start. Reading the list now draws it as its
@@ -1070,7 +1176,10 @@ export function ProjectStream({
                       <div className="mt-2 text-[0.8125rem] text-muted-foreground"><Prose text={item.item.body} /></div>
                     </details>
                   )
-                  : <InlineGateBlock gate={{ kind: "open", item: item.item }} t={t} te={te} onAnswered={(outcome) => void handleGate(outcome)} />}
+                  : <InlineGateBlock
+                      gate={{ kind: "open", item: item.item }} t={t} te={te} onAnswered={(outcome) => void handleGate(outcome)}
+                      answerBelow={{ active: route?.item.item_id === item.item.item_id, busy: sending, onBusy: (on) => setCardsBusy((n) => Math.max(0, n + (on ? 1 : -1))), choose: (fill) => chooseGate(item.item.item_id, fill) }}
+                    />}
               </div>
             );
           }
@@ -1152,7 +1261,14 @@ export function ProjectStream({
         <textarea
           id="project-stream-box"
           value={draft}
-          onChange={(e) => setDraft(e.target.value)}
+          onChange={(e) => {
+            setDraft(e.target.value);
+            // Words begun for the item the box is answering stay bound to it: a poll that
+            // settles that item must not hand them to the next one (pickGone stops them).
+            if (draft.trim() === "" && e.target.value.trim() !== "") {
+              setBoundTo(route !== null ? { to: "gate", id: route.item.item_id } : { to: "agent" });
+            }
+          }}
           // Enter sends; Shift+Enter breaks the line (the person's ask). An Enter that
           // ends an IME composition (Chinese / Japanese input) is not a send.
           onKeyDown={(e) => {
@@ -1160,7 +1276,9 @@ export function ProjectStream({
             e.preventDefault();
             void send();
           }}
-          placeholder={t("workspace.stream.compose.placeholder")}
+          placeholder={route === null ? t("workspace.stream.compose.placeholder")
+            : route.action === "reject" ? t("workspace.stream.compose.rejectPlaceholder")
+            : t("workspace.stream.compose.answerPlaceholder", { title: route.item.title })}
           className="min-h-16 w-full resize-y rounded-lg border bg-background px-3 py-2 text-[0.9375rem] leading-relaxed outline-none focus:border-ring"
           disabled={sending}
         />
@@ -1193,6 +1311,24 @@ export function ProjectStream({
           {dispatchEnvironmentChoices(environments, projectId).notice === "failed" && (
             <span className="text-amber-700 dark:text-amber-400">{t("workspace.stream.compose.envListFailed")}</span>
           )}
+          {route !== null ? (
+            <span className="min-w-0 flex-1 truncate font-medium text-foreground" title={t(`workspace.timeline.gate.${route.action === "reject" ? "rejectPlaceholder" : "answerHint"}.${gateReplyReachOf(route.item, route.action)}`)}>
+              {route.action === "reject"
+                ? t("workspace.stream.compose.rejecting", { title: route.item.title })
+                : routeStep !== null ? t("workspace.stream.compose.answering", { title: route.item.title, step: routeStep })
+                : t("workspace.stream.compose.answeringNoStep", { title: route.item.title })}
+              {canStopAnswering && (
+                <button type="button" onClick={stopAnswering} className="ml-2 font-normal text-primary hover:underline">{t("workspace.stream.compose.stopAnswering")}</button>
+              )}
+            </span>
+          ) : pickGone ? (
+            <span className="min-w-0 flex-1 truncate text-amber-700 dark:text-amber-400">
+              {t(pickGoneKey)}
+              {agentReachable && (
+                <button type="button" onClick={stopAnswering} className="ml-2 text-primary hover:underline">{t("workspace.stream.compose.stopAnswering")}</button>
+              )}
+            </span>
+          ) : (
           <span className="min-w-0 flex-1 truncate">
             {composeIntentOf(draft)?.kind === "dispatch"
               ? (target.kind === "step" ? t("workspace.stream.compose.to", { step: target.step.step, title: target.step.title })
@@ -1207,8 +1343,13 @@ export function ProjectStream({
                 : startsNewStep(target) ? t("workspace.stream.compose.toNewStep")
                 : t(`workspace.stream.compose.${target.reason}`))}
           </span>
-          <Button size="sm" onClick={() => void send()} disabled={sending || composeIntentOf(draft) === null}>
-            {sending ? <RefreshCw className="size-3.5 animate-spin" /> : <Send className="size-3.5" />}{t("workspace.stream.compose.send")}
+          )}
+          <Button size="sm" variant={route?.action === "reject" ? "destructive" : "default"} onClick={() => void send()} disabled={sending || cardsBusy > 0 || (route === null ? !pickGone && composeIntentOf(draft) === null : route.action === "answer" && draft.trim() === "")}>
+            {sending ? <RefreshCw className="size-3.5 animate-spin" /> : <Send className="size-3.5" />}
+            {route === null ? t("workspace.stream.compose.send")
+              : route.action === "answer" ? t("workspace.stream.compose.answerSend")
+              : routeReviewFix ? t("workspace.stream.compose.rejectFixSend")
+              : t("workspace.stream.compose.rejectSend")}
           </Button>
         </div>
         {notice && <p className={cn("text-[0.8125rem]", notice.tone === "bad" ? "text-destructive" : notice.tone === "warn" ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground")} role={notice.tone === "bad" ? "alert" : undefined}>{notice.text}</p>}

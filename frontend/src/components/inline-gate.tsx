@@ -42,15 +42,31 @@ export interface GateOutcome {
   response: string;
 }
 
-export function InlineGateBlock({ gate, t, te, onAnswered }: {
+/**
+ * The page's own box answers this item instead of a box on the card (CR-63, the
+ * project conversation): `active` when that box is answering this item now; `choose`
+ * points it here, optionally pre-filled with a suggested answer.
+ */
+export interface AnswerBelow {
+  active: boolean;
+  /** The page's box is sending: this card's buttons wait too, so one item never gets
+   *  two opposite answers in flight (approve here, reject below). */
+  busy: boolean;
+  /** And the other way: told while this card's own answer is in flight. */
+  onBusy: (busy: boolean) => void;
+  choose: (fill?: string) => void;
+}
+
+export function InlineGateBlock({ gate, t, te, onAnswered, answerBelow }: {
   gate: InlineGate<AttentionItem>;
   t: Translate;
   te: TranslateEnum;
   /** Told once a response was recorded (or found already changed), so the page re-reads. */
   onAnswered: (outcome: GateOutcome) => void;
+  answerBelow?: AnswerBelow;
 }) {
   if (gate.kind === "notAGate" || gate.kind === "settled") return null;
-  if (gate.kind === "open") return <OpenGate item={gate.item} t={t} te={te} onAnswered={onAnswered} />;
+  if (gate.kind === "open") return <OpenGate item={gate.item} t={t} te={te} onAnswered={onAnswered} answerBelow={answerBelow} />;
   return (
     <p className="mt-1 text-[0.75rem] leading-snug text-muted-foreground">
       {t(`workspace.timeline.gate.${gate.kind}`)}
@@ -66,8 +82,9 @@ export function InlineGateBlock({ gate, t, te, onAnswered }: {
   );
 }
 
-function OpenGate({ item, t, te, onAnswered }: {
+function OpenGate({ item, t, te, onAnswered, answerBelow }: {
   item: AttentionItem; t: Translate; te: TranslateEnum; onAnswered: (outcome: GateOutcome) => void;
+  answerBelow?: AnswerBelow;
 }) {
   const [expanded, setExpanded] = useState(false);
   // For an approval, `reject` here means "the reason box is open" — approving is one
@@ -85,10 +102,12 @@ function OpenGate({ item, t, te, onAnswered }: {
   const shown = expanded || !long ? item.body : `${item.body.slice(0, BODY_FOLD)}…`;
   const ready = gateResponseReady(action, response);
   const approval = item.kind === "approval";
+  const locked = busy || (answerBelow?.busy ?? false);
 
   const submit = async (chosen: GateAction = action) => {
     if (!gateResponseReady(chosen, response) || busy) return;
     setBusy(true);
+    answerBelow?.onBusy(true);
     setError(null);
     setNotice(null);
     try {
@@ -109,6 +128,7 @@ function OpenGate({ item, t, te, onAnswered }: {
         setError(err instanceof Error ? err.message : String(err));
       }
     } finally {
+      answerBelow?.onBusy(false);
       if (mounted.current) setBusy(false);
     }
   };
@@ -132,21 +152,31 @@ function OpenGate({ item, t, te, onAnswered }: {
           <p className="text-[0.75rem] text-muted-foreground">{t("workspace.timeline.gate.approvalHint")}</p>
           <div className="flex flex-wrap items-center gap-2">
             {/* One click, sent at once. */}
-            <Button size="sm" onClick={() => void submit("approve")} disabled={busy}>
+            <Button size="sm" onClick={() => void submit("approve")} disabled={locked}>
               {busy && action === "approve" ? <RefreshCw className="size-3.5 animate-spin" /> : null}
               {t("attention.form.approve")}
             </Button>
-            <Button
-              size="sm"
-              variant={action === "reject" ? "destructive" : "outline"}
-              onClick={() => setAction(action === "reject" ? "approve" : "reject")}
-              disabled={busy}
-              aria-expanded={action === "reject"}
-            >
-              {t("attention.form.reject")}
-            </Button>
+            {answerBelow ? (
+              // The reason is written in the page's box; the button only points it here.
+              <Button size="sm" variant={answerBelow.active ? "destructive" : "outline"} onClick={() => answerBelow.choose()} disabled={locked}>
+                {t("attention.form.reject")}
+              </Button>
+            ) : (
+              <Button
+                size="sm"
+                variant={action === "reject" ? "destructive" : "outline"}
+                onClick={() => setAction(action === "reject" ? "approve" : "reject")}
+                disabled={busy}
+                aria-expanded={action === "reject"}
+              >
+                {t("attention.form.reject")}
+              </Button>
+            )}
           </div>
-          {action === "reject" && (
+          {answerBelow?.active && (
+            <p className="text-[0.75rem] text-muted-foreground">{t(`workspace.timeline.gate.rejectPlaceholder.${gateReplyReachOf(item, "reject")}`)}</p>
+          )}
+          {!answerBelow && action === "reject" && (
             <>
               <textarea
                 value={response}
@@ -163,6 +193,20 @@ function OpenGate({ item, t, te, onAnswered }: {
               </Button>
             </>
           )}
+        </>
+      ) : answerBelow ? (
+        <>
+          <p className="text-[0.75rem] text-muted-foreground">{t(`workspace.timeline.gate.answerHint.${gateReplyReachOf(item, "answer")}`)}</p>
+          {item.options.length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {item.options.map((value) => (
+                <Button key={value} size="sm" variant="outline" onClick={() => answerBelow.choose(value)} disabled={locked}>{value}</Button>
+              ))}
+            </div>
+          )}
+          {answerBelow.active
+            ? <p className="text-[0.75rem] font-medium text-primary">{t("workspace.timeline.gate.answeringBelow")}</p>
+            : <Button size="sm" variant="outline" onClick={() => answerBelow.choose()} disabled={locked}>{t("workspace.timeline.gate.answerBelow")}</Button>}
         </>
       ) : (
         <>
