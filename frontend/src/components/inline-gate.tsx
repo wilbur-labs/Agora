@@ -21,7 +21,7 @@ import { Button } from "@/components/ui/button";
 import { ApiError } from "@/lib/control-plane";
 import { respondAttention, type AttentionItem } from "@/lib/attention";
 import {
-  defaultGateAction, gateResponseReady,
+  defaultGateAction, gateReplyReachOf, gateResponseReady,
   type GateAction, type InlineGate,
 } from "@/lib/inline-gate";
 import type { Translate, TranslateEnum } from "@/lib/i18n";
@@ -151,7 +151,7 @@ function OpenGate({ item, t, te, onAnswered }: {
               <textarea
                 value={response}
                 onChange={(e) => setResponse(e.target.value)}
-                placeholder={t("workspace.timeline.gate.rejectPlaceholder")}
+                placeholder={t(`workspace.timeline.gate.rejectPlaceholder.${gateReplyReachOf(item, "reject")}`)}
                 aria-label={t("attention.form.response")}
                 disabled={busy}
                 autoFocus
@@ -179,7 +179,7 @@ function OpenGate({ item, t, te, onAnswered }: {
               </select>
             </label>
           )}
-          <p className="text-[0.75rem] text-muted-foreground">{t("workspace.timeline.gate.answerHint")}</p>
+          <p className="text-[0.75rem] text-muted-foreground">{t(`workspace.timeline.gate.answerHint.${gateReplyReachOf(item, "answer")}`)}</p>
           <textarea
             value={response}
             onChange={(e) => setResponse(e.target.value)}

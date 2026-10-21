@@ -22,6 +22,7 @@
  *   - `open`       — the item, still waiting, with everything needed to answer it.
  */
 import { ATTENTION_RAISE_EVENTS } from "./timeline.ts";
+import { REVIEW_REQUESTER } from "./run-column.ts";
 import type { AttentionLike, TaskAttentionView } from "./task-attention.ts";
 
 export interface GateEventLike {
@@ -69,8 +70,31 @@ export function defaultGateAction(kind: string): GateAction {
 
 /**
  * Whether a response may be sent: an approval needs no words; anything else is an
- * answer, and an empty answer would deliver nothing to the agent waiting on it.
+ * answer, and an empty answer says nothing to whoever reads it.
  */
 export function gateResponseReady(action: GateAction, response: string): boolean {
   return action !== "answer" || response.trim() !== "";
+}
+
+/**
+ * Where the words typed into an item's form actually go (CR-62). The form used to say
+ * "agent 会收到" for every item, and for most of them nothing was sent anywhere:
+ *
+ *   - `reviewFix`   — a rejection of Agora's own review gate. The page turns the reason
+ *                     into the fix run it sends the worker (workspace page `handleGate`),
+ *                     so here, and only here, an agent reads the words.
+ *   - `reviewOwed`  — Agora's own blocker for a review that did not happen. Answering
+ *                     clears the gate and nothing else: no review is re-run, and the work
+ *                     goes on unreviewed.
+ *   - `recordOnly`  — everything else. The response is stored on the item. The one live
+ *                     channel back to an agent (a bidirectional bridge approval) carries
+ *                     the approve/reject decision, never the text.
+ */
+export type GateReplyReach = "reviewFix" | "reviewOwed" | "recordOnly";
+
+export function gateReplyReachOf(item: { kind: string; requester: string }, action: GateAction): GateReplyReach {
+  const review = item.requester === REVIEW_REQUESTER;
+  if (review && item.kind === "approval" && action === "reject") return "reviewFix";
+  if (review && item.kind === "blocker") return "reviewOwed";
+  return "recordOnly";
 }

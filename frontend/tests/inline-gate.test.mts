@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { defaultGateAction, gateResponseReady, inlineGateOf } from "../src/lib/inline-gate.ts";
+import { defaultGateAction, gateReplyReachOf, gateResponseReady, inlineGateOf } from "../src/lib/inline-gate.ts";
 import type { TaskAttentionView } from "../src/lib/task-attention.ts";
 
 type Item = { item_id: string; kind: string; state: string };
@@ -61,4 +61,27 @@ test("an approval or rejection may be wordless; an answer may not be empty", () 
   assert.equal(gateResponseReady("reject", "   "), true);
   assert.equal(gateResponseReady("answer", "   "), false);
   assert.equal(gateResponseReady("answer", "yes"), true);
+});
+
+test("only a rejected review gate promises that an agent reads the words (CR-62)", () => {
+  const review = "agora-review";
+  assert.equal(gateReplyReachOf({ kind: "approval", requester: review }, "reject"), "reviewFix");
+  assert.equal(gateReplyReachOf({ kind: "approval", requester: review }, "approve"), "recordOnly");
+  assert.equal(gateReplyReachOf({ kind: "blocker", requester: review }, "answer"), "reviewOwed");
+  // A bridge approval carries the decision back, never the text; questions and other
+  // blockers are stored on the item and sent nowhere.
+  assert.equal(gateReplyReachOf({ kind: "approval", requester: "codex-app-server" }, "reject"), "recordOnly");
+  assert.equal(gateReplyReachOf({ kind: "question", requester: "claude-bridge" }, "answer"), "recordOnly");
+  assert.equal(gateReplyReachOf({ kind: "blocker", requester: "user" }, "answer"), "recordOnly");
+});
+
+test("every reply reach has its sentence in both locales", async () => {
+  const { workspace } = await import("../src/lib/i18n/dictionaries/workspace.ts");
+  for (const locale of ["en", "zh"] as const) {
+    const gate = workspace[locale].timeline.gate as unknown as Record<string, Record<string, unknown>>;
+    for (const reach of ["reviewFix", "reviewOwed", "recordOnly"]) {
+      assert.equal(typeof gate.answerHint[reach], "string", `${locale} answerHint.${reach}`);
+      assert.equal(typeof gate.rejectPlaceholder[reach], "string", `${locale} rejectPlaceholder.${reach}`);
+    }
+  }
 });

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 import sys
 
 from agora.attention.models import AttentionKind, AttentionState
@@ -179,12 +180,22 @@ def test_the_quota_sentence_is_read_the_way_a_person_reads_it():
     assert readable_failure("codex", "timeout after 600s") == "timeout after 600s"
 
 
+def test_a_missing_worktree_is_said_in_words_and_keeps_the_original():
+    raw = "workspace is not a provisioned worktree for this project/adapter; provision it before running"
+    said = readable_failure("codex", raw)
+    assert said.startswith("codex 的工作目录没有建好，运行没能开始")
+    assert raw in said
+
+
 def test_a_substitute_that_cannot_launch_still_leaves_a_gate(tmp_path):
-    """The codex review of CR-121: kiro configured but its worktree never provisioned.
+    """The codex review of CR-121: kiro configured but its worktree not usable at launch.
 
     The substitute is queued (so the codex blocker is not raised), then fails before
     launch. Pre-launch refusals settle without ``_after_run``; without the gate for
     them the task refused every worker run with nothing in the inbox until restart.
+
+    Queueing a review now provisions the reviewer's worktree (CR-61), so the worktree
+    is removed after queueing to reach the pre-launch refusal this test is about.
     """
     tasks, store, dispatcher = _system(tmp_path)
     task = _planned_task(tasks)
@@ -192,10 +203,11 @@ def test_a_substitute_that_cannot_launch_still_leaves_a_gate(tmp_path):
     failed = _failed_review(dispatcher, store, task.task_id, worker.run_id)
     _after(dispatcher, failed, worker.run_id)
     kiro = next(r for r in _reviews_of(store, task.task_id, worker.run_id) if r.adapter == "kiro")
+    shutil.rmtree(tmp_path / "workspaces" / "kiro")
 
     settled = asyncio.run(dispatcher.execute(kiro.run_id))
 
-    assert settled.state == RunState.FAILED  # tmp_path/workspaces/kiro does not exist
+    assert settled.state == RunState.FAILED  # tmp_path/workspaces/kiro is gone
     open_items = AttentionStore(tasks).list(task_id=task.task_id, state=AttentionState.OPEN)
     assert [i.kind for i in open_items] == [AttentionKind.BLOCKER]
     assert open_items[0].run_id == worker.run_id

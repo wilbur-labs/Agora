@@ -594,6 +594,121 @@ def test_auto_review_dispatches_review_run_after_worker(tmp_path):
     assert store.require(reviews[0]).adapter == "claude"
 
 
+def _reviewer_never_provisioned(tmp_path):
+    """alpha with only the worker's worktree — the shape of a project imported from a
+    workspace (CR-52), where nothing ever created the reviewer's worktree."""
+    root = tmp_path / "alpha"
+    _provision_codex_worktree(tmp_path)
+    claude_ws = tmp_path / "workspaces" / "claude"
+    ok = [sys.executable, "-c", "open('worked.txt', 'w').write('ok'); print('ok')", "{prompt}"]
+    config = {
+        "projects": {"registry_path": str(tmp_path / "projects.yaml"), "default": "alpha", "projects": {
+            "alpha": {"name": "Alpha", "root": str(root), "worker_agent": "codex", "reviewer_agent": "claude",
+                      "workspaces": {"codex": str(tmp_path / "workspaces" / "codex"), "claude": str(claude_ws)}}}},
+        "execution": {"adapters": {
+            "codex": {"command": ok, "workspace_key": "codex"},
+            "claude": {"command": ok, "workspace_key": "claude"},
+            "kiro": {"enabled": False}}},
+    }
+    tasks = TaskStore(tmp_path / "agora.db")
+    store = ExecutionStore(tasks)
+    dispatcher = ExecutionDispatcher(
+        store, ProjectRegistry(config), build_adapter_registry(config),
+        allowed_workspace_roots=[tmp_path / "workspaces"], auto_review=True,
+    )
+    return tasks, store, dispatcher, claude_ws
+
+
+def _run_and_drain(dispatcher, run_id):
+    async def scenario():
+        await dispatcher.execute(run_id)
+        for _ in range(50):
+            pending = list(dispatcher._scheduled)
+            if not pending:
+                break
+            await asyncio.gather(*pending, return_exceptions=True)
+
+    asyncio.run(scenario())
+
+
+def test_auto_review_provisions_a_local_reviewer_worktree_nobody_created(tmp_path):
+    """CR-61: the review failed at start with "workspace is not a provisioned
+    worktree" because only the implementer's worktree existed. The review path now
+    provisions the reviewer's own worktree first, so the review actually runs."""
+    tasks, store, dispatcher, claude_ws = _reviewer_never_provisioned(tmp_path)
+    task = _planned_task(tasks)
+    worker = dispatcher.queue(_request(task.task_id))
+
+    _run_and_drain(dispatcher, worker.run_id)
+
+    runs = [store.require(run.run_id) for run in store.list(task_id=task.task_id)]
+    reviews = [run for run in runs if run.result_metadata.get("agora_role") == "review"]
+    assert len(reviews) == 1
+    review = reviews[0]
+    assert review.adapter == "claude"
+    assert review.state == RunState.SUCCEEDED, review.error_message
+    top = subprocess.run([GIT, "-C", str(claude_ws), "rev-parse", "--abbrev-ref", "HEAD"],
+                         capture_output=True, text=True, check=True, timeout=15)
+    assert top.stdout.strip() == worktree_branch("alpha", "claude")
+
+
+def test_a_reviewer_worktree_that_cannot_be_provisioned_blocks_naming_the_reviewer(tmp_path):
+    """When the reviewer's worktree cannot be built (here: its directory already holds
+    unmanaged files), no review run is queued to fail obscurely; the task is blocked
+    with a reason that names the reviewer and says the worktree is the problem."""
+    tasks, store, dispatcher, claude_ws = _reviewer_never_provisioned(tmp_path)
+    claude_ws.mkdir(parents=True, exist_ok=True)
+    (claude_ws / "stray.txt").write_text("not a worktree", encoding="utf-8")
+    attention = AttentionStore(tasks)
+    task = _planned_task(tasks)
+    worker = dispatcher.queue(_request(task.task_id))
+
+    _run_and_drain(dispatcher, worker.run_id)
+
+    assert [run.run_id for run in store.list(task_id=task.task_id)] == [worker.run_id]
+    items = attention.list(task_id=task.task_id, state=AttentionState.OPEN)
+    assert len(items) == 1
+    assert items[0].kind == AttentionKind.BLOCKER
+    assert "'claude'" in items[0].body and "工作树未能建立" in items[0].body
+
+
+def test_a_reviewer_with_its_own_workspace_key_is_not_provisioned_by_name(tmp_path):
+    """The provisioner resolves a workspace by adapter name; execution by
+    ``workspace_key``. A reviewer whose key differs keeps the pre-CR-61 path: its
+    already valid worktree is used, not replaced by a blocker (codex round 2)."""
+    root = tmp_path / "alpha"
+    _provision_codex_worktree(tmp_path)
+    review_ws = tmp_path / "workspaces" / "review-ws"
+    subprocess.run([GIT, "-C", str(root), "worktree", "add", "-q", "-b",
+                    worktree_branch("alpha", "claude"), str(review_ws), "HEAD"],
+                   check=True, timeout=15)
+    ok = [sys.executable, "-c", "open('worked.txt', 'w').write('ok'); print('ok')", "{prompt}"]
+    config = {
+        "projects": {"registry_path": str(tmp_path / "projects.yaml"), "default": "alpha", "projects": {
+            "alpha": {"name": "Alpha", "root": str(root), "worker_agent": "codex", "reviewer_agent": "claude",
+                      "workspaces": {"codex": str(tmp_path / "workspaces" / "codex"), "review-ws": str(review_ws)}}}},
+        "execution": {"adapters": {
+            "codex": {"command": ok, "workspace_key": "codex"},
+            "claude": {"command": ok, "workspace_key": "review-ws"},
+            "kiro": {"enabled": False}}},
+    }
+    tasks = TaskStore(tmp_path / "agora.db")
+    store = ExecutionStore(tasks)
+    dispatcher = ExecutionDispatcher(
+        store, ProjectRegistry(config), build_adapter_registry(config),
+        allowed_workspace_roots=[tmp_path / "workspaces"], auto_review=True,
+    )
+    task = _planned_task(tasks)
+    worker = dispatcher.queue(_request(task.task_id))
+
+    _run_and_drain(dispatcher, worker.run_id)
+
+    runs = [store.require(run.run_id) for run in store.list(task_id=task.task_id)]
+    reviews = [run for run in runs if run.result_metadata.get("agora_role") == "review"]
+    assert len(reviews) == 1
+    assert reviews[0].state == RunState.SUCCEEDED, reviews[0].error_message
+
+
 def test_second_worker_run_is_refused_while_one_is_unfinished(tmp_path):
     """Two clients can each observe "nothing is running" and POST with the same
     expected_task_version: the task is already RUNNING, so queueing does not bump

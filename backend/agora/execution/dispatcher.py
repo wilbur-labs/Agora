@@ -21,6 +21,7 @@ from agora.attention.bridges.codex_app_server import CodexAppServerError, CodexA
 from agora.attention.bridges.codex_broker import CodexApprovalBroker
 
 from agora.workspaces.models import ProvisionRequest, WorkspaceState
+from agora.workspaces.provisioner import WorkspaceProvisioner
 from agora.workspaces.naming import worktree_branch
 
 from .adapters import (
@@ -1767,6 +1768,22 @@ class ExecutionDispatcher:
         finally:
             await components.aclose()
 
+    async def _provision_local(self, adapter: ExecutionAdapter, project_id: str) -> str | None:
+        """Provision ``adapter``'s local worktree for ``project_id``. None when it is
+        ready (already or now); otherwise the reason, already redacted — never raises."""
+        try:
+            provisioner = WorkspaceProvisioner(
+                self.projects, allowed_workspace_roots=self.allowed_workspace_roots,
+            )
+            result = await provisioner.provision(
+                ProvisionRequest(project_id=project_id, adapter=adapter.name)
+            )
+            if result.status.state != WorkspaceState.READY:
+                return redact_text(f"{result.status.state.value}: {result.status.error or ''}".strip())
+            return None
+        except Exception as exc:  # noqa: BLE001 - a failed provision is a reason, not a crash
+            return redact_text(f"{type(exc).__name__}: {exc}")
+
     async def _review_prompt_remote(self, worker_run: ExecutionRun, adapter: ExecutionAdapter) -> str:
         """``_review_prompt``, read on the worker's host: readiness, changed files and
         their contents come from the remote provisioner and deliverables reader."""
@@ -2494,6 +2511,23 @@ class ExecutionDispatcher:
                         f"{describe_target(worker_adapter.remote if worker_adapter else None)}，评审 {reviewer!r} 在 "
                         f"{describe_target(reviewer_adapter.remote)}。复核要读开发的工作树，两者必须配置在同一台主机。"
                     ),
+                )
+                return
+        if not is_remote(reviewer_adapter) and reviewer_adapter.workspace_key == reviewer_adapter.name:
+            # The provisioner looks the workspace up by adapter name, execution by
+            # ``workspace_key``; where they differ it would build (or refuse) the wrong
+            # directory, so such a reviewer keeps the old path — the pre-launch readiness
+            # check — rather than gaining a blocker for a worktree that may be fine.
+            # The reviewer runs in its OWN local worktree too, and nothing else creates
+            # it: projects imported from a workspace are registered without provisioning
+            # (CR-52) and the frontend only provisions the implementer. Without this the
+            # review failed at start with "not a provisioned worktree" and the task
+            # stopped for a reason the user could not see (CR-61).
+            provisioned = await self._provision_local(reviewer_adapter, worker_run.project_id)
+            if provisioned is not None:
+                self._block_review_owed(
+                    task_id=worker_run.task_id, run_id=worker_run.run_id,
+                    reason=f"评审代理 {reviewer!r} 在本机的工作树未能建立：{provisioned}",
                 )
                 return
         try:

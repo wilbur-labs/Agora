@@ -63,4 +63,8 @@ def readable_failure(adapter: str, reason: str | None) -> str:
     if is_usage_limit(reason):
         when = retry_at(reason)
         return f"{adapter} 额度用完" + (f"（它说 {when} 之后可以再用）" if when else "")
+    if reason and "not a provisioned worktree" in reason:
+        # The CR-61 shape: the run never started because its worktree did not exist.
+        # Said in words, with the original kept as evidence rather than replaced.
+        return f"{adapter} 的工作目录没有建好，运行没能开始（原始错误：{reason}）"
     return reason or "（没有错误详情）"

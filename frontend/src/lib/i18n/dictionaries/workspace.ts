@@ -708,8 +708,17 @@ export const workspace = {
         showBody: "Show the whole note",
         hideBody: "Hide",
         approvalHint: "Approve sends at once. Reject asks for a line first.",
-        answerHint: "Write your answer; the agent receives it.",
-        rejectPlaceholder: "Why it is rejected — the agent receives this (optional)",
+        // Where the typed words go, per item (lib/inline-gate.ts gateReplyReachOf, CR-62).
+        answerHint: {
+          reviewFix: "Write what to change; it is sent to the developing agent as the fix request.",
+          reviewOwed: "Submitting only marks this item handled so the task can go on: the review is not re-run, and this work counts as accepted without review. What you write stays on this item and is sent to no agent.",
+          recordOnly: "Your answer is recorded on this item and sent to no agent.",
+        },
+        rejectPlaceholder: {
+          reviewFix: "Why it is rejected — sent to the developing agent as the fix request (optional)",
+          reviewOwed: "Why it is rejected (kept on this item only, optional)",
+          recordOnly: "Why it is rejected (kept on this item only, not sent to the agent, optional)",
+        },
         confirmReject: "Confirm rejection",
         answerPlaceholder: "Your answer",
         recorded: "Recorded.",
@@ -1579,8 +1588,17 @@ export const workspace = {
         showBody: "展开全文",
         hideBody: "收起",
         approvalHint: "点「批准」即提交。「拒绝」会先让你写一句原因。",
-        answerHint: "写下你的回答，agent 会收到。",
-        rejectPlaceholder: "为什么拒——agent 会收到这句（可选）",
+        // Where the typed words go, per item (lib/inline-gate.ts gateReplyReachOf, CR-62).
+        answerHint: {
+          reviewFix: "写下要改什么，会作为修正要求发给开发的 agent。",
+          reviewOwed: "提交只会把这条标成已处理，让任务能继续：不会重新复核，这次实现就算没经过复核被接受。写的内容只记在这条事项上，不会发给任何 agent。",
+          recordOnly: "你的回答会记在这条事项上，不会发给任何 agent。",
+        },
+        rejectPlaceholder: {
+          reviewFix: "为什么拒——会作为修正要求发给开发的 agent（可选）",
+          reviewOwed: "为什么拒（只记在这条事项上，可选）",
+          recordOnly: "为什么拒（只记在这条事项上，不会发给 agent，可选）",
+        },
         confirmReject: "确认拒绝",
         answerPlaceholder: "你的回答",
         recorded: "已记录。",
