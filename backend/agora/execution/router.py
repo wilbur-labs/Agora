@@ -5,6 +5,8 @@ import asyncio
 import hashlib
 
 import mimetypes
+import time
+from datetime import datetime
 
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
@@ -294,6 +296,19 @@ class RunOutputSlice(BaseModel):
     #: existed, and any that failed before its first line was written. The
     #: window says so rather than presenting it as a live transcript.
     from_record: bool = False
+    #: Run activity (CR-12 ①, the replacement the owner chose on 2026-10-07): seconds,
+    #: measured on this host, since the transcript was last written — or, while there is
+    #: no transcript file, since the run started. A fact about the transcript, not about
+    #: the agent: the prompt echo is written before the agent starts, so a file that
+    #: exists is no proof the agent said anything. Only for a running run whose
+    #: transcript could be read; None everywhere else — "no idea" must not read as "quiet".
+    quiet_seconds: float | None = None
+    #: When ``quiet_seconds`` was measured (this host, epoch seconds). Two polls of the
+    #: same offset can land out of order and both look current; this says which is newer.
+    quiet_measured_at: float | None = None
+    #: The transcript is at its size cap and takes no more output, so its silence says
+    #: nothing about the agent.
+    log_capped: bool = False
 
 
 @router.get("/runs/{run_id}/output", response_model=RunOutputSlice)
@@ -348,6 +363,8 @@ def run_output(
         # last few kilobytes of a long answer as the whole of it — complete, no
         # notice, and no way for the reader to tell.
         record_truncated = len(run.stdout_tail or "") >= OUTPUT_TAIL_LIMIT
+    measured_at = time.time()
+    quiet_seconds = _quiet_seconds(run, chunk, measured_at) if run.state == RunState.RUNNING else None
     return RunOutputSlice(
         run_id=run_id,
         # Redacted again here, over the contiguous slice being served. The writer
@@ -364,7 +381,29 @@ def run_output(
         complete=settled,
         state=run.state,
         from_record=from_record,
+        quiet_seconds=quiet_seconds,
+        quiet_measured_at=measured_at if quiet_seconds is not None else None,
+        log_capped=chunk.capped,
     )
+
+
+def _quiet_seconds(run, chunk, now: float) -> float | None:
+    """How long a running run's transcript has been silent, or None when unknown.
+
+    Measured against this host's clock on both ends (the file's mtime, the run's
+    recorded start), so a browser with a different clock cannot turn it into a stall.
+    """
+    if not chunk.reachable:
+        return None
+    since = chunk.written_at
+    if since is None:
+        if not run.started_at:
+            return None
+        try:
+            since = datetime.fromisoformat(run.started_at).timestamp()
+        except ValueError:
+            return None
+    return max(0.0, now - since)
 
 
 def _has_transcript(dispatcher: ExecutionDispatcher, run_id: str) -> bool:

@@ -299,6 +299,17 @@ export interface RunOutputSlice {
    * presenting it as a live transcript.
    */
   from_record: boolean;
+  /**
+   * Run activity: seconds since the transcript was last written (or, while there is no
+   * transcript, since the run started), measured on the control plane's host. About the
+   * transcript, not the agent — the prompt echo is in it too. Only for a running run
+   * whose transcript was read; null means "cannot say", never "quiet".
+   */
+  quiet_seconds: number | null;
+  /** When `quiet_seconds` was measured, on the control plane (epoch seconds). */
+  quiet_measured_at: number | null;
+  /** The transcript is at its size cap; its silence says nothing about the agent. */
+  log_capped: boolean;
 }
 
 /**

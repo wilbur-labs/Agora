@@ -4315,3 +4315,95 @@ def test_a_commands_own_spacing_is_never_rewritten():
     assert "A B.txt" not in rendered
     # Both lines survive, the second indented so it stays with the first on screen.
     assert "$ Bash(" in rendered and "\n  git status --short" in rendered
+
+
+# -- run activity (CR-12 ①) ------------------------------------------------------
+
+
+def _running(run_id, started_at):
+    from types import SimpleNamespace
+
+    from agora.execution.models import RunState
+
+    return SimpleNamespace(
+        run_id=run_id, state=RunState.RUNNING, task_id="t1", adapter="codex",
+        prompt="", error=None, stdout_tail="", stderr_tail="", started_at=started_at,
+    )
+
+
+class _QuietDispatcher:
+    def __init__(self, logs):
+        self.run_logs = logs
+
+    def is_draining(self, run_id):
+        return False
+
+
+def _output_of(run, logs):
+    from agora.execution.router import run_output
+
+    class _Store:
+        def require(self, run_id):
+            return run
+
+    return run_output(run.run_id, 0, _Store(), _QuietDispatcher(logs))
+
+
+def test_a_running_run_says_how_long_its_transcript_has_been_silent(tmp_path):
+    import os
+    import time
+
+    logs = RunLogStore(tmp_path / "logs")
+    logs.append("r1", "working\n")
+    past = time.time() - 600
+    os.utime(logs.path_for("r1"), (past, past))
+
+    sliced = _output_of(_running("r1", "2026-10-21T00:00:00+00:00"), logs)
+
+    assert sliced.quiet_seconds is not None and 590 <= sliced.quiet_seconds <= 700
+    assert sliced.quiet_measured_at is not None and abs(sliced.quiet_measured_at - time.time()) < 60
+    assert sliced.log_capped is False
+
+
+def test_before_any_output_the_silence_is_counted_from_the_start(tmp_path):
+    from datetime import datetime, timedelta, timezone
+
+    logs = RunLogStore(tmp_path / "logs")
+    started = (datetime.now(timezone.utc) - timedelta(minutes=3)).isoformat()
+
+    sliced = _output_of(_running("r2", started), logs)
+
+    assert sliced.quiet_seconds is not None and 170 <= sliced.quiet_seconds <= 250
+
+
+def test_an_unreadable_transcript_or_a_settled_run_claims_no_silence(tmp_path):
+    from types import SimpleNamespace
+
+    from agora.execution.models import RunState
+
+    logs = RunLogStore(tmp_path / "logs")
+    logs.append("r3", "done\n")
+    settled = SimpleNamespace(**{**vars(_running("r3", "2026-10-21T00:00:00+00:00")), "state": RunState.SUCCEEDED})
+    assert _output_of(settled, logs).quiet_seconds is None
+
+    from agora.execution.runlog import RunLogSlice
+
+    class _Unreadable:
+        def read(self, run_id, offset=0):
+            return RunLogSlice(text="", offset=0, next_offset=0, reachable=False, unreachable_reason="PermissionError")
+
+    sliced = _output_of(_running("r4", "2026-10-21T00:00:00+00:00"), _Unreadable())
+    assert sliced.reachable is False
+    assert sliced.quiet_seconds is None  # "could not read" never becomes "silent for N minutes"
+    assert sliced.quiet_measured_at is None
+
+
+def test_a_capped_transcript_says_so(tmp_path):
+    logs = RunLogStore(tmp_path / "logs")
+    chunk = "x" * 100_000
+    written = 0
+    while written < MAX_LOG_BYTES + 200_000:
+        logs.append("r5", chunk)
+        written += len(chunk)
+    assert logs.read("r5").capped is True
+    assert logs.read("r5", 0).written_at is not None

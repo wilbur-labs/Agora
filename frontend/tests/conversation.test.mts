@@ -402,3 +402,39 @@ test("the workbench's middle column is one stream: the conversation carries the 
   // A live turn shows its state, never a ticking guess at its duration.
   assert.ok(!source.includes("Date.now()"), "the card must not compute a live duration from the clock");
 });
+
+test("run activity counts silence from the last read and never claims it from a failed one (CR-12 ①)", async () => {
+  const { runActivityOf, STUCK_AFTER_MINUTES } = await import("../src/lib/conversation.ts");
+  const read = (quiet: number | null, extra: Partial<OutputSliceLike> = {}) => mergeTranscript(EMPTY_TRANSCRIPT, {
+    text: "x", offset: 0, next_offset: 1, reachable: true, quiet_seconds: quiet, read_at: 1_000_000, ...extra,
+  });
+  assert.deepEqual(runActivityOf(read(30), 1_000_000), { kind: "quiet", minutes: 0, stuck: false });
+  // Keeps counting between reads.
+  assert.equal((runActivityOf(read(30), 1_000_000 + 5 * 60_000) as { minutes: number }).minutes, 5);
+  const late = runActivityOf(read(STUCK_AFTER_MINUTES * 60), 1_000_000);
+  assert.equal(late.kind === "quiet" && late.stuck, true);
+  // Cannot say: no figure, an unreadable transcript, a read that did not come back.
+  assert.deepEqual(runActivityOf(read(null), 1_000_000), { kind: "none" });
+  assert.deepEqual(runActivityOf(undefined), { kind: "none" });
+  const unreadable = mergeTranscript(read(30), { text: "", offset: 1, next_offset: 1, reachable: false });
+  assert.deepEqual(runActivityOf(unreadable, 1_000_000), { kind: "none" });
+  const stalled = mergeTranscript(read(30), { text: "", offset: 1, next_offset: 1, reachable: true, failed: true });
+  assert.deepEqual(runActivityOf(stalled, 1_000_000), { kind: "none" });
+  // A late answer to an older poll of the same offset does not pull the figure back.
+  const newer = mergeTranscript(EMPTY_TRANSCRIPT, {
+    text: "", offset: 0, next_offset: 0, reachable: true, quiet_seconds: 660, quiet_measured_at: 2000, read_at: 1_000_000,
+  });
+  const lateRead = mergeTranscript(newer, {
+    text: "", offset: 0, next_offset: 0, reachable: true, quiet_seconds: 60, quiet_measured_at: 1400, read_at: 1_000_500,
+  });
+  assert.equal((runActivityOf(lateRead, 1_000_500) as { minutes: number }).minutes, 11);
+  // A read with no figure in between hides the note but keeps the order mark.
+  const blank = mergeTranscript(newer, { text: "", offset: 0, next_offset: 0, reachable: true, quiet_seconds: null, read_at: 1_000_200 });
+  assert.deepEqual(runActivityOf(blank, 1_000_200), { kind: "none" });
+  const afterBlank = mergeTranscript(blank, {
+    text: "", offset: 0, next_offset: 0, reachable: true, quiet_seconds: 60, quiet_measured_at: 1400, read_at: 1_000_600,
+  });
+  assert.deepEqual(runActivityOf(afterBlank, 1_000_600), { kind: "none" });
+  // A capped transcript cannot tell.
+  assert.deepEqual(runActivityOf(read(900, { log_capped: true }), 1_000_000), { kind: "capped" });
+});

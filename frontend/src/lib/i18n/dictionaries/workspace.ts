@@ -347,6 +347,13 @@ export const workspace = {
       // finished (user, 2026-09-22: "正在输出的时候也没什么显示").
       transcriptWorking: "still working…",
       transcriptStalled: "last read did not come back — retrying",
+      // Run activity (lib/conversation.ts runActivityOf).
+      activity: {
+        recent: "transcript updated just now",
+        quiet: "transcript unchanged for {minutes} min",
+        stuck: "transcript unchanged for {minutes} min — may be stuck",
+        capped: "transcript is at its size cap; cannot tell whether output continues",
+      },
       transcriptUnreadable: "transcript could not be read",
       transcriptLossy: "some output was lost before it could be saved",
       // A question's run is not a card of its own: while it runs, one quiet line under
@@ -1335,6 +1342,13 @@ export const workspace = {
       transcriptWaiting: "等第一行输出…",
       transcriptWorking: "还在跑…",
       transcriptStalled: "上一次读取没回来——重试中",
+      // Run activity (lib/conversation.ts runActivityOf).
+      activity: {
+        recent: "记录刚刚有更新",
+        quiet: "记录 {minutes} 分钟没有更新",
+        stuck: "记录 {minutes} 分钟没有更新，可能卡住了",
+        capped: "记录已到大小上限，看不出是否还在输出",
+      },
       transcriptUnreadable: "读不到 transcript",
       transcriptLossy: "有一部分输出没来得及保存就丢了",
       answering: "{adapter} 回答中…",

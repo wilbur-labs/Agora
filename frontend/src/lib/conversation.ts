@@ -221,6 +221,11 @@ export interface OutputSliceLike {
   from_record?: boolean;
   /** Output the agent produced that could not be saved. */
   lossy?: boolean;
+  quiet_seconds?: number | null;
+  quiet_measured_at?: number | null;
+  log_capped?: boolean;
+  /** When the caller received this slice (ms since epoch), so silence can keep counting. */
+  read_at?: number;
 }
 
 export interface Transcript {
@@ -256,6 +261,14 @@ export interface Transcript {
    * does not make the transcript whole again.
    */
   lossy: boolean;
+  /** Silence as of `quietReadAt` (see `runActivityOf`); null when the last read could not say. */
+  quietSeconds: number | null;
+  quietReadAt: number | null;
+  /** The newest control-plane measurement time seen. Only rises: a read that carries no
+   *  figure hides the note but keeps this, so an older figure arriving after it is still
+   *  recognised as older. */
+  quietMeasuredAt: number | null;
+  logCapped: boolean;
 }
 
 export const EMPTY_TRANSCRIPT: Transcript = {
@@ -268,6 +281,10 @@ export const EMPTY_TRANSCRIPT: Transcript = {
   more: false,
   fromRecord: false,
   lossy: false,
+  quietSeconds: null,
+  quietReadAt: null,
+  quietMeasuredAt: null,
+  logCapped: false,
 };
 
 /**
@@ -291,6 +308,8 @@ export function mergeTranscript(prev: Transcript, slice: OutputSliceLike): Trans
       stalled: false,
       unreadable: true,
       unreadableReason: slice.unreachable_reason ?? null,
+      quietSeconds: null,
+      quietReadAt: null,
       // `complete` is not taken from an unreachable read: the run's state came
       // back in the same response, but the transcript behind it did not, and
       // marking the turn finished here would present a truncated conversation as
@@ -298,6 +317,19 @@ export function mergeTranscript(prev: Transcript, slice: OutputSliceLike): Trans
       more: false,
     };
   }
+  // Polls of an unchanged transcript all ask for the same offset, so a late response
+  // to an older one passes the order check below; its silence figure is older too and
+  // must not pull a newer one back ("11 min, may be stuck" → "1 min").
+  const staleActivity = slice.quiet_measured_at != null && prev.quietMeasuredAt != null
+    && slice.quiet_measured_at < prev.quietMeasuredAt;
+  const activity = staleActivity
+    ? { quietSeconds: prev.quietSeconds, quietReadAt: prev.quietReadAt, quietMeasuredAt: prev.quietMeasuredAt, logCapped: prev.logCapped }
+    : {
+      quietSeconds: slice.quiet_seconds ?? null,
+      quietReadAt: slice.quiet_seconds == null ? null : (slice.read_at ?? null),
+      quietMeasuredAt: slice.quiet_measured_at ?? prev.quietMeasuredAt,
+      logCapped: slice.log_capped ?? false,
+    };
   if (slice.offset !== prev.offset) {
     // Not the slice we asked for, so **nothing** in it is used — not even its
     // `complete`. Two reads of the same offset can be in flight at once; taking
@@ -329,7 +361,43 @@ export function mergeTranscript(prev: Transcript, slice: OutputSliceLike): Trans
     more: slice.more_available ?? false,
     fromRecord: slice.from_record ?? false,
     lossy: prev.lossy || (slice.lossy ?? false),
+    ...activity,
   };
+}
+
+/**
+ * Run activity (CR-12 ①, the replacement the owner chose on 2026-10-07): how long a
+ * running turn has written nothing. Display only — nothing is stopped or retried on it.
+ *
+ *   - `none`   — cannot say: no reading yet, the last read did not come back or could
+ *                not read the transcript. The feed's own stalled / unreadable notes
+ *                speak for those; silence is not claimed from stale data.
+ *   - `capped` — the transcript takes no more output, so it cannot tell.
+ *   - `quiet`  — minutes since the transcript last changed (or since the start, when
+ *                there is none), with `stuck` from `STUCK_AFTER_MINUTES` on. Said about
+ *                the transcript, not the agent: the prompt echo is in it too. "May be
+ *                stuck", not "stuck": an agent can think for a long time without printing.
+ */
+export const STUCK_AFTER_MINUTES = 10;
+
+/** A slice marked with when it was received, so `runActivityOf` can keep counting
+ *  between reads. The one place the components' reads touch the clock. */
+export function receivedSlice<S extends OutputSliceLike>(slice: S, at: number = Date.now()): S {
+  return { ...slice, read_at: at };
+}
+
+export type RunActivity =
+  | { kind: "none" }
+  | { kind: "capped" }
+  | { kind: "quiet"; minutes: number; stuck: boolean };
+
+export function runActivityOf(transcript: Transcript | undefined, now: number = Date.now()): RunActivity {
+  if (!transcript || transcript.stalled || transcript.unreadable) return { kind: "none" };
+  if (transcript.logCapped) return { kind: "capped" };
+  if (transcript.quietSeconds === null || transcript.quietReadAt === null) return { kind: "none" };
+  const seconds = transcript.quietSeconds + Math.max(0, (now - transcript.quietReadAt) / 1000);
+  const minutes = Math.floor(seconds / 60);
+  return { kind: "quiet", minutes, stuck: minutes >= STUCK_AFTER_MINUTES };
 }
 
 /**

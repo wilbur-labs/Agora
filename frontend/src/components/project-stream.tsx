@@ -47,7 +47,8 @@ import {
 } from "@/lib/project-stream";
 import { gateReplyReachOf } from "@/lib/inline-gate";
 import { REVIEW_REQUESTER } from "@/lib/run-column";
-import { EMPTY_TRANSCRIPT, formatDuration, mergeTranscript, turnDurationMs, type Transcript } from "@/lib/conversation";
+import { EMPTY_TRANSCRIPT, formatDuration, mergeTranscript, receivedSlice, turnDurationMs, type Transcript } from "@/lib/conversation";
+import { ActivityNote } from "@/components/run-activity";
 import type { PlanRow } from "@/lib/task-plan";
 import { useI18n } from "@/lib/i18n";
 import { workspace as workspaceDictionary } from "@/lib/i18n/dictionaries/workspace";
@@ -876,7 +877,8 @@ export function ProjectStream({
     try {
       const slice = await getRunOutput(runId, current.offset);
       if (!alive.current) return;
-      setTranscripts((prev) => ({ ...prev, [runId]: mergeTranscript(prev[runId] ?? EMPTY_TRANSCRIPT, slice) }));
+      const received = receivedSlice(slice);
+      setTranscripts((prev) => ({ ...prev, [runId]: mergeTranscript(prev[runId] ?? EMPTY_TRANSCRIPT, received) }));
     } catch {
       if (!alive.current) return;
       // A read that did not come back is a stall, not a hole: the offset has not
@@ -935,7 +937,7 @@ export function ProjectStream({
   const chatLine = (run: RunSummary, held: ExecutionRun | "failed" | undefined) => {
     const quiet = "text-[0.8125rem] text-muted-foreground";
     if (run.state === "queued" || run.state === "running") {
-      return <p className={cn(quiet, "inline-flex items-center gap-1.5")}><span className="size-1.5 animate-pulse rounded-full bg-primary" />{t("workspace.stream.answering", { adapter: adapterLabel(run.adapter) })}</p>;
+      return <p className={cn(quiet, "inline-flex items-center gap-1.5")}><span className="size-1.5 animate-pulse rounded-full bg-primary" />{t("workspace.stream.answering", { adapter: adapterLabel(run.adapter) })}<ActivityNote transcript={transcripts[run.run_id]} className="ml-1" /></p>;
     }
     if (reading.has(run.run_id)) return <p className={quiet}>{t("workspace.stream.loading")}</p>;
     if (held === undefined || held === "failed") {
@@ -1033,6 +1035,7 @@ export function ProjectStream({
                         ? <>
                             <span className="inline-flex items-center gap-1 text-primary"><span className="size-1.5 animate-pulse rounded-full bg-current" />{te("runState", item.unit.run.state)}</span>
                             <button type="button" onClick={() => void stopTurn(item.unit.run)} disabled={stopping.has(item.unit.run.run_id)} className="underline-offset-2 hover:underline disabled:opacity-50">{t(stopping.has(item.unit.run.run_id) ? "workspace.stream.stopping" : "workspace.stream.stop")}</button>
+                            {item.unit.run.state === "running" && <ActivityNote transcript={transcript} />}
                           </>
                         : <span>{te("runState", item.unit.run.state)} · {relTime(record?.finished_at ?? item.unit.run.queued_at, t)}</span>}
                       {transcript?.stalled && <span>{t("workspace.stream.transcriptStalled")}</span>}
@@ -1129,7 +1132,8 @@ export function ProjectStream({
                         {standIn && <span className="text-amber-700 dark:text-amber-400">{t("workspace.stream.reviewStoodIn", { adapter: adapterLabel(standIn.adapter) })}</span>}
                         {reviewLive
                           ? <><span className="inline-flex items-center gap-1 text-amber-700 dark:text-amber-400"><span className="size-1.5 animate-pulse rounded-full bg-current" />{te("runState", review.state)}</span>
-                              <button type="button" onClick={() => void stopTurn(review)} disabled={stopping.has(review.run_id)} className="underline-offset-2 hover:underline disabled:opacity-50">{t(stopping.has(review.run_id) ? "workspace.stream.stopping" : "workspace.stream.stop")}</button></>
+                              <button type="button" onClick={() => void stopTurn(review)} disabled={stopping.has(review.run_id)} className="underline-offset-2 hover:underline disabled:opacity-50">{t(stopping.has(review.run_id) ? "workspace.stream.stopping" : "workspace.stream.stop")}</button>
+                              {review.state === "running" && <ActivityNote transcript={reviewFeed} />}</>
                           : <span>{review.state === "succeeded" ? "" : `${te("runState", review.state)} · `}{relTime(review.finished_at ?? review.queued_at, t)}</span>}
                         {/* What the feed cannot vouch for, said here as on a worker turn:
                             a stalled or unreadable read must not read as a quiet agent. */}

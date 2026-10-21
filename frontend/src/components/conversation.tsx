@@ -51,6 +51,7 @@ import {
   mergeTranscript,
   nestedSummaryOf,
   nextPollDelay,
+  receivedSlice,
   WORKER_ROLE,
   orphanSession,
   REVIEW_ROLE,
@@ -64,6 +65,7 @@ import {
   type SessionVerdict,
   type Transcript,
 } from "@/lib/conversation";
+import { ActivityNote } from "@/components/run-activity";
 import type { RunUnit, UnplacedRun } from "@/lib/run-tree";
 import { runsLackKnown, timelineReadOf, timelineVerdictOf } from "@/lib/timeline";
 import { CONTINUE_TIMEOUT_SECONDS } from "@/lib/continue-run";
@@ -410,9 +412,10 @@ export function Conversation({
     const current = transcripts[runId] ?? EMPTY_TRANSCRIPT;
     try {
       const slice = await getRunOutput(runId, current.offset);
+      const received = receivedSlice(slice);
       setTranscripts((prev) => ({
         ...prev,
-        [runId]: mergeTranscript(prev[runId] ?? EMPTY_TRANSCRIPT, slice),
+        [runId]: mergeTranscript(prev[runId] ?? EMPTY_TRANSCRIPT, received),
       }));
       if (slice.complete) onTurnSettled?.();
       return slice;
@@ -1149,6 +1152,7 @@ function TranscriptBody({ transcript, live, onLoad }: { transcript: Transcript |
       {transcript.stalled && (
         <Notice tone="warn">{t("conversation.transcript.stalled")}</Notice>
       )}
+      {live && <ActivityNote transcript={transcript} className="mb-1 block text-xs text-muted-foreground" />}
       {transcript.lossy && (
         <Notice tone="warn">{t("conversation.transcript.lossy")}</Notice>
       )}

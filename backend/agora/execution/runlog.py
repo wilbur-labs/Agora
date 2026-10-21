@@ -16,6 +16,7 @@ same function, so "where is Agora's state" keeps exactly one answer.
 """
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -82,6 +83,13 @@ class RunLogSlice:
     #: disk, so a caller polling for "anything new" knows to come straight back
     #: rather than waiting for its next tick.
     more_available: bool = False
+    #: When the transcript file was last written (its mtime, epoch seconds), observed
+    #: in the same read. None when there is no file yet, or it could not be read —
+    #: callers tell those apart by ``reachable``.
+    written_at: float | None = None
+    #: The transcript reached ``MAX_LOG_BYTES`` and takes no more appends, so a
+    #: silent file says nothing about whether the agent is still producing output.
+    capped: bool = False
 
 
 class RunLogStore:
@@ -206,6 +214,10 @@ class RunLogStore:
             with path.open("rb") as handle:
                 handle.seek(start)
                 raw = handle.read(MAX_SLICE_BYTES + 1)
+                # After the read, so the mtime is never older than the text served with
+                # it: a write landing in between shows as fresh activity, and its bytes
+                # arrive with the next read — never new text beside "silent for 20 min".
+                stat = os.fstat(handle.fileno())
         except OSError as exc:
             return RunLogSlice(
                 text="", offset=start, next_offset=start,
@@ -228,6 +240,8 @@ class RunLogStore:
             reachable=True,
             more_available=more,
             lossy=self._is_lossy(run_id),
+            written_at=stat.st_mtime,
+            capped=stat.st_size >= MAX_LOG_BYTES,
         )
 
 
