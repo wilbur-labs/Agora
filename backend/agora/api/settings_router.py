@@ -1204,6 +1204,19 @@ class RemoteEnvironmentRequest(BaseModel):
     # for this field is the password itself. Length is checked in _validate_credential
     # instead, with a message that never interpolates the value.
     password: str | None = Field(default=None)
+    # The claude-workspace tool directory on the host (CR-30 slice 3); absolute, no `..`.
+    # Optional: empty means "open as task" is not offered on this environment.
+    workspace_tool_dir: str | None = Field(default=None, max_length=1024)
+
+    @field_validator("workspace_tool_dir")
+    @classmethod
+    def _tool_dir_is_absolute(cls, value: str | None) -> str | None:
+        text = (value or "").strip()
+        if not text:
+            return None
+        if not text.startswith("/") or ".." in text.split("/"):
+            raise ValueError("workspace_tool_dir must be an absolute POSIX path without '..'")
+        return text
 
     @model_validator(mode="after")
     def _validate_credential(self) -> "RemoteEnvironmentRequest":
@@ -1266,6 +1279,7 @@ class RemoteEnvironmentRequest(BaseModel):
             cleanup_worktree=self.cleanup_worktree,
             credential_source=self.credential_source,  # type: ignore[arg-type]
             project_id=self.project_id,
+            workspace_tool_dir=(self.workspace_tool_dir or "").strip() or None,
         )
 
 
@@ -1361,6 +1375,7 @@ def _remote_environment_view(record: RemoteEnvironmentRecord) -> dict[str, Any]:
         "host_key_mode": record.host_key_mode,
         "known_hosts_path": record.known_hosts_path,
         "cleanup_worktree": record.cleanup_worktree,
+        "workspace_tool_dir": record.workspace_tool_dir,
         "created_at": record.created_at,
         "updated_at": record.updated_at,
     }

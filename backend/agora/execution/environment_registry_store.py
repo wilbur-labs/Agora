@@ -102,6 +102,8 @@ class RemoteEnvironmentStore:
                     credential_source TEXT NOT NULL DEFAULT 'env_var',
                     -- The project whose root this is (one environment = one project).
                     project_id TEXT,
+                    -- The claude-workspace tool directory on the host (CR-30 slice 3).
+                    workspace_tool_dir TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -123,6 +125,9 @@ class RemoteEnvironmentStore:
                 # migration can know, and guessing it is the cross-project write this
                 # column exists to stop. Such a row is refused at dispatch until edited.
                 db.execute("ALTER TABLE remote_environments ADD COLUMN project_id TEXT")
+            if "workspace_tool_dir" not in columns:
+                # Nullable: "not registered" is the honest value for every existing row.
+                db.execute("ALTER TABLE remote_environments ADD COLUMN workspace_tool_dir TEXT")
             db.commit()
 
     # ------------------------------------------------------------------ reads
@@ -169,8 +174,8 @@ class RemoteEnvironmentStore:
                         environment_id, label, ssh_host, ssh_port, ssh_user,
                         remote_workspace, remote_project_root, secret_ref,
                         host_key_mode, known_hosts_path, cleanup_worktree,
-                        credential_source, project_id, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        credential_source, project_id, workspace_tool_dir, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (*_columns(record), now, now),
                 )
@@ -194,7 +199,7 @@ class RemoteEnvironmentStore:
                    SET label = ?, ssh_host = ?, ssh_port = ?, ssh_user = ?,
                        remote_workspace = ?, remote_project_root = ?, secret_ref = ?,
                        host_key_mode = ?, known_hosts_path = ?, cleanup_worktree = ?,
-                       credential_source = ?, project_id = ?, updated_at = ?
+                       credential_source = ?, project_id = ?, workspace_tool_dir = ?, updated_at = ?
                  WHERE environment_id = ?
                 """,
                 (
@@ -210,6 +215,7 @@ class RemoteEnvironmentStore:
                     1 if record.cleanup_worktree else 0,
                     record.credential_source,
                     record.project_id,
+                    record.workspace_tool_dir,
                     utc_now(),
                     environment_id,
                 ),
@@ -268,6 +274,7 @@ def _columns(record: RemoteEnvironmentRecord) -> tuple[Any, ...]:
         1 if record.cleanup_worktree else 0,
         record.credential_source,
         record.project_id,
+        record.workspace_tool_dir,
     )
 
 
@@ -286,6 +293,7 @@ def _record_from_row(row: sqlite3.Row) -> RemoteEnvironmentRecord:
         cleanup_worktree=bool(row["cleanup_worktree"]),
         credential_source=row["credential_source"],
         project_id=row["project_id"],
+        workspace_tool_dir=row["workspace_tool_dir"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )

@@ -84,6 +84,9 @@ class RemoteEnvironmentRecord:
     #: None only on a row written before the column existed; such a row cannot be used
     #: until it is edited to name its project.
     project_id: str | None = None
+    #: The claude-workspace TOOL directory on this host (CR-30 slice 3), for opening a
+    #: terminal as one of its tasks. None = not offered; Agora never guesses the path.
+    workspace_tool_dir: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
 

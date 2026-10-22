@@ -966,6 +966,21 @@ class RemoteFilesystem:
                     return False
             return True
 
+    async def listdir(self, path: Path) -> list[str]:
+        """The names in a remote directory, without '.' and '..'. SFTP errors propagate as
+        the same OSError family ``read_file`` uses — never an empty list for "could not read"."""
+        conn = await self._env._ensure_conn()
+        async with conn.start_sftp_client() as sftp:
+            try:
+                names = await sftp.listdir(_posix(path))
+            except asyncssh.SFTPNoSuchFile as exc:
+                raise FileNotFoundError(_posix(path)) from exc
+            except asyncssh.SFTPPermissionDenied as exc:
+                raise PermissionError(_posix(path)) from exc
+            except asyncssh.SFTPError as exc:
+                raise OSError(f"cannot list remote directory {_posix(path)}: {exc}") from exc
+        return [n for n in (_as_str(name) for name in names) if n not in (".", "..")]
+
     async def read_file(
         self, path: Path, *, max_bytes: int = MAX_FS_READ_BYTES, truncate: bool = False
     ) -> bytes:

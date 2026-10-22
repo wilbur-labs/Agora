@@ -214,7 +214,7 @@ export function remotePathWithin(path: string, root: string): boolean {
 /** Fields kept under "advanced"; the form opens that section when one of them errs. */
 export const ADVANCED_FIELDS: readonly (keyof RemoteEnvironmentInput)[] = [
   "environment_id", "label", "ssh_port", "credential_source", "secret_ref", "password",
-  "remote_workspace", "host_key_mode", "known_hosts_path", "cleanup_worktree",
+  "remote_workspace", "host_key_mode", "known_hosts_path", "cleanup_worktree", "workspace_tool_dir",
 ];
 
 /** A valid environment id from free text: `10.36.94.35` -> `10-36-94-35`,
@@ -328,6 +328,7 @@ export function emptyEnvironmentInput(): RemoteEnvironmentInput {
     known_hosts_path: null,
     cleanup_worktree: false,
     project_id: "",
+    workspace_tool_dir: null,
   };
 }
 
@@ -350,6 +351,7 @@ export function toEnvironmentInput(env: RemoteEnvironment): RemoteEnvironmentInp
     known_hosts_path: env.known_hosts_path,
     cleanup_worktree: env.cleanup_worktree,
     project_id: env.project_id ?? "",
+    workspace_tool_dir: env.workspace_tool_dir ?? null,
   };
 }
 

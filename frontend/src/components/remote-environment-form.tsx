@@ -332,6 +332,14 @@ export function RemoteEnvironmentForm({
               onChange={(e) => set("known_hosts_path", e.target.value ? e.target.value : null)}
             />
           </Field>
+          <Field label={t("environments.form.toolDirLabel")} hint={t("environments.form.toolDirHint")} error={errorFor("workspace_tool_dir")}>
+            <input
+              className="w-full rounded-md border px-3 py-2 text-sm font-mono"
+              placeholder="/workplace/ai-tools/claude-workspace"
+              value={effective.workspace_tool_dir ?? ""}
+              onChange={(e) => set("workspace_tool_dir", e.target.value ? e.target.value : null)}
+            />
+          </Field>
         </div>
         <label className="mt-3 flex items-center gap-2 text-sm">
           <input

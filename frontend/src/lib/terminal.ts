@@ -29,6 +29,23 @@ export interface TerminalEnvironmentTarget {
   label: string;
   target: string;
   root: string;
+  /** Set when "open as task" can be asked for on this environment (CR-30 slice 3). */
+  workspace_tool_dir: string | null;
+}
+
+/** The tasks on a remote host that name the environment's root (CR-30 slice 3). Three
+ *  states kept apart: read whole, read with gaps, could not read. */
+export interface RemoteTaskTargets {
+  environment_id: string;
+  state: "complete" | "partial" | "unavailable";
+  reason: string | null;
+  tool_dir: string | null;
+  work_root: string | null;
+  unreadable: number;
+  truncated: boolean;
+  tasks: { task: string; title: string | null }[];
+  remote_repo: { head: string | null; dirty: boolean | null } | null;
+  local_repos: { source: string; head: string | null; dirty: boolean | null }[];
 }
 
 export interface TerminalTaskTarget {
@@ -116,6 +133,8 @@ export const terminalSession = () => call<{ authorized: boolean }>("/api/termina
 export const listTerminals = () => call<{ terminals: TerminalRow[] }>("/api/terminals");
 export const terminalTargets = (projectId: string) =>
   call<TerminalTargets>(`/api/projects/${encodeURIComponent(projectId)}/terminal-targets`);
+export const remoteTaskTargets = (projectId: string, environmentId: string) =>
+  call<RemoteTaskTargets>(`/api/projects/${encodeURIComponent(projectId)}/remote-task-targets?environment_id=${encodeURIComponent(environmentId)}`);
 export const closeTerminal = (id: string) =>
   call<{ terminal_id: string }>(`/api/terminals/${encodeURIComponent(id)}`, { method: "DELETE" });
 
@@ -124,6 +143,7 @@ export function createTerminal(input: {
   command?: TerminalCommand;
   task?: { source: string; task: string };
   environment_id?: string;
+  remote_task?: string;
   rows?: number;
   cols?: number;
 }): Promise<TerminalRow> {
@@ -144,6 +164,30 @@ export function terminalStateOf(
   if (row.alive) return "running";
   if (row.end_reason === "closed" || row.end_reason === "disconnected" || row.end_reason === "failed") return row.end_reason;
   return row.exit_code === null ? "exitedUnknown" : "exited";
+}
+
+/** The sentence under a remote host's task list (CR-30 slice 3): what the read could not
+ *  cover, and the two work-data repositories as facts. No verdict on whether the task
+ *  records agree, and no "pull over there": HEAD alone cannot say either. */
+export type RemoteTaskNote =
+  | { kind: "unavailable"; reason: string }
+  | { kind: "partial"; unreadable: number; truncated: boolean }
+  | { kind: "none" }
+  | { kind: "listed" };
+
+export function remoteTaskNoteOf(scan: Pick<RemoteTaskTargets, "state" | "reason" | "unreadable" | "truncated" | "tasks">): RemoteTaskNote {
+  if (scan.state === "unavailable") return { kind: "unavailable", reason: scan.reason ?? "" };
+  if (scan.state === "partial") return { kind: "partial", unreadable: scan.unreadable, truncated: scan.truncated };
+  return scan.tasks.length === 0 ? { kind: "none" } : { kind: "listed" };
+}
+
+/** One side's work-data repository, said as it is: HEAD and whether it has uncommitted
+ *  changes, each "unknown" when it could not be read. */
+export function repoFactsOf(repo: { head: string | null; dirty: boolean | null } | null): { head: string; dirty: "yes" | "no" | "unknown" } {
+  return {
+    head: repo?.head ?? "?",
+    dirty: repo?.dirty === true ? "yes" : repo?.dirty === false ? "no" : "unknown",
+  };
 }
 
 /** Launch choices for a project: its claude-workspace tasks first (the way the person

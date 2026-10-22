@@ -322,6 +322,7 @@ export interface RemoteEnvironment {
   credential_source: CredentialSource;
   credential_present: boolean | null;
   host_key_mode: "strict" | "tofu";
+  workspace_tool_dir?: string | null;
   known_hosts_path: string | null;
   cleanup_worktree: boolean;
   /** The project whose root this is (one environment = one project). null only on a row
@@ -351,6 +352,9 @@ export interface RemoteEnvironmentInput {
   known_hosts_path: string | null;
   cleanup_worktree: boolean;
   project_id: string;
+  /** The claude-workspace tool directory on the host (CR-30 slice 3); null = "open as
+   *  task" is not offered there. */
+  workspace_tool_dir?: string | null;
 }
 
 /** A host from this machine's ~/.ssh/config (CR-25) — only to pre-fill a registration. */

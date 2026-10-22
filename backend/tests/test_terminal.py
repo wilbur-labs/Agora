@@ -418,7 +418,7 @@ def test_a_remote_terminal_only_opens_on_an_environment_of_this_project(api, tmp
     client, _ = api
     _login(client, tmp_path)
     other = SimpleNamespace(project_id="someone-else", environment_id="e1", label="E1", ssh_user="u",
-                            ssh_host="h", ssh_port=22, remote_project_root="/srv/x")
+                            ssh_host="h", ssh_port=22, remote_project_root="/srv/x", workspace_tool_dir=None)
     store = SimpleNamespace(get=lambda environment_id: other, list_environments=lambda: [other])
     app.dependency_overrides[get_remote_environment_store] = lambda: store
     resp = client.post("/api/terminals", json={"project_id": "home", "command": "shell", "environment_id": "e1"})
@@ -429,7 +429,7 @@ def test_a_remote_terminal_only_opens_on_an_environment_of_this_project(api, tmp
     app.dependency_overrides[get_remote_environment_store] = lambda: SimpleNamespace(
         get=lambda environment_id: mine, list_environments=lambda: [mine])
     (listed,) = client.get("/api/projects/home/terminal-targets").json()["environments"]
-    assert listed == {"environment_id": "e1", "label": "E1", "target": "u@h:2222", "root": "/srv/x"}
+    assert listed == {"environment_id": "e1", "label": "E1", "target": "u@h:2222", "root": "/srv/x", "workspace_tool_dir": None}
 
 
 def test_a_remote_host_that_stalls_on_the_channel_gives_its_slot_back(monkeypatch):
@@ -488,3 +488,46 @@ def test_a_remote_close_that_does_not_finish_is_forced_within_the_grace(monkeypa
 
     session, environment = _asyncio.run(scenario())
     assert aborted and session.end_reason == "closed" and environment.closed
+
+
+def test_listing_remote_tasks_needs_the_terminal_token(api, tmp_path):
+    """It connects with the person's SSH credentials, so it is a terminal route (kiro, CR-30 slice 3 design)."""
+    client, _ = api
+    assert client.get("/api/projects/home/remote-task-targets", params={"environment_id": "e1"}).status_code == 401
+
+
+def test_a_full_terminal_list_still_closes_the_connection_a_task_check_opened():
+    from agora.terminal import manager as manager_module
+
+    async def scenario():
+        manager = TerminalManager()
+        manager._starting = manager_module.MAX_TERMINALS
+        environment = _FakeEnvironment(_FakeProc())
+        with pytest.raises(manager_module.TerminalLimitReached):
+            await _open(manager, environment)
+        return environment
+
+    assert _asyncio.run(scenario()).closed
+
+
+def test_a_remote_task_without_an_environment_is_refused(api, tmp_path):
+    client, _ = api
+    _login(client, tmp_path)
+    resp = client.post("/api/terminals", json={"project_id": "home", "remote_task": "wanted"})
+    assert resp.status_code == 422
+
+
+def test_a_close_that_stalls_is_aborted_within_the_grace(monkeypatch):
+    from agora.terminal import manager as manager_module
+
+    monkeypatch.setattr(manager_module, "REMOTE_CLOSE_GRACE", 0.05)
+    aborted = []
+
+    class _Stalls:
+        _conn = SimpleNamespace(abort=lambda: aborted.append(True))
+
+        async def aclose(self):
+            await _asyncio.sleep(10)
+
+    _asyncio.run(manager_module.quietly_close(_Stalls()))
+    assert aborted

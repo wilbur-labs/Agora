@@ -22,7 +22,7 @@ from agora.execution.environment_registry_store import RemoteEnvironmentStore
 from agora.execution.security import redact_text
 from agora.projects.registry import ProjectRegistry
 from agora.terminal.auth import TOKEN_HEADER, LaunchCodes, load_or_create_token, token_matches
-from agora.terminal.manager import PtyUnavailable, TerminalLimitReached, TerminalManager, command_argv
+from agora.terminal.manager import PtyUnavailable, TerminalLimitReached, TerminalManager, command_argv, quietly_close
 from agora.terminal.targets import task_targets
 
 router = APIRouter()
@@ -104,7 +104,79 @@ def terminal_targets(
 
 def _environment_view(record) -> dict[str, Any]:
     return {"environment_id": record.environment_id, "label": record.label,
-            "target": _target_of(record), "root": record.remote_project_root}
+            "target": _target_of(record), "root": record.remote_project_root,
+            # Whether "open as task" can be asked for at all (CR-30 slice 3). The tasks
+            # themselves come from remote-task-targets, which needs the terminal token.
+            "workspace_tool_dir": record.workspace_tool_dir}
+
+
+def _environment_for(record):
+    """A fresh RemoteEnvironment for one use: it is one connection on one loop."""
+    from agora.environments_remote import RemoteEnvironment
+
+    return RemoteEnvironment(
+        host=record.ssh_host, port=record.ssh_port, user=record.ssh_user, secret_ref=record.secret_ref,
+        host_key_mode=record.host_key_mode, known_hosts_path=record.known_hosts_path,
+        credential_source=record.credential_source, environment_id=record.environment_id,
+    )
+
+
+def _bound_record(store: RemoteEnvironmentStore, environment_id: str, project_id: str):
+    record = store.get(environment_id)
+    # Only an environment bound to this project — the same rule a remote run obeys.
+    if record is None or record.project_id != project_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such remote environment for this project.")
+    return record
+
+
+def _local_repo_facts(registry: ProjectRegistry) -> list[dict[str, Any]]:
+    """git facts of this machine's claude-workspace work roots, for the person to compare
+    with the remote one. Facts only: no verdict on whether the task records agree."""
+    import subprocess
+
+    from agora.terminal.targets import _is_kiro
+
+    out: list[dict[str, Any]] = []
+    for source in registry.workspace_sources():
+        path = Path(source)
+        if _is_kiro(path):
+            continue
+
+        def git(*args: str) -> str | None:
+            try:
+                done = subprocess.run(["git", "-C", str(path), *args], capture_output=True, text=True,
+                                      encoding="utf-8", errors="replace", timeout=8)
+            except (OSError, subprocess.TimeoutExpired):
+                return None
+            return done.stdout if done.returncode == 0 else None
+
+        head, status = git("rev-parse", "--short", "HEAD"), git("status", "--porcelain")
+        out.append({"source": str(path), "head": head.strip() if head else None,
+                    "dirty": None if status is None else bool(status.strip())})
+    return out
+
+
+@router.get("/projects/{project_id}/remote-task-targets", dependencies=[Depends(require_terminal_session)])
+async def remote_task_targets(
+    project_id: str,
+    environment_id: str,
+    registry: ProjectRegistry = Depends(get_project_registry),
+    environments: RemoteEnvironmentStore = Depends(get_remote_environment_store),
+) -> dict[str, Any]:
+    """The claude-workspace tasks on this environment's host that name its project root
+    (CR-30 slice 3). It connects with the person's SSH credentials, so it takes the
+    terminal token like every other terminal route."""
+    from agora.terminal.remote_tasks import scan_remote_tasks
+
+    _project(registry, project_id)
+    record = _bound_record(environments, environment_id, project_id)
+    environment = _environment_for(record)
+    try:
+        scan = await scan_remote_tasks(environment, record.workspace_tool_dir, record.remote_project_root)
+    finally:
+        await quietly_close(environment)
+    local = await asyncio.to_thread(_local_repo_facts, registry)
+    return {"environment_id": environment_id, **scan.payload(), "local_repos": local}
 
 
 def _target_of(record) -> str:
@@ -136,6 +208,8 @@ class CreateTerminalRequest(BaseModel):
     task: TaskRef | None = None
     #: Open on this registered remote environment (CR-30 slice 2), in its project root.
     environment_id: str | None = Field(default=None, min_length=1, max_length=128)
+    #: With ``environment_id``: open as this claude-workspace task on that host (slice 3).
+    remote_task: str | None = Field(default=None, min_length=1, max_length=128)
     rows: int = Field(default=30, ge=2, le=500)
     cols: int = Field(default=120, ge=10, le=1000)
 
@@ -152,6 +226,8 @@ async def create_terminal(
     environments: RemoteEnvironmentStore = Depends(get_remote_environment_store),
 ) -> dict[str, Any]:
     project = _project(registry, request.project_id)
+    if request.remote_task is not None and request.environment_id is None:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "remote_task needs environment_id.")
     if request.environment_id is not None:
         if request.task is not None:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "A remote terminal opens in the project root, not as a task.")
@@ -192,25 +268,40 @@ async def create_terminal(
 
 
 async def _create_remote(request: CreateTerminalRequest, project_id: str, store: RemoteEnvironmentStore) -> dict[str, Any]:
-    from agora.environments_remote import RemoteEnvironment, RemoteHostKeyError
+    from agora.environments_remote import RemoteHostKeyError
+    from agora.terminal.remote_tasks import SCAN_TIMEOUT, RemoteTaskRefused, open_line, verify_task
 
-    record = store.get(request.environment_id)
-    # Only an environment bound to this project — the same rule a remote run obeys.
-    if record is None or record.project_id != project_id:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such remote environment for this project.")
+    record = _bound_record(store, request.environment_id, project_id)
     target = _target_of(record)
     # One connection per terminal: RemoteEnvironment is one connection on one loop.
-    environment = RemoteEnvironment(
-        host=record.ssh_host, port=record.ssh_port, user=record.ssh_user, secret_ref=record.secret_ref,
-        host_key_mode=record.host_key_mode, known_hosts_path=record.known_hosts_path,
-        credential_source=record.credential_source, environment_id=record.environment_id,
-    )
+    environment = _environment_for(record)
+    cwd, line, label = record.remote_project_root, _REMOTE_LINES[request.command], f"{project_id} · {request.command} · {target}"
     try:
+        if request.remote_task is not None:
+            # The menu was a list of candidates: everything is checked again here.
+            try:
+                tool, work = await asyncio.wait_for(
+                    verify_task(environment, record.workspace_tool_dir, record.remote_project_root, request.remote_task),
+                    timeout=SCAN_TIMEOUT,
+                )
+            except RemoteTaskRefused as exc:
+                await quietly_close(environment)
+                raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from None
+            except (asyncio.TimeoutError, TimeoutError):
+                await quietly_close(environment)
+                raise HTTPException(status.HTTP_504_GATEWAY_TIMEOUT,
+                                    f"Checking the task on {target} took over {int(SCAN_TIMEOUT)} s.") from None
+            except BaseException:
+                await quietly_close(environment)
+                raise
+            cwd, line = str(tool), open_line(work, request.remote_task)
+            label = f"{request.remote_task} · claude (claude-workspace) · {target}"
         session = await get_terminal_manager().create_remote(
-            project_id=project_id, label=f"{project_id} · {request.command} · {target}", environment=environment,
-            target=target, cwd=record.remote_project_root, line=_REMOTE_LINES[request.command],
-            rows=request.rows, cols=request.cols,
+            project_id=project_id, label=label, environment=environment,
+            target=target, cwd=cwd, line=line, rows=request.rows, cols=request.cols,
         )
+    except HTTPException:
+        raise
     except TerminalLimitReached as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from None
     except RemoteHostKeyError as exc:

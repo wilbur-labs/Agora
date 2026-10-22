@@ -26,7 +26,7 @@ test("tasks come first, and a task that cannot open is listed, not dropped", () 
 });
 
 test("a project's remote environments come after the local choices, each with every command (CR-30 slice 2)", () => {
-  const environment = { environment_id: "e1", label: "E1", target: "sharp@10.36.94.35", root: "/srv/p" };
+  const environment = { environment_id: "e1", label: "E1", target: "sharp@10.36.94.35", root: "/srv/p", workspace_tool_dir: null };
   const choices = launchChoicesOf({ project_id: "p", root: "r", tasks: [], environments: [environment], environments_error: null });
   assert.deepEqual(choices.slice(4).map((c) => c.kind === "remote" && `${c.environment.environment_id}:${c.command}`),
     ["e1:claude", "e1:codex", "e1:kiro", "e1:shell"]);
@@ -48,4 +48,16 @@ test("no stored token reads as none, a broken store as none", () => {
   assert.equal(readTerminalToken({ getItem: () => null, setItem: () => undefined }), null);
   assert.equal(readTerminalToken({ getItem: () => { throw new Error("blocked"); }, setItem: () => undefined }), null);
   assert.equal(readTerminalToken(null), null);
+});
+
+test("a remote task list says what it could not read, and the repositories only as facts (CR-30 slice 3)", async () => {
+  const { remoteTaskNoteOf, repoFactsOf } = await import("../src/lib/terminal.ts");
+  const base = { reason: null, unreadable: 0, truncated: false, tasks: [] as { task: string; title: string | null }[] };
+  assert.deepEqual(remoteTaskNoteOf({ ...base, state: "unavailable", reason: "no tool" }), { kind: "unavailable", reason: "no tool" });
+  assert.deepEqual(remoteTaskNoteOf({ ...base, state: "partial", unreadable: 2 }), { kind: "partial", unreadable: 2, truncated: false });
+  assert.deepEqual(remoteTaskNoteOf({ ...base, state: "complete" }), { kind: "none" });
+  assert.deepEqual(remoteTaskNoteOf({ ...base, state: "complete", tasks: [{ task: "a", title: null }] }), { kind: "listed" });
+  assert.deepEqual(repoFactsOf({ head: "abc", dirty: true }), { head: "abc", dirty: "yes" });
+  assert.deepEqual(repoFactsOf({ head: null, dirty: null }), { head: "?", dirty: "unknown" });
+  assert.deepEqual(repoFactsOf(null), { head: "?", dirty: "unknown" });
 });

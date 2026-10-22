@@ -294,7 +294,11 @@ class TerminalManager:
         """Open a PTY on ``environment`` (a ``RemoteEnvironment`` owned by this terminal
         alone) and start copying its output. Runs on the server's event loop, which then
         owns the channel. A failure closes the connection and raises: no half-open entry."""
-        self._reserve()
+        try:
+            self._reserve()
+        except BaseException:
+            await _quietly_close(environment)  # it may already be connected (a task check)
+            raise
         try:
             try:
                 proc = await asyncio.wait_for(
@@ -428,10 +432,19 @@ class TerminalManager:
 
 
 async def _quietly_close(environment: Any) -> None:
+    """Close a remote connection, bounded: a host that stalls on the close must not hold
+    the caller. Past the grace the connection is aborted."""
     try:
-        await environment.aclose()
+        await asyncio.wait_for(environment.aclose(), timeout=REMOTE_CLOSE_GRACE)
     except Exception:  # noqa: BLE001 - closing must not raise over the real error
-        pass
+        conn = getattr(environment, "_conn", None)
+        try:
+            if conn is not None:
+                conn.abort()
+        except Exception:
+            pass
+
+quietly_close = _quietly_close
 
 
 @dataclass
