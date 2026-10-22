@@ -25,6 +25,7 @@ import { Check, Loader2, RefreshCw, Sparkles } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { RecordedGoals } from "@/components/recorded-goals";
+import { TerminalLauncher } from "@/components/terminal-launcher";
 import { useI18n } from "@/lib/i18n";
 import {
   adoptKickoff,
@@ -284,6 +285,9 @@ export function ProjectChat({
           >
             <RefreshCw className={cn("size-3.5", busy !== null && "animate-spin")} />
           </Button>
+          {/* The terminal is reachable before a goal is settled too: it is where the work
+              happens, and a project without a goal had no way to open one (seen on 8001). */}
+          <TerminalLauncher projectId={projectId} />
         </header>
 
         {error && (
