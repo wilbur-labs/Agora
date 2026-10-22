@@ -40,6 +40,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shlex
+import socket
 import stat
 import tempfile
 import weakref
@@ -277,6 +278,9 @@ class RemoteEnvironment:
         self._host_key_mode = host_key_mode
         self._known_hosts_path = known_hosts_path
         self._conn: "asyncssh.SSHClientConnection | None" = None
+        #: False for a connection that must only verify — the environment page's test
+        #: connection — so connecting never records a host key nobody confirmed.
+        self.pin_on_connect = True
         # The remote login shell's PATH, probed once per instance (= per run); None when
         # the probe produced nothing usable (CR-23).
         self._login_path: object = _UNPROBED
@@ -494,8 +498,108 @@ class RemoteEnvironment:
                 )
             self._append_known_host_atomically(self._known_hosts_line(key))
 
+    # --- looking before trusting (environment page: test connection) ---
+
+    def _trust_files(self) -> list[Path]:
+        """The files a verified connect trusts for this host, in this mode."""
+        if self._host_key_mode == "tofu":
+            return [Path(self._known_hosts_path).expanduser(), _user_known_hosts()] if self._known_hosts_path else []
+        return [Path(self._known_hosts_path).expanduser() if self._known_hosts_path else _user_known_hosts()]
+
+    def _trusted_for_host(self, addresses: "Sequence[str]" = ("",)) -> "tuple[list, bool, list]":
+        """The host keys this environment's files trust for the host, and whether a CA is.
+        Matched by name and by each of the host's addresses, as the connection itself
+        matches by name and peer address: a key recorded under the IP is trusted too."""
+        port = None if self._port == 22 else self._port
+        trusted: list = []
+        revoked: list = []
+        has_ca = False
+        for path in self._trust_files():
+            known = _load_known_hosts([path])
+            if known is None:
+                continue
+            for addr in addresses or ("",):
+                result = asyncssh.match_known_hosts(known, self._host, addr, port)
+                trusted += list(result[0])
+                has_ca = has_ca or bool(result[1])
+                revoked += list(result[2])
+        return trusted, has_ca, revoked
+
+    async def _addresses(self) -> list[str]:
+        """The host's addresses as the connection would resolve them; empty when it cannot."""
+        try:
+            infos = await asyncio.get_running_loop().getaddrinfo(self._host, self._port, type=socket.SOCK_STREAM)
+        except OSError:
+            return [""]
+        return list(dict.fromkeys(info[4][0] for info in infos)) or [""]
+
+    async def presented_host_key(self, *, timeout: float = 15.0) -> "tuple[asyncssh.SSHKey, str]":
+        """The key the server presents and how this environment's files regard it —
+        without authenticating and without pinning anything.
+
+        A server usually holds several host keys (rsa, ecdsa, ed25519) and offers the one
+        the client prefers. Asked with default preferences it may show a different one
+        from the key on file, and comparing those would call a trusted host a mismatch
+        (measured on the test host). So when keys are on file, the server is asked for
+        exactly those algorithms; only a server that cannot present any of them, or
+        presents a different key of the same algorithm, is a mismatch.
+
+        Status: ``trusted``, ``mismatch``, ``revoked``, ``ca`` (a CA is trusted: the
+        connect decides), or ``unknown``."""
+        trusted, has_ca, revoked = self._trusted_for_host(await self._addresses())
+        algs: list[str] = []
+        for k in trusted:
+            alg = k.get_algorithm()
+            algs += ["rsa-sha2-512", "rsa-sha2-256", "ssh-rsa"] if alg == "ssh-rsa" else [alg]
+        kwargs = {"server_host_key_algs": list(dict.fromkeys(algs))} if algs else {}
+        try:
+            key = await asyncio.wait_for(
+                asyncssh.get_server_host_key(self._host, self._port, config=None, **kwargs), timeout=timeout,
+            )
+        except asyncssh.KeyExchangeFailed:
+            if not algs:
+                raise
+            # It holds none of the trusted algorithms: show what it does present.
+            key = await asyncio.wait_for(
+                asyncssh.get_server_host_key(self._host, self._port, config=None), timeout=timeout,
+            )
+        if key is None:
+            raise RemoteHostKeyError(f"server {self._host} presented no host key")
+        if any(k.public_data == key.public_data for k in revoked):
+            # Explicitly revoked (@revoked): never offered for trust, whatever else is on file.
+            return key, "revoked"
+        if any(k.public_data == key.public_data for k in trusted):
+            return key, "trusted"
+        if has_ca:
+            # A CA is trusted for this host: a replaced key with a valid certificate is
+            # accepted by the connection, so this check does not overrule it.
+            return key, "ca"
+        if trusted:
+            return key, "mismatch"
+        return key, "unknown"
+
+    async def pin_confirmed_host_key(self, fingerprint: str) -> str:
+        """Pin the presented key, but only the one the person saw: the key is fetched
+        again and must carry ``fingerprint``, and must still be ``unknown``. TOFU only —
+        a strict environment's trust is the operator's own known_hosts, not Agora's to edit."""
+        if self._host_key_mode != "tofu" or not self._known_hosts_path:
+            raise RemoteHostKeyError("only a TOFU environment with a known_hosts file can record a key here")
+        async with _pin_lock_for(self._known_hosts_path):
+            key, trust = await self.presented_host_key()
+            presented = key.get_fingerprint("sha256")
+            if presented != fingerprint:
+                raise RemoteHostKeyError(
+                    f"the host now presents {presented}, not the {fingerprint} that was confirmed; nothing recorded")
+            if trust == "trusted":
+                return presented
+            if trust != "unknown":
+                raise RemoteHostKeyError(f"the host key is {trust} for this environment; nothing recorded")
+            self._append_known_host_atomically(self._known_hosts_line(key))
+            return presented
+
     async def _connect_once(self) -> "asyncssh.SSHClientConnection":
-        await self._tofu_pin_if_needed()
+        if self.pin_on_connect:
+            await self._tofu_pin_if_needed()
         kwargs = {
             "host": self._host,
             "port": self._port,

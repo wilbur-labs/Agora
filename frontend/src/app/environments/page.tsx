@@ -19,6 +19,7 @@ import { AlertTriangle, CheckCircle2, HelpCircle, Pencil, Plus, Server, Trash2, 
 
 import { DeliveryShell } from "@/components/delivery-shell";
 import { RemoteEnvironmentForm } from "@/components/remote-environment-form";
+import { ConnectionCheckButton } from "@/components/connection-check";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/lib/i18n";
 import {
@@ -295,6 +296,9 @@ export default function EnvironmentsPage() {
                         : t("environments.remoteList.secretRefLabel", { secretRef: env.secret_ref })}
                     </span>
                   </div>
+                  {/* Keyed by the saved configuration: an edit drops the old result (and a
+                      test still in flight), so an untested destination never shows as checked. */}
+                  <ConnectionCheckButton key={`${env.environment_id}:${env.updated_at ?? ""}`} environmentId={env.environment_id} />
                 </div>
               );
             })}

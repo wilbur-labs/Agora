@@ -314,6 +314,55 @@ async def _create_remote(request: CreateTerminalRequest, project_id: str, store:
     return session.view()
 
 
+@router.post("/remote-environments/{environment_id}/test", dependencies=[Depends(require_terminal_session)])
+async def test_remote_environment(
+    environment_id: str,
+    environments: RemoteEnvironmentStore = Depends(get_remote_environment_store),
+) -> dict[str, Any]:
+    """Test connection (environment page): host key first, without signing in or pinning;
+    then sign-in, project root, agent CLIs and the tool directory. It uses the person's
+    SSH credentials, so it takes the terminal token."""
+    from agora.execution.connection_check import check_environment
+
+    record = environments.get(environment_id)
+    if record is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Unknown remote environment: {environment_id}")
+    environment = _environment_for(record)
+    try:
+        result = await check_environment(environment, record)
+    finally:
+        await quietly_close(environment)
+    return {"environment_id": environment_id, **result}
+
+
+class TrustHostKeyRequest(BaseModel):
+    #: The SHA256 fingerprint the person saw. Recorded only if the host still presents it.
+    fingerprint: str = Field(min_length=10, max_length=200)
+
+
+@router.post("/remote-environments/{environment_id}/trust-host-key", dependencies=[Depends(require_terminal_session)])
+async def trust_remote_host_key(
+    environment_id: str,
+    request: TrustHostKeyRequest,
+    environments: RemoteEnvironmentStore = Depends(get_remote_environment_store),
+) -> dict[str, Any]:
+    from agora.environments_remote import RemoteHostKeyError
+
+    record = environments.get(environment_id)
+    if record is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Unknown remote environment: {environment_id}")
+    environment = _environment_for(record)
+    try:
+        recorded = await environment.pin_confirmed_host_key(request.fingerprint)
+    except RemoteHostKeyError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from None
+    except Exception as exc:  # noqa: BLE001 - the host could not be reached
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"{type(exc).__name__}: {redact_text(str(exc))}") from None
+    finally:
+        await quietly_close(environment)
+    return {"environment_id": environment_id, "fingerprint": recorded, "recorded": True}
+
+
 @router.delete("/terminals/{terminal_id}", dependencies=[Depends(require_terminal_session)])
 def close_terminal(terminal_id: str) -> dict[str, Any]:
     if not get_terminal_manager().close(terminal_id):

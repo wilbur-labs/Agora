@@ -531,3 +531,9 @@ def test_a_close_that_stalls_is_aborted_within_the_grace(monkeypatch):
 
     _asyncio.run(manager_module.quietly_close(_Stalls()))
     assert aborted
+
+
+def test_testing_a_connection_and_trusting_a_key_need_the_terminal_token(api):
+    client, _ = api
+    assert client.post("/api/remote-environments/e1/test").status_code == 401
+    assert client.post("/api/remote-environments/e1/trust-host-key", json={"fingerprint": "SHA256:abcdefghij"}).status_code == 401

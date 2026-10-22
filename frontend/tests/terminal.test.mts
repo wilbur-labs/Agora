@@ -61,3 +61,17 @@ test("a remote task list says what it could not read, and the repositories only 
   assert.deepEqual(repoFactsOf({ head: null, dirty: null }), { head: "?", dirty: "unknown" });
   assert.deepEqual(repoFactsOf(null), { head: "?", dirty: "unknown" });
 });
+
+test("a connection check stops where trust stops, and says what it did not check", async () => {
+  const { checkStepsOf } = await import("../src/lib/terminal.ts");
+  const base = { environment_id: "e", auth_detail: null, clis: null, tool: null, timed_out: false } as const;
+  const unknownKey = { status: "unknown", fingerprint: "SHA256:x", algorithm: "ssh-ed25519", mode: "tofu" } as const;
+  assert.deepEqual(checkStepsOf({ ...base, host_key: unknownKey, auth: "skipped", root: "skipped" }).map((s) => s.key),
+    ["key.unknownTofu", "auth.skipped"]);
+  const trusted = { ...unknownKey, status: "trusted" } as const;
+  const full = checkStepsOf({ ...base, host_key: trusted, auth: "ok", root: "absent", clis: { claude: "/u/bin/claude", codex: null } });
+  assert.deepEqual(full.map((s) => s.key), ["key.trusted", "auth.ok", "root.absent", "clis.found", "clis.missing"]);
+  assert.equal(full.find((s) => s.id === "root")?.tone, "bad");
+  assert.deepEqual(checkStepsOf({ ...base, host_key: { status: "unreachable", detail: "x" }, auth: "skipped", root: "skipped" }).map((s) => s.key), ["key.unreachable"]);
+  assert.deepEqual(checkStepsOf({ ...base, host_key: null, auth: "skipped", root: "skipped", timed_out: true }).map((s) => s.key), ["timedOut"]);
+});

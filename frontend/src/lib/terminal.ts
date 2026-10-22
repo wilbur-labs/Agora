@@ -135,6 +135,68 @@ export const terminalTargets = (projectId: string) =>
   call<TerminalTargets>(`/api/projects/${encodeURIComponent(projectId)}/terminal-targets`);
 export const remoteTaskTargets = (projectId: string, environmentId: string) =>
   call<RemoteTaskTargets>(`/api/projects/${encodeURIComponent(projectId)}/remote-task-targets?environment_id=${encodeURIComponent(environmentId)}`);
+/** Test connection (environment page). Each step is a fact or "skipped"/"unknown"; the
+ *  check stops before signing in to a host whose key is not trusted. */
+export interface ConnectionCheck {
+  environment_id: string;
+  host_key:
+    | { status: "unreachable"; detail: string }
+    | { status: "trusted" | "mismatch" | "revoked" | "ca" | "unknown"; fingerprint: string; algorithm: string; mode: "strict" | "tofu" }
+    | null;
+  auth: "ok" | "failed" | "refused" | "skipped";
+  auth_detail: string | null;
+  root: "dir" | "absent" | "not_dir" | "unknown" | "skipped";
+  clis: Record<string, string | null> | null;
+  tool: { ok: true; tool_dir: string; work_root: string } | { ok: false; reason: string } | null;
+  timed_out: boolean;
+}
+
+export const testRemoteEnvironment = (environmentId: string) =>
+  call<ConnectionCheck>(`/api/remote-environments/${encodeURIComponent(environmentId)}/test`, { method: "POST" });
+export const trustRemoteHostKey = (environmentId: string, fingerprint: string) =>
+  call<{ fingerprint: string; recorded: boolean }>(
+    `/api/remote-environments/${encodeURIComponent(environmentId)}/trust-host-key`,
+    { method: "POST", body: JSON.stringify({ fingerprint }) });
+
+export interface CheckStep {
+  id: string;
+  key: string;
+  vars?: Record<string, string>;
+  tone: "ok" | "warn" | "bad" | "muted";
+}
+
+/** The check, as lines in the order it ran. A step that did not run says so. */
+export function checkStepsOf(check: ConnectionCheck): CheckStep[] {
+  if (check.timed_out) return [{ id: "timeout", key: "timedOut", tone: "bad" }];
+  const steps: CheckStep[] = [];
+  const key = check.host_key;
+  if (key === null) return steps;
+  if (key.status === "unreachable") return [{ id: "key", key: "key.unreachable", vars: { detail: key.detail }, tone: "bad" }];
+  steps.push({
+    id: "key",
+    key: key.status === "unknown" ? (key.mode === "tofu" ? "key.unknownTofu" : "key.unknownStrict") : `key.${key.status}`,
+    vars: { fingerprint: key.fingerprint },
+    tone: key.status === "trusted" ? "ok" : key.status === "mismatch" || key.status === "revoked" ? "bad" : key.status === "ca" ? "muted" : "warn",
+  });
+  if (check.auth === "skipped") {
+    steps.push({ id: "auth", key: "auth.skipped", tone: "muted" });
+    return steps;
+  }
+  steps.push({ id: "auth", key: `auth.${check.auth}`, vars: { detail: check.auth_detail ?? "" }, tone: check.auth === "ok" ? "ok" : "bad" });
+  if (check.auth !== "ok") return steps;
+  steps.push({ id: "root", key: `root.${check.root}`, tone: check.root === "dir" ? "ok" : check.root === "unknown" ? "warn" : "bad" });
+  if (check.clis === null) steps.push({ id: "clis", key: "clis.unknown", tone: "warn" });
+  else for (const [name, where] of Object.entries(check.clis)) {
+    steps.push({ id: `cli-${name}`, key: where ? "clis.found" : "clis.missing", vars: { name, where: where ?? "" }, tone: where ? "ok" : "warn" });
+  }
+  if (check.tool !== null) {
+    steps.push(check.tool.ok
+      ? { id: "tool", key: "tool.ok", vars: { tool: check.tool.tool_dir, work: check.tool.work_root }, tone: "ok" }
+      : { id: "tool", key: "tool.bad", vars: { reason: check.tool.reason }, tone: "bad" });
+  }
+  return steps;
+}
+
 export const closeTerminal = (id: string) =>
   call<{ terminal_id: string }>(`/api/terminals/${encodeURIComponent(id)}`, { method: "DELETE" });
 
