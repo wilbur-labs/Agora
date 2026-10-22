@@ -11,6 +11,13 @@ Lifetime: a terminal lives until its process exits, it is closed, or this server
 On Windows each terminal's process tree is placed in a job object that kills its members
 when the handle closes — so an agent started inside a terminal does not outlive Agora.
 After a restart the list is empty, which is true: those processes are gone.
+
+A remote terminal (CR-30 slice 2, ``RemoteTerminalSession``) is the same shape over an
+SSH channel with a PTY. Its process and connection belong to the server's event loop;
+``write``/``resize``/``close`` may be called from any thread and only post to that loop.
+How a terminal ended is recorded, not inferred from the exit code: ``exited`` (the
+program ended), ``closed`` (the person closed it), ``disconnected`` (the SSH connection
+dropped — the remote program may still be running) or ``failed`` (it never started).
 """
 from __future__ import annotations
 
@@ -33,6 +40,12 @@ MAX_TERMINALS = 8
 QUEUE_LIMIT = 2000
 #: How long an exited terminal stays in the list.
 KEEP_EXITED_SECONDS = 24 * 3600
+#: How long opening a remote terminal may take — connect, PATH probe, channel, PTY. A host
+#: that accepts the connection and then stalls must not hold a terminal slot forever.
+REMOTE_OPEN_TIMEOUT = 45.0
+#: How long a remote close may wait for the channel to close gracefully. A program that
+#: stopped reading its input can hold a graceful close forever (it flushes first).
+REMOTE_CLOSE_GRACE = 5.0
 
 
 class TerminalLimitReached(RuntimeError):
@@ -66,6 +79,14 @@ class TerminalSession:
     cols: int
     exited_at: float | None = None
     exit_code: int | None = None
+    #: How it ended (see the module docstring); None while it runs.
+    end_reason: str | None = None
+    end_detail: str | None = None
+    #: ``user@host`` for a remote terminal; None on this machine.
+    remote: str | None = None
+    #: Set before a close ends the process, so whoever records the end — the close or
+    #: the reader it unblocked — records it as closed, not as the program exiting.
+    _closing: bool = False
     _pty: Any = None
     _job: Any = None
     _chunks: list[tuple[int, str]] = field(default_factory=list)
@@ -88,6 +109,9 @@ class TerminalSession:
             "started_at": self.started_at,
             "exited_at": self.exited_at,
             "exit_code": self.exit_code,
+            "end_reason": self.end_reason,
+            "end_detail": self.end_detail,
+            "remote": self.remote,
             "alive": self.exited_at is None,
         }
 
@@ -109,12 +133,17 @@ class TerminalSession:
                 self._chars -= len(old)
             self._publish(("output", self._seq, text))
 
-    def _finish(self, code: int | None) -> None:
+    def _finish(self, code: int | None, reason: str = "exited", detail: str | None = None) -> None:
         with self._lock:
             if self.exited_at is None:
                 self.exited_at = time.time()
                 self.exit_code = code
-            self._publish(("exit", self._seq, code))
+                self.end_reason = reason
+                self.end_detail = detail
+            self._publish(("exit", self._seq, self.end_payload()))
+
+    def end_payload(self) -> dict[str, Any]:
+        return {"code": self.exit_code, "reason": self.end_reason, "detail": self.end_detail}
 
     # --- windows ------------------------------------------------------------------------
     def attach(self) -> tuple[list[tuple[int, str]], asyncio.Queue]:
@@ -124,7 +153,7 @@ class TerminalSession:
             replay = list(self._chunks)
             self._subscribers[queue] = loop
             if self.exited_at is not None:
-                queue.put_nowait(("exit", self._seq, self.exit_code))
+                queue.put_nowait(("exit", self._seq, self.end_payload()))
         return replay, queue
 
     def detach(self, queue: asyncio.Queue) -> None:
@@ -253,13 +282,43 @@ class TerminalManager:
         with self._lock:
             return self._sessions.get(terminal_id)
 
-    def create(self, *, project_id: str, label: str, cwd: Path, argv: list[str],
-               env_extra: dict[str, str] | None = None, rows: int = 30, cols: int = 120) -> TerminalSession:
+    def _reserve(self) -> None:
         with self._lock:
             self._prune()
             if sum(1 for s in self._sessions.values() if s.exited_at is None) + self._starting >= MAX_TERMINALS:
                 raise TerminalLimitReached(f"at most {MAX_TERMINALS} terminals are open at once; close one first")
             self._starting += 1
+
+    async def create_remote(self, *, project_id: str, label: str, environment: Any, target: str,
+                            cwd: str, line: str, rows: int = 30, cols: int = 120) -> "RemoteTerminalSession":
+        """Open a PTY on ``environment`` (a ``RemoteEnvironment`` owned by this terminal
+        alone) and start copying its output. Runs on the server's event loop, which then
+        owns the channel. A failure closes the connection and raises: no half-open entry."""
+        self._reserve()
+        try:
+            try:
+                proc = await asyncio.wait_for(
+                    environment.open_terminal(line, cwd, rows=rows, cols=cols), timeout=REMOTE_OPEN_TIMEOUT,
+                )
+            except BaseException:
+                await _quietly_close(environment)
+                raise
+            session = RemoteTerminalSession(
+                terminal_id=uuid.uuid4().hex[:12], project_id=project_id, label=label, cwd=cwd,
+                argv=[line], started_at=time.time(), rows=rows, cols=cols, remote=target,
+                _loop=asyncio.get_running_loop(), _proc=proc, _environment=environment,
+            )
+            with self._lock:
+                self._sessions[session.terminal_id] = session
+            session._task = asyncio.create_task(session._pump())
+            return session
+        finally:
+            with self._lock:
+                self._starting -= 1
+
+    def create(self, *, project_id: str, label: str, cwd: Path, argv: list[str],
+               env_extra: dict[str, str] | None = None, rows: int = 30, cols: int = 120) -> TerminalSession:
+        self._reserve()
         try:
             return self._start(project_id=project_id, label=label, cwd=cwd, argv=argv,
                                env_extra=env_extra, rows=rows, cols=cols)
@@ -313,7 +372,7 @@ class TerminalManager:
             code = pty.exitstatus
         except Exception:
             pass
-        session._finish(code)
+        session._finish(code, "closed" if session._closing else "exited")
         self._release(session)
 
     @staticmethod
@@ -339,9 +398,13 @@ class TerminalManager:
         session = self.get(terminal_id)
         if session is None:
             return False
+        if isinstance(session, RemoteTerminalSession):
+            session.request_close()
+            return True
         if session.exited_at is None:
             from agora.execution.dispatcher import ExecutionDispatcher
 
+            session._closing = True
             ExecutionDispatcher._kill_process_tree(session._job)
             _kill_group(session._pty)
             try:
@@ -355,10 +418,105 @@ class TerminalManager:
             while time.time() < deadline and _alive(session._pty):
                 time.sleep(0.1)
             if not _alive(session._pty):
-                session._finish(_exit_status(session._pty))
+                session._finish(_exit_status(session._pty), "closed")
                 self._release(session)
         return True
 
     def close_all(self) -> None:
         for session in self.list():
             self.close(session.terminal_id)
+
+
+async def _quietly_close(environment: Any) -> None:
+    try:
+        await environment.aclose()
+    except Exception:  # noqa: BLE001 - closing must not raise over the real error
+        pass
+
+
+@dataclass
+class RemoteTerminalSession(TerminalSession):
+    """A terminal whose PTY is an SSH channel (CR-30 slice 2). Its channel and
+    connection belong to ``_loop``; every other thread only posts to it."""
+
+    _loop: Any = None
+    _proc: Any = None
+    _environment: Any = None
+    _task: Any = None
+
+    async def _pump(self) -> None:
+        proc = self._proc
+        reason, detail = "exited", None
+        try:
+            while True:
+                data = await proc.stdout.read(4096)
+                if not data:
+                    break
+                try:
+                    self._append(data)
+                except Exception:
+                    pass  # delivery must not end the terminal; the buffer still has it
+            await proc.wait_closed()
+        except asyncio.CancelledError:
+            reason = "closed"
+        except Exception as exc:  # noqa: BLE001 - a dropped connection, said as such
+            reason, detail = "disconnected", type(exc).__name__
+        code = getattr(proc, "exit_status", None)
+        if self._closing:
+            reason = "closed"
+        elif reason == "exited" and code is None:
+            # The channel ended without an exit status: the connection went, not the
+            # program. Whether it is still running over there is not known.
+            reason = "disconnected"
+        self._finish(code if reason == "exited" else None, reason, detail)
+        await _quietly_close(self._environment)
+
+    def write(self, data: str) -> None:
+        if self.exited_at is None and self._proc is not None:
+            self._post(self._proc.stdin.write, data)
+
+    def resize(self, rows: int, cols: int) -> None:
+        rows, cols = max(2, min(rows, 500)), max(10, min(cols, 1000))
+        if self.exited_at is None and self._proc is not None:
+            self.rows, self.cols = rows, cols
+            self._post(self._proc.change_terminal_size, cols, rows)
+
+    def request_close(self) -> None:
+        """Post the close and return: nothing here waits on the loop, so a close from a
+        worker thread or from shutdown cannot deadlock against it."""
+        if self.exited_at is not None:
+            return
+        self._closing = True
+        self._post(self._close_on_loop)
+
+    def _close_on_loop(self) -> None:
+        try:
+            self._proc.close()
+        except Exception:
+            pass
+        self._loop.call_later(REMOTE_CLOSE_GRACE, self._force_close)
+
+    def _force_close(self) -> None:
+        """The graceful close did not finish: drop the connection and stop the pump, so
+        the slot and the connection are given back whatever the channel is doing."""
+        if self.exited_at is not None:
+            return
+        conn = getattr(self._environment, "_conn", None)
+        try:
+            if conn is not None:
+                conn.abort()
+        except Exception:
+            pass
+        if self._task is not None:
+            self._task.cancel()
+
+    def _post(self, fn, *args) -> None:
+        def run() -> None:
+            try:
+                fn(*args)
+            except Exception:
+                pass  # a channel already gone: the pump records how it ended
+        try:
+            self._loop.call_soon_threadsafe(run)
+        except RuntimeError:
+            pass  # the loop is closed: the server is stopping and the channel with it

@@ -345,6 +345,30 @@ def test_update_keeps_keyring_password_when_none_sent(client, memory_keyring):
     assert memory_keyring["kimono-vps"] == "keepme"  # untouched
 
 
+def test_pointing_a_keyring_environment_elsewhere_requires_the_password_again(client, memory_keyring):
+    """The stored password belongs to the host it was entered for. Moving the environment
+    to another host/port/user while keeping it would send it there (codex, CR-30 slice 2
+    design review) — refused until a password is entered for the new place."""
+    client.post(
+        "/api/remote-environments",
+        json=_payload(credential_source="keyring", secret_ref="login", password="keepme"),
+    )
+    for change in ({"ssh_host": "attacker.example"}, {"ssh_port": 2222}, {"ssh_user": "someone"}):
+        resp = client.put(
+            "/api/remote-environments/kimono-vps",
+            json=_payload(credential_source="keyring", secret_ref="login", password=None, **change),
+        )
+        assert resp.status_code == 422, (change, resp.text)
+        assert "password" in resp.json()["detail"]
+    assert memory_keyring["kimono-vps"] == "keepme"  # nothing changed
+    moved = client.put(
+        "/api/remote-environments/kimono-vps",
+        json=_payload(credential_source="keyring", secret_ref="login", password="fresh", ssh_host="new.example"),
+    )
+    assert moved.status_code == 200, moved.text
+    assert memory_keyring["kimono-vps"] == "fresh"
+
+
 def test_update_replaces_keyring_password_when_sent(client, memory_keyring):
     client.post(
         "/api/remote-environments",

@@ -254,3 +254,237 @@ def test_an_agent_name_that_could_reach_the_shell_is_refused(tmp_path):
         command_argv("kiro", kiro_agent="x; rm -rf ~")
     with pytest.raises(ValueError):
         command_argv("claude", kiro_agent="wekan-server")
+
+
+# --- remote (CR-30 slice 2) --------------------------------------------------------------
+
+import asyncio as _asyncio
+from types import SimpleNamespace
+
+from agora.terminal.manager import RemoteTerminalSession, TerminalManager
+
+
+class _FakeStdout:
+    def __init__(self) -> None:
+        self.chunks: _asyncio.Queue = _asyncio.Queue()
+
+    async def read(self, n: int) -> str:
+        return await self.chunks.get()
+
+
+class _FakeProc:
+    """The parts of an asyncssh SSHClientProcess a remote terminal uses."""
+
+    def __init__(self) -> None:
+        self.stdout = _FakeStdout()
+        self.stdin = SimpleNamespace(written=[], write=lambda data: self.stdin.written.append(data))
+        self.sizes: list[tuple[int, int]] = []
+        self.exit_status: int | None = None
+        self.closed = False
+
+    def change_terminal_size(self, cols: int, rows: int) -> None:
+        self.sizes.append((cols, rows))
+
+    def close(self) -> None:
+        self.closed = True
+        self.stdout.chunks.put_nowait("")
+
+    async def wait_closed(self) -> None:
+        return None
+
+
+class _FakeEnvironment:
+    def __init__(self, proc=None, error: Exception | None = None) -> None:
+        self.proc, self.error, self.closed, self.opened = proc, error, False, None
+
+    async def open_terminal(self, line, cwd, *, rows, cols):
+        self.opened = (line, cwd, rows, cols)
+        if self.error:
+            raise self.error
+        return self.proc
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+async def _settle(session) -> None:
+    for _ in range(50):
+        if session.exited_at is not None:
+            return
+        await _asyncio.sleep(0.01)
+
+
+def _open(manager, environment):
+    return manager.create_remote(project_id="p", label="p · shell · u@h", environment=environment,
+                                 target="u@h", cwd="/srv/p", line="exec sh", rows=24, cols=80)
+
+
+def test_a_remote_terminal_carries_output_input_and_size_and_ends_as_exited():
+    async def scenario():
+        manager, proc = TerminalManager(), _FakeProc()
+        environment = _FakeEnvironment(proc)
+        session = await _open(manager, environment)
+        assert isinstance(session, RemoteTerminalSession) and session.remote == "u@h"
+        assert environment.opened == ("exec sh", "/srv/p", 24, 80)
+        proc.stdout.chunks.put_nowait("hello 中文\r\n")
+        await _asyncio.sleep(0.02)
+        session.write("ls\r")
+        session.resize(30, 100)
+        await _asyncio.sleep(0.02)
+        assert proc.stdin.written == ["ls\r"] and proc.sizes == [(100, 30)]
+        proc.exit_status = 0
+        proc.stdout.chunks.put_nowait("")
+        await _settle(session)
+        return session, environment
+
+    session, environment = _asyncio.run(scenario())
+    assert "hello 中文" in "".join(text for _, text in session._chunks)
+    view = session.view()
+    assert view["end_reason"] == "exited" and view["exit_code"] == 0 and view["remote"] == "u@h"
+    assert environment.closed
+
+
+def test_a_channel_that_ends_without_an_exit_status_is_a_dropped_connection_not_an_exit():
+    async def scenario():
+        manager, proc = TerminalManager(), _FakeProc()
+        session = await _open(manager, _FakeEnvironment(proc))
+        proc.stdout.chunks.put_nowait("")  # EOF, no exit status: the connection went
+        await _settle(session)
+        return session
+
+    session = _asyncio.run(scenario())
+    assert session.end_reason == "disconnected" and session.exit_code is None
+
+
+def test_closing_a_remote_terminal_is_recorded_as_closed():
+    async def scenario():
+        manager, proc = TerminalManager(), _FakeProc()
+        session = await _open(manager, _FakeEnvironment(proc))
+        assert manager.close(session.terminal_id) is True  # posts, does not wait
+        await _settle(session)
+        return session, proc
+
+    session, proc = _asyncio.run(scenario())
+    assert proc.closed and session.end_reason == "closed" and session.exit_code is None
+
+
+def test_a_remote_terminal_that_cannot_open_leaves_nothing_behind():
+    async def scenario():
+        manager = TerminalManager()
+        environment = _FakeEnvironment(error=OSError("unreachable"))
+        with pytest.raises(OSError):
+            await _open(manager, environment)
+        return manager, environment
+
+    manager, environment = _asyncio.run(scenario())
+    assert environment.closed and manager.list() == [] and manager._starting == 0
+
+
+def test_the_remote_command_enters_the_project_directory_first_and_stops_if_it_cannot():
+    from agora.environments_remote import RemoteEnvironment
+
+    environment = RemoteEnvironment(host="h", user="u", secret_ref="", credential_source="ssh_default")
+    seen = {}
+
+    class _Conn:
+        async def create_process(self, command, **kwargs):
+            seen["command"], seen["kwargs"] = command, kwargs
+            return "proc"
+
+    async def scenario():
+        async def _conn():
+            return _Conn()
+
+        async def _login(conn):
+            return "/usr/bin:/bin"
+
+        environment._ensure_conn = _conn  # type: ignore[method-assign]
+        environment._login_path_for = _login  # type: ignore[method-assign]
+        return await environment.open_terminal("claude; exec sh", "/srv/my 项目", rows=24, cols=80)
+
+    assert _asyncio.run(scenario()) == "proc"
+    command = seen["command"]
+    assert command.startswith('"${SHELL:-/bin/sh}" -lc ')
+    import shlex as _shlex
+    script = _shlex.split(command)[2]
+    assert script.startswith("cd '/srv/my 项目' || { echo ")
+    assert "exit 1; }; export PATH=" in script and script.endswith("; claude; exec sh")
+    assert seen["kwargs"]["term_type"] == "xterm-256color" and seen["kwargs"]["term_size"] == (80, 24)
+
+
+def test_a_remote_terminal_only_opens_on_an_environment_of_this_project(api, tmp_path):
+    from agora.api.settings_router import get_remote_environment_store
+
+    client, _ = api
+    _login(client, tmp_path)
+    other = SimpleNamespace(project_id="someone-else", environment_id="e1", label="E1", ssh_user="u",
+                            ssh_host="h", ssh_port=22, remote_project_root="/srv/x")
+    store = SimpleNamespace(get=lambda environment_id: other, list_environments=lambda: [other])
+    app.dependency_overrides[get_remote_environment_store] = lambda: store
+    resp = client.post("/api/terminals", json={"project_id": "home", "command": "shell", "environment_id": "e1"})
+    assert resp.status_code == 404
+    targets = client.get("/api/projects/home/terminal-targets").json()
+    assert targets["environments"] == [] and targets["environments_error"] is None
+    mine = SimpleNamespace(**{**vars(other), "project_id": "home", "ssh_port": 2222})
+    app.dependency_overrides[get_remote_environment_store] = lambda: SimpleNamespace(
+        get=lambda environment_id: mine, list_environments=lambda: [mine])
+    (listed,) = client.get("/api/projects/home/terminal-targets").json()["environments"]
+    assert listed == {"environment_id": "e1", "label": "E1", "target": "u@h:2222", "root": "/srv/x"}
+
+
+def test_a_remote_host_that_stalls_on_the_channel_gives_its_slot_back(monkeypatch):
+    from agora.terminal import manager as manager_module
+
+    monkeypatch.setattr(manager_module, "REMOTE_OPEN_TIMEOUT", 0.05)
+
+    class _Stalls(_FakeEnvironment):
+        async def open_terminal(self, line, cwd, *, rows, cols):
+            await _asyncio.sleep(10)
+
+    async def scenario():
+        manager, environment = TerminalManager(), _Stalls()
+        with pytest.raises(_asyncio.TimeoutError):
+            await _open(manager, environment)
+        return manager, environment
+
+    manager, environment = _asyncio.run(scenario())
+    assert environment.closed and manager._starting == 0 and manager.list() == []
+
+
+@pytest.mark.skipif(os.name != "nt", reason="ConPTY; the close path is the same on POSIX")
+def test_closing_a_local_terminal_is_recorded_as_closed_not_as_an_exit(tmp_path):
+    import sys as _sys
+
+    manager = TerminalManager()
+    session = manager.create(project_id="p", label="sleep", cwd=tmp_path,
+                             argv=[_sys.executable, "-c", "import time; time.sleep(60)"])
+    time.sleep(1)
+    assert manager.close(session.terminal_id)
+    deadline = time.time() + 10
+    while session.exited_at is None and time.time() < deadline:
+        time.sleep(0.1)
+    assert session.end_reason == "closed"
+
+
+def test_a_remote_close_that_does_not_finish_is_forced_within_the_grace(monkeypatch):
+    from agora.terminal import manager as manager_module
+
+    monkeypatch.setattr(manager_module, "REMOTE_CLOSE_GRACE", 0.05)
+
+    class _Stuck(_FakeProc):
+        def close(self) -> None:
+            self.closed = True  # a graceful close still flushing: no EOF comes
+
+    aborted = []
+
+    async def scenario():
+        manager, proc = TerminalManager(), _Stuck()
+        environment = _FakeEnvironment(proc)
+        environment._conn = SimpleNamespace(abort=lambda: aborted.append(True))
+        session = await _open(manager, environment)
+        manager.close(session.terminal_id)
+        await _settle(session)
+        return session, environment
+
+    session, environment = _asyncio.run(scenario())
+    assert aborted and session.end_reason == "closed" and environment.closed

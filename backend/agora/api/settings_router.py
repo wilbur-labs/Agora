@@ -1498,6 +1498,18 @@ def update_remote_environment(
             status.HTTP_404_NOT_FOUND, f"Unknown remote environment: {environment_id}"
         )
     _require_project(registry, request.project_id)
+    # A stored password belongs to the place it was entered for. Pointing the environment
+    # somewhere else while keeping it would hand it to whatever answers there — and this
+    # API has no caller identity of its own yet (CR-68), so another account on this
+    # machine could do exactly that (codex review of the remote terminal design).
+    moved = (request.ssh_host, request.ssh_port, request.ssh_user) != (
+        existing.ssh_host, existing.ssh_port, existing.ssh_user)
+    if moved and request.credential_source == "keyring" and not request.password:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "the host, port or user changed: the stored password is not carried to the new "
+            "place — enter the password again",
+        )
     # Decide the keyring outcome BEFORE mutating anything, so an invalid combination is
     # a clean 422 rather than a half-applied update.
     if request.credential_source == "keyring" and not request.password:

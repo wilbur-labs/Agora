@@ -20,6 +20,7 @@ export function TerminalView({ terminalId, onExit }: { terminalId: string; onExi
   const host = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState<Status>("connecting");
   const [exitCode, setExitCode] = useState<number | null>(null);
+  const [endReason, setEndReason] = useState<string | null>(null);
   const onExitRef = useRef(onExit);
   useEffect(() => { onExitRef.current = onExit; }, [onExit]);
 
@@ -60,6 +61,7 @@ export function TerminalView({ terminalId, onExit }: { terminalId: string; onExi
           exited = true;
           setStatus("exited");
           setExitCode(message.code ?? null);
+          setEndReason(typeof message.reason === "string" ? message.reason : null);
           onExitRef.current?.(message.code ?? null);
         } else if (message.type === "overflow") setStatus("tooSlow");
       };
@@ -87,7 +89,9 @@ export function TerminalView({ terminalId, onExit }: { terminalId: string; onExi
       {status !== "open" && (
         <p className={status === "connecting" ? "px-3 py-1 text-xs text-muted-foreground" : "px-3 py-1 text-xs text-amber-700 dark:text-amber-400"}>
           {status === "exited"
-            ? t("workspace.terminal.state.exitedWith", { code: exitCode === null ? "?" : String(exitCode) })
+            ? (endReason === "disconnected" || endReason === "closed" || endReason === "failed"
+              ? t(`workspace.terminal.state.${endReason}Long`)
+              : t("workspace.terminal.state.exitedWith", { code: exitCode === null ? "?" : String(exitCode) }))
             : t(`workspace.terminal.stream.${status}`)}
         </p>
       )}

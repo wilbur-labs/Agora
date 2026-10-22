@@ -16,8 +16,10 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect, status
 from pydantic import BaseModel, Field
 
-from agora.api.settings_router import get_project_registry
+from agora.api.settings_router import get_project_registry, get_remote_environment_store
 from agora.config.settings import get_config, resolve_control_plane_db_path
+from agora.execution.environment_registry_store import RemoteEnvironmentStore
+from agora.execution.security import redact_text
 from agora.projects.registry import ProjectRegistry
 from agora.terminal.auth import TOKEN_HEADER, LaunchCodes, load_or_create_token, token_matches
 from agora.terminal.manager import PtyUnavailable, TerminalLimitReached, TerminalManager, command_argv
@@ -84,10 +86,41 @@ def terminal_session(request: Request) -> dict[str, bool]:
 
 
 @router.get("/projects/{project_id}/terminal-targets")
-def terminal_targets(project_id: str, registry: ProjectRegistry = Depends(get_project_registry)) -> dict[str, Any]:
+def terminal_targets(
+    project_id: str,
+    registry: ProjectRegistry = Depends(get_project_registry),
+    environments: RemoteEnvironmentStore = Depends(get_remote_environment_store),
+) -> dict[str, Any]:
     project = _project(registry, project_id)
     tasks = task_targets([Path(p) for p in registry.workspace_sources()], Path(project.root))
-    return {"project_id": project_id, "root": str(project.root), "tasks": [t.payload() for t in tasks]}
+    try:
+        remote = [_environment_view(e) for e in environments.list_environments() if e.project_id == project_id]
+        remote_error = None
+    except Exception as exc:  # noqa: BLE001 - "could not read" is said, never "none registered"
+        remote, remote_error = [], type(exc).__name__
+    return {"project_id": project_id, "root": str(project.root), "tasks": [t.payload() for t in tasks],
+            "environments": remote, "environments_error": remote_error}
+
+
+def _environment_view(record) -> dict[str, Any]:
+    return {"environment_id": record.environment_id, "label": record.label,
+            "target": _target_of(record), "root": record.remote_project_root}
+
+
+def _target_of(record) -> str:
+    port = "" if record.ssh_port == 22 else f":{record.ssh_port}"
+    return f"{record.ssh_user}@{record.ssh_host}{port}"
+
+
+#: What a remote terminal runs, by command. Only these: the line goes to the remote shell.
+#: Quitting an agent leaves a login shell, as on this machine.
+_REMOTE_SHELL = 'exec "${SHELL:-/bin/sh}" -l'
+_REMOTE_LINES = {
+    "shell": _REMOTE_SHELL,
+    "claude": f"claude; {_REMOTE_SHELL}",
+    "codex": f"codex; {_REMOTE_SHELL}",
+    "kiro": f"kiro-cli chat; {_REMOTE_SHELL}",
+}
 
 
 class TaskRef(BaseModel):
@@ -101,6 +134,8 @@ class CreateTerminalRequest(BaseModel):
     #: Open as this workspace task (claude: ``cw open``; kiro: its agent) instead of in
     #: the repository.
     task: TaskRef | None = None
+    #: Open on this registered remote environment (CR-30 slice 2), in its project root.
+    environment_id: str | None = Field(default=None, min_length=1, max_length=128)
     rows: int = Field(default=30, ge=2, le=500)
     cols: int = Field(default=120, ge=10, le=1000)
 
@@ -111,8 +146,16 @@ def list_terminals() -> dict[str, Any]:
 
 
 @router.post("/terminals", status_code=status.HTTP_201_CREATED, dependencies=[Depends(require_terminal_session)])
-async def create_terminal(request: CreateTerminalRequest, registry: ProjectRegistry = Depends(get_project_registry)) -> dict[str, Any]:
+async def create_terminal(
+    request: CreateTerminalRequest,
+    registry: ProjectRegistry = Depends(get_project_registry),
+    environments: RemoteEnvironmentStore = Depends(get_remote_environment_store),
+) -> dict[str, Any]:
     project = _project(registry, request.project_id)
+    if request.environment_id is not None:
+        if request.task is not None:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "A remote terminal opens in the project root, not as a task.")
+        return await _create_remote(request, project.project_id, environments)
     root = Path(project.root)
     env: dict[str, str] = {}
     if request.task is None:
@@ -145,6 +188,38 @@ async def create_terminal(request: CreateTerminalRequest, registry: ProjectRegis
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from None
     except (PtyUnavailable, OSError) as exc:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, f"Could not start a terminal: {exc}") from None
+    return session.view()
+
+
+async def _create_remote(request: CreateTerminalRequest, project_id: str, store: RemoteEnvironmentStore) -> dict[str, Any]:
+    from agora.environments_remote import RemoteEnvironment, RemoteHostKeyError
+
+    record = store.get(request.environment_id)
+    # Only an environment bound to this project — the same rule a remote run obeys.
+    if record is None or record.project_id != project_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such remote environment for this project.")
+    target = _target_of(record)
+    # One connection per terminal: RemoteEnvironment is one connection on one loop.
+    environment = RemoteEnvironment(
+        host=record.ssh_host, port=record.ssh_port, user=record.ssh_user, secret_ref=record.secret_ref,
+        host_key_mode=record.host_key_mode, known_hosts_path=record.known_hosts_path,
+        credential_source=record.credential_source, environment_id=record.environment_id,
+    )
+    try:
+        session = await get_terminal_manager().create_remote(
+            project_id=project_id, label=f"{project_id} · {request.command} · {target}", environment=environment,
+            target=target, cwd=record.remote_project_root, line=_REMOTE_LINES[request.command],
+            rows=request.rows, cols=request.cols,
+        )
+    except TerminalLimitReached as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from None
+    except RemoteHostKeyError as exc:
+        # The host key or the credential refused the connection: said as it is, never
+        # turned into a prompt inside the terminal.
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, redact_text(str(exc))) from None
+    except Exception as exc:  # noqa: BLE001 - asyncssh / OSError: the host could not be reached
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE,
+                            f"Could not open a terminal on {target}: {type(exc).__name__}: {redact_text(str(exc))}") from None
     return session.view()
 
 
@@ -182,7 +257,7 @@ async def terminal_stream(socket: WebSocket, terminal_id: str) -> None:
             if kind == "output":
                 await socket.send_text(json.dumps({"type": "output", "seq": seq, "data": payload}))
             elif kind == "exit":
-                await socket.send_text(json.dumps({"type": "exit", "code": payload}))
+                await socket.send_text(json.dumps({"type": "exit", **payload}))
             elif kind == "overflow":
                 await socket.send_text(json.dumps({"type": "overflow"}))
                 await socket.close(code=4408, reason="window too slow")

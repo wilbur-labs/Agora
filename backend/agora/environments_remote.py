@@ -768,6 +768,24 @@ class RemoteEnvironment:
         proc = await conn.create_process(cmd, encoding=None)
         return RemoteProcessHandle(proc)
 
+    async def open_terminal(self, line: str, cwd: str, *, rows: int, cols: int) -> "asyncssh.SSHClientProcess":
+        """An interactive PTY on the host (CR-30 slice 2): ``line`` run in ``cwd`` by the
+        remote login shell, with the same PATH a remote run gets (CR-23).
+
+        ``line`` is the caller's — built only from an enumerated command, never from a
+        request — and goes in after the directory change has succeeded: a project root
+        that is gone or unreadable ends the terminal with that said, rather than leaving
+        a home-directory shell under a label that names the project."""
+        conn = await self._ensure_conn()
+        path_word = _agent_path_word(await self._login_path_for(conn))
+        root = _posix(cwd)
+        fail = shlex.quote(f"进不了项目目录：{root}")
+        script = f"cd {shlex.quote(root)} || {{ echo {fail}; exit 1; }}; export {path_word}; {line}"
+        return await conn.create_process(
+            f'"${{SHELL:-/bin/sh}}" -lc {shlex.quote(script)}',
+            term_type="xterm-256color", term_size=(cols, rows), encoding="utf-8", errors="replace",
+        )
+
     # --- AsyncFilesystem (CR-11) ---
 
     @property

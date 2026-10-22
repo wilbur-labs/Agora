@@ -19,10 +19,23 @@ test("tasks come first, and a task that cannot open is listed, not dropped", () 
   const choices = launchChoicesOf({ project_id: "p", root: "r", tasks: [
     { source: "E:/Work", task: "work-chat", title: null, tool_dir: "E:/tool", reason: null, workspace: "claude", agent: null },
     { source: "E:/Other", task: "x", title: null, tool_dir: null, reason: "no tool", workspace: "kiro", agent: null },
-  ] });
+  ], environments: [], environments_error: null });
   assert.deepEqual(choices.slice(0, 2).map((c) => c.kind === "task" && c.openable), [true, false]);
   assert.deepEqual(choices.slice(2).map((c) => c.kind === "repo" && c.command), ["claude", "codex", "kiro", "shell"]);
   assert.equal(launchChoicesOf(null).length, 4);
+});
+
+test("a project's remote environments come after the local choices, each with every command (CR-30 slice 2)", () => {
+  const environment = { environment_id: "e1", label: "E1", target: "sharp@10.36.94.35", root: "/srv/p" };
+  const choices = launchChoicesOf({ project_id: "p", root: "r", tasks: [], environments: [environment], environments_error: null });
+  assert.deepEqual(choices.slice(4).map((c) => c.kind === "remote" && `${c.environment.environment_id}:${c.command}`),
+    ["e1:claude", "e1:codex", "e1:kiro", "e1:shell"]);
+});
+
+test("a dropped connection is not an exit, and a closed terminal says it was closed", () => {
+  assert.equal(terminalStateOf({ alive: false, exit_code: null, end_reason: "disconnected" }), "disconnected");
+  assert.equal(terminalStateOf({ alive: false, exit_code: null, end_reason: "closed" }), "closed");
+  assert.equal(terminalStateOf({ alive: false, exit_code: 3, end_reason: "exited" }), "exited");
 });
 
 test("the launch code is taken out of the address, everything else kept", () => {

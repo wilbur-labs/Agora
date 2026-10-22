@@ -15,7 +15,20 @@ export interface TerminalRow {
   started_at: number;
   exited_at: number | null;
   exit_code: number | null;
+  /** How it ended: the program exited, the person closed it, the SSH connection dropped
+   *  (the remote program may still be running), or it never started. Null while running. */
+  end_reason: "exited" | "closed" | "disconnected" | "failed" | null;
+  end_detail: string | null;
+  /** `user@host` for a terminal on a registered remote environment; null on this machine. */
+  remote: string | null;
   alive: boolean;
+}
+
+export interface TerminalEnvironmentTarget {
+  environment_id: string;
+  label: string;
+  target: string;
+  root: string;
 }
 
 export interface TerminalTaskTarget {
@@ -33,6 +46,10 @@ export interface TerminalTargets {
   project_id: string;
   root: string;
   tasks: TerminalTaskTarget[];
+  /** Registered remote environments of this project (CR-30 slice 2). */
+  environments: TerminalEnvironmentTarget[];
+  /** Set when the environment list could not be read: "none" is not claimed then. */
+  environments_error: string | null;
 }
 
 export class TerminalAuthRequired extends Error {}
@@ -106,6 +123,7 @@ export function createTerminal(input: {
   project_id: string;
   command?: TerminalCommand;
   task?: { source: string; task: string };
+  environment_id?: string;
   rows?: number;
   cols?: number;
 }): Promise<TerminalRow> {
@@ -118,9 +136,13 @@ export function terminalStreamUrl(id: string, location: { protocol: string; host
   return `${base.replace(/^http/, "ws")}/api/terminals/${encodeURIComponent(id)}/stream`;
 }
 
-/** What the page says about one terminal's state. */
-export function terminalStateOf(row: Pick<TerminalRow, "alive" | "exit_code">): "running" | "exited" | "exitedUnknown" {
+/** What the page says about one terminal's state. A dropped SSH connection is not an
+ *  exit: the remote program may still be running, and the page says that. */
+export function terminalStateOf(
+  row: Pick<TerminalRow, "alive" | "exit_code"> & Partial<Pick<TerminalRow, "end_reason">>,
+): "running" | "exited" | "exitedUnknown" | "closed" | "disconnected" | "failed" {
   if (row.alive) return "running";
+  if (row.end_reason === "closed" || row.end_reason === "disconnected" || row.end_reason === "failed") return row.end_reason;
   return row.exit_code === null ? "exitedUnknown" : "exited";
 }
 
@@ -129,10 +151,15 @@ export function terminalStateOf(row: Pick<TerminalRow, "alive" | "exit_code">): 
  *  with why it cannot open, never silently dropped. */
 export type LaunchChoice =
   | { kind: "task"; target: TerminalTaskTarget; openable: boolean }
-  | { kind: "repo"; command: TerminalCommand };
+  | { kind: "repo"; command: TerminalCommand }
+  | { kind: "remote"; environment: TerminalEnvironmentTarget; command: TerminalCommand };
+
+const COMMANDS = ["claude", "codex", "kiro", "shell"] as const;
 
 export function launchChoicesOf(targets: TerminalTargets | null): LaunchChoice[] {
   const tasks: LaunchChoice[] = (targets?.tasks ?? []).map((target) => ({ kind: "task", target, openable: target.tool_dir !== null }));
-  const repo: LaunchChoice[] = (["claude", "codex", "kiro", "shell"] as const).map((command) => ({ kind: "repo", command }));
-  return [...tasks, ...repo];
+  const repo: LaunchChoice[] = COMMANDS.map((command) => ({ kind: "repo", command }));
+  const remote: LaunchChoice[] = (targets?.environments ?? []).flatMap((environment) =>
+    COMMANDS.map((command) => ({ kind: "remote" as const, environment, command })));
+  return [...tasks, ...repo, ...remote];
 }

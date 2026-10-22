@@ -39,7 +39,9 @@ export function TerminalLauncher({ projectId }: { projectId: string }) {
     try {
       const row = await createTerminal(choice.kind === "task"
         ? { project_id: projectId, task: { source: choice.target.source, task: choice.target.task } }
-        : { project_id: projectId, command: choice.command });
+        : choice.kind === "remote"
+          ? { project_id: projectId, command: choice.command, environment_id: choice.environment.environment_id }
+          : { project_id: projectId, command: choice.command });
       const url = `/terminal?id=${encodeURIComponent(row.terminal_id)}`;
       if (tab) tab.location.href = url; else window.location.href = url;
       setOpen(false);
@@ -61,7 +63,16 @@ export function TerminalLauncher({ projectId }: { projectId: string }) {
         <div className="absolute right-0 z-40 mt-1 w-80 space-y-1 rounded-lg border bg-background p-2 text-sm shadow-lg">
           {targets === null && <p className="px-2 py-1 text-xs text-muted-foreground">{t("workspace.terminal.loading")}</p>}
           {targets === "failed" && <p className="px-2 py-1 text-xs text-amber-700 dark:text-amber-400">{t("workspace.terminal.targetsFailed")}</p>}
-          {choices.map((choice) => choice.kind === "task" ? (
+          {typeof targets === "object" && targets?.environments_error && (
+            <p className="px-2 py-1 text-xs text-amber-700 dark:text-amber-400">{t("workspace.terminal.environmentsFailed")}</p>
+          )}
+          {choices.map((choice) => choice.kind === "remote" ? (
+            <button key={`${choice.environment.environment_id}/${choice.command}`} type="button" disabled={busy} onClick={() => void launch(choice)}
+              className="block w-full rounded-md px-2 py-1.5 text-left hover:bg-accent disabled:opacity-60">
+              {t(`workspace.terminal.onRemote.${choice.command}`, { target: choice.environment.target })}
+              {choice.command === "claude" && <span className="block text-xs text-muted-foreground">{t("workspace.terminal.onRemoteHint", { root: choice.environment.root })}</span>}
+            </button>
+          ) : choice.kind === "task" ? (
             <button key={`${choice.target.source}/${choice.target.task}`} type="button" disabled={busy || !choice.openable}
               onClick={() => void launch(choice)}
               className="block w-full rounded-md px-2 py-1.5 text-left hover:bg-accent disabled:opacity-60">
