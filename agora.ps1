@@ -12,6 +12,7 @@
                   -Build      rebuild frontend/out first (also when already running:
                               the backend serves the files from disk, no restart needed)
                   -NoBrowser  do not open the browser
+                  -InTab      open in a normal browser tab instead of an Edge app window
       down      stop the Agora backend on the port: first a normal close, then
                 force after a grace period. Anything on the port that is not
                 running agora.api.app is left alone.
@@ -46,6 +47,7 @@ param(
     [string]$Command = 'help',
     [switch]$Build,
     [switch]$NoBrowser,
+    [switch]$InTab,
     [switch]$Pause,
     [int]$Port = 8000,
     [int]$StartTimeoutSec = 60,
@@ -321,7 +323,23 @@ function Open-Browser {
             if ($code) { $target = "$Url/?terminal_code=$([uri]::EscapeDataString($code))" }
         } catch { Write-Fail "No terminal launch code ($($_.Exception.Message)); terminals stay locked in this browser." }
     }
-    Start-Process $target | Out-Null
+    # An app window of its own (CR-64): its own taskbar icon, no address bar or tab strip,
+    # so Agora is not one tab among many. Edge ships with Windows; without it, or with
+    # -InTab, the default browser opens a tab as before.
+    $edge = $null
+    if (-not $InTab) {
+        # Only from the variables that exist: Join-Path on a missing one throws, and with
+        # ErrorActionPreference=Stop that would end the launch with no browser at all.
+        $edge = @(${env:ProgramFiles(x86)}, $env:ProgramFiles) |
+            Where-Object { $_ } |
+            ForEach-Object { Join-Path $_ 'Microsoft\Edge\Application\msedge.exe' } |
+            Where-Object { Test-Path $_ } | Select-Object -First 1
+    }
+    if ($edge) {
+        Start-Process -FilePath $edge -ArgumentList "--app=$target" | Out-Null
+    } else {
+        Start-Process $target | Out-Null
+    }
 }
 
 function Show-LogTail([int]$Lines = 30) {
