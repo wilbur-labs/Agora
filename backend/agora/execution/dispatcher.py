@@ -69,8 +69,10 @@ from .models import (
     ROLE_WORKER,
     REVIEWS_RUN_KEY,
     REVIEW_OWED_BLOCKER_TITLE,
+    REVIEW_OWED_BLOCKER_TITLE_KEY,
     role_of,
 )
+from agora.messages import MESSAGES, say, variants
 from .store import (
     ExecutionStore,
     REVIEW_OWED_NO_GATE_ITEM,
@@ -882,10 +884,8 @@ class ExecutionDispatcher:
                 # test_sessions.py::test_app_server_records_unsupported_session.
                 self.sessions.mark_unsupported(
                     task_id=run.task_id, adapter=run.adapter, workspace=workspace, role=role,
-                    reason=(
-                        "codex app-server 桥不参与会话续接：它自己在进程内持有对话，"
-                        "Agora 没有实测过它的 resume 路径。这条链路上每一轮都是独立调用。"
-                    ),
+                    reason=say("session.unsupported_app_server"),
+                    reason_code="session.unsupported_app_server",
                 )
                 return await self._execute_codex_app_server(
                     running, adapter, workspace, role, reviews_run_id, baseline,
@@ -917,6 +917,8 @@ class ExecutionDispatcher:
                     self.sessions.mark_unreadable(
                         task_id=run.task_id, adapter=run.adapter, role=role,
                         reason=decision.refusal or "",
+                        reason_code=decision.refusal_code,
+                        reason_args=decision.refusal_args,
                     )
                 return self.store.finish(
                     run_id, RunState.FAILED, expected_version=running.version, exit_code=None,
@@ -987,12 +989,7 @@ class ExecutionDispatcher:
                 # it does, and here they may not. Said in the transcript rather
                 # than assumed away: if the snapshot later disagrees with the
                 # disk, this line is the explanation, and it is CR-46's case.
-                self.run_logs.append(
-                    run_id,
-                    "· 这一轮没能把子进程收进进程组（Windows job object 接管失败）。"
-                    "如果 agent 起了后台进程，它可能在这一轮结束之后还在写工作目录——"
-                    "交付物快照与磁盘内容届时可能对不上。\n",
-                )
+                self.run_logs.append(run_id, say("run.job_object_failed"))
             self._active[run_id] = proc
             try:
                 # Bound to its session only now that a process exists. Recorded
@@ -1206,9 +1203,7 @@ class ExecutionDispatcher:
                     # what the usage reader parses and it will be short: the
                     # window must not present a truncated turn as a whole one.
                     self.run_logs.append(
-                        run_id,
-                        "\n· 这一轮的输出没能读完：进程已经结束，但还有东西占着它的管道"
-                        f"（等了 {_DRAIN_TIMEOUT_SECONDS} 秒）。上面显示的是已经读到的部分。\n",
+                        run_id, say("run.drain_timeout_local", seconds=_DRAIN_TIMEOUT_SECONDS),
                     )
                     # The abandoned reader is still attached to that pipe. Marked
                     # closed so it writes nothing more: the window has been told
@@ -1412,6 +1407,8 @@ class ExecutionDispatcher:
                     self.sessions.mark_unreadable(
                         task_id=run.task_id, adapter=run.adapter, role=role,
                         reason=decision.refusal or "",
+                        reason_code=decision.refusal_code,
+                        reason_args=decision.refusal_args,
                     )
                 return self.store.finish(
                     run_id, RunState.FAILED, expected_version=running.version, exit_code=None,
@@ -1433,7 +1430,7 @@ class ExecutionDispatcher:
                 run_id, _prompt_echo(run.prompt, resuming, machine_written=role == ROLE_REVIEW),
             )
             self.run_logs.append(
-                run_id, f"· 在远端 {describe_target(remote)} 的工作树 {workspace} 里执行。\n",
+                run_id, say("run.remote_where", target=describe_target(remote), workspace=workspace),
             )
             try:
                 handle = await env.launch(
@@ -1527,9 +1524,7 @@ class ExecutionDispatcher:
                     )
                     stderr = stderr_reader.result() if stderr_reader in done else b""
                     self.run_logs.append(
-                        run_id,
-                        "\n· 这一轮的输出没能读完：远端进程已经结束，但通道上还有东西没读到"
-                        f"（等了 {_DRAIN_TIMEOUT_SECONDS} 秒）。上面显示的是已经读到的部分。\n",
+                        run_id, say("run.drain_timeout_remote", seconds=_DRAIN_TIMEOUT_SECONDS),
                     )
                     gate.close()
                 else:
@@ -2055,10 +2050,11 @@ class ExecutionDispatcher:
     #: Recorded as the blocker's reason by ``reconcile_reviews_owed`` when no review
     #: run is linked to the worker run at all: the process died between the worker
     #: run settling and the review being queued.
-    REVIEW_OWED_AFTER_RESTART_REASON = (
-        "Agora 在这次实现运行结束之后、独立交叉评审被创建之前停止了(进程退出或崩溃),"
-        "因此评审运行从未入队,也没有留下任何记录。"
-    )
+    #:
+    #: CR-71: each reason is a catalog message rendered in the reader's language when
+    #: the blocker is written (``REVIEW_OWED_REASON_KEYS``). The ``*_REASON`` constants
+    #: are those messages' ``zh`` text, kept for the callers and tests that name them.
+    REVIEW_OWED_AFTER_RESTART_REASON = MESSAGES["review.owed_after_restart"]["zh"]
 
     #: Recorded as the blocker's reason when a review run *is* linked to the worker
     #: run but left no gate item. The review ran; writing the approval failed and so
@@ -2071,11 +2067,7 @@ class ExecutionDispatcher:
     #: ``_block_review_owed``'s body. Until O3 (2026-08-30) each reason carried its
     #: own copy and two of them offered "dispatch a review again", which is not an
     #: exit that exists.
-    REVIEW_OWED_WITHOUT_GATE_REASON = (
-        "这次实现运行的评审运行已经结束,但没有留下任何需要你处置的条目(批准项和阻塞项"
-        "都没有写成功),因此没有人被要求接受这份工作。请查看那次评审运行本身的状态与"
-        "输出:它可能在真正评审之前就失败了,也可能结论已经写出来但没有保存下来。"
-    )
+    REVIEW_OWED_WITHOUT_GATE_REASON = MESSAGES["review.owed_without_gate"]["zh"]
 
     #: Recorded as the blocker's reason when the review run linked to this worker run
     #: was **cancelled** and left no gate item — by a human through the API, or
@@ -2089,20 +2081,21 @@ class ExecutionDispatcher:
     #: settles a RUNNING review too, and a reviewer stopped partway had already been
     #: given the prompt; what the cancel guarantees is that no conclusion was recorded,
     #: which is the fact this database holds.
-    REVIEW_OWED_CANCELLED_REASON = (
-        "这次实现运行的独立交叉评审运行已被取消(可能是你手动取消的,也可能是 Agora 在评审"
-        "真正开始之前退出、由停机清理自动取消的),因此这次评审没有留下任何结论 —— 它可能"
-        "还没开始,也可能在中途被停下。"
-    )
+    REVIEW_OWED_CANCELLED_REASON = MESSAGES["review.owed_cancelled"]["zh"]
 
     #: Which reason each derived cause gets. A cause with no entry here is a new
     #: arrangement nobody has decided what to say about, so it is not defaulted:
     #: ``reconcile_reviews_owed`` skips it (the run stays owed and refused) rather
     #: than recording a reason that does not describe it.
+    REVIEW_OWED_REASON_KEYS: dict[str, str] = {
+        REVIEW_OWED_NO_REVIEW_RUN: "review.owed_after_restart",
+        REVIEW_OWED_NO_GATE_ITEM: "review.owed_without_gate",
+        REVIEW_OWED_REVIEW_CANCELLED: "review.owed_cancelled",
+    }
+    #: The same mapping as text (``zh``), kept for the callers that read it. Derived
+    #: from the keys, so the two cannot name different causes.
     REVIEW_OWED_REASONS: dict[str, str] = {
-        REVIEW_OWED_NO_REVIEW_RUN: REVIEW_OWED_AFTER_RESTART_REASON,
-        REVIEW_OWED_NO_GATE_ITEM: REVIEW_OWED_WITHOUT_GATE_REASON,
-        REVIEW_OWED_REVIEW_CANCELLED: REVIEW_OWED_CANCELLED_REASON,
+        cause: MESSAGES[key]["zh"] for cause, key in REVIEW_OWED_REASON_KEYS.items()
     }
 
     def reconcile_reviews_owed(self) -> list[dict[str, str]]:
@@ -2209,7 +2202,8 @@ class ExecutionDispatcher:
         recorded: list[dict[str, str]] = []
         unrecorded: list[dict[str, str]] = []
         for owed in owed_runs:
-            reason = self.REVIEW_OWED_REASONS.get(owed.get("cause", ""))
+            reason_key = self.REVIEW_OWED_REASON_KEYS.get(owed.get("cause", ""))
+            reason = None if reason_key is None else say(reason_key)
             if reason is None:
                 # An unrecognised cause is a new arrangement this method has no true
                 # sentence for. Skipping leaves the derived refusal standing, which
@@ -2345,34 +2339,22 @@ class ExecutionDispatcher:
                 run_id=run_id,
                 kind=AttentionKind.BLOCKER,
                 urgency=AttentionUrgency.HIGH,
-                title=self.REVIEW_FAILED_TITLE,
-                body=(
-                    "这次实现运行已完成,但没有任何独立交叉评审的结论被记录下来,因此没有人"
-                    "被要求接受这份工作。具体是哪一种情况,见原因:\n"
-                    f"{reason}\n\n"
-                    "本条打开期间会挡住这个任务的新实现运行,所以两个出口都从处置本条"
-                    "(回复或取消)开始:\n"
-                    "1) 处置本条,不再补评审:这份工作就以“没有任何评审结论”的状态留下,"
-                    "任务随后可以接受新的实现运行。选这个出口,就是在没有评审结论的情况下"
-                    "接受这份工作。\n"
-                    "2) 先处理上面的原因(例如配置或登录评审运行时),处置本条,然后重新派发"
-                    "一次实现运行;它成功后 Agora 会自动为*那次*运行派发交叉评审。那次评审"
-                    "读到的不是完整的工作区,而是一份有上限的采样:只包含新运行结束时工作区里"
-                    f"相对 HEAD 有改动的文件,每个文件最多前 {_REVIEW_FILE_CHARS} 个字符,"
-                    f"所有文件合计约 {_REVIEW_PROMPT_BUDGET} 个字符(超出后其余文件整个略去),"
-                    f"最多 {MAX_FILES} 个文件;读不出来的文件会被跳过,git 给不出答案时按"
-                    "“没有改动”处理。所以上面这次运行的产出,只有仍留在工作区里*并且*落在"
-                    "这份采样之内的部分会被看到 —— 一个 2000 字符、之后没再改动的文件,只有"
-                    f"前 {_REVIEW_FILE_CHARS} 个字符会被看到;排在合计上限之外的文件完全不会"
-                    "被看到。\n"
-                    "Agora 没有单独派发评审运行的接口(评审只会跟在一次成功的实现运行之后),"
-                    "因此“再派发一次评审”不是一个出口。"
+                title=say(REVIEW_OWED_BLOCKER_TITLE_KEY),
+                body=say(
+                    "review.owed_blocker_body",
+                    reason=reason,
+                    file_chars=_REVIEW_FILE_CHARS,
+                    budget=_REVIEW_PROMPT_BUDGET,
+                    max_files=MAX_FILES,
                 )[:32_000],
                 requester=REVIEW_REQUESTER,
             ),
             # This *is* the control plane raising its own item, which is the only
             # caller allowed to claim REVIEW_REQUESTER (AttentionStore.create).
             internal=True,
+            # The same blocker written under another display language is still this
+            # one: the title is part of the idempotency key (CR-71).
+            equivalent_titles=variants(REVIEW_OWED_BLOCKER_TITLE_KEY),
         )
 
     def _linked_reviews(self, task_id: str, worker_run_id: str) -> list[Any]:
@@ -2434,7 +2416,7 @@ class ExecutionDispatcher:
         except KeyError:
             self._block_review_owed(
                 task_id=worker_run.task_id, run_id=worker_run.run_id,
-                reason=f"项目 {worker_run.project_id} 已不在配置中,无法确定评审代理。",
+                reason=say("review.project_missing", project_id=worker_run.project_id),
             )
             return
         reviewer = reviewer or project.reviewer_agent
@@ -2443,9 +2425,9 @@ class ExecutionDispatcher:
             # is a substitution: it replaces an independent review with none.
             self._block_review_owed(
                 task_id=worker_run.task_id, run_id=worker_run.run_id,
-                reason=(
-                    f"评审运行时 {reviewer!r} 未配置或已停用(可用:"
-                    f"{', '.join(sorted(self.adapters)) or '无'})。"
+                reason=say(
+                    "review.reviewer_unavailable", reviewer=reviewer,
+                    available=', '.join(sorted(self.adapters)) or say("review.no_runtime_available"),
                 ),
             )
             return
@@ -2469,7 +2451,7 @@ class ExecutionDispatcher:
             except RemoteTargetMismatch as exc:
                 self._block_review_owed(
                     task_id=worker_run.task_id, run_id=worker_run.run_id,
-                    reason=f"评审无法派到开发所在的注册环境：{exc}",
+                    reason=say("review.environment_mismatch", error=exc),
                 )
                 return
             review_environment_id = recorded["environment_id"]
@@ -2492,7 +2474,10 @@ class ExecutionDispatcher:
             if provisioned is not None:
                 self._block_review_owed(
                     task_id=worker_run.task_id, run_id=worker_run.run_id,
-                    reason=f"评审代理 {reviewer!r} 在注册环境 {review_environment_id!r} 上的工作树未能建立：{provisioned}",
+                    reason=say(
+                        "review.remote_worktree_failed", reviewer=reviewer,
+                        environment_id=review_environment_id, error=provisioned,
+                    ),
                 )
                 return
         if is_remote(worker_adapter) or is_remote(reviewer_adapter):
@@ -2506,10 +2491,10 @@ class ExecutionDispatcher:
             if not compatible:
                 self._block_review_owed(
                     task_id=worker_run.task_id, run_id=worker_run.run_id,
-                    reason=(
-                        f"评审代理与开发代理不在同一台主机上：开发 {worker_run.adapter!r} 在 "
-                        f"{describe_target(worker_adapter.remote if worker_adapter else None)}，评审 {reviewer!r} 在 "
-                        f"{describe_target(reviewer_adapter.remote)}。复核要读开发的工作树，两者必须配置在同一台主机。"
+                    reason=say(
+                        "review.host_mismatch", worker=worker_run.adapter,
+                        worker_target=describe_target(worker_adapter.remote if worker_adapter else None),
+                        reviewer=reviewer, reviewer_target=describe_target(reviewer_adapter.remote),
                     ),
                 )
                 return
@@ -2527,7 +2512,7 @@ class ExecutionDispatcher:
             if provisioned is not None:
                 self._block_review_owed(
                     task_id=worker_run.task_id, run_id=worker_run.run_id,
-                    reason=f"评审代理 {reviewer!r} 在本机的工作树未能建立：{provisioned}",
+                    reason=say("review.local_worktree_failed", reviewer=reviewer, error=provisioned),
                 )
                 return
         try:
@@ -2559,7 +2544,7 @@ class ExecutionDispatcher:
             # is what has to be visible.
             self._block_review_owed(
                 task_id=worker_run.task_id, run_id=worker_run.run_id,
-                reason=f"评审运行未能入队:{type(exc).__name__}: {exc}",
+                reason=say("review.enqueue_failed", error_type=type(exc).__name__, error=exc),
             )
             return
         self.schedule(review_run.run_id)
@@ -2611,23 +2596,23 @@ class ExecutionDispatcher:
         """Turn a completed review run into a human attention item on the task."""
         stood_in_for = self._stood_in_for(review_run, reviews_run_id)
         if kind == AttentionKind.APPROVAL:
-            title = f"评审完成,待你批准(评审:{review_run.adapter})"
+            title = say("review.approval_title", reviewer=review_run.adapter)
             if stood_in_for is not None:
-                title = (
-                    f"评审完成,待你批准(评审:{review_run.adapter},顶替 {stood_in_for.adapter}:"
-                    f"{readable_failure(stood_in_for.adapter, stood_in_for.error_message)})"
+                title = say(
+                    "review.approval_title_stood_in", reviewer=review_run.adapter,
+                    original=stood_in_for.adapter,
+                    why=readable_failure(stood_in_for.adapter, stood_in_for.error_message),
                 )
+            # Not localized (CR-71 P1): an approval's body is the verdict the fix
+            # prompt quotes when the person rejects it, so it is agent input and
+            # stays fixed-language whatever the reader has chosen.
             body = review_run.stdout_tail or "(评审未产出文本)"
         else:
-            title = f"评审运行未完成(评审:{review_run.adapter})"
+            title = say("review.failed_title", reviewer=review_run.adapter)
             reason = readable_failure(
                 review_run.adapter, failure_reason(review_run.error_message, review_run.stderr_tail),
             )
-            body = (
-                f"{review_run.adapter} 的复核没有完成:{reason}。\n"
-                "这次实现还没有任何复核结论。回复或取消本条之后任务就能继续,"
-                "但那样这次实现就是没有经过复核被接受的。复核的原始输出在对话里这张复核卡上。"
-            )
+            body = say("review.failed_body", reviewer=review_run.adapter, reason=reason)
         AttentionStore(self.store.tasks).create(
             CreateAttentionRequest(
                 task_id=review_run.task_id,
@@ -2936,14 +2921,11 @@ class ExecutionDispatcher:
             # what must not be recorded as a live session — so this fails closed:
             # the next turn is refused until the person starts a new conversation.
             first, second = transcript.session_conflict
+            args = {"first": first, "second": second}
             self.sessions.mark_lost(
                 task_id=task_id, adapter=adapter, role=role,
-                reason=(
-                    f"这一轮的输出里出现了两个不同的会话 id（先 {first}，后 {second}）。"
-                    "工作很可能落在后一个里，而记录指向前一个——继续续接任何一个都可能"
-                    "接不上这一轮、甚至重做或覆盖它写过的文件。所以这里停下来，"
-                    "要继续请显式新开一个会话。"
-                ),
+                reason=say("session.two_ids_settled", **args),
+                reason_code="session.two_ids_settled", reason_args=args,
             )
             return
         if transcript.session_id:
@@ -2978,12 +2960,8 @@ class ExecutionDispatcher:
             # the silence adr/0007 exists to forbid.
             self.sessions.mark_unidentified(
                 task_id=task_id, adapter=adapter, workspace=workspace, role=role,
-                reason=(
-                    "这一轮跑过了，但它的输出里读不到会话 id"
-                    f"（退出码 {exit_code}）。可能供应商那边确实有一个会话，"
-                    "只是 Agora 叫不出它的名字——所以下一条消息会开一段新的对话，"
-                    "这一轮的上下文不会被带过去。"
-                ),
+                reason=say("session.unidentified", exit_code=exit_code),
+                reason_code="session.unidentified", reason_args={"exit_code": exit_code},
             )
             return
         if resuming and exit_code == 0 and not killed:
@@ -2998,23 +2976,15 @@ class ExecutionDispatcher:
             # and the id is kept because the conversation is probably still there.
             self.sessions.mark_unreadable(
                 task_id=task_id, adapter=adapter, role=role,
-                reason=(
-                    f"这一轮续接跑完了（退出码 {exit_code}），"
-                    "但输出里始终没有出现会话 id——所以没法确认它接上的是同一段会话。"
-                    "可能是 CLI 换了事件格式（Agora 读不出来），"
-                    "也可能是它忽略了 resume、在另一段会话里干了这一轮的活。"
-                    "下一条消息仍会按记录里的 id 续接；如果你发现上下文接不上，请显式新开一个会话。"
-                ),
+                reason=say("session.resume_unconfirmed", exit_code=exit_code),
+                reason_code="session.resume_unconfirmed", reason_args={"exit_code": exit_code},
             )
             return
         if resuming and exit_code != 0 and not killed:
             self.sessions.mark_lost(
                 task_id=task_id, adapter=adapter, role=role,
-                reason=(
-                    f"上一次续接会话失败（退出码 {exit_code}），"
-                    "而且这一轮里供应商始终没有报出会话 id —— 说明它没能接上这段会话。"
-                    "上下文可能还在，但这次没读到。"
-                ),
+                reason=say("session.resume_lost", exit_code=exit_code),
+                reason_code="session.resume_lost", reason_args={"exit_code": exit_code},
             )
 
     async def _read_streaming(
@@ -3155,13 +3125,11 @@ class ExecutionDispatcher:
                 self._session_noted[run.run_id] = _CONFLICT_NOTED
                 first, second = transcript.session_conflict
                 try:
+                    args = {"first": first, "second": second}
                     self.sessions.mark_lost(
                         task_id=run.task_id, adapter=run.adapter, role=role,
-                        reason=(
-                            f"这一轮的输出里出现了两个不同的会话 id（先 {first}，后 {second}）。"
-                            "工作很可能落在后一个里——继续续接任何一个都可能接不上这一轮，"
-                            "甚至重做或覆盖它写过的文件。要继续请显式新开一个会话。"
-                        ),
+                        reason=say("session.two_ids_streaming", **args),
+                        reason_code="session.two_ids_streaming", reason_args=args,
                     )
                 except Exception:
                     # Retried on the next line, and again at settlement.
@@ -3419,7 +3387,14 @@ def token_capturable_adapters(adapters: dict[str, ExecutionAdapter]) -> set[str]
 #: Written between a kept head and a bounded tail that do not meet. The reader
 #: shows it verbatim, so a turn whose middle was dropped does not read as one
 #: continuous answer.
-_MERGE_GAP_NOTICE = "\n· 中间的输出没有保留：这一轮打印的内容超过了缓冲上限，上下两段之间缺了一截。\n".encode()
+#:
+#: CR-71: written in the reader's display language (``_merge_gap_notice``); this
+#: constant is the ``zh`` text, kept for the callers that name it.
+_MERGE_GAP_NOTICE = MESSAGES["run.merge_gap"]["zh"].encode()
+
+
+def _merge_gap_notice() -> bytes:
+    return say("run.merge_gap").encode()
 
 
 def _merge_overlapping(head: bytes, tail: bytes, total: int) -> bytes:
@@ -3452,7 +3427,7 @@ def _merge_overlapping(head: bytes, tail: bytes, total: int) -> bytes:
     # A gap: `total` exceeds what the two pieces hold. Said, not silently closed
     # with a newline — the record used to read as one continuous output,
     # complete and not lossy, with its whole middle gone.
-    return head + _MERGE_GAP_NOTICE + tail
+    return head + _merge_gap_notice() + tail
 
 
 def _settlement_stdout(
@@ -3541,7 +3516,7 @@ def _prompt_echo(prompt: str, resuming: bool, *, machine_written: bool = False) 
         # content is not lost: a review's subject is the worker run whose output
         # is right above it in the same conversation.
         body = prompt.strip()
-        summary = f"（Agora 自动拼的复核请求，{len(body)} 字；内容是上面那一轮改动的文件）"
+        summary = say("run.review_prompt_echo", chars=len(body))
         return redact_text(f"{marker} {summary}\n")
     lines = prompt.strip().splitlines() or [""]
     return redact_text("".join(f"{marker} {line}\n" for line in lines))

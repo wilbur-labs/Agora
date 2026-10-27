@@ -33,6 +33,39 @@ from agora.api.settings_router import router as settings_router
 from agora.api.kickoff_router import router as kickoff_router
 from agora.api.terminal_router import get_terminal_manager, router as terminal_router
 
+def _load_display_language() -> None:
+    """Adopt the persisted ``display_language``, if there is a valid one.
+
+    Never raises. A missing row leaves the current value (the default ``zh``); an
+    unreadable database or a value outside the catalog leaves it too and is
+    reported on stderr. ``say()`` itself never reads the database — doing that lazily
+    would make every test that renders a message open whatever database the process
+    resolves (``tests/conftest.py``).
+    """
+    try:
+        from agora.config.settings import resolve_control_plane_db_path
+        from agora.messages import SETTING_DISPLAY_LANGUAGE, set_display_language
+        from agora.projects.store import ProjectStore
+
+        # The store alone, not a ProjectRegistry: constructing a registry imports
+        # the YAML source and creates directories under every project root, none of
+        # which reading one setting needs.
+        stored = ProjectStore(resolve_control_plane_db_path(get_config())).get_setting(
+            SETTING_DISPLAY_LANGUAGE
+        )
+        if stored is not None:
+            set_display_language(stored)
+    except Exception as exc:  # noqa: BLE001 - a display preference never blocks startup
+        try:
+            print(
+                f"agora: display language could not be loaded, keeping the default: "
+                f"{type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+        except Exception:  # noqa: BLE001, S110 - nowhere left to report it to
+            pass
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     # Which database this process is about to use, and — first — whether that
@@ -66,6 +99,11 @@ async def lifespan(_: FastAPI):
         except Exception:  # noqa: BLE001, S110 - nowhere left to report it to
             pass
     initialize_control_plane_store()
+    # The reader's language for backend-written text (CR-71), loaded before anything
+    # below can write a run-log note or an attention item. Wrapped: a language that
+    # cannot be read is a display preference left at its default, never a reason to
+    # refuse to start — and it is said on stderr rather than silently assumed.
+    _load_display_language()
     # One call, because the two steps behind it are ordered by a real dependency
     # and not by taste: reconcile_reviews_owed raises the gates that resume_queued
     # judges the persisted queue against, and both have to finish before the API

@@ -61,6 +61,7 @@ from agora.environments import (
     PathProbe,
     ProcessHandle,
 )
+from agora.messages import say
 from agora.fsprobe import PathProbe as _PathProbe  # same type; explicit for constructors
 
 HostKeyMode = str  # "strict" | "tofu"; validated in __init__ (raises on anything else)
@@ -883,7 +884,7 @@ class RemoteEnvironment:
         conn = await self._ensure_conn()
         path_word = _agent_path_word(await self._login_path_for(conn))
         root = _posix(cwd)
-        fail = shlex.quote(f"进不了项目目录：{root}")
+        fail = shlex.quote(say("terminal.cd_failed", root=root))
         script = f"cd {shlex.quote(root)} || {{ echo {fail}; exit 1; }}; export {path_word}; {line}"
         return await conn.create_process(
             f'"${{SHELL:-/bin/sh}}" -lc {shlex.quote(script)}',

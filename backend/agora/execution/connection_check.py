@@ -20,6 +20,7 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
+from agora.messages import say
 from agora.environments_remote import RemoteHostKeyError, _agent_path_word
 
 CHECK_TIMEOUT = 30.0
@@ -70,7 +71,7 @@ async def _check(environment: Any, record: Any) -> dict[str, Any]:
         except RemoteTaskRefused as exc:
             result["tool"] = {"ok": False, "reason": str(exc)}
         except Exception as exc:  # noqa: BLE001
-            result["tool"] = {"ok": False, "reason": f"读不了：{type(exc).__name__}"}
+            result["tool"] = {"ok": False, "reason": say("connection.tool_unreadable", error_type=type(exc).__name__)}
     return result
 
 

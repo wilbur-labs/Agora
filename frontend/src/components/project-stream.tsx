@@ -476,7 +476,7 @@ export function ProjectStream({
           ...(environmentId ? { environment_id: environmentId } : {}),
           task_id: task.task_id,
           adapter: who,
-          prompt: reviewFixPrompt({ reviewTitle: outcome.item.title, reviewBody: outcome.item.body, reason: outcome.response }),
+          prompt: reviewFixPrompt({ reviewBody: outcome.item.body, reason: outcome.response }),
           timeout_seconds: CONTINUE_TIMEOUT_SECONDS,
           expected_task_version: planned.version,
           actor: "user",

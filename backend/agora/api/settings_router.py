@@ -16,12 +16,13 @@ import textwrap
 import threading
 from functools import wraps
 from pathlib import Path
-from typing import Any, Callable, TypeVar
+from typing import Any, Callable, Literal, TypeVar
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
+from agora import messages
 from agora.config.settings import get_config, resolve_control_plane_db_path
 from agora.fsprobe import PathProbe, probe_path
 from agora.tasks.router import get_project_registry, get_task_store
@@ -236,7 +237,55 @@ def settings_overview(
         "execution": _execution_limits(config),
         "runs": _run_stats(store),
         "control_plane": _control_plane_auth(config),
+        "display_language": messages.get_display_language(),
     }
+
+
+class DisplayLanguageRequest(BaseModel):
+    """The reader's language for backend-written text (CR-71). Only the catalog's
+    languages: anything else is a 422, never mapped to a default."""
+
+    language: Literal["zh", "ja", "en"]
+
+
+@router.get("/settings/display-language")
+def get_display_language_setting() -> dict[str, str]:
+    """The language backend-written text is rendered in now. This process's value —
+    loaded from ``project_settings`` at startup and changed only by the PUT below
+    after it has persisted — so it is what the next message will actually be
+    written in."""
+    return {"language": messages.get_display_language()}
+
+
+# Persist + activate is one unit: sync endpoints run in worker threads, so without it
+# two tabs' PUTs can interleave (A commits ja, B commits and activates en, A activates
+# ja) and leave the saved language and the one in use different until a restart.
+_DISPLAY_LANGUAGE_LOCK = threading.Lock()
+
+
+@router.put("/settings/display-language")
+def set_display_language_setting(
+    request: DisplayLanguageRequest,
+    registry: ProjectRegistry = Depends(get_project_registry),
+) -> dict[str, str]:
+    """Persist the reader's language, **then** switch to it.
+
+    In that order so the server never renders in a language it has not saved: a
+    failed write leaves the language as it was and answers 503, and the frontend
+    switches only on success (CR-71 revision, P2 — the server's value is the one
+    authority). State-changing, so it passes ``LocalOriginGuard`` like every other
+    PUT (the guard is app-wide middleware).
+    """
+    with _DISPLAY_LANGUAGE_LOCK:
+        try:
+            registry.store.set_setting(messages.SETTING_DISPLAY_LANGUAGE, request.language)
+        except Exception as exc:  # noqa: BLE001 - any failed write is "not saved"
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                f"display language not saved: {type(exc).__name__}: {exc}",
+            ) from None
+        messages.set_display_language(request.language)
+        return {"language": messages.get_display_language()}
 
 
 @router.put("/settings/projects-base")

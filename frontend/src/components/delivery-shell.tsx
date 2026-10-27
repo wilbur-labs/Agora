@@ -10,7 +10,7 @@ import {
   Settings,
   Sun,
 } from "lucide-react";
-import { useI18n } from "@/lib/i18n";
+import { useI18n, type LanguageSync } from "@/lib/i18n";
 import { nextLocale } from "@/lib/i18n/locale";
 import { fetchHealth, listOpenAttention, type RuntimeCapabilities } from "@/lib/control-plane";
 import { waitingTotalOf } from "@/lib/project-rail";
@@ -57,10 +57,17 @@ const UTILITIES = [
   { href: "/settings", key: "settings", label: "Settings", icon: Settings },
 ] as const;
 
+function languageSyncTitle(sync: LanguageSync, t: (key: string, vars?: Record<string, string>) => string, next: string): string {
+  if (sync === "saving") return t("common.languageSync.saving");
+  if (sync === "saveFailed") return t("common.languageSync.saveFailed");
+  const switchTo = t("common.languageSync.next", { language: next });
+  return sync === "unread" ? `${t("common.languageSync.unread")} ${switchTo}` : switchTo;
+}
+
 /** The bar. `active` is the stable English label of the screen rendering it. */
 export function TopBar({ active }: { active: string }) {
   const { resolvedTheme, setTheme } = useTheme();
-  const { locale, toggleLocale, t } = useI18n();
+  const { locale, languageSync, toggleLocale, t } = useI18n();
   const [runtimes, setRuntimes] = useState<RuntimeCapabilities | null>(null);
   const [probeFailed, setProbeFailed] = useState(false);
   const [health, setHealth] = useState<AgoraHealth | null | "failed">(null);
@@ -209,10 +216,14 @@ export function TopBar({ active }: { active: string }) {
           ))}
           <TextSizeButton />
           <button
-            className="rounded-lg p-2 text-muted-foreground hover:bg-accent hover:text-foreground"
+            className={cn(
+              "rounded-lg p-2 hover:bg-accent hover:text-foreground",
+              languageSync === "unread" || languageSync === "saveFailed" ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground",
+            )}
             onClick={toggleLocale}
+            disabled={languageSync === "saving" || languageSync === "pending"}
             aria-label={t("common.action.toggleLanguage")}
-            title={t(`common.language.${nextLocale(locale)}`)}
+            title={languageSyncTitle(languageSync, t, t(`common.language.${nextLocale(locale)}`))}
           >
             <Languages className="size-4" />
           </button>

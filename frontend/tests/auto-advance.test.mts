@@ -37,28 +37,33 @@ test("\"no next step\" is only certain over a whole read", () => {
 });
 
 test("the fix prompt carries the reviewer's words and the person's, labelled apart", () => {
-  const prompt = reviewFixPrompt({ reviewTitle: "评审完成", reviewBody: "## 结论\n不能批准。", reason: "先修第一条" });
+  const prompt = reviewFixPrompt({ reviewBody: "## 结论\n不能批准。", reason: "先修第一条" });
   assert.match(prompt, /^复核未通过/);
-  assert.ok(prompt.includes("## 复核意见（评审完成）\n## 结论\n不能批准。"));
+  assert.ok(prompt.includes("## 复核意见\n## 结论\n不能批准。"));
   assert.ok(prompt.includes("## 我的补充\n先修第一条"));
   assert.ok(prompt.indexOf("复核意见") < prompt.indexOf("我的补充"));
 });
 
 test("a prompt over the run limit is cut in the reviewer's body, marked, and keeps the reason", () => {
   const body = "x".repeat(40_000);
-  const prompt = reviewFixPrompt({ reviewTitle: "t", reviewBody: body, reason: "改第一条" }, 16_000);
+  const prompt = reviewFixPrompt({ reviewBody: body, reason: "改第一条" }, 16_000);
   assert.ok(prompt.length <= 16_000);
   assert.ok(prompt.includes(REVIEW_BODY_TRUNCATED_MARK));
   assert.ok(prompt.endsWith("## 我的补充\n改第一条"));
   // Under the limit nothing is cut and nothing is marked.
-  const short = reviewFixPrompt({ reviewTitle: "t", reviewBody: "ok", reason: "" }, 16_000);
+  const short = reviewFixPrompt({ reviewBody: "ok", reason: "" }, 16_000);
   assert.ok(!short.includes(REVIEW_BODY_TRUNCATED_MARK));
   // The default limit is the control plane's own run prompt limit.
-  assert.ok(reviewFixPrompt({ reviewTitle: "t", reviewBody: body, reason: "" }).length <= 16_000);
+  assert.ok(reviewFixPrompt({ reviewBody: body, reason: "" }).length <= 16_000);
 });
 
 test("an empty reason adds no empty section", () => {
-  const prompt = reviewFixPrompt({ reviewTitle: "", reviewBody: "x", reason: "   " });
+  const prompt = reviewFixPrompt({ reviewBody: "x", reason: "   " });
   assert.ok(!prompt.includes("我的补充"));
-  assert.ok(prompt.includes("（未命名）"));
+});
+
+test("what the agent receives does not depend on the item's (localized) title", () => {
+  // CR-71: titles are written in the reader's language; the prompt takes no title at all.
+  const prompt = reviewFixPrompt({ reviewBody: "## 结论\n不能批准。", reason: "" });
+  assert.equal(prompt, "复核未通过，请按下面的意见修改；改完说明每一条是怎么处理的。\n\n## 复核意见\n## 结论\n不能批准。");
 });

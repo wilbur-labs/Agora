@@ -18,6 +18,7 @@ import {
 } from "react";
 import { DEFAULT_LOCALE, messages, type Locale } from "./messages";
 import { htmlLangOf, localeOf, nextLocale } from "./locale";
+import { readServerLanguage, saveServerLanguage } from "./server-language";
 
 const STORAGE_KEY = "agora.locale";
 
@@ -35,9 +36,15 @@ export type Translate = (key: string, vars?: TranslateVars) => string;
 // humanized raw value when the value is not mapped under `enums.<group>`.
 export type TranslateEnum = (group: string, value: string) => string;
 
+// Where the display language stands against the server's setting, which is the
+// authority (CR-71): "unread" means the page could not ask, so it shows its cached
+// choice and must not claim the backend writes in it; "saveFailed" means the button
+// was pressed, the server refused or was unreachable, and the language did not change.
+export type LanguageSync = "pending" | "synced" | "unread" | "saving" | "saveFailed";
+
 type I18nContextValue = {
   locale: Locale;
-  setLocale: (locale: Locale) => void;
+  languageSync: LanguageSync;
   toggleLocale: () => void;
   t: Translate;
   te: TranslateEnum;
@@ -66,6 +73,7 @@ function interpolate(template: string, vars?: TranslateVars): string {
 
 export function LocaleProvider({ children }: { children: ReactNode }) {
   const [locale, setLocaleState] = useState<Locale>(DEFAULT_LOCALE);
+  const [languageSync, setLanguageSync] = useState<LanguageSync>("pending");
 
   useEffect(() => {
     // One-time hydration of the persisted (or browser-preferred) locale.
@@ -81,24 +89,42 @@ export function LocaleProvider({ children }: { children: ReactNode }) {
       setLocaleState(next);
     }
     document.documentElement.setAttribute("data-i18n-ready", "");
+    // Then ask the authority. Its answer wins over the cache; the cache is updated so
+    // the next page load paints in it straight away.
+    let alive = true;
+    readServerLanguage().then(
+      (server) => {
+        if (!alive) return;
+        setLocaleState(server);
+        try { window.localStorage.setItem(STORAGE_KEY, server); } catch { /* cache only */ }
+        setLanguageSync("synced");
+      },
+      () => { if (alive) setLanguageSync("unread"); },
+    );
+    return () => { alive = false; };
   }, []);
 
   useEffect(() => {
     document.documentElement.lang = htmlLangOf(locale);
   }, [locale]);
 
-  const setLocale = useCallback((next: Locale) => {
-    setLocaleState(next);
-    window.localStorage.setItem(STORAGE_KEY, next);
-  }, []);
-
+  // Saved first, switched second: the UI only changes language once the server has
+  // it, so what the page shows and what the backend writes cannot silently diverge.
   const toggleLocale = useCallback(() => {
-    setLocaleState((current) => {
-      const next = nextLocale(current);
-      window.localStorage.setItem(STORAGE_KEY, next);
-      return next;
-    });
-  }, []);
+    // Not while the first read of the server's value is still out: its answer would
+    // land after the save and overwrite the language just saved (codex, CR-71 s2).
+    if (languageSync === "saving" || languageSync === "pending") return;
+    const next = nextLocale(locale);
+    setLanguageSync("saving");
+    saveServerLanguage(next).then(
+      (saved) => {
+        setLocaleState(saved);
+        try { window.localStorage.setItem(STORAGE_KEY, saved); } catch { /* cache only */ }
+        setLanguageSync("synced");
+      },
+      () => setLanguageSync("saveFailed"),
+    );
+  }, [languageSync, locale]);
 
   const t = useCallback(
     (key: string, vars?: TranslateVars) => {
@@ -118,8 +144,8 @@ export function LocaleProvider({ children }: { children: ReactNode }) {
   );
 
   const value = useMemo<I18nContextValue>(
-    () => ({ locale, setLocale, toggleLocale, t, te }),
-    [locale, setLocale, toggleLocale, t, te],
+    () => ({ locale, languageSync, toggleLocale, t, te }),
+    [locale, languageSync, toggleLocale, t, te],
   );
 
   return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>;

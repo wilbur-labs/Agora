@@ -34,6 +34,7 @@ from typing import Any
 
 import yaml
 
+from agora.messages import say
 from agora.projects.import_candidates import _paths_in, _title_of
 from agora.projects.importer import DuplicateKeyError, StrictLoader
 from agora.projects.workspace_tasks import MAX_TASK_YAML_BYTES
@@ -113,13 +114,13 @@ async def resolve_tool(environment: Any, tool_dir: str) -> tuple[PurePosixPath, 
     reason when either is not what it must be."""
     clean = _clean_absolute(tool_dir)
     if clean is None:
-        raise RemoteTaskRefused(f"claude-workspace 工具目录必须是绝对路径且不含 ..：{tool_dir}")
+        raise RemoteTaskRefused(say("remote.tool_dir_not_absolute", tool_dir=tool_dir))
     tool = await _existing(environment, clean, "dir")
     if tool is None:
-        raise RemoteTaskRefused(f"那台机器上没有这个目录：{tool_dir}")
+        raise RemoteTaskRefused(say("remote.no_such_dir", tool_dir=tool_dir))
     for part, kind in (("scripts/cw.sh", "file"), (".claude", "dir")):
         if await _existing(environment, tool / part, kind) is None:
-            raise RemoteTaskRefused(f"{tool} 不像 claude-workspace 工具目录（缺 {part}）")
+            raise RemoteTaskRefused(say("remote.not_a_tool_dir", tool=tool, part=part))
     try:
         marker = (await environment.fs.read_file(Path(str(tool / ".workroot")), max_bytes=4096)).decode("utf-8").strip()
     except FileNotFoundError:
@@ -127,14 +128,14 @@ async def resolve_tool(environment: Any, tool_dir: str) -> tuple[PurePosixPath, 
     if marker:
         root = _clean_absolute(marker)
         if root is None:
-            raise RemoteTaskRefused(f"{tool}/.workroot 不是绝对路径：{marker}")
+            raise RemoteTaskRefused(say("remote.workroot_not_absolute", tool=tool, marker=marker))
         work = await _existing(environment, root, "dir")
         if work is None:
-            raise RemoteTaskRefused(f".workroot 指向的工作根不存在：{marker}")
+            raise RemoteTaskRefused(say("remote.workroot_missing", marker=marker))
     else:
         work = tool
     if await _existing(environment, work / "tasks", "dir") is None:
-        raise RemoteTaskRefused(f"工作根里没有 tasks/：{work}")
+        raise RemoteTaskRefused(say("remote.no_tasks_dir", work=work))
     return tool, work
 
 
@@ -186,7 +187,7 @@ async def _scan(environment: Any, tool_dir: str, project_root: str) -> RemoteTas
     clean_root = _clean_absolute(project_root)
     root = None if clean_root is None else await _existing(environment, clean_root, "dir")
     if root is None:
-        raise RemoteTaskRefused(f"这个环境的项目目录在那台机器上不存在：{project_root}")
+        raise RemoteTaskRefused(say("remote.project_root_missing", project_root=project_root))
     names = sorted(n for n in await environment.fs.listdir(Path(str(work / "tasks")))
                    if not n.startswith(("_", ".")))
     scan = RemoteTaskScan(state="complete", tool_dir=str(tool), work_root=str(work))
@@ -222,15 +223,15 @@ async def scan_remote_tasks(environment: Any, tool_dir: str | None, project_root
     """The tasks on this environment's host that name its project root. Never raises:
     every failure is a scan that says it could not read."""
     if not tool_dir:
-        return RemoteTaskScan(state="unavailable", reason="这个环境没登记 claude-workspace 工具目录")
+        return RemoteTaskScan(state="unavailable", reason=say("remote.tool_dir_unregistered"))
     try:
         return await asyncio.wait_for(_scan(environment, tool_dir, project_root), timeout=SCAN_TIMEOUT)
     except RemoteTaskRefused as exc:
         return RemoteTaskScan(state="unavailable", reason=str(exc))
     except (asyncio.TimeoutError, TimeoutError):
-        return RemoteTaskScan(state="unavailable", reason=f"读远端任务记录超过 {int(SCAN_TIMEOUT)} 秒")
+        return RemoteTaskScan(state="unavailable", reason=say("remote.scan_timeout", seconds=int(SCAN_TIMEOUT)))
     except Exception as exc:  # noqa: BLE001 - connection, SFTP, host key: said as "could not read"
-        return RemoteTaskScan(state="unavailable", reason=f"读不到远端的任务记录：{type(exc).__name__}")
+        return RemoteTaskScan(state="unavailable", reason=say("remote.scan_unreadable", error_type=type(exc).__name__))
 
 
 async def verify_task(environment: Any, tool_dir: str | None, project_root: str, task: str) -> tuple[PurePosixPath, PurePosixPath]:
@@ -238,27 +239,27 @@ async def verify_task(environment: Any, tool_dir: str | None, project_root: str,
     is named by. Returns the resolved tool directory and work root; raises
     ``RemoteTaskRefused`` with the reason otherwise."""
     if not TASK_NAME_RE.match(task or ""):
-        raise RemoteTaskRefused(f"任务名不合法：{task!r}")
+        raise RemoteTaskRefused(say("remote.bad_task_name", task=task))
     if not tool_dir:
-        raise RemoteTaskRefused("这个环境没登记 claude-workspace 工具目录")
+        raise RemoteTaskRefused(say("remote.tool_dir_unregistered"))
     tool, work = await resolve_tool(environment, tool_dir)
     clean_root = _clean_absolute(project_root)
     root = None if clean_root is None else await _existing(environment, clean_root, "dir")
     if root is None:
-        raise RemoteTaskRefused(f"这个环境的项目目录在那台机器上不存在：{project_root}")
+        raise RemoteTaskRefused(say("remote.project_root_missing", project_root=project_root))
     try:
         document = await _task_document(environment, work, task)
     except FileNotFoundError:
-        raise RemoteTaskRefused(f"那台机器上没有这个任务：{task}") from None
+        raise RemoteTaskRefused(say("remote.no_such_task", task=task)) from None
     except (OSError, ValueError) as exc:
-        raise RemoteTaskRefused(f"读不了 {task} 的 task.yaml：{exc}") from None
+        raise RemoteTaskRefused(say("remote.task_yaml_unreadable", task=task, error=exc)) from None
     if _archived(document):
-        raise RemoteTaskRefused(f"{task} 已归档")
+        raise RemoteTaskRefused(say("remote.task_archived", task=task))
     names_root = await _names_root(environment, document, root)
     if names_root is None:
-        raise RemoteTaskRefused(f"{task} 记录里的仓库路径在那台机器上读不了，确认不了它是不是这个项目")
+        raise RemoteTaskRefused(say("remote.task_root_unreadable", task=task))
     if not names_root:
-        raise RemoteTaskRefused(f"{task} 的记录没有指向这个环境的项目目录（{project_root}）")
+        raise RemoteTaskRefused(say("remote.task_not_this_project", task=task, project_root=project_root))
     return tool, work
 
 

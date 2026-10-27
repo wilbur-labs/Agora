@@ -57,15 +57,17 @@ export function noNextStepIsCertain(rowsWhole: boolean, next: AdvanceRowLike | n
  */
 export const REVIEW_BODY_TRUNCATED_MARK = "…（复核意见过长，此处按 run 提示词上限截断；全文在「待你处理」的记录里）";
 
+// The heading does not carry the attention item's title: that title is written in the
+// reader's display language (CR-71), and what an agent receives must not change with
+// the language someone happens to read Agora in.
 export function reviewFixPrompt(input: {
-  reviewTitle: string;
   reviewBody: string;
   reason: string;
 }, limit: number = CONTINUE_PROMPT_LIMIT): string {
   const head = [
     "复核未通过，请按下面的意见修改；改完说明每一条是怎么处理的。",
     "",
-    `## 复核意见（${input.reviewTitle.trim() || "未命名"}）`,
+    "## 复核意见",
   ].join("\n");
   const reason = input.reason.trim();
   const tail = reason === "" ? "" : `\n\n## 我的补充\n${reason}`;

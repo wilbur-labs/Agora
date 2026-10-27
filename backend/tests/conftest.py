@@ -496,3 +496,19 @@ def refuse_databases_outside_the_temp_tree(tmp_path_factory, monkeypatch, reques
 
         monkeypatch.setattr(module, name, guarded_os_mkdir)
     yield
+
+
+@pytest.fixture(autouse=True)
+def reset_display_language():
+    """Every test starts and ends in the default display language (CR-71).
+
+    The language is one process-wide value (``agora.messages``), so a test that
+    switches it — directly, through the PUT endpoint, or through a lifespan that
+    loads a stored one — would otherwise leak it into every test after it, and a
+    test asserting Chinese text would fail depending on order.
+    """
+    from agora import messages
+
+    messages.set_display_language(messages.DEFAULT_LANGUAGE)
+    yield
+    messages.set_display_language(messages.DEFAULT_LANGUAGE)

@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from agora.fsprobe import probe_path
+from agora.messages import MESSAGES, say
 
 #: Run ids are control-plane generated, but this module turns one into a
 #: filesystem path, so the shape is enforced here rather than trusted. Anything
@@ -42,10 +43,14 @@ MAX_LOG_BYTES = 8 * 1024 * 1024
 
 #: Appended once when a transcript reaches the cap, so a conversation that stops
 #: mid-sentence says why instead of looking like an agent that went quiet.
-TRUNCATION_NOTICE = (
-    "\n· 这一轮的记录到达了大小上限，后面的输出没有被保存下来。"
-    "run 本身不受影响；结论与改动文件仍在它自己的记录里。\n"
-).encode("utf-8")
+#:
+#: CR-71: written in the reader's display language (``truncation_notice``); this
+#: constant is the ``zh`` text, kept for the callers that name it.
+TRUNCATION_NOTICE = MESSAGES["runlog.truncated"]["zh"].encode("utf-8")
+
+
+def truncation_notice() -> bytes:
+    return say("runlog.truncated").encode("utf-8")
 
 
 class RunLogError(ValueError):
@@ -147,7 +152,7 @@ class RunLogStore:
                 # which reads as an agent that stopped rather than a transcript
                 # that ran out of room.
                 room = MAX_LOG_BYTES - size
-                payload = _whole_characters(payload[:room]) + TRUNCATION_NOTICE
+                payload = _whole_characters(payload[:room]) + truncation_notice()
                 # The notice is in the text, but `lossy` has to say so too: a
                 # caller reading the flag alone was told nothing was missing,
                 # which is what the field exists to deny. Marked durably, so it

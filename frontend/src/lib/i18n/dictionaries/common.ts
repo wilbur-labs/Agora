@@ -65,6 +65,12 @@ export const common = {
       zh: "中文",
       ja: "日本語",
     },
+    languageSync: {
+      next: "Switch to {language}. Run logs and items written before a switch stay in the language they were written in.",
+      saving: "Saving the language setting…",
+      saveFailed: "The language setting could not be saved, so the display language was not changed. Press again to retry.",
+      unread: "Agora's language setting could not be read. Whether this page and the records Agora writes next are in the same language is unknown.",
+    },
     state: {
       loading: "Loading",
       empty: "Nothing to show yet.",
@@ -158,6 +164,12 @@ export const common = {
       zh: "中文",
       ja: "日本語",
     },
+    languageSync: {
+      next: "切换到{language}。切换之前写下的运行记录和待处理事项，保持写下时的语言。",
+      saving: "正在保存语言设置…",
+      saveFailed: "语言设置没能保存，所以显示语言没有改变。再点一次重试。",
+      unread: "读不到 Agora 的语言设置。这个页面的语言和 Agora 接下来写的记录是否一致，不知道。",
+    },
     state: {
       loading: "加载中",
       empty: "暂无内容。",
@@ -231,6 +243,12 @@ export const common = {
       en: "English",
       zh: "中文",
       ja: "日本語",
+    },
+    languageSync: {
+      next: "{language}に切り替えます。切り替え前に書かれた実行ログと対応項目は、書かれた言語のままです。",
+      saving: "言語設定を保存しています…",
+      saveFailed: "言語設定を保存できなかったため、表示言語は変えていません。もう一度押すと再試行します。",
+      unread: "Agora の言語設定を読めませんでした。この画面の言語と、Agora がこれから書く記録の言語が一致しているかは不明です。",
     },
     state: {
       loading: "読み込み中",

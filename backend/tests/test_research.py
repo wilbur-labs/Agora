@@ -49,3 +49,49 @@ def test_research_orchestrator_writes_artifacts(tmp_path):
     assert (task.task_dir / "notes" / "claude-research.md").exists()
     assert (task.task_dir / "notes" / "codex-engineering.md").exists()
     assert (task.task_dir / "notes" / "verifier.md").exists()
+
+
+# --- CR-71: Japanese requests are classified like Chinese and English ones -------
+
+import pytest  # noqa: E402
+
+from agora import messages  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    ("question", "task_type"),
+    [
+        ("RAG 向けのリランカーに関する論文をサーベイしてください。", "paper_survey"),
+        ("公式ドキュメントを読み比べて違いをまとめてください。", "official_docs_comparison"),
+        ("本番 RAG で使えるオープンソースのライブラリを選定してください。", "library_evaluation"),
+        ("このリポジトリのソースコードを読み込んで構造を説明してください。", "repo_deep_dive"),
+        ("二つの埋め込みモデルのベンチマークを取ってください。", "poc_or_benchmark"),
+        ("証拠ストアのアーキテクチャをどうするか決定したいです。", "architecture_decision"),
+        ("Python 3.13 へのアップグレード手順を作ってください。", "migration_plan"),
+        ("この機能の要件と設計、タスク分解を作ってください。", "spec_generation"),
+        ("ログイン画面のバグを修正して実装してください。", "code_implementation"),
+    ],
+)
+def test_japanese_requests_are_classified(question, task_type):
+    assert classify(question)["task_type"] == task_type
+
+
+def test_a_japanese_research_request_auto_dispatches():
+    assert should_auto_dispatch("本番 RAG で使えるオープンソースのリランカーを比較して、おすすめを一つ選んでください。") is True
+    # A broad request falls to the technical report, and still counts as research
+    # through the Japanese intent words.
+    assert should_auto_dispatch("社内向け検索の調査をお願いします。") is True
+
+
+def test_a_japanese_chat_line_is_not_research():
+    assert should_auto_dispatch("こんにちは、調子はどうですか？") is False
+
+
+def test_keyword_matching_does_not_depend_on_the_display_language():
+    question = "本番 RAG で使えるオープンソースのライブラリを選定してください。"
+    for lang in messages.LANGUAGES:
+        messages.set_display_language(lang)
+        assert classify(question)["task_type"] == "library_evaluation"
+    question_zh = "比较生产级 RAG 系统可用的开源 reranker，并推荐一个。"
+    messages.set_display_language("ja")
+    assert should_auto_dispatch(question_zh) is True

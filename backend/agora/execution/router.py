@@ -12,6 +12,7 @@ from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from typing import Annotated
 
+from agora.messages import say
 from fastapi import APIRouter, Depends, HTTPException, Path as PathParam, Query, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, Response
@@ -503,10 +504,7 @@ def forget_task_session(
     # by the concurrency limit. The previous version paged through the task's runs
     # and tested each one — capped, and a cap fails toward allowing the clear.
     draining = dispatcher.draining_for(task_id, adapter)
-    conflict = (
-        "这个适配器还有一轮在跑，现在清除会话不会生效——那个进程报出的下一条会话事件会把它写回来。"
-        "先等它结束或停止它，再新开会话。"
-    )
+    conflict = say("session.clear_while_running")
     if live or draining:
         raise HTTPException(status.HTTP_409_CONFLICT, conflict)
     try:

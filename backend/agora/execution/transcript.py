@@ -21,6 +21,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from agora.messages import say
+
 from .adapters import (
     EVENT_FORMAT_CLAUDE_STREAM_JSON,
     EVENT_FORMAT_CODEX_JSONL,
@@ -110,13 +112,12 @@ class TranscriptReader:
         """Any closing note for the transcript, after the process has exited."""
         notes: list[str] = []
         if self.unread_kinds:
-            notes.append(
-                "· 本轮有 Agora 未能解读的事件类型："
-                + "、".join(self.unread_kinds)
-                + "（已如实记下，未当作没发生）"
-            )
+            notes.append(say(
+                "transcript.unread_kinds",
+                kinds=say("transcript.list_separator").join(self.unread_kinds),
+            ))
         if self.final_text_truncated:
-            notes.append("· 供应商声明它自己的最终文本被截断了，上面显示的不是全文")
+            notes.append(say("transcript.vendor_truncated"))
         return "".join(_line(note) for note in notes)
 
     @property
@@ -139,7 +140,7 @@ class TranscriptReader:
         if kind in self.unread_kinds:
             return ""
         self.unread_kinds.append(kind)
-        return _line(f"· 未解读的事件：{kind}")
+        return _line(say("transcript.unread_event", kind=kind))
 
     def _remember_session(self, value: Any) -> None:
         """Record the provider's session id, and never let it change silently.
@@ -570,7 +571,7 @@ class ClaudeStreamJsonReader(TranscriptReader):
         # never fires; when it does, `_render_thinking_copy` says so rather than
         # letting the pair look intended.
         state["counted"] = True
-        return _line(f"· 想了约 {tokens} tokens")
+        return _line(say("transcript.thought_tokens", tokens=tokens))
 
     def finish(self) -> str:
         # A thinking block still open here never got its `content_block_stop`.
@@ -796,7 +797,7 @@ class KiroStreamJsonReader(TranscriptReader):
             status = _text_of(update.get("status"))
             return _line(f"$ {_clip(title)}{f' ({status})' if status else ''}")
         if update_kind == "plan":
-            return _line("· 收到计划更新")
+            return _line(say("transcript.plan_update"))
         return self._unread(f"kiro update:{update_kind}")
 
 
@@ -858,7 +859,7 @@ def _compact(value: Any) -> str:
 def _clip(text: str) -> str:
     if len(text) <= _ECHO_LIMIT:
         return text
-    return f"{text[:_ECHO_LIMIT]}… (截断，共 {len(text)} 字)"
+    return say("transcript.clipped", head=text[:_ECHO_LIMIT], length=len(text))
 
 
 #: A command is the one tool input that *is* reading matter — what ran is the whole
@@ -949,7 +950,7 @@ def _tool_call(name: Any, payload: Any, *, cwd: str | None = None) -> str:
         # How much is being written is the one number a reader wants here.
         body = _text_of(payload.get("content"))
         if body:
-            return f"{tool}({subject}) {body.count(chr(10)) + 1} 行"
+            return say("transcript.write_lines", tool=tool, subject=subject, lines=body.count(chr(10)) + 1)
     return f"{tool}({subject})" if subject else tool
 
 

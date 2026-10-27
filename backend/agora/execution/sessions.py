@@ -39,6 +39,7 @@ run's own result.
 """
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import uuid
@@ -49,6 +50,8 @@ from pathlib import Path
 from typing import Iterator, Sequence
 
 from pydantic import BaseModel
+
+from agora.messages import render_code, say
 
 from .models import ROLE_WORKER
 
@@ -151,6 +154,10 @@ class AgentSession(BaseModel):
     #: Why the state is ``unreadable``. Empty for every other state, and shown to
     #: the user verbatim — it is the difference between "start a new one" and
     #: "fix the worktree".
+    #:
+    #: CR-71: rendered **at read time** in the reader's display language when the row
+    #: carries a ``reason_code``; a row written before the code existed shows its
+    #: stored text as written.
     reason: str | None = None
     first_seen_at: str | None = None
     last_seen_at: str | None = None
@@ -191,6 +198,12 @@ class SessionDecision:
     #: Set when the turn must not be launched at all. The dispatcher settles the
     #: run with this text; nothing falls back to starting a new session.
     refusal: str | None = None
+    #: The catalog key and arguments ``refusal`` was rendered from, so a refusal
+    #: written back onto the session row (``mark_unreadable``) is re-rendered in the
+    #: reader's language when it is read (CR-71). None for a refusal composed from
+    #: stored text that has no single key.
+    refusal_code: str | None = None
+    refusal_args: dict | None = None
     #: True when the refusal came from a **live condition** — the workspace, or
     #: the adapter's lack of a resume command — rather than from the recorded
     #: state. Only these may be written back as ``unreadable``: doing it for a
@@ -252,6 +265,10 @@ def initialize_session_schema(db: sqlite3.Connection) -> None:
     _add_column(db, "agent_sessions", "previous_session_id", "TEXT")
     _add_column(db, "agent_sessions", "cleared_at", "TEXT")
     _add_column(db, "agent_sessions", "clear_seq", "INTEGER NOT NULL DEFAULT 0")
+    # CR-71: the reason as a catalog key + JSON arguments, rendered at read time in
+    # the reader's language. Nullable: rows written before it have only ``reason``.
+    _add_column(db, "agent_sessions", "reason_code", "TEXT")
+    _add_column(db, "agent_sessions", "reason_args", "TEXT")
     run_columns = {row[1] for row in db.execute("PRAGMA table_info(execution_run_sessions)")}
     if run_columns:
         _add_column(db, "execution_run_sessions", "clear_seq", "INTEGER NOT NULL DEFAULT 0")
@@ -565,18 +582,11 @@ class AgentSessionStore:
                 # overwrite work the old session had already finished. Refused
                 # instead: rule 3 says a new session is an explicit act, and this
                 # is exactly a case where the person has to make it.
+                args = {"adapter": adapter, "session_id": orphan.session_id}
                 return SessionDecision(
                     mode=MODE_RESUME, session_id=orphan.session_id, clear_seq=seq,
-                    refusal=(
-                        f"这个任务在 {adapter} 上有一段旧会话（{orphan.session_id}），"
-                        "它记录于 role 进入主键之前，**无法判定它属于你的工作还是某次评审**——"
-                        "所以既不能当作你的会话续接（可能给你评审的上下文），"
-                        "也不能当作不存在（那会静默新开一段，agent 可能重做或覆盖它已完成的工作）。"
-                        "请你决定：**确认丢弃它，就显式新开一个会话**（对话窗口上的按钮）。"
-                        "把它认领成某一方的会话目前还做不到——那需要一个把 role 定下来的动作，"
-                        "Agora 还没有提供（CR-47）。在那之前，继续这段旧上下文的唯一办法是手工改库，"
-                        "所以这里说的是实话，而不是一个你按不到的选项。"
-                    ),
+                    refusal=say("session.orphan_refusal", **args),
+                    refusal_code="session.orphan_refusal", refusal_args=args,
                 )
         if current.state == SESSION_PENDING:
             # An id we chose and the provider never acknowledged. Nothing was
@@ -608,32 +618,29 @@ class AgentSessionStore:
             return SessionDecision(
                 mode=MODE_RESUME if current.session_id else MODE_START,
                 session_id=current.session_id, clear_seq=seq,
+                # ``current.reason`` is already rendered in the reader's language
+                # when the row has a code (``_session_of``), so the stored reason and
+                # the sentence after it are in one language (CR-71 P2). A legacy row
+                # with no code contributes its text as written.
                 refusal=(
-                    (current.reason or "上一次续接这个会话失败，且供应商没有报出会话 id。")
-                    + " 这个判断是上一次真实观测的结果，不会自己变回来。"
-                    "解决了那次失败的原因（比如重新登录）之后，点「再试一次续接」，"
-                    "下一条消息就会按原来的会话 id 再试；确实要另起一段，请显式新开会话。"
+                    (current.reason or say("session.lost_default"))
+                    + say("session.lost_refusal_suffix")
                 ),
             )
         if current.workspace is not None and not _same_workspace(current.workspace, target):
+            args = {"recorded": current.workspace, "target": target}
             return SessionDecision(
                 mode=MODE_RESUME, session_id=current.session_id, clear_seq=seq,
-                refusal=(
-                    "这个任务的会话记录在另一个工作目录里"
-                    f"（会话在 {current.workspace}，本次要用 {target}）。"
-                    "三家 CLI 的会话都按工作目录分域，换了目录就读不到原会话。"
-                    "要继续这段上下文，请用原来的工作目录；确实要另起一段，请显式新开会话。"
-                ),
+                refusal=say("session.wrong_workspace", **args),
+                refusal_code="session.wrong_workspace", refusal_args=args,
                 condition_based=True,
             )
         if not can_resume:
+            args = {"adapter": adapter, "session_id": current.session_id}
             return SessionDecision(
                 mode=MODE_RESUME, session_id=current.session_id, clear_seq=seq,
-                refusal=(
-                    f"适配器 {adapter} 没有配置续接命令，无法继续已记录的会话 "
-                    f"{current.session_id}。这不是「没有会话」——上下文还在，"
-                    "只是这个配置读不到它。"
-                ),
+                refusal=say("session.no_resume_command", **args),
+                refusal_code="session.no_resume_command", refusal_args=args,
                 condition_based=True,
             )
         return SessionDecision(
@@ -736,6 +743,10 @@ class AgentSessionStore:
                                  THEN agent_sessions.state ELSE excluded.state END,
                     reason = CASE WHEN agent_sessions.state IN ('unreadable', 'forked')
                                   THEN agent_sessions.reason ELSE NULL END,
+                    reason_code = CASE WHEN agent_sessions.state IN ('unreadable', 'forked')
+                                       THEN agent_sessions.reason_code ELSE NULL END,
+                    reason_args = CASE WHEN agent_sessions.state IN ('unreadable', 'forked')
+                                       THEN agent_sessions.reason_args ELSE NULL END,
                     -- A different id is a different conversation: its count
                     -- starts at one. Adding to the old row's total made a first
                     -- successful turn read as the session's second, and every
@@ -822,6 +833,7 @@ class AgentSessionStore:
                 """
                 UPDATE agent_sessions
                    SET session_id = ?, workspace = ?, state = ?, reason = NULL,
+                       reason_code = NULL, reason_args = NULL,
                        turns = turns + ?, last_seen_at = ?, last_run_id = ?
                  WHERE task_id = ? AND adapter = ? AND role = ?
                 """,
@@ -833,6 +845,7 @@ class AgentSessionStore:
 
     def mark_unreadable(
         self, *, task_id: str, adapter: str, reason: str, role: str = ROLE_WORKER,
+        reason_code: str | None = None, reason_args: dict | None = None,
     ) -> None:
         """Flag a session a live condition stops this configuration from continuing.
 
@@ -846,7 +859,7 @@ class AgentSessionStore:
         problem into permanent data loss — and make the next turn look like a
         clean first turn.
         """
-        self._mark(task_id, adapter, role, SESSION_UNREADABLE, reason)
+        self._mark(task_id, adapter, role, SESSION_UNREADABLE, reason, reason_code, reason_args)
 
     def mark_forked(
         self,
@@ -867,6 +880,7 @@ class AgentSessionStore:
         fork happened so the window stops calling this the same conversation.
         """
         now = _now()
+        fork_args = {"previous": previous, "observed": observed}
         with self._transaction() as db:
             existing = db.execute(
                 "SELECT session_id, turns, cleared_at, clear_seq FROM agent_sessions"
@@ -889,7 +903,7 @@ class AgentSessionStore:
                 """
                 UPDATE agent_sessions
                    SET session_id = ?, previous_session_id = ?, state = ?,
-                       reason = ?, last_seen_at = ?,
+                       reason = ?, reason_code = ?, reason_args = ?, last_seen_at = ?,
                        -- A fork **is** a different conversation, so its count
                        -- starts at one. Carrying the old session's total over
                        -- showed a two-turn session as its seventh turn.
@@ -898,11 +912,7 @@ class AgentSessionStore:
                 """,
                 (
                     observed, previous, SESSION_FORKED,
-                    (
-                        "续接时供应商报出的会话 id 与请求的不是同一个"
-                        f"（请求 {previous}，实际 {observed}）。"
-                        "这一轮的工作在新会话里，之前那段上下文没有被带过来。"
-                    ),
+                    say("session.forked", **fork_args), "session.forked", _args_json(fork_args),
                     now, task_id, adapter, role,
                 ),
             )
@@ -927,6 +937,8 @@ class AgentSessionStore:
         workspace: Path | str,
         reason: str,
         role: str = ROLE_WORKER,
+        reason_code: str | None = None,
+        reason_args: dict | None = None,
     ) -> None:
         """Record that a turn ran and its session could not be named.
 
@@ -953,9 +965,10 @@ class AgentSessionStore:
             db.execute(
                 """
                 INSERT INTO agent_sessions
-                    (task_id, adapter, role, session_id, workspace, state, reason, turns,
+                    (task_id, adapter, role, session_id, workspace, state, reason,
+                     reason_code, reason_args, turns,
                      first_seen_at, last_seen_at, last_run_id)
-                VALUES (?, ?, ?, NULL, ?, ?, ?, 0, ?, ?, NULL)
+                VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, 0, ?, ?, NULL)
                 ON CONFLICT(task_id, adapter, role) DO UPDATE SET
                     state = CASE WHEN agent_sessions.session_id IS NULL
                                    OR agent_sessions.state = 'pending'
@@ -963,6 +976,12 @@ class AgentSessionStore:
                     reason = CASE WHEN agent_sessions.session_id IS NULL
                                     OR agent_sessions.state = 'pending'
                                   THEN excluded.reason ELSE agent_sessions.reason END,
+                    reason_code = CASE WHEN agent_sessions.session_id IS NULL
+                                         OR agent_sessions.state = 'pending'
+                                       THEN excluded.reason_code ELSE agent_sessions.reason_code END,
+                    reason_args = CASE WHEN agent_sessions.session_id IS NULL
+                                         OR agent_sessions.state = 'pending'
+                                       THEN excluded.reason_args ELSE agent_sessions.reason_args END,
                     -- The unconfirmed id goes with the state it belonged to.
                     -- Leaving it behind under `unidentified` would name a session
                     -- as this task's while saying none could be named.
@@ -972,12 +991,13 @@ class AgentSessionStore:
                 """,
                 (
                     task_id, adapter, role, str(Path(workspace)),
-                    SESSION_UNIDENTIFIED, reason, now, now,
+                    SESSION_UNIDENTIFIED, reason, reason_code, _args_json(reason_args), now, now,
                 ),
             )
 
     def mark_lost(
         self, *, task_id: str, adapter: str, reason: str, role: str = ROLE_WORKER,
+        reason_code: str | None = None, reason_args: dict | None = None,
     ) -> None:
         """Record that a resumed turn ran and the provider never named a session.
 
@@ -986,10 +1006,11 @@ class AgentSessionStore:
         again. Only :meth:`forget` clears it, which is the person deciding to
         start over rather than the dispatcher deciding for them.
         """
-        self._mark(task_id, adapter, role, SESSION_LOST, reason)
+        self._mark(task_id, adapter, role, SESSION_LOST, reason, reason_code, reason_args)
 
     def _mark(
-        self, task_id: str, adapter: str, role: str, state: str, reason: str
+        self, task_id: str, adapter: str, role: str, state: str, reason: str,
+        reason_code: str | None = None, reason_args: dict | None = None,
     ) -> None:
         """Record a state for this conversation, **creating the row if needed**.
 
@@ -1007,14 +1028,17 @@ class AgentSessionStore:
                 """
                 INSERT INTO agent_sessions
                     (task_id, adapter, role, session_id, workspace, state, reason,
+                     reason_code, reason_args,
                      turns, first_seen_at, last_seen_at, last_run_id)
-                VALUES (?, ?, ?, NULL, '', ?, ?, 0, ?, ?, NULL)
+                VALUES (?, ?, ?, NULL, '', ?, ?, ?, ?, 0, ?, ?, NULL)
                 ON CONFLICT(task_id, adapter, role) DO UPDATE SET
                     state = excluded.state,
                     reason = excluded.reason,
+                    reason_code = excluded.reason_code,
+                    reason_args = excluded.reason_args,
                     last_seen_at = excluded.last_seen_at
                 """,
-                (task_id, adapter, role, state, reason, now, now),
+                (task_id, adapter, role, state, reason, reason_code, _args_json(reason_args), now, now),
             )
 
     def retry(self, *, task_id: str, adapter: str, role: str = ROLE_WORKER) -> bool:
@@ -1039,14 +1063,14 @@ class AgentSessionStore:
             cursor = db.execute(
                 """
                 UPDATE agent_sessions
-                   SET state = ?, reason = ?, last_seen_at = ?
+                   SET state = ?, reason = ?, reason_code = ?, reason_args = NULL,
+                       last_seen_at = ?
                  WHERE task_id = ? AND adapter = ? AND role = ?
                    AND state = ? AND session_id IS NOT NULL
                 """,
                 (
                     SESSION_UNREADABLE,
-                    "你要求再试一次续接：下一条消息会按原来的会话 id 再试。"
-                    "如果它又没能接上，这里会重新变回「续接失败」。",
+                    say("session.retry_requested"), "session.retry_requested",
                     _now(), task_id, adapter, role, SESSION_LOST,
                 ),
             )
@@ -1055,6 +1079,7 @@ class AgentSessionStore:
     def mark_unsupported(
         self, *, task_id: str, adapter: str, workspace: Path | str, reason: str,
         role: str = ROLE_WORKER,
+        reason_code: str | None = None, reason_args: dict | None = None,
     ) -> None:
         """Record that this task's runs are not carrying a session at all.
 
@@ -1073,9 +1098,10 @@ class AgentSessionStore:
             db.execute(
                 """
                 INSERT INTO agent_sessions
-                    (task_id, adapter, role, session_id, workspace, state, reason, turns,
+                    (task_id, adapter, role, session_id, workspace, state, reason,
+                     reason_code, reason_args, turns,
                      first_seen_at, last_seen_at, last_run_id)
-                VALUES (?, ?, ?, NULL, ?, ?, ?, 0, ?, ?, NULL)
+                VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, 0, ?, ?, NULL)
                 ON CONFLICT(task_id, adapter, role) DO UPDATE SET
                     -- The state is about **this configuration's** ability to
                     -- continue, so it is written whether or not an id is on
@@ -1088,9 +1114,14 @@ class AgentSessionStore:
                     -- configuration, which is why it is kept.
                     state = excluded.state,
                     reason = excluded.reason,
+                    reason_code = excluded.reason_code,
+                    reason_args = excluded.reason_args,
                     last_seen_at = excluded.last_seen_at
                 """,
-                (task_id, adapter, role, str(Path(workspace)), SESSION_UNSUPPORTED, reason, now, now),
+                (
+                    task_id, adapter, role, str(Path(workspace)), SESSION_UNSUPPORTED,
+                    reason, reason_code, _args_json(reason_args), now, now,
+                ),
             )
 
     def forget(
@@ -1135,7 +1166,8 @@ class AgentSessionStore:
                 """
                 UPDATE agent_sessions
                    SET session_id = NULL, previous_session_id = session_id,
-                       state = ?, reason = NULL, turns = 0, last_run_id = NULL,
+                       state = ?, reason = NULL, reason_code = NULL, reason_args = NULL,
+                       turns = 0, last_run_id = NULL,
                        last_seen_at = ?, cleared_at = ?, clear_seq = clear_seq + 1
                  WHERE task_id = ? AND adapter = ? AND role = ?
                    AND session_id IS NOT NULL
@@ -1166,6 +1198,8 @@ class AgentSessionStore:
                         -- was pressed.
                         state = excluded.state,
                         reason = NULL,
+                        reason_code = NULL,
+                        reason_args = NULL,
                         turns = 0,
                         last_run_id = NULL
                     """,
@@ -1262,13 +1296,38 @@ def _session_of(row: sqlite3.Row) -> AgentSession:
         state=row["state"],
         session_id=row["session_id"],
         workspace=row["workspace"],
-        reason=row["reason"],
+        reason=_reason_of(row),
         previous_session_id=_column(row, "previous_session_id"),
         first_seen_at=row["first_seen_at"],
         last_seen_at=row["last_seen_at"],
         last_run_id=row["last_run_id"],
         turns=int(row["turns"] or 0),
     )
+
+
+def _reason_of(row: sqlite3.Row) -> str | None:
+    """The row's reason in the reader's language now (CR-71 P2).
+
+    A row with a ``reason_code`` is rendered from the catalog at read time, so a
+    reason recorded while the setting was 中文 reads in 日本語 after a switch — and
+    so does any refusal composed from it (``decide``'s ``lost`` path). A row without
+    one — written before the column existed, or by a writer with no single key —
+    shows its stored text as written; so does a code that no longer renders.
+    """
+    stored = row["reason"]
+    code = _column(row, "reason_code")
+    if not code:
+        return stored
+    raw = _column(row, "reason_args")
+    try:
+        args = json.loads(raw) if raw else {}
+    except (TypeError, ValueError):
+        return stored
+    return render_code(code, args if isinstance(args, dict) else None, stored)
+
+
+def _args_json(args: dict | None) -> str | None:
+    return None if args is None else json.dumps(args, ensure_ascii=False, default=str)
 
 
 def _column(row: sqlite3.Row, name: str):

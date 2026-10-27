@@ -6,6 +6,8 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
+from agora.messages import MESSAGES
+
 
 class RunState(str, Enum):
     QUEUED = "queued"
@@ -78,7 +80,15 @@ REMOTE_TARGET_KEY = "agora_remote"
 #: title is redacted on insert and a comparison against a redacted copy is a
 #: second thing to keep in step; the constant is shared so both sides still name
 #: one item rather than two.
-REVIEW_OWED_BLOCKER_TITLE = "跨评审没有留下结论,需要你处理"
+#:
+#: CR-71: the title is now written in the reader's display language
+#: (``messages.say("review.owed_blocker_title")``). This constant is that message's
+#: ``zh`` text, kept for the callers and tests that name it; the idempotency lookup
+#: matches every language's variant (``AttentionStore.create_once``'s
+#: ``equivalent_titles``), so a switch between two attempts does not pile up a second
+#: blocker.
+REVIEW_OWED_BLOCKER_TITLE_KEY = "review.owed_blocker_title"
+REVIEW_OWED_BLOCKER_TITLE = MESSAGES[REVIEW_OWED_BLOCKER_TITLE_KEY]["zh"]
 
 #: The task version this run was validated against, recorded by
 #: ``ExecutionStore.create`` in the transaction that inserts the run — after the

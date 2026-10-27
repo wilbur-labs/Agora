@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import re
 
+from agora.messages import say
+
 #: Who stands in for whom when the original reviewer is out of quota. One hop only:
 #: the substitute's own failure ends in the ordinary blocker.
 REVIEW_SUBSTITUTES: dict[str, str] = {"codex": "kiro"}
@@ -62,9 +64,11 @@ def readable_failure(adapter: str, reason: str | None) -> str:
         reason = reason[len("agent reported: "):]
     if is_usage_limit(reason):
         when = retry_at(reason)
-        return f"{adapter} 额度用完" + (f"（它说 {when} 之后可以再用）" if when else "")
+        return say("review.usage_limit", adapter=adapter) + (
+            say("review.usage_limit_retry_at", when=when) if when else ""
+        )
     if reason and "not a provisioned worktree" in reason:
         # The CR-61 shape: the run never started because its worktree did not exist.
         # Said in words, with the original kept as evidence rather than replaced.
-        return f"{adapter} 的工作目录没有建好，运行没能开始（原始错误：{reason}）"
-    return reason or "（没有错误详情）"
+        return say("review.worktree_missing", adapter=adapter, reason=reason)
+    return reason or say("review.no_error_detail")

@@ -117,7 +117,8 @@ class AttentionStore:
             )
 
     def create_once(
-        self, request: CreateAttentionRequest, *, internal: bool = False
+        self, request: CreateAttentionRequest, *, internal: bool = False,
+        equivalent_titles: tuple[str, ...] = (),
     ) -> tuple[AttentionItem, bool]:
         """Create this item unless an equal OPEN one already exists.
 
@@ -146,18 +147,26 @@ class AttentionStore:
         same closed default: only Agora's own paths may claim a requester in
         ``RESERVED_REQUESTERS``. ``ExecutionDispatcher._block_review_owed`` is the
         one production caller and passes it.
+
+        ``equivalent_titles`` are other titles that name **the same item** — the
+        same fixed title written in another display language (CR-71). Without it a
+        reader switching language between two attempts would get a second blocker
+        for one missing review, because the key compared the title's text.
         """
         self._reject_reserved_requester(request.requester, internal=internal)
         now = utc_now()
+        titles = list(dict.fromkeys(
+            redact_text(title.strip()) for title in (request.title, *equivalent_titles)
+        ))
         with self._transaction() as db:
             row = db.execute(
-                """SELECT item_id FROM attention_items
+                f"""SELECT item_id FROM attention_items
                    WHERE task_id = ? AND run_id IS ? AND kind = ? AND state = ?
-                     AND requester IS ? AND title = ?
+                     AND requester IS ? AND title IN ({", ".join("?" for _ in titles)})
                      AND (expires_at IS NULL OR expires_at > ?)
                    ORDER BY created_at, rowid LIMIT 1""",
                 (request.task_id, request.run_id, request.kind.value, AttentionState.OPEN.value,
-                 request.requester, redact_text(request.title.strip()), now),
+                 request.requester, *titles, now),
             ).fetchone()
             # Read the item back outside this transaction: `require` opens its own
             # connection, and doing that while this one holds BEGIN IMMEDIATE is a
