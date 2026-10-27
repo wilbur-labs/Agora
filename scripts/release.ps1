@@ -6,15 +6,15 @@
     Run from a development checkout, on main, in sync with origin/main (CR-31).
 
       1. checks: on main, clean tree, HEAD == origin/main, the tag does not exist yet
-      2. writes the version into its four records (backend/agora/__init__.py,
-         backend/pyproject.toml, frontend/package.json, and backend/uv.lock via
-         'uv lock'); tests/test_version.py checks they agree
+      2. writes the version into its five records (backend/agora/__init__.py,
+         backend/pyproject.toml, frontend/package.json, desktop/package.json, and
+         backend/uv.lock via 'uv lock'); tests/test_version.py checks they agree
       3. runs every gate on exactly that content: backend pytest -m "not integration",
          frontend test:control-plane, lint, tsc --noEmit, build
       4. commits "release: vX.Y.Z", creates an annotated tag, pushes main and the
          tag to origin. Never to any other remote.
 
-    Any failure before step 4 restores the four files and stops; nothing is pushed.
+    Any failure before step 4 restores the version files and stops; nothing is pushed.
     Moving the stable install onto the new tag is a separate step, run there:
         .\agora.ps1 upgrade -To vX.Y.Z
 
@@ -33,7 +33,7 @@ $Root = Split-Path $PSScriptRoot -Parent
 $Backend = Join-Path $Root 'backend'
 $Frontend = Join-Path $Root 'frontend'
 $Tag = "v$Version"
-$Files = @('backend/agora/__init__.py', 'backend/pyproject.toml', 'backend/uv.lock', 'frontend/package.json')
+$Files = @('backend/agora/__init__.py', 'backend/pyproject.toml', 'backend/uv.lock', 'frontend/package.json', 'desktop/package.json')
 
 function Write-Step([string]$Message) { Write-Host "[release] $Message" }
 
@@ -82,6 +82,8 @@ try {
     Set-VersionIn 'backend/agora/__init__.py' '^__version__ = "[^"]+"' "__version__ = `"$Version`""
     Set-VersionIn 'backend/pyproject.toml' '^version = "[^"]+"' "version = `"$Version`""
     Set-VersionIn 'frontend/package.json' '^  "version": "[^"]+"' "  `"version`": `"$Version`""
+    # The desktop shell (CR-72) ships with the release it opens; its installer is named by this.
+    Set-VersionIn 'desktop/package.json' '^  "version": "[^"]+"' "  `"version`": `"$Version`""
     Assert-Ok (Invoke-Tool $uv.Source @('lock') $Backend) 'uv lock'
 
     # 3. Gates on exactly this content ----------------------------------------
