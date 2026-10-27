@@ -13,6 +13,10 @@
                               the backend serves the files from disk, no restart needed)
                   -NoBrowser  do not open the browser
                   -InTab      open in a normal browser tab instead of an Edge app window
+                  -LaunchUrlFile <path>
+                              open nothing; write {"url","code_obtained"} as JSON to <path>
+                              for the desktop app (CR-72). Written only after this script
+                              has verified the listener is this install's own Agora.
       down      stop the Agora backend on the port: first a normal close, then
                 force after a grace period. Anything on the port that is not
                 running agora.api.app is left alone.
@@ -54,7 +58,8 @@ param(
     [int]$StopGraceSec = 10,
     [string]$To,
     [switch]$Yes,
-    [switch]$Dev
+    [switch]$Dev,
+    [string]$LaunchUrlFile
 )
 
 $ErrorActionPreference = 'Stop'
@@ -311,8 +316,9 @@ function Get-TerminalToken {
 }
 
 function Open-Browser {
-    if ($NoBrowser) { return }
+    if ($NoBrowser -and -not $LaunchUrlFile) { return }
     $target = $Url
+    $codeObtained = $false
     $token = Get-TerminalToken
     if ($token) {
         # The token goes in a header, never a URL (URLs reach access logs and history):
@@ -320,8 +326,19 @@ function Open-Browser {
         try {
             $r = Invoke-WebRequest -UseBasicParsing -Method Post -Uri "$Url/api/terminal-launch-code" -Headers @{ 'X-Agora-Terminal-Token' = $token } -TimeoutSec 5
             $code = ($r.Content | ConvertFrom-Json).code
-            if ($code) { $target = "$Url/?terminal_code=$([uri]::EscapeDataString($code))" }
-        } catch { Write-Fail "No terminal launch code ($($_.Exception.Message)); terminals stay locked in this browser." }
+            if ($code) {
+                $target = "$Url/?terminal_code=$([uri]::EscapeDataString($code))"
+                $codeObtained = $true
+            }
+        } catch { Write-Fail "No new terminal launch code ($($_.Exception.Message)); whether terminals are unlocked is up to this browser's earlier session." }
+    }
+    # The desktop app (CR-72) asks for the URL instead of a browser. Every caller of this
+    # function has already established that the listener is this install's own Agora
+    # (Get-RunningAgora / the start path), which is what makes handing it the code safe.
+    if ($LaunchUrlFile) {
+        $payload = @{ url = $target; code_obtained = $codeObtained } | ConvertTo-Json -Compress
+        [IO.File]::WriteAllText($LaunchUrlFile, $payload, (New-Object Text.UTF8Encoding $false))
+        return
     }
     # An app window of its own (CR-64): its own taskbar icon, no address bar or tab strip,
     # so Agora is not one tab among many. Edge ships with Windows; without it, or with
@@ -839,7 +856,7 @@ function Do-Upgrade {
     } catch {
         Write-Fail "Upgrade to $To failed during '$($journal.phase)': $($_.Exception.Message)"
         try { Undo-Upgrade $journal }
-        catch { throw "Upgrade to $To failed, and rolling back failed too: $($_.Exception.Message). $JournalFile is kept; fix the cause and run '.gora.ps1 rollback -Yes'." }
+        catch { throw "Upgrade to $To failed, and rolling back failed too: $($_.Exception.Message). $JournalFile is kept; fix the cause and run '.\agora.ps1 rollback -Yes'." }
         throw "Upgrade to $To failed and was rolled back to $($journal.from_version)."
     }
     $journal.phase = 'done'; Save-Journal $journal

@@ -1,0 +1,31 @@
+{
+  "name": "agora-desktop",
+  "version": "1.5.1",
+  "private": true,
+  "description": "Agora desktop shell",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test tests/lib.test.js",
+    "build": "electron-builder --publish never"
+  },
+  "devDependencies": {
+    "electron": "35.1.5",
+    "electron-builder": "26.0.12"
+  },
+  "build": {
+    "appId": "dev.agora.desktop",
+    "productName": "Agora",
+    "directories": { "output": "dist" },
+    "files": ["main.js", "lib.js", "icon.ico", "package.json"],
+    "win": { "target": ["nsis"], "icon": "icon.ico", "signAndEditExecutable": true },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Agora"
+    }
+  }
+}
