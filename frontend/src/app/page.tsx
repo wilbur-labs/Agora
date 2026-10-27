@@ -34,6 +34,7 @@ import { DeliveryShell } from "@/components/delivery-shell";
 import { TodayFocusCard, TodayProjectRow } from "@/components/today-focus-card";
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/lib/i18n";
+import { intlLocaleOf } from "@/lib/i18n/locale";
 import { cn } from "@/lib/utils";
 import { MAX_PAGE, readPage } from "@/lib/paged";
 import {
@@ -426,7 +427,7 @@ export default function TodayPage() {
   };
   const dateLine = loadedAt === null
     ? null
-    : new Date(loadedAt).toLocaleDateString(locale === "zh" ? "zh-CN" : "en-US", {
+    : new Date(loadedAt).toLocaleDateString(intlLocaleOf(locale), {
       year: "numeric", month: "long", day: "numeric", weekday: "short",
     });
 

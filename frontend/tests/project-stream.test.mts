@@ -53,6 +53,10 @@ test("a typed line is a question by default; a note, an idea or work by prefix; 
   assert.deepEqual(composeIntentOf("点子: 加一个语气判断"), { kind: "idea", text: "加一个语气判断" });
   assert.deepEqual(composeIntentOf("做：把骨架搭起来"), { kind: "dispatch", text: "把骨架搭起来" });
   assert.deepEqual(composeIntentOf("do: scaffold it"), { kind: "dispatch", text: "scaffold it" });
+  // CR-71: the Japanese placeholder tells the reader to type these, so they must work.
+  assert.deepEqual(composeIntentOf("メモ：あとで見る"), { kind: "note", text: "あとで見る" });
+  assert.deepEqual(composeIntentOf("アイデア: 口調の判定"), { kind: "idea", text: "口調の判定" });
+  assert.deepEqual(composeIntentOf("作業：骨組みを作る"), { kind: "dispatch", text: "骨組みを作る" });
   // CR-75: a plain line is a question, not work — "还给mockup页面的链接" must never
   // become step 2's implementation again.
   // CR-99: a plain line goes to the agent as typed — it decides whether to answer or act.

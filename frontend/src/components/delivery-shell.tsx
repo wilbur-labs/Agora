@@ -11,6 +11,7 @@ import {
   Sun,
 } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
+import { nextLocale } from "@/lib/i18n/locale";
 import { fetchHealth, listOpenAttention, type RuntimeCapabilities } from "@/lib/control-plane";
 import { waitingTotalOf } from "@/lib/project-rail";
 import { instanceBadgeOf, type AgoraHealth } from "@/lib/instance";
@@ -211,7 +212,7 @@ export function TopBar({ active }: { active: string }) {
             className="rounded-lg p-2 text-muted-foreground hover:bg-accent hover:text-foreground"
             onClick={toggleLocale}
             aria-label={t("common.action.toggleLanguage")}
-            title={locale === "zh" ? t("common.language.en") : t("common.language.zh")}
+            title={t(`common.language.${nextLocale(locale)}`)}
           >
             <Languages className="size-4" />
           </button>

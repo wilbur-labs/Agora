@@ -85,9 +85,9 @@ export type ComposeIntent =
   | { kind: "idea"; text: string }
   | { kind: "dispatch"; text: string };
 
-const NOTE_PREFIXES = ["备注：", "备注:", "note:", "Note:"];
-const IDEA_PREFIXES = ["点子：", "点子:", "idea:", "Idea:"];
-const WORK_PREFIXES = ["做：", "做:", "do:", "Do:"];
+const NOTE_PREFIXES = ["备注：", "备注:", "メモ：", "メモ:", "note:", "Note:"];
+const IDEA_PREFIXES = ["点子：", "点子:", "アイデア：", "アイデア:", "idea:", "Idea:"];
+const WORK_PREFIXES = ["做：", "做:", "作業：", "作業:", "do:", "Do:"];
 
 function stripPrefix(text: string, prefixes: readonly string[]): string | null {
   for (const prefix of prefixes) {

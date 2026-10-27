@@ -110,4 +110,58 @@ export const attention = {
       cancelReason: "从关注事项中心取消",
     },
   },
+  ja: {
+    header: {
+      eyebrow: "人による介入",
+      title: "要対応センター（Attention Center）",
+      openCount: "未対応 {count} 件",
+      refresh: "更新",
+    },
+    notifications: {
+      title: "エージェントが待機しているときに通知する",
+      hint: "クリックした後にだけ権限を求めます。",
+      enable: "通知を有効にする",
+    },
+    filters: {
+      state: "状態",
+      kind: "種類",
+      project: "プロジェクト",
+    },
+    list: {
+      loading: "要対応の受信箱を読み込み中…",
+      empty: "条件に合う要対応事項はありません。",
+      noBody: "詳細なし",
+      requestedBy: "{requester} からの依頼",
+    },
+    detail: {
+      emptyState: "事項を選ぶと内容を確認して対応できます。",
+      project: "プロジェクト",
+      task: "タスク",
+      run: "実行",
+      requester: "依頼者",
+      resolution: "対応結果",
+    },
+    bridge: {
+      heading: "{vendor} ブリッジ · {mode}",
+      captureOnly: "Agora はこの待機を捕捉しましたが、あなたの回答を自動で送り返すことはできません。ベンダーの画面で対応するか、実行をキャンセルしてください。",
+      bidirectional: "回答は検証済みの構造化チャネルで届けられます。",
+    },
+    form: {
+      approve: "承認",
+      reject: "却下",
+      suggestedAnswer: "回答の候補",
+      response: "回答",
+      responsePlaceholder: "待機中のエージェントに背景情報を伝える",
+      submit: "回答を送信",
+      cancel: "事項をキャンセル",
+    },
+    messages: {
+      recordedCaptureOnly: "回答を Agora に記録しました。この捕捉専用（capture-only）ブリッジではベンダーのプロセスに届けられません。",
+      recordedBidirectional: "回答を記録しました。双方向ブリッジで待機中のエージェントに届けられます。",
+      conflictRefreshed: "この事項は別のセッションで変更されました。正となる状態に更新しました。",
+      cancelled: "要対応事項をキャンセルしました。",
+      conflictRefreshedShort: "この事項は別のセッションで変更されました。更新しました。",
+      cancelReason: "要対応センターからキャンセル",
+    },
+  },
 } as const;

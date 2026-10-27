@@ -17,6 +17,7 @@ import {
   type ReactNode,
 } from "react";
 import { DEFAULT_LOCALE, messages, type Locale } from "./messages";
+import { htmlLangOf, localeOf, nextLocale } from "./locale";
 
 const STORAGE_KEY = "agora.locale";
 
@@ -72,16 +73,9 @@ export function LocaleProvider({ children }: { children: ReactNode }) {
     // real locale is applied here. `data-i18n-ready` then reveals the tree (see
     // the guard style in layout), so the pre-hydration English HTML is never
     // shown flipping to Chinese — the swap happens while content is hidden.
-    const bootstrapped = window.__AGORA_LOCALE__;
-    const stored = window.localStorage.getItem(STORAGE_KEY);
-    // No stored/bootstrapped preference → default to Chinese (this deployment's
-    // primary audience). A stored "en" is still honored so the toggle sticks.
-    const next: Locale =
-      bootstrapped === "en" || bootstrapped === "zh"
-        ? bootstrapped
-        : stored === "en" || stored === "zh"
-          ? stored
-          : "zh";
+    // No stored/bootstrapped preference → Chinese (this deployment's primary
+    // audience); a stored choice is honored so the button sticks.
+    const next: Locale = localeOf(window.__AGORA_LOCALE__ ?? window.localStorage.getItem(STORAGE_KEY));
     if (next !== DEFAULT_LOCALE) {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- hydration-only sync from an external store; see comment above.
       setLocaleState(next);
@@ -90,7 +84,7 @@ export function LocaleProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
-    document.documentElement.lang = locale === "zh" ? "zh-Hans" : "en";
+    document.documentElement.lang = htmlLangOf(locale);
   }, [locale]);
 
   const setLocale = useCallback((next: Locale) => {
@@ -100,7 +94,7 @@ export function LocaleProvider({ children }: { children: ReactNode }) {
 
   const toggleLocale = useCallback(() => {
     setLocaleState((current) => {
-      const next: Locale = current === "zh" ? "en" : "zh";
+      const next = nextLocale(current);
       window.localStorage.setItem(STORAGE_KEY, next);
       return next;
     });

@@ -18,9 +18,10 @@ import { today } from "./dictionaries/today";
 import { projectChat } from "./dictionaries/project-chat";
 import { environments, skills } from "./dictionaries/environments";
 
-export type Locale = "en" | "zh";
+import type { Locale } from "./locale";
 
-export const LOCALES: readonly Locale[] = ["en", "zh"] as const;
+export type { Locale } from "./locale";
+export { LOCALES } from "./locale";
 export const DEFAULT_LOCALE: Locale = "en";
 
 export const messages = {
@@ -59,5 +60,23 @@ export const messages = {
     projectChat: projectChat.zh,
     environments: environments.zh,
     skills: skills.zh,
+  },
+  ja: {
+    common: common.ja,
+    home: home.ja,
+    controlPlane: controlPlane.ja,
+    enums: enums.ja,
+    portfolio: portfolio.ja,
+    requirements: requirements.ja,
+    runs: runs.ja,
+    workflows: workflows.ja,
+    attention: attention.ja,
+    settings: settings.ja,
+    workspace: workspace.ja,
+    conversation: conversation.ja,
+    today: today.ja,
+    projectChat: projectChat.ja,
+    environments: environments.ja,
+    skills: skills.ja,
   },
 } as const;
