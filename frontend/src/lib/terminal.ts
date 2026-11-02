@@ -111,7 +111,7 @@ export async function redeemLaunchCode(code: string, store: Store | null = stora
   return true;
 }
 
-async function call<T>(path: string, init?: RequestInit): Promise<T> {
+export async function call<T>(path: string, init?: RequestInit): Promise<T> {
   const token = readTerminalToken();
   const response = await fetch(`${getApiBase()}${path}`, {
     ...init,

@@ -8390,3 +8390,82 @@ Commit the slice files on `feature/w8-session-ui`, staged explicitly, and push t
 `private`. Then the owner runs the kickoff on NichiMate from the projects screen; what
 they get stuck on decides the next cut (Reach before polish). Still open from W9: D-5
 step B (known defects reader) and the browser check of all screens.
+
+## CR-75 slice 1 — the work page and restart recovery
+
+Branch `feature/w8-session-ui`, on top of the design note `619ede1`
+(`docs/CR75-slice1-work-page.md`). Reach slice of CR-75 (Agora as the one place claude,
+codex and kiro work happens): a **Work** tab whose left column lists the active projects of
+every registered workspace source and whose right side is that project's terminal; projects
+keep running in the background; after a restart, claude projects left open are reopened on
+their last recorded conversation, with a banner that says only what the evidence supports.
+
+Backend (`agora/work/`, `api/work_router.py`):
+- `projects.py` — its own scan of each source's `tasks/` (one unreadable entry is that
+  entry's problem; `stat` itself is the probe, since from Python 3.14 `is_dir`/`is_file`
+  answer False for a read that failed).
+- `store.py` — `work_sessions`: the person's intent (`want_open`, written before any process
+  operation), the launch, the shell's pid + creation time, and the recovery point (`ck_*`)
+  kept apart from the launch columns.
+- `report_hook.py` + `hooks.py` — a SessionStart/SessionEnd hook injected per process with
+  `claude --settings <file>` (merges with the project's own hooks; nothing global touched),
+  appending to a per-launch journal in an owner-only directory (icacls checked afterwards,
+  domain-qualified; links and junctions refused; contents re-verified before each launch).
+- `reports.py` — the journal reader: fail-closed per line, the launch's *first*
+  SessionStart decides what it was (`resumed` / `resumed_other` / `not_resumed` /
+  `started`), `/clear` and anything unreadable make the recovery point stale.
+- `service.py` — open/close/restore. Restore runs once per server life, skips what may still
+  be running (pid + creation time; unknown counts as running), resumes only a transcript
+  inside claude's projects directory. A close is the service's own task once the intent is
+  written; an open arriving during a close waits for it; a close that could not end the
+  terminal says so (`closed: false`) and a second agent is never started beside it.
+- `DELETE /terminals/{id}` on a work terminal is the person's close too.
+- `command_argv(agent_args=…)` appends each argument as a shell literal; terminals no longer
+  inherit the launching agent's session variables (`AGENT_SESSION_VARS`).
+
+Frontend: `/work` page (fifth top-bar tab), `lib/work-state.ts` (banner wording from the
+evidence), `lib/work.ts`, three-language `work` dictionary; the terminal uses Tabby's Grape
+scheme and JetBrains Mono (`lib/terminal-theme.ts`).
+
+Tests (collected counts):
+- Backend `tests/test_work.py` + `tests/test_terminal.py`: **125 collected, 123 passed,
+  2 skipped** — the CR-78 test (skip reason names the row; verified to fail without the
+  skip) and one POSIX-only command-line test on Windows. `compileall` clean, schema check
+  clean, `git diff --check` clean. The full backend suite was last run before the review
+  rounds: `test_deliverable_snapshot::test_work_the_run_committed_is_still_reported_as_delivered`
+  fails at `86af0b4` in a clean worktree too (pre-existing, not this slice).
+- Frontend `pnpm test:control-plane`: **587 tests, 586 passed, 0 failed**; `tsc`, `lint`,
+  `build` clean.
+
+Review gate. Implementation by Claude Code; reviewers were codex and, when codex's
+workspace credits ran out, kiro as the substitute (`kiro-review.sh`, same gate):
+- codex rounds 1–2 (10-30): 3 + 3 findings, all fixed.
+- kiro substitute rounds 3–8 (10-30): 9/9/9/7/10/5 — almost all fixed; rejected: duplicate
+  YAML keys (system-wide parser behaviour); deferred CR-77.
+- codex, six rounds (11-02): one finding each, all fixed — open/close ordering (CR-77
+  closed), restore request loop and unmount, cancelled close request, close sequence across
+  retries, restore after unmount, ACL principal by domain-qualified name.
+- kiro substitute rounds 9–13 (11-02; codex out of credits again): 8/8/4/10/2. Fixed the
+  large majority; rejected with reasons — `AGORA_CLAUDE_WORKSPACE_TOOL` binding every source
+  (a pre-existing development override), old journals pruned (never read again once a newer
+  launch exists), 1 MiB journal cap (truncation is marked stale), macOS liveness (not a
+  target; answers "unknown", shown as maybe running), a stale point cleared after a launch
+  that was warned as stale; deferred CR-78. Round 13 had nothing new beyond these.
+
+Defers (rows in the workspace CR log, each with what brings it back):
+- CR-76 — a process that could not join the job object may outlive the server; restore
+  will not start a second one (pid check), the orphan itself is unmanaged.
+- CR-78 — a project wanted open under a source that cannot be read at all has no close on
+  the page; skipped test `test_a_project_wanted_open_under_an_unreadable_source_can_be_closed`.
+
+### Blockers
+
+None for the commit. Open with the owner: the terminal colours look missing next to their
+Tabby (awaiting a side-by-side screenshot).
+
+### Next safe action
+
+The owner checks the exit line by hand on the development install (port 8001): open two
+projects, `/clear` one and say something, restart the machine, open the Work page — both
+report 「已接回」, the cleared one on its later conversation. What they get stuck on picks the
+next cut; slice 2 (mandatory commit review through a git hook) is next in the agreed order.

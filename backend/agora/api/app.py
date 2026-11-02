@@ -32,6 +32,7 @@ from agora.control_plane.router import (
 from agora.api.settings_router import router as settings_router
 from agora.api.kickoff_router import router as kickoff_router
 from agora.api.terminal_router import get_terminal_manager, router as terminal_router
+from agora.api.work_router import router as work_router
 
 def _load_display_language() -> None:
     """Adopt the persisted ``display_language``, if there is a valid one.
@@ -167,6 +168,7 @@ app.include_router(task_discovery_router, prefix="/api")
 app.include_router(settings_router, prefix="/api")
 app.include_router(kickoff_router, prefix="/api")
 app.include_router(terminal_router, prefix="/api")
+app.include_router(work_router, prefix="/api")
 
 
 # Field names whose VALUE must never be reflected back in a 422 body. FastAPI's default

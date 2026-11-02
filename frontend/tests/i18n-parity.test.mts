@@ -15,6 +15,7 @@ import { runs } from "../src/lib/i18n/dictionaries/runs.ts";
 import { settings } from "../src/lib/i18n/dictionaries/settings.ts";
 import { today } from "../src/lib/i18n/dictionaries/today.ts";
 import { workflows } from "../src/lib/i18n/dictionaries/workflows.ts";
+import { work } from "../src/lib/i18n/dictionaries/work.ts";
 import { workspace } from "../src/lib/i18n/dictionaries/workspace.ts";
 
 // A key missing from a locale silently falls back to English at runtime, which
@@ -23,7 +24,7 @@ import { workspace } from "../src/lib/i18n/dictionaries/workspace.ts";
 
 const dictionaries: Record<string, Record<string, unknown>> = {
   attention, common, controlPlane, conversation, enums, environments, skills, home,
-  portfolio, projectChat, requirements, runs, settings, today, workflows, workspace,
+  portfolio, projectChat, requirements, runs, settings, today, work, workflows, workspace,
 };
 
 const OTHER_LOCALES = ["zh", "ja"] as const;

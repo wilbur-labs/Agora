@@ -10,6 +10,7 @@ import "@xterm/xterm/css/xterm.css";
 
 import { getApiBase } from "@/lib/api";
 import { readTerminalToken, terminalStreamUrl } from "@/lib/terminal";
+import { GRAPE, TERMINAL_FONT_FAMILY, TERMINAL_FONT_WEIGHT } from "@/lib/terminal-theme";
 import { readUiScale, terminalFontSize } from "@/lib/ui-scale";
 import { useI18n } from "@/lib/i18n";
 
@@ -33,12 +34,13 @@ export function TerminalView({ terminalId, onExit }: { terminalId: string; onExi
       const term = new Terminal({
         cursorBlink: true,
         scrollback: 10000,
-        // CR-55: CJK falls through to the bundled fonts, not the OS default (MS Gothic).
-        // Every common monospace face comes first: Noto covers ASCII too, and reaching it
-        // for Latin would break the cell grid on a machine without Consolas.
-        fontFamily: "Cascadia Mono, Consolas, Menlo, 'DejaVu Sans Mono', 'Liberation Mono', 'Noto Sans SC Variable', 'Noto Sans JP Variable', 'Microsoft YaHei UI', monospace",
+        // The owner's Tabby look (lib/terminal-theme.ts). CR-55 still holds: every common
+        // monospace face comes before the CJK ones, which catch what the Latin faces lack.
+        fontFamily: TERMINAL_FONT_FAMILY,
+        fontWeight: TERMINAL_FONT_WEIGHT,
+        fontWeightBold: 700,
         fontSize: terminalFontSize(readUiScale()),
-        theme: { background: "#0b0f14" },
+        theme: GRAPE,
       });
       const fit = new FitAddon();
       term.loadAddon(fit);
@@ -95,7 +97,7 @@ export function TerminalView({ terminalId, onExit }: { terminalId: string; onExi
             : t(`workspace.terminal.stream.${status}`)}
         </p>
       )}
-      <div ref={host} className="min-h-0 flex-1 bg-[#0b0f14] p-1" />
+      <div ref={host} className="min-h-0 flex-1 p-1" style={{ background: GRAPE.background }} />
     </div>
   );
 }

@@ -364,8 +364,28 @@ async def trust_remote_host_key(
 
 
 @router.delete("/terminals/{terminal_id}", dependencies=[Depends(require_terminal_session)])
-def close_terminal(terminal_id: str) -> dict[str, Any]:
-    if not get_terminal_manager().close(terminal_id):
+async def close_terminal(terminal_id: str) -> dict[str, Any]:
+    session = get_terminal_manager().get(terminal_id)
+    if session is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such terminal.")
+    if session.project_id.startswith("work:") and session.exited_at is None:
+        # Only a running one: a repeated close of a terminal that already ended must not
+        # reach, through its project, a newer terminal opened since (kiro review round 8).
+        # A work project's terminal closed from this page is the person's close too: it
+        # goes through the work service, which records that they no longer want it open
+        # (CR-75 design R5). ``TerminalManager.close`` itself never touches that record,
+        # because shutdown closes every terminal through it.
+        from agora.api.work_router import get_work_service
+
+        still_running = await get_work_service().close(session.project_id.removeprefix("work:"))
+        return {"terminal_id": terminal_id, "closing": True, "still_running": still_running}
+    if session.project_id.startswith("work:"):
+        # One that ended on its own: the intent is still cleared, when nothing newer is
+        # running for the project (kiro review round 9).
+        from agora.api.work_router import get_work_service
+
+        await get_work_service().release_ended(session.project_id.removeprefix("work:"), terminal_id)
+    if not await asyncio.to_thread(get_terminal_manager().close, terminal_id):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "No such terminal.")
     return {"terminal_id": terminal_id, "closing": True}
 

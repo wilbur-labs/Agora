@@ -26,6 +26,9 @@ export interface ShellTab {
  *  Today puts the inventory ("另开「项目」页") without giving it a tab. */
 export const SHELL_TABS: readonly ShellTab[] = [
   { href: "/", key: "today", label: "Today" },
+  // Workspace CR-75 slice 1 (10-30): the work page — one terminal per project — joins
+  // the row as the fifth tab, the mockup at claude.ai/artifact/NeG3BPvLtvhAK5QipyvTar.
+  { href: "/work", key: "work", label: "Work" },
   { href: "/workspace", key: "workbench", label: "Workbench" },
   { href: "/environments", key: "environments", label: "Environments" },
   { href: "/skills", key: "skills", label: "Skills" },

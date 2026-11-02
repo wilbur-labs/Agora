@@ -65,7 +65,7 @@ def claude_tool_dir_for(source: Path, sources: list[Path]) -> Path | None:
                     pointed = Path(marker.read_text(encoding="utf-8").strip())
                     if _same(pointed, source):
                         return child
-            except OSError:
+            except (OSError, UnicodeDecodeError, ValueError):
                 continue
     return None
 
@@ -88,7 +88,7 @@ def kiro_agent_for(source: Path, task: str) -> tuple[str | None, str | None]:
         return None, f"kiro agent profile could not be read: {type(exc).__name__}"
     name = data.get("name") if isinstance(data, dict) else None
     name = name if isinstance(name, str) and name else task
-    if not AGENT_NAME_RE.match(name):
+    if not AGENT_NAME_RE.fullmatch(name):
         return None, f"kiro agent name is not usable on a command line: {name!r}"
     return name, None
 

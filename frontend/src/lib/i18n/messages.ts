@@ -17,6 +17,7 @@ import { conversation } from "./dictionaries/conversation";
 import { today } from "./dictionaries/today";
 import { projectChat } from "./dictionaries/project-chat";
 import { environments, skills } from "./dictionaries/environments";
+import { work } from "./dictionaries/work";
 
 import type { Locale } from "./locale";
 
@@ -42,6 +43,7 @@ export const messages = {
     projectChat: projectChat.en,
     environments: environments.en,
     skills: skills.en,
+    work: work.en,
   },
   zh: {
     common: common.zh,
@@ -60,6 +62,7 @@ export const messages = {
     projectChat: projectChat.zh,
     environments: environments.zh,
     skills: skills.zh,
+    work: work.zh,
   },
   ja: {
     common: common.ja,
@@ -78,5 +81,6 @@ export const messages = {
     projectChat: projectChat.ja,
     environments: environments.ja,
     skills: skills.ja,
+    work: work.ja,
   },
 } as const;

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shlex
 import shutil
 import signal
 import threading
@@ -46,6 +47,21 @@ REMOTE_OPEN_TIMEOUT = 45.0
 #: How long a remote close may wait for the channel to close gracefully. A program that
 #: stopped reading its input can hold a graceful close forever (it flushes first).
 REMOTE_CLOSE_GRACE = 5.0
+
+
+#: What an agent session puts into the environment of everything it starts. When Agora
+#: itself was started from inside a Claude Code session, these reach every terminal it
+#: opens, and a claude started there believes it is that session's child: it says
+#: "Transcript saving is off — inherited CLAUDE_CODE_CHILD_SESSION marker" and keeps no
+#: transcript, so there is nothing to resume after a restart (CR-75, seen 10-30). The
+#: messaging token is a credential of that other session besides. The person's own
+#: settings (``CLAUDE_CODE_USE_BEDROCK`` and the like) are not on this list and stay.
+AGENT_SESSION_VARS = (
+    "CLAUDECODE", "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_EXECPATH",
+    "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN", "CLAUDE_CODE_SESSION_ATTENDED",
+    "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD", "CLAUDE_EFFORT",
+    "CLAUDE_PID", "AI_AGENT",
+)
 
 
 class TerminalLimitReached(RuntimeError):
@@ -196,28 +212,49 @@ def default_shell() -> list[str]:
     return [os.environ.get("SHELL") or "/bin/bash", "-i"]
 
 
-def command_argv(command: str, *, kiro_agent: str | None = None) -> list[str]:
+def shell_literal(value: str) -> str:
+    """``value`` as one literal word for the shell ``command_argv`` wraps the agent in:
+    PowerShell single quotes on Windows (nothing inside expands; ``'`` doubles), POSIX
+    quoting elsewhere. A double quote or a control character is refused outright — the
+    Windows command line is assembled by ``list2cmdline`` around the PowerShell source,
+    and neither has a reason to be in a path or an id that reaches here (CR-75 §4)."""
+    if any(ch == '"' or ord(ch) < 0x20 or ord(ch) == 0x7F for ch in value):
+        raise ValueError("a double quote or control character cannot be passed to the terminal's shell")
+    if os.name == "nt":
+        return "'" + value.replace("'", "''") + "'"
+    import shlex
+
+    return shlex.quote(value)
+
+
+def command_argv(command: str, *, kiro_agent: str | None = None, agent_args: list[str] | None = None) -> list[str]:
     """The program a terminal runs: a shell, or an agent CLI inside one so that quitting
     the agent leaves the shell rather than closing the window. Only these four.
 
     ``kiro_agent`` opens kiro on that agent profile (a kiro-workspace task). It goes into
-    the shell's command line, so only a name matching ``AGENT_NAME_RE`` is accepted."""
+    the shell's command line, so only a name matching ``AGENT_NAME_RE`` is accepted.
+    ``agent_args`` are appended to the agent's command, each as a shell literal
+    (``shell_literal``) — the work page's ``--settings <file>`` and ``--resume <id>``."""
     from agora.terminal.targets import AGENT_NAME_RE
 
     agents = {"claude": "claude", "codex": "codex", "kiro": "kiro-cli chat"}
     shell = default_shell()
     if command == "shell":
+        if agent_args:
+            raise ValueError("a plain shell takes no agent arguments")
         return shell
     if command not in agents:
         raise ValueError(f"unknown terminal command {command!r}")
     line = agents[command]
     if kiro_agent is not None:
-        if command != "kiro" or not AGENT_NAME_RE.match(kiro_agent):
+        if command != "kiro" or not AGENT_NAME_RE.fullmatch(kiro_agent):
             raise ValueError(f"unusable kiro agent {kiro_agent!r}")
         line = f"{line} --agent {kiro_agent}"
+    for arg in agent_args or []:
+        line = f"{line} {shell_literal(arg)}"
     if os.name == "nt":
         return [shell[0], "-NoLogo", "-NoExit", "-Command", line]
-    return [shell[0], "-ic", f"{line}; exec {shell[0]} -i"]
+    return [shell[0], "-ic", f"{line}; exec {shlex.quote(shell[0])} -i"]
 
 
 def _kill_group(pty) -> None:
@@ -335,7 +372,7 @@ class TerminalManager:
         env = dict(os.environ)
         # The terminal is the person's own shell, not Agora's: none of the server's
         # private settings follow it in.
-        for key in ("AGORA_CONFIG_PATH", "AGORA_INSTANCE", "AGORA_KEYRING_SERVICE"):
+        for key in ("AGORA_CONFIG_PATH", "AGORA_INSTANCE", "AGORA_KEYRING_SERVICE", *AGENT_SESSION_VARS):
             env.pop(key, None)
         env.update(env_extra or {})
         env.setdefault("TERM", "xterm-256color")

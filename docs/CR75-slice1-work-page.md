@@ -235,3 +235,6 @@ ACL；上报内容不被当成命令执行——id 过正则才会进命令行�
 
 - CR-76：Windows 上进程放不进 job object 时服务器死后子进程可能活着。本刀已用 §2 的 pid 检查挡住
   「自动再开一个」，剩下的是那个孤儿进程本身没人管；何时变急：真实使用中看到 `maybe_running`。
+- CR-78（代码评审 kiro 第 9 轮）：整个工作源读不到时，其下仍想打开的项目在页面上没有关闭入口；
+  界面如实说「打不开」。跳过的测试 `test_a_project_wanted_open_under_an_unreadable_source_can_be_closed`
+  点名本行；何时变急：有源长期不可读又想清掉它的项目。
