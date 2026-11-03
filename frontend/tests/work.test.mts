@@ -21,25 +21,40 @@ test("the left column speaks about the terminal, and says claude quit only when 
 
 test("a resume is called resumed only once the launch's first report confirms it", () => {
   const entry = { task: "alpha", source: "/w", result: "resume" as const };
-  const launch = (confirm: NonNullable<WorkProjectRow["launch"]>["confirm"]) =>
-    row({ launch: { result: "resume", detail: null, restored: true, confirm } });
-  assert.equal(bannerLineOf("k", entry, launch("pending"))?.message, "resuming");
-  assert.equal(bannerLineOf("k", entry, launch("pending"))?.tone, "pending");
-  assert.equal(bannerLineOf("k", entry, launch("resumed"))?.message, "resumed");
+  const launch = (confirm: NonNullable<WorkProjectRow["launch"]>["confirm"], stale = false) =>
+    row({ launch: { result: "resume", detail: null, restored: true, confirm }, stale });
+  // Going well asks nothing of the person, so it says nothing (owner, 11-03).
+  assert.equal(bannerLineOf("k", entry, launch("pending")), null);
+  assert.equal(bannerLineOf("k", entry, launch("resumed")), null);
   assert.equal(bannerLineOf("k", entry, launch("resumed_other"))?.message, "resumedOther");
   assert.equal(bannerLineOf("k", entry, launch("not_resumed"))?.message, "notResumed");
   assert.equal(bannerLineOf("k", entry, launch("unconfirmed"))?.message, "unconfirmed");
+  // A point that may not be the latest is said either way.
+  assert.equal(bannerLineOf("k", entry, launch("pending", true))?.message, "resuming");
+  assert.equal(bannerLineOf("k", entry, launch("pending", true))?.tone, "pending");
+  assert.equal(bannerLineOf("k", entry, launch("resumed", true))?.message, "resumed");
   // A launch this server did not start as a restore confirms nothing about the restore.
-  assert.equal(bannerLineOf("k", entry, row({ launch: { result: "resume", detail: null, restored: false, confirm: "resumed" } }))?.message, "resuming");
+  assert.equal(bannerLineOf("k", entry, row({ launch: { result: "resume", detail: null, restored: false, confirm: "resumed" }, stale: true }))?.message, "resuming");
 });
 
-test("a new conversation is said with why, and as started only once claude reported", () => {
-  const entry = { task: "alpha", source: "/w", result: "fresh_missing" as const };
+test("a new conversation where there was nothing to bring back is said only when it went wrong", () => {
+  for (const result of ["fresh_missing", "fresh_empty", "fresh_no_record"] as const) {
+    const entry = { task: "alpha", source: "/w", result };
+    const launch = (confirm: NonNullable<WorkProjectRow["launch"]>["confirm"]) =>
+      row({ launch: { result, detail: null, restored: true, confirm } });
+    assert.equal(bannerLineOf("k", entry, launch("pending")), null, result);
+    assert.equal(bannerLineOf("k", entry, launch("started")), null, result);
+    assert.match(bannerLineOf("k", entry, launch("unconfirmed"))?.message ?? "", /Unconfirmed$/, result);
+  }
+});
+
+test("a recorded conversation that could not be checked is said with why", () => {
+  const entry = { task: "alpha", source: "/w", result: "fresh_untrusted" as const };
   const launch = (confirm: NonNullable<WorkProjectRow["launch"]>["confirm"]) =>
-    row({ launch: { result: "fresh_missing", detail: null, restored: true, confirm } });
-  assert.equal(bannerLineOf("k", entry, launch("pending"))?.message, "freshMissingPending");
-  assert.equal(bannerLineOf("k", entry, launch("started"))?.message, "freshMissing");
-  assert.equal(bannerLineOf("k", entry, launch("unconfirmed"))?.message, "freshMissingUnconfirmed");
+    row({ launch: { result: "fresh_untrusted", detail: null, restored: true, confirm } });
+  assert.equal(bannerLineOf("k", entry, launch("pending"))?.message, "freshUntrustedPending");
+  assert.equal(bannerLineOf("k", entry, launch("started"))?.message, "freshUntrusted");
+  assert.equal(bannerLineOf("k", entry, launch("unconfirmed"))?.message, "freshUntrustedUnconfirmed");
 });
 
 test("what was never gone or was closed is not in the banner; the rest is", () => {

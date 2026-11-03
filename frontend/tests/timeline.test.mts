@@ -469,17 +469,3 @@ test("on a shared queue time runs order by run id, across both run kinds", () =>
 });
 
 // --- what a source scan can and cannot hold ------------------------------------
-
-test("a failed events read is not written down as an empty list", async () => {
-  // Honest about what this is: a scan of one literal in one file. It catches the
-  // exact regression (`setEvents([])` in the catch, which erased notes already on
-  // screen) and nothing semantically equivalent to it — review demonstrated with 11
-  // mutations that source scans do not hold, which is CR-18. The *false claim* half
-  // of that defect is now closed by the union above instead, and closing this half
-  // structurally needs the loader guard that CR-24 carries.
-  const { readFile } = await import("node:fs/promises");
-  const file = await readFile(new URL("../src/app/workspace/page.tsx", import.meta.url), "utf8");
-  const source = file.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
-  assert.ok(!source.includes("setEvents([])"),
-    "a failed events read must not be recorded as a confirmed empty history");
-});

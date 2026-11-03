@@ -643,40 +643,6 @@ test("the trust line asks about the failure before it asks about the task", () =
   assert.equal(taskTrustLineOf({ readFailed: false, hasTask: true, hasSpec: true }), "unbound");
 });
 
-test("the workspace page renders these decisions and does not restate them", async () => {
-  // Structural, and narrower than it used to be on purpose: now that every element's
-  // decision is a variant returned by a pure function, what is left to check is that
-  // the component reads those variants rather than the raw response. The behaviour
-  // itself is tested above, where it can actually be executed -- this suite cannot
-  // mount a .tsx component at all.
-  const { readFile } = await import("node:fs/promises");
-  const file = await readFile(
-    new URL("../src/app/workspace/page.tsx", import.meta.url), "utf8");
-  const source = file.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
-
-  // The project strip (`workspaceProjectStripOf`) is no longer on this page: the design's
-  // task view has no project-level row — the order is the card list, the project's
-  // standing is the project conversation's. The decision itself still lives in
-  // lib/portfolio-bucket and is exercised above; only its consumer here is gone.
-  for (const fragment of [
-    "taskTrustLineOf({",
-    "trustLine ===",
-  ]) {
-    assert.ok(source.includes(fragment), `expected the page to contain ${fragment}`);
-  }
-  for (const banned of [
-    // the page's own arithmetic on a page's length
-    "const total = dashboard.tasks.length",
-    // the unbound verification number, in the third place it lived
-    "dashTask?.verified_weight",
-    "dashTask?.total_weight",
-  ]) {
-    assert.ok(!source.includes(banned), `${banned} must not be in the page`);
-  }
-  assert.ok(source.includes("dashError ? null : dashTask?.next_action"),
-    "a stale dashTask must not supply this task's next action");
-});
-
 test("the projects screen is reachable from the first-level navigation", async () => {
   // It was removed from the navigation once, on the reasoning that Today would absorb it.
   // The mockup says otherwise in as many words: Today answers what to push today, this

@@ -16,7 +16,7 @@ export interface WorkTerminal {
 }
 
 export type LaunchResult =
-  | "resume" | "fresh_no_record" | "fresh_missing" | "fresh_untrusted" | "fresh_unsupported" | "no_hook";
+  | "resume" | "fresh_no_record" | "fresh_missing" | "fresh_empty" | "fresh_untrusted" | "fresh_unsupported" | "no_hook";
 
 export type Confirm = "resumed" | "resumed_other" | "not_resumed" | "started" | "unreadable_report" | "unconfirmed" | "pending";
 
@@ -84,6 +84,11 @@ export interface BannerLine {
  * What the banner says about one restored project. A launch that was decided as a resume
  * is "resumed" only once its first report confirms it; until then it is pending, and past
  * the window it is unconfirmed — a state, not the end: a late report still moves it.
+ *
+ * Only what asks something of the person gets a line (owner, 11-03): a confirmed resume,
+ * and a fresh start where there was nothing to bring back, say nothing — nor do they
+ * while they are still on their way to that. The line appears once the launch turns out
+ * otherwise. Saying nothing claims nothing: no line here ever stands for "resumed".
  */
 export function bannerLineOf(key: string, entry: RestoreEntry, row: WorkProjectRow | undefined): BannerLine | null {
   if (entry.superseded) return null;
@@ -109,19 +114,21 @@ export function bannerLineOf(key: string, entry: RestoreEntry, row: WorkProjectR
   const confirm = row.launch?.restored ? row.launch.confirm : null;
   if (entry.result === "resume") {
     switch (confirm) {
-      case "resumed": return { ...base, tone: "good", message: "resumed" };
+      case "resumed": return base.stale ? { ...base, tone: "good", message: "resumed" } : null;
       case "resumed_other": return { ...base, tone: "warn", message: "resumedOther" };
       case "not_resumed": return { ...base, tone: "warn", message: "notResumed" };
       case "unreadable_report": return { ...base, tone: "warn", message: "unreadableReport" };
       case "unconfirmed": return { ...base, tone: "warn", message: "unconfirmed" };
-      default: return { ...base, tone: "pending", message: "resuming" };
+      default: return base.stale ? { ...base, tone: "pending", message: "resuming" } : null;
     }
   }
-  // A fresh launch, and why it is fresh.
+  // A fresh launch, and why it is fresh. Nothing recorded, the file gone, or nobody ever
+  // spoke in it: there was nothing to bring back, so a start that went well is not news.
+  const quiet = entry.result !== "fresh_untrusted";
   const why = entry.result === "fresh_missing" ? "freshMissing" : entry.result === "fresh_untrusted" ? "freshUntrusted" : "freshNoRecord";
-  if (confirm === "started") return { ...base, tone: "warn", message: why };
+  if (confirm === "started") return quiet ? null : { ...base, tone: "warn", message: why };
   if (confirm === "unconfirmed" || confirm === "unreadable_report") return { ...base, tone: "warn", message: `${why}Unconfirmed` };
-  return { ...base, tone: "pending", message: `${why}Pending` };
+  return quiet ? null : { ...base, tone: "pending", message: `${why}Pending` };
 }
 
 export function bannerLinesOf(view: Pick<WorkView, "restore" | "projects">): BannerLine[] {

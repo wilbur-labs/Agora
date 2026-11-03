@@ -25,7 +25,7 @@ from agora.terminal.manager import PtyUnavailable, TerminalLimitReached, Termina
 from agora.work import hooks as hooks_module
 from agora.work.procs import creation_time, liveness
 from agora.work.projects import WorkProject, WorkScan, scan_work_projects, work_key
-from agora.work.reports import SESSION_ID_RE, Journal, read_journal, trusted_transcript
+from agora.work.reports import SESSION_ID_RE, Journal, has_conversation, read_journal, trusted_transcript
 from agora.work.store import WorkSession, WorkSessionStore
 
 #: The terminal's project id for a work project: ``work:<key>``.
@@ -44,7 +44,7 @@ class LaunchInfo:
     #: ``resume`` or ``fresh``.
     mode: str
     #: What was decided before the launch: resume, fresh_no_record, fresh_missing,
-    #: fresh_untrusted, fresh_unsupported, no_hook.
+    #: fresh_empty, fresh_untrusted, fresh_unsupported, no_hook.
     result: str
     detail: str | None = None
     restored: bool = False
@@ -294,6 +294,13 @@ class WorkService:
         except OSError:
             return "fresh", "fresh_untrusted", None, None
         if not present:
+            return "fresh", "fresh_untrusted", None, None
+        # Claude writes the transcript at startup: one nobody spoke in is there and empty,
+        # and resuming it would bring back nothing (owner, 11-03).
+        try:
+            if not has_conversation(transcript):
+                return "fresh", "fresh_empty", None, None
+        except OSError:
             return "fresh", "fresh_untrusted", None, None
         return "resume", "resume", None, row.ck_session
 

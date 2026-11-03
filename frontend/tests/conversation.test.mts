@@ -382,27 +382,6 @@ test("the footnote counts reviews by role and calls everything else nested 'othe
   );
 });
 
-test("the workbench's middle column is one stream: the conversation carries the timeline, and the tabs are gone", async () => {
-  const { readFile } = await import("node:fs/promises");
-  const page = await readFile(new URL("../src/app/workspace/page.tsx", import.meta.url), "utf8");
-  const pageSource = page.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
-  assert.ok(!pageSource.includes('role="tab"'), "the middle column must not be a tab bar");
-  assert.ok(!pageSource.includes("TimelineColumn"), "the separate timeline column must be gone");
-  assert.ok(pageSource.includes("<Conversation"), "the conversation is the column");
-  const conversation = await readFile(new URL("../src/components/conversation.tsx", import.meta.url), "utf8");
-  const source = conversation.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
-  // The interleave and its completeness claim come from the one module that already
-  // makes them; the component must not re-decide what "may not be the whole history" means.
-  for (const call of ["timelineVerdictOf(", "timelineReadOf(", "streamEventsOf(", "turnDurationMs(", "nestedSummaryOf("]) {
-    assert.ok(source.includes(call), `the conversation must derive from ${call}`);
-  }
-  // Changed files come from the shared block, so a run's files read the same here and in
-  // the right column.
-  assert.ok(source.includes("DeliverablesBlock"), "the turn card must render files through the shared block");
-  // A live turn shows its state, never a ticking guess at its duration.
-  assert.ok(!source.includes("Date.now()"), "the card must not compute a live duration from the clock");
-});
-
 test("run activity counts silence from the last read and never claims it from a failed one (CR-12 ①)", async () => {
   const { runActivityOf, STUCK_AFTER_MINUTES } = await import("../src/lib/conversation.ts");
   const read = (quiet: number | null, extra: Partial<OutputSliceLike> = {}) => mergeTranscript(EMPTY_TRANSCRIPT, {

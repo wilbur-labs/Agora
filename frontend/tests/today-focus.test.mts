@@ -223,37 +223,3 @@ test("every card field the mockup draws without a reader is a capability slot, n
 });
 
 // --- the page must take these decisions from here ----------------------------------
-
-test("the Today page places tiers, states capacity and reads refusals through this module only", async () => {
-  const { readFile } = await import("node:fs/promises");
-  const page = await readFile(new URL("../src/app/page.tsx", import.meta.url), "utf8");
-  const source = page.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
-  for (const call of ["todayTiersOf(", "focusCapacityOf(", "promoteRefusalOf(", "advancingCountOf("]) {
-    assert.ok(source.includes(call), `the page must call ${call}`);
-  }
-  // No second opinion on fullness: the page must not compare a length against the limit.
-  assert.ok(!/\.length\s*>=\s*[\w.]*limit/.test(source), "the page must not recompute is_full");
-  assert.ok(!/is_full\s*=/.test(source), "the page must not assign is_full");
-  // And no zero invented for a missing number.
-  assert.ok(!source.includes("?? 0"), "the page must not read a missing number as zero");
-});
-
-test("the focus card draws no row for a feature that does not exist yet, and never blanks a fact", async () => {
-  // CR-38 (user, 2026-10-08: "界面也不整洁"): milestone / environment / git / last time /
-  // discovery / defects have no reader yet; a row saying so on every card is a promise,
-  // not information. The facts the card does draw still come from the shared judgements
-  // below and never read a missing number as zero.
-  const { readFile } = await import("node:fs/promises");
-  const card = await readFile(new URL("../src/components/today-focus-card.tsx", import.meta.url), "utf8");
-  const source = card.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
-  for (const field of Object.keys(TODAY_CARD_NO_READER)) {
-    assert.ok(!source.includes(`TODAY_CARD_NO_READER.${field}`), `the ${field} placeholder must not be drawn`);
-  }
-  // The next-step, blocking count and progress come from the existing judgements.
-  for (const call of ["workspaceProjectStripOf(", "progressBarOf("]) {
-    assert.ok(source.includes(call), `the card must derive from ${call}`);
-  }
-  assert.ok(!source.includes("?? 0"), "the card must not read a missing number as zero");
-  // The mockup's "换个 agent" button was cut by decision; the card must not grow one back.
-  assert.ok(!/agent/i.test(source.replace(/worker_agent|reviewer_agent/g, "")), "no agent picker on the card");
-});

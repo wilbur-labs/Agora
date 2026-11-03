@@ -1,12 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import Link from "next/link";
+
 import { AlertTriangle, ArrowRight, ChevronRight, CircleCheck, FileCheck2, FolderPlus, Pencil, Plus, RefreshCw, Sparkles, Target, X } from "lucide-react";
 import { DeliveryShell } from "@/components/delivery-shell";
 import { ImportProjectsPanel } from "@/components/import-projects-panel";
 import { Badge } from "@/components/ui/badge";
-import { Button, buttonVariants } from "@/components/ui/button";
+import { Button } from "@/components/ui/button";
 import {
   ApiError,
   archiveTask,
@@ -374,20 +374,12 @@ export default function PortfolioPage() {
         {dashboard && dashboard.project_id === projectFilter && (
           <ProjectCockpit dashboard={dashboard} onEditCharter={() => setShowCharter(true)} />
         )}
-        {/* The kickoff is not a form on this screen any more (CR-62). It is the project's
-            conversation, in the workbench's middle column, and it stays open after the
-            goal is settled — so this screen points at it rather than holding a second,
-            differently-shaped copy of it. */}
+        {/* The kickoff was the project's conversation in the workbench (CR-62), and the
+            workbench is gone (CR-79): the fact is still said, with no button to nowhere. */}
         {gatedProject && (
           <section className="flex flex-wrap items-center gap-3 rounded-xl border border-dashed bg-muted/20 p-4">
             <Sparkles className="size-4 text-primary" />
             <p className="text-sm text-muted-foreground">{t("projectChat.gate.noCharter")}</p>
-            <Link
-              href={`/workspace?project=${encodeURIComponent(dashboard.project_id)}`}
-              className={cn(buttonVariants({ size: "sm" }), "ml-auto")}
-            >
-              {t("projectChat.gate.settle")}
-            </Link>
           </section>
         )}
 

@@ -311,67 +311,6 @@ test("each stale-read notice speaks for its own read, in every locale", () => {
 // The helper had no caller left (CR-77) and was removed rather than kept as an unused
 // export that the compiler would never flag.
 
-test("the rail drops the stale run in one place, not at each render site", async () => {
-  // Structural, and the same honest limit as its counterpart on the portfolio board:
-  // node --test strips types but does not transform JSX, so this suite cannot mount
-  // the component. Dropping the run where the task list is derived is what keeps
-  // anything downstream from using a run the page cannot vouch for; a guard at each
-  // render site is one chance per site to be forgotten.
-  //
-  // W9 changed the shape this guards, not the guarantee. The column used to derive
-  // three things from the run (a state dot, a relative time, the ordering) and the
-  // drop had to happen where the groups were built so all three stopped at once. The
-  // project-level column derives one — whether a run is in flight — so the drop moved
-  // to where the project's task list is derived.
-  //
-  // W11 moved it once more, for the same reason and to the same effect. The task list
-  // left the column for the page: the plan is derived in `planRows`, the gate is decided
-  // there once, and `planRowsOf` is the only thing that turns it into a `running` field.
-  // The column is now a step further from the runs than it was — it is not given tasks
-  // at all — so the second half of this test reads the plan's renderer instead. Still
-  // one place, still upstream of every render.
-  const { readFile } = await import("node:fs/promises");
-  const file = await readFile(
-    new URL("../src/app/workspace/page.tsx", import.meta.url), "utf8");
-  const source = file.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
-  assert.ok(source.includes('projectActiveReach === "complete"'),
-    "the page must ask whether the active-run read can be vouched for");
-  // Anchored to the assignment, not merely to the expression appearing somewhere: a
-  // regex that only proves the gate exists in the file would pass on dead code, or on a
-  // gate computed and then ignored.
-  // The gate is decided once in the page and handed to the module that owns the plan;
-  // nothing between them may re-derive it.
-  assert.ok(/const runsAreCurrent = projectActiveReach === "complete";/.test(source),
-    "that verdict must be the one handed to planRowsOf, not recomputed downstream");
-  const plan = await readFile(new URL("../src/lib/task-plan.ts", import.meta.url), "utf8");
-  const planSource = plan.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
-  assert.ok(/const running = input\.runsAreCurrent && input\.runningTaskIds\.has\(/.test(planSource),
-    "the gate must be what produces the derived `running` field");
-  // The same gate must also decide the invitation to start one: a stale snapshot that
-  // still offered "Continue" would be claiming no run is active on a read that cannot
-  // say so. `continueEntryGate` turns the null into its own refusal.
-  assert.ok(/activeRunCount: input\.runsAreCurrent \?/.test(planSource),
-    "a stale run snapshot must reach the continue gate as unknown, not as zero");
-  // And the render site cannot reach past it, structurally: the column is not given the
-  // runs at all, so there is nothing behind the gate for it to consult. Stronger than
-  // forbidding one spelling of a second lookup, which aliases and helpers walk around.
-  const column = await readFile(
-    new URL("../src/components/project-nav.tsx", import.meta.url), "utf8");
-  const columnSource = column.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
-  const rendered = await readFile(
-    new URL("../src/components/project-side.tsx", import.meta.url), "utf8");
-  const renderedSource = rendered.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
-  assert.ok(renderedSource.includes("row.running"),
-    "the rendered state must read the gated field");
-  assert.ok(!/runs\.some\(|runs\.filter\(|RunSummary/.test(renderedSource),
-    "the order column must not receive or re-derive runs either");
-  // `runs: NavCapability` is the resource's capability, not the run data — what must not
-  // reach the column is the runs themselves, so match on how they would be consulted and
-  // on the type they would arrive as.
-  assert.ok(!/\brunsAreCurrent\b|\bruns\.some\(|\bruns\.filter\(|\bRunSummary\b/.test(columnSource),
-    "the column must not receive or re-derive runs — the gate is upstream of it");
-});
-
 test("the runs notice describes what the rail now does, not what it used to", async () => {
   // The notice outlived the presentation it described: it said the dots and times
   // *shown* might be out of date, while CR-17 had just stopped showing them. A

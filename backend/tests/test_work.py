@@ -133,11 +133,14 @@ def _report(service: WorkService, key: str, *, event="SessionStart", source="sta
     return launch
 
 
-def _transcript(claude: Path, session: str, exists=True) -> Path:
+def _transcript(claude: Path, session: str, exists=True, spoken=True) -> Path:
     path = claude / "E--tool" / f"{session}.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
     if exists:
-        path.write_text("{}\n", encoding="utf-8")
+        lines = ['{"type": "permission-mode"}', '{"type": "attachment"}']
+        if spoken:
+            lines.append('{"type": "user", "message": {"role": "user", "content": "hi"}}')
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
 
 
@@ -378,6 +381,7 @@ def test_no_report_within_the_window_is_unconfirmed_and_a_late_one_still_counts(
 
 @pytest.mark.parametrize("case, expected", [
     ("missing", "fresh_missing"),
+    ("empty", "fresh_empty"),
     ("outside", "fresh_untrusted"),
     ("none", "fresh_no_record"),
 ])
@@ -390,6 +394,9 @@ def test_restore_without_a_usable_conversation_starts_fresh_and_says_why(world, 
     sid = str(uuid.uuid4())
     if case == "missing":
         _report(service, key, session=sid, transcript=_transcript(claude, sid, exists=False))
+    elif case == "empty":
+        # Claude writes the file at startup; nobody spoke in this one (owner, 11-03).
+        _report(service, key, session=sid, transcript=_transcript(claude, sid, spoken=False))
     elif case == "outside":
         # Recorded straight into the store: a report outside Claude's directory never gets there.
         service.store.advance_checkpoint(key, session=sid, transcript=str(tmp_path / "elsewhere.jsonl"),

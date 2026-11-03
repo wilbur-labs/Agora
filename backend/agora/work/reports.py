@@ -41,6 +41,23 @@ def trusted_transcript(raw: object, base: Path | None = None) -> Path | None:
     return path if a.startswith(b.rstrip("\\/") + os.sep) else None
 
 
+def has_conversation(transcript: Path) -> bool:
+    """Whether the transcript holds a message. Claude writes the file at startup, so one
+    nobody spoke in exists and holds only its own bookkeeping — nothing to resume. Raises
+    ``OSError`` when it cannot be read; a line that does not parse is skipped."""
+    with transcript.open("rb") as handle:
+        for line in handle:
+            if b'"user"' not in line and b'"assistant"' not in line:
+                continue
+            try:
+                entry = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(entry, dict) and entry.get("type") in ("user", "assistant"):
+                return True
+    return False
+
+
 @dataclass
 class SessionEvent:
     event: str

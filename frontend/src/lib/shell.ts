@@ -13,7 +13,7 @@
  * companion test file (tests/shell.test.mts) directly.
  */
 
-/** One of the four screens. `label` is the stable English name pages pass as `active`. */
+/** One of the bar's screens. `label` is the stable English name pages pass as `active`. */
 export interface ShellTab {
   href: string;
   /** Key under `common.nav.*`. */
@@ -21,15 +21,14 @@ export interface ShellTab {
   label: string;
 }
 
-/** The mockup's four tabs, in its order. Not five: the projects inventory and Settings
+/** The bar's tabs, in order. The projects inventory and Settings
  *  are reached from the bar's right-hand cluster, where the mockup's design note for
  *  Today puts the inventory ("另开「项目」页") without giving it a tab. */
 export const SHELL_TABS: readonly ShellTab[] = [
-  { href: "/", key: "today", label: "Today" },
-  // Workspace CR-75 slice 1 (10-30): the work page — one terminal per project — joins
-  // the row as the fifth tab, the mockup at claude.ai/artifact/NeG3BPvLtvhAK5QipyvTar.
-  { href: "/work", key: "work", label: "Work" },
-  { href: "/workspace", key: "workbench", label: "Workbench" },
+  // Workspace CR-75 slice 1 (10-30): the work page — one terminal per project, the mockup
+  // at claude.ai/artifact/NeG3BPvLtvhAK5QipyvTar. Since CR-79 (11-03) it is also the front
+  // page: Today and the project workbench were removed at the owner's word.
+  { href: "/", key: "work", label: "Work" },
   { href: "/environments", key: "environments", label: "Environments" },
   { href: "/skills", key: "skills", label: "Skills" },
 ];

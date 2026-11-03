@@ -8469,3 +8469,37 @@ The owner checks the exit line by hand on the development install (port 8001): o
 projects, `/clear` one and say something, restart the machine, open the Work page — both
 report 「已接回」, the cleared one on its later conversation. What they get stuck on picks the
 next cut; slice 2 (mandatory commit review through a git hook) is next in the agreed order.
+
+## CR-79 — quieter restore banner, an empty conversation is not resumed, Today and the workbench removed
+
+Owner, 11-03, after the first restart: all three projects said 「記録された会話が見つからない」.
+Nothing was lost — they had been opened on 10-30 and never spoken in, so claude never wrote
+their transcripts. Asked whether that could go unsaid, and to delete the old front page and
+the project workbench.
+
+- `reports.has_conversation` + `fresh_empty`: claude now writes the transcript at startup, so
+  a file with no user/assistant entry is nothing to resume — the launch starts fresh instead
+  of `--resume` on an empty session. Unreadable → `fresh_untrusted`, as before.
+- `lib/work-state.ts`: the banner speaks only when something asks for the person — a
+  confirmed resume and a fresh start with nothing to bring back (no record, file gone,
+  empty) are silent, including while pending; failures, unconfirmed starts, a possibly older
+  point (`stale`) and `fresh_untrusted` are still said. Silence never stands for "resumed".
+- Removed `/` (Today) and `/workspace` (workbench) and the components only they used; `/`
+  renders the work page; the bar is Work · Environments · Skills. The portfolio's "settle
+  the goal" button pointed into the workbench and is gone (the fact stays). Dispatch, run
+  history and the project conversation have no way in on this build — the owner was told
+  before choosing. Source-scan tests of the removed pages were dropped (7); `lib/` modules
+  they used stay, with their tests.
+
+Tests (collected counts): backend `test_work` + `test_terminal` + `test_web_ui`: **140
+collected, 138 passed, 2 skipped** (same two as slice 1). Frontend `test:control-plane`:
+**581 tests, 580 passed, 1 skipped, 0 failed**; `tsc`, `lint`, `build` clean; `compileall`
+and `git diff --check` clean.
+
+Review: codex round 1 — no findings (script exit 0; it read the patch).
+
+### Next safe action
+
+Restart dev 8001; the owner rechecks the restart path. The exit line now reads: the cleared
+project resumes its post-clear conversation (seen in the terminal; a good resume shows no
+banner).

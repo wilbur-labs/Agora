@@ -15,7 +15,6 @@
  * one thing this project forbids: a product stating what its reads do not support.
  */
 
-import Link from "next/link";
 import { FileWarning, Library } from "lucide-react";
 
 import { DeliveryShell } from "@/components/delivery-shell";
@@ -64,12 +63,6 @@ export default function SkillsPage() {
           ))}
         </section>
 
-        <p className="text-xs text-muted-foreground">
-          {t("skills.workbenchHint")}{" "}
-          <Link href="/workspace" className="text-primary hover:underline">
-            {t("common.nav.workbench")}
-          </Link>
-        </p>
       </div>
     </DeliveryShell>
   );

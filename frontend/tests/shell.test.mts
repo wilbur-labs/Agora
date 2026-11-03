@@ -3,9 +3,9 @@ import test from "node:test";
 
 import { SHELL_TABS, cliStripOf, cliVersionLineOf } from "../src/lib/shell.ts";
 
-test("the bar has the mockup's four tabs plus the work page (CR-75), in order, and nothing else", () => {
-  assert.deepEqual(SHELL_TABS.map((tab) => tab.href), ["/", "/work", "/workspace", "/environments", "/skills"]);
-  assert.deepEqual(SHELL_TABS.map((tab) => tab.label), ["Today", "Work", "Workbench", "Environments", "Skills"]);
+test("the bar has the work page, environments and skills (CR-79), in order, and nothing else", () => {
+  assert.deepEqual(SHELL_TABS.map((tab) => tab.href), ["/", "/environments", "/skills"]);
+  assert.deepEqual(SHELL_TABS.map((tab) => tab.label), ["Work", "Environments", "Skills"]);
 });
 
 test("a CLI's version line is one of four sentences, never a blank or a zero", () => {
@@ -24,7 +24,7 @@ test("the strip tells a probe that failed from one that has not answered, and li
   if (strip.kind === "probed") assert.deepEqual(strip.lines, [{ adapter: "codex", line: { kind: "version", version: "1" } }]);
 });
 
-test("the shell renders the tabs from the one list, keeps the inventory and Settings reachable, and the workbench carries the same bar", async () => {
+test("the shell renders the tabs from the one list, keeps the inventory and Settings reachable, and the work page carries the same bar", async () => {
   const { readFile } = await import("node:fs/promises");
   const shell = await readFile(new URL("../src/components/delivery-shell.tsx", import.meta.url), "utf8");
   const shellSource = shell.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
@@ -37,9 +37,9 @@ test("the shell renders the tabs from the one list, keeps the inventory and Sett
   // as an empty string.
   assert.ok(shellSource.includes("cliStripOf("), "the CLI strip comes from lib/shell.ts");
   assert.ok(!/version\s*\?\?\s*""/.test(shellSource), "a missing version is a sentence, not a blank");
-  const page = await readFile(new URL("../src/app/workspace/page.tsx", import.meta.url), "utf8");
+  const page = await readFile(new URL("../src/app/work/page.tsx", import.meta.url), "utf8");
   const pageSource = page.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
-  assert.ok(pageSource.includes("<TopBar"), "the workbench carries the same top bar as every other screen");
+  assert.ok(pageSource.includes("<TopBar"), "the work page carries the same top bar as every other screen");
 });
 
 test("the platform next to 本机 is the OS's own name, never Python's win32", async () => {
