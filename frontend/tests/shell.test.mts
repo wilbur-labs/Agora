@@ -3,9 +3,9 @@ import test from "node:test";
 
 import { SHELL_TABS, cliStripOf, cliVersionLineOf } from "../src/lib/shell.ts";
 
-test("the bar has the work page, environments and skills (CR-79), in order, and nothing else", () => {
-  assert.deepEqual(SHELL_TABS.map((tab) => tab.href), ["/", "/environments", "/skills"]);
-  assert.deepEqual(SHELL_TABS.map((tab) => tab.label), ["Work", "Environments", "Skills"]);
+test("the bar has the overview, the work page, environments and skills, in order, and nothing else", () => {
+  assert.deepEqual(SHELL_TABS.map((tab) => tab.href), ["/", "/work", "/environments", "/skills"]);
+  assert.deepEqual(SHELL_TABS.map((tab) => tab.label), ["Overview", "Work", "Environments", "Skills"]);
 });
 
 test("a CLI's version line is one of four sentences, never a blank or a zero", () => {

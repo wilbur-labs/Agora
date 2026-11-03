@@ -8503,3 +8503,36 @@ Review: codex round 1 — no findings (script exit 0; it read the patch).
 Restart dev 8001; the owner rechecks the restart path. The exit line now reads: the cleared
 project resumes its post-clear conversation (seen in the terminal; a good resume shows no
 banner).
+
+## CR-75 slice 3 — the overview page
+
+Owner, 11-03: 「评审完了接着做概览页」. The overview is the front page (`/`); the work page
+moves back to `/work`; the bar is Overview · Work · Environments · Skills.
+
+- `lib/overview.ts`: one card per project the work page lists, joined on (source, task) with
+  the workspace-sources read (`/api/workspace-sources`, which already reads task.yaml,
+  RESUME 进度快照 and the CR table). A project that read did not cover — failed, still out,
+  or not in it — is said ("could not read this project's record"), never drawn as an empty
+  bar or zero. CRs not closed = OPEN + DECIDED; rows with an unreadable status are counted
+  apart, never as closed. Progress reuses `taskProgressOf` / `progressBarOf`.
+- `app/page.tsx`: the cards (title, task · agent · terminal state, progress bar, CR line),
+  click → work page with that project selected (`WORK_SELECTED_KEY`, now shared). The page
+  asks for the restore after a restart as the work page does, and says when a project needs
+  a look there. A failed poll keeps the cards and says they are out of date; a failed
+  restore request is said; a superseded sources read is cancelled.
+- No "current task" on the card: RESUME has no fixed place for one, and a line cut from
+  「下一步」 is often a heading. Needs a recorded field first.
+- Three-language `overview` dictionary; `common.nav.overview`.
+
+Tests: frontend `test:control-plane` **586 tests, 585 passed, 1 skipped, 0 failed** (5 new in
+`tests/overview.test.mts`); `tsc`, `lint`, `build`, `git diff --check` clean. No backend
+change.
+
+Review: codex round 1 — 2 (stale list after a failed poll not said; restore request failure
+not said), fixed; round 2 — 1 (an older sources read could overwrite a newer one), fixed;
+round 3 — none.
+
+### Next safe action
+
+Restart dev 8001; the owner looks at the overview. Slice 2 (commit review through a git hook)
+is next in the agreed order unless use says otherwise.

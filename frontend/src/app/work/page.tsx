@@ -25,11 +25,11 @@ import {
   type BannerLine,
   type ProjectState,
   type WorkView,
+  WORK_SELECTED_KEY as SELECTED_KEY,
 } from "@/lib/work";
 import { useI18n } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
-const SELECTED_KEY = "agora.work.selected";
 const POLL_MS = 5000;
 const RESTORE_BACKOFF_MIN_MS = 5000;
 const RESTORE_BACKOFF_MAX_MS = 60000;

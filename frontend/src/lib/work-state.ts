@@ -60,6 +60,10 @@ export interface WorkView {
   hook_problem: string | null;
 }
 
+/** Which project the work page shows; the overview writes it before sending the person
+ *  there. A convenience only: browser storage that is not there loses nothing. */
+export const WORK_SELECTED_KEY = "agora.work.selected";
+
 /** The left column's state for one project: about the terminal, never about claude. */
 export type ProjectState = "starting" | "open" | "agentExited" | "ended" | "notOpen";
 

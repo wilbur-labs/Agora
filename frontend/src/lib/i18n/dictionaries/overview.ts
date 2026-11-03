@@ -1,0 +1,51 @@
+// The overview page (workspace CR-75 slice 3): every active project at a glance, what its
+// own record says about progress and open CRs, and whether its terminal is open. A
+// project whose record could not be read says so; it is never drawn as empty or zero.
+
+export const overview = {
+  en: {
+    title: "Overview",
+    summary: "{projects} active projects · {open} with a terminal open",
+    attention: "The restore after the restart has something to say about {count} project(s).",
+    attentionLink: "See the work page",
+    loadingRecord: "Reading the record…",
+    recordUnread: "Could not read this project's record",
+    crCounts: "{count} CRs not closed",
+    crNone: "No CR open",
+    crUnrecognised: "{count} with a status that could not be read",
+    crUnreadable: "CR log could not be read ({reason})",
+    sourcesFailed: "Could not read the projects' records; progress and CRs are not shown.",
+    openHint: "Open on the work page",
+    restoreAttention: "after the restart: see the work page",
+  },
+  zh: {
+    title: "概览",
+    summary: "{projects} 个进行中的项目 · {open} 个终端开着",
+    attention: "重启后的恢复有 {count} 个项目需要你看一下。",
+    attentionLink: "去工作页",
+    loadingRecord: "正在读记录…",
+    recordUnread: "读不到这个项目的记录",
+    crCounts: "{count} 条 CR 未关闭",
+    crNone: "没有未关闭的 CR",
+    crUnrecognised: "另有 {count} 条状态读不懂",
+    crUnreadable: "CR 表读不了（{reason}）",
+    sourcesFailed: "读不到各项目的记录，进度和 CR 暂不显示。",
+    openHint: "在工作页打开",
+    restoreAttention: "重启恢复：去工作页看一下",
+  },
+  ja: {
+    title: "概要",
+    summary: "進行中のプロジェクト {projects} 件 · ターミナル起動中 {open} 件",
+    attention: "再起動後の復元で、{count} 件のプロジェクトに確認が必要です。",
+    attentionLink: "作業ページへ",
+    loadingRecord: "記録を読み込み中…",
+    recordUnread: "このプロジェクトの記録を読めませんでした",
+    crCounts: "未完了の CR {count} 件",
+    crNone: "未完了の CR なし",
+    crUnrecognised: "ほかに状態を読めない CR {count} 件",
+    crUnreadable: "CR 表を読めませんでした（{reason}）",
+    sourcesFailed: "各プロジェクトの記録を読めませんでした。進捗と CR は表示していません。",
+    openHint: "作業ページで開く",
+    restoreAttention: "再起動後の復元：作業ページで確認してください",
+  },
+};

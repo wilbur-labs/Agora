@@ -10,6 +10,7 @@ export const common = {
     },
     nav: {
       today: "Today",
+      overview: "Overview",
       work: "Work",
     projects: "Projects",
       workbench: "Workbench",
@@ -115,6 +116,7 @@ export const common = {
     },
     nav: {
       today: "今天",
+      overview: "概览",
       work: "工作",
     projects: "项目",
       workbench: "项目工作台",
@@ -196,6 +198,7 @@ export const common = {
     },
     nav: {
       today: "今日",
+      overview: "概要",
       work: "作業",
       projects: "プロジェクト",
       workbench: "ワークベンチ",

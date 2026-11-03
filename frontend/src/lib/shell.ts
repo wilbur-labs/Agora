@@ -25,10 +25,12 @@ export interface ShellTab {
  *  are reached from the bar's right-hand cluster, where the mockup's design note for
  *  Today puts the inventory ("另开「项目」页") without giving it a tab. */
 export const SHELL_TABS: readonly ShellTab[] = [
+  // Workspace CR-75 slice 3 (11-03): the overview — every project at a glance — is the
+  // front page. Today and the project workbench were removed at the owner's word (CR-79).
+  { href: "/", key: "overview", label: "Overview" },
   // Workspace CR-75 slice 1 (10-30): the work page — one terminal per project, the mockup
-  // at claude.ai/artifact/NeG3BPvLtvhAK5QipyvTar. Since CR-79 (11-03) it is also the front
-  // page: Today and the project workbench were removed at the owner's word.
-  { href: "/", key: "work", label: "Work" },
+  // at claude.ai/artifact/NeG3BPvLtvhAK5QipyvTar.
+  { href: "/work", key: "work", label: "Work" },
   { href: "/environments", key: "environments", label: "Environments" },
   { href: "/skills", key: "skills", label: "Skills" },
 ];

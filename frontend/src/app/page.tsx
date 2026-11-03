@@ -1,5 +1,230 @@
+"use client";
+
 /**
- * The front page is the work page (workspace CR-79, owner 11-03): Today and the project
- * workbench are gone, and the overview page will take this place when it lands.
+ * The overview (workspace CR-75 slice 3), the front page: every active project at a
+ * glance — what its own record says about progress and CRs not closed, and whether its
+ * terminal is open. A card leads to that project on the work page.
+ *
+ * Judgements live in lib/overview.ts. The page also asks for the restore after a restart,
+ * as the work page does: the server restores at most once per run, and the person should
+ * not have to visit the work page first for what was open to come back.
  */
-export { default } from "./work/page";
+import { useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+
+import { TopBar } from "@/components/delivery-shell";
+import { ProgressSnapshotBar } from "@/components/progress-snapshot-bar";
+import { listWorkspaceSources } from "@/lib/control-plane";
+import { overviewCardsOf, overviewSummaryOf, type OverviewCard } from "@/lib/overview";
+import { TerminalAuthRequired } from "@/lib/terminal";
+import {
+  WORK_SELECTED_KEY,
+  bannerLinesOf,
+  listWorkProjects,
+  restoreWorkProjects,
+  type ProjectState,
+  type WorkView,
+} from "@/lib/work";
+import type { WorkspaceSourcePayload } from "@/lib/workspace-sources";
+import { useI18n } from "@/lib/i18n";
+import { cn } from "@/lib/utils";
+
+const POLL_MS = 10000;
+const RESTORE_RETRY_MS = 30000;
+
+const DOT: Record<ProjectState, string> = {
+  starting: "bg-sky-600",
+  open: "bg-emerald-600",
+  agentExited: "bg-amber-600",
+  ended: "border border-muted-foreground bg-transparent",
+  notOpen: "border border-muted-foreground/60 bg-transparent",
+};
+
+export default function OverviewPage() {
+  const { t } = useI18n();
+  const router = useRouter();
+  const [view, setView] = useState<WorkView | "auth" | "failed" | null>(null);
+  const [sources, setSources] = useState<WorkspaceSourcePayload[] | null>(null);
+  const [sourcesFailed, setSourcesFailed] = useState(false);
+  // A poll that failed after a list was shown: the cards stay, marked out of date (codex review).
+  const [listFailed, setListFailed] = useState(false);
+  // The restore request failed while the server still has no answer: said here, not only
+  // on the work page (codex review).
+  const [restoreError, setRestoreError] = useState<string | null>(null);
+  const mounted = useRef(true);
+  const sequence = useRef(0);
+  const shown = useRef(0);
+  const restoring = useRef(false);
+  const restoreRetryAt = useRef(0);
+
+  useEffect(() => {
+    mounted.current = true;
+    // Plain functions inside the effect: the restore's answer reads the list again, so
+    // the loader refers to itself.
+    function loadWork() {
+      if (!mounted.current) return;
+      const mine = ++sequence.current;
+      listWorkProjects()
+        .then((next) => {
+          if (!mounted.current || mine < shown.current) return;
+          shown.current = mine;
+          setView(next);
+          setListFailed(false);
+          if (next.restore !== null) setRestoreError(null);
+          if (next.restore === null && !next.restoring && !restoring.current && Date.now() >= restoreRetryAt.current) {
+            restoring.current = true;
+            void restoreWorkProjects()
+              .then(() => { if (mounted.current) setRestoreError(null); })
+              .catch((err) => {
+                restoreRetryAt.current = Date.now() + RESTORE_RETRY_MS;
+                if (mounted.current && !(err instanceof TerminalAuthRequired)) setRestoreError(String((err as Error).message));
+              })
+              .finally(() => { restoring.current = false; loadWork(); });
+          }
+        })
+        .catch((err) => {
+          if (!mounted.current || mine < shown.current) return;
+          shown.current = mine;
+          if (err instanceof TerminalAuthRequired) { setView("auth"); return; }
+          // A list already shown stays, marked out of date until a read succeeds again.
+          setView((prev) => (typeof prev === "object" && prev ? prev : "failed"));
+          setListFailed(true);
+        });
+    }
+    // Only the latest read may land: a newer one cancels the one still out (codex review).
+    let sourcesRead: AbortController | null = null;
+    function loadSources() {
+      sourcesRead?.abort();
+      const mine = new AbortController();
+      sourcesRead = mine;
+      listWorkspaceSources(mine.signal)
+        .then((next) => { if (mounted.current && sourcesRead === mine) { setSources(next); setSourcesFailed(false); } })
+        .catch(() => { if (mounted.current && sourcesRead === mine) setSourcesFailed(true); });
+    }
+    loadWork();
+    loadSources();
+    // The terminals change on their own; the records only when the person edits them, so
+    // they are read again when the page comes back into view rather than on a timer.
+    const timer = window.setInterval(() => { if (document.visibilityState === "visible") loadWork(); }, POLL_MS);
+    const onVisible = () => { if (document.visibilityState === "visible") { loadWork(); loadSources(); } };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      mounted.current = false;
+      sourcesRead?.abort();
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, []);
+
+  const workView = typeof view === "object" && view ? view : null;
+  const attentionKeys = useMemo(
+    () => new Set(workView ? bannerLinesOf(workView).map((line) => line.key) : []), [workView]);
+  const cards = useMemo(
+    () => (workView ? overviewCardsOf(workView, sources, sourcesFailed, attentionKeys) : []),
+    [workView, sources, sourcesFailed, attentionKeys]);
+  const summary = overviewSummaryOf(cards);
+
+  const go = (key: string) => {
+    try { window.localStorage.setItem(WORK_SELECTED_KEY, key); } catch { /* a convenience only */ }
+    router.push("/work");
+  };
+
+  return (
+    <div className="flex h-screen flex-col bg-background">
+      <TopBar active="Overview" />
+      <main className="min-h-0 flex-1 overflow-y-auto">
+        <div className="mx-auto max-w-[1600px] space-y-5 p-4 md:p-8">
+          <header className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
+            <h1 className="text-xl font-semibold">{t("overview.title")}</h1>
+            {workView && <p className="text-sm text-muted-foreground">{t("overview.summary", summary)}</p>}
+          </header>
+
+          {view === null && <p className="text-sm text-muted-foreground">…</p>}
+          {view === "auth" && <p className="text-sm text-amber-700 dark:text-amber-400">{t("work.authRequired")}</p>}
+          {view === "failed" && <p className="text-sm text-red-700 dark:text-red-400">{t("work.failedToList")}</p>}
+
+          {listFailed && workView && <p className="text-sm text-amber-700 dark:text-amber-400">{t("work.listStale")}</p>}
+          {restoreError && <p className="text-sm text-red-700 dark:text-red-400">{t("work.restoreFailed", { detail: restoreError })}</p>}
+
+          {attentionKeys.size > 0 && (
+            <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-2 text-sm text-amber-800 dark:text-amber-300">
+              {t("overview.attention", { count: attentionKeys.size })}{" "}
+              <Link href="/work" className="font-medium underline">{t("overview.attentionLink")}</Link>
+            </p>
+          )}
+          {sourcesFailed && <p className="text-sm text-amber-700 dark:text-amber-400">{t("overview.sourcesFailed")}</p>}
+
+          {workView && cards.length === 0 && workView.unreadable.length === 0 && (
+            <p className="text-sm text-muted-foreground">{t("work.noProjects")}</p>
+          )}
+
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
+            {cards.map((card) => <Card key={card.key} card={card} onOpen={() => go(card.key)} />)}
+          </div>
+
+          {workView && workView.unreadable.length > 0 && (
+            <section className="space-y-1">
+              <h2 className="text-sm font-semibold">{t("work.unreadableHeading")}</h2>
+              <ul className="space-y-0.5 text-xs text-muted-foreground">
+                {workView.unreadable.map((u) => (
+                  <li key={`${u.source}\0${u.task}`} className="break-all">{u.task} — {u.reason} ({u.source})</li>
+                ))}
+              </ul>
+            </section>
+          )}
+          {workView && workView.inactive > 0 && (
+            <p className="text-xs text-muted-foreground">{t("work.inactive", { count: workView.inactive })}</p>
+          )}
+        </div>
+      </main>
+    </div>
+  );
+}
+
+function Card({ card, onOpen }: { card: OverviewCard; onOpen: () => void }) {
+  const { t } = useI18n();
+  const record = card.record;
+  const title = record.show === "read" && record.title ? record.title : card.task;
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      title={t("overview.openHint")}
+      className={cn(
+        "flex min-w-0 flex-col gap-2 rounded-xl border bg-card p-4 text-left transition-colors hover:bg-accent/60",
+        card.attention && "border-amber-500/60",
+      )}
+    >
+      <div className="flex min-w-0 items-start gap-2">
+        <span className={cn("mt-1.5 size-2 shrink-0 rounded-full", DOT[card.state])} />
+        <div className="min-w-0 flex-1">
+          <p className="line-clamp-2 text-sm font-semibold leading-snug">{title}</p>
+          <p className="truncate text-xs text-muted-foreground">
+            {card.task} · {card.workspace} · {t(`work.state.${card.state}`)}
+          </p>
+        </div>
+      </div>
+
+      {record.show === "loading" && <p className="text-xs text-muted-foreground">{t("overview.loadingRecord")}</p>}
+      {record.show === "unread" && <p className="text-xs text-amber-700 dark:text-amber-400">{t("overview.recordUnread")}</p>}
+      {record.show === "read" && (
+        <>
+          {record.progress.show === "bar"
+            ? <ProgressSnapshotBar bar={record.progress.bar} compact />
+            : <p className="text-xs text-amber-700 dark:text-amber-400">{t("overview.recordUnread")}</p>}
+          <p className="text-xs text-muted-foreground">
+            {record.cr.show === "counts" && (
+              <>
+                {record.cr.notClosed > 0 ? t("overview.crCounts", { count: record.cr.notClosed }) : t("overview.crNone")}
+                {record.cr.unrecognised > 0 && <> · {t("overview.crUnrecognised", { count: record.cr.unrecognised })}</>}
+              </>
+            )}
+            {record.cr.show === "unreadable" && t("overview.crUnreadable", { reason: record.cr.reason })}
+          </p>
+        </>
+      )}
+      {card.attention && <p className="text-xs text-amber-700 dark:text-amber-400">{t("overview.restoreAttention")}</p>}
+    </button>
+  );
+}
