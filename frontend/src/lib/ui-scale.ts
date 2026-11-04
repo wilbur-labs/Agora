@@ -15,9 +15,11 @@ export function nextUiScale(current: UiScale): UiScale {
   return current === "normal" ? "large" : current === "large" ? "xlarge" : "normal";
 }
 
-/** The terminal's font size in px for a scale (xterm measures in px, not rem). */
+/** The terminal's font size in px for a scale (xterm measures in px, not rem). At the
+ *  default scale it is 14, Tabby's default (the owner's Tabby sets no size; 11-04: "终端里面
+ *  的文字有点大"), and it grows and shrinks with the page from there. */
 export function terminalFontSize(scale: UiScale): number {
-  return Math.round(14 * UI_SCALES[scale]);
+  return Math.round(14 * UI_SCALES[scale] / UI_SCALES[DEFAULT_UI_SCALE]);
 }
 
 export function readUiScale(): UiScale {
