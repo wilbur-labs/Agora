@@ -48,10 +48,44 @@ export interface RestoreEntry {
   superseded?: boolean;
 }
 
+export interface ShelvedProject {
+  key: string;
+  source: string;
+  task: string;
+  title: string | null;
+  workspace: "claude" | "kiro";
+  /** What its task.yaml says: `paused`, `archived`, or whatever else is not `active`. */
+  status: string;
+  /** It sits in tasks/_archive/ (claude-workspace's `cw archive`). */
+  archived_dir: boolean;
+}
+
+/** Why a pause/archive/restore did not happen, from the error the request threw: the
+ *  terminal is open (said in the page's words), or the server's own reason. */
+export function shelfErrorOf(message: string): { kind: "terminalOpen" } | { kind: "refused"; reason: string } {
+  try {
+    const body = JSON.parse(message) as { code?: unknown; message?: unknown };
+    if (body && body.code === "terminal_open") return { kind: "terminalOpen" };
+    if (body && typeof body.message === "string") return { kind: "refused", reason: body.message };
+  } catch { /* not the structured detail */ }
+  return { kind: "refused", reason: message };
+}
+
+/** The shelved list split as the page shows it: paused first, then archived, then any
+ *  other status — a status the page has no word for is shown as written, not hidden. */
+export function shelvedGroupsOf(shelved: readonly ShelvedProject[]) {
+  const paused = shelved.filter((p) => p.status === "paused");
+  const archived = shelved.filter((p) => p.status !== "paused" && (p.status === "archived" || p.archived_dir));
+  const other = shelved.filter((p) => !paused.includes(p) && !archived.includes(p));
+  return { paused, archived, other };
+}
+
 export interface WorkView {
   projects: WorkProjectRow[];
   unreadable: { source: string; task: string; reason: string; key?: string; want_open?: boolean }[];
   inactive: number;
+  /** Paused or archived projects (CR-80): not listed for work, offered for restoring. */
+  shelved: ShelvedProject[];
   missing: { key: string; task: string; source: string }[];
   /** Running terminals of projects the scan no longer lists: still reachable, to close. */
   detached: { key: string; task: string; terminal: WorkTerminal }[];

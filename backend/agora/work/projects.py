@@ -9,7 +9,7 @@ from __future__ import annotations
 import hashlib
 import os
 import stat
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +17,10 @@ import yaml
 
 from agora.fsprobe import probe_path
 from agora.terminal.targets import _is_kiro, claude_tool_dir_for, kiro_agent_for
+
+
+#: Prefix in an archived project's key input, keeping it apart from a same-named active one.
+ARCHIVED_PREFIX = "_archive/"
 
 
 def work_key(source: str | Path, task: str) -> str:
@@ -45,12 +49,31 @@ class WorkProject:
 
 
 @dataclass
+class ShelvedProject:
+    """A project whose ``status`` is something other than ``active`` (CR-80): not listed
+    for work, listed on the overview to be restored."""
+    key: str
+    source: str
+    task: str
+    title: str | None
+    workspace: str
+    status: str
+    #: It sits in ``tasks/_archive/`` (claude-workspace's ``cw archive``).
+    archived_dir: bool
+
+    def payload(self) -> dict[str, Any]:
+        return {"key": self.key, "source": self.source, "task": self.task, "title": self.title,
+                "workspace": self.workspace, "status": self.status, "archived_dir": self.archived_dir}
+
+
+@dataclass
 class WorkScan:
     projects: list[WorkProject]
     #: ``{source, task, reason}`` for every project directory that could not be read.
     unreadable: list[dict[str, str]]
     #: Projects whose ``status`` is set to something other than ``active``.
     inactive: int
+    shelved: list[ShelvedProject] = field(default_factory=list)
 
 
 def _title(document: dict[str, Any]) -> str | None:
@@ -70,10 +93,58 @@ def _status(document: dict[str, Any]) -> str | None:
     return None
 
 
+def _task_dirs(entries: list[Path], source: Path, prefix: str,
+               unreadable: list[dict[str, str]]) -> list[Path]:
+    """The task directories among ``entries``; ``prefix`` names them in ``unreadable``."""
+    task_dirs = []
+    for entry in entries:
+        if entry.name.startswith("_"):
+            continue
+        # One entry that cannot be probed is that entry's problem, not the source's.
+        # ``stat`` itself: from Python 3.14 ``is_dir`` answers False for a read that
+        # failed, and the entry would vanish from the page unsaid (kiro round 10).
+        try:
+            mode = entry.stat().st_mode
+        except FileNotFoundError:
+            if os.path.lexists(entry):
+                unreadable.append({"source": str(source), "task": prefix + entry.name,
+                                   "reason": "link target not found"})
+            continue
+        except OSError as exc:
+            unreadable.append({"source": str(source), "task": prefix + entry.name, "reason": type(exc).__name__})
+            continue
+        if stat.S_ISDIR(mode):
+            task_dirs.append(entry)
+    return task_dirs
+
+
+def _manifest(task_dir: Path, source: Path, label: str,
+              unreadable: list[dict[str, str]]) -> dict[str, Any] | None:
+    manifest = task_dir / "task.yaml"
+    probe = probe_path(manifest)
+    if probe.absent:
+        unreadable.append({"source": str(source), "task": label, "reason": "no task.yaml"})
+        return None
+    if probe.unknown or not probe.is_file():
+        unreadable.append({"source": str(source), "task": label,
+                           "reason": probe.reason() if probe.unknown else "task.yaml is not a file"})
+        return None
+    try:
+        document = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
+        unreadable.append({"source": str(source), "task": label, "reason": type(exc).__name__})
+        return None
+    if not isinstance(document, dict):
+        unreadable.append({"source": str(source), "task": label,
+                           "reason": f"task.yaml is not a mapping ({type(document).__name__})"})
+        return None
+    return document
+
+
 def scan_work_projects(sources: list[Path]) -> WorkScan:
     projects: list[WorkProject] = []
     unreadable: list[dict[str, str]] = []
-    inactive = 0
+    shelved: list[ShelvedProject] = []
     for source in sources:
         tasks_dir = Path(source) / "tasks"
         try:
@@ -81,51 +152,20 @@ def scan_work_projects(sources: list[Path]) -> WorkScan:
         except OSError as exc:
             unreadable.append({"source": str(source), "task": "", "reason": type(exc).__name__})
             continue
-        task_dirs = []
-        for entry in entries:
-            if entry.name.startswith("_"):
-                continue
-            # One entry that cannot be probed is that entry's problem, not the source's.
-            # ``stat`` itself: from Python 3.14 ``is_dir`` answers False for a read that
-            # failed, and the entry would vanish from the page unsaid (kiro round 10).
-            try:
-                mode = entry.stat().st_mode
-            except FileNotFoundError:
-                if os.path.lexists(entry):
-                    unreadable.append({"source": str(source), "task": entry.name, "reason": "link target not found"})
-                continue
-            except OSError as exc:
-                unreadable.append({"source": str(source), "task": entry.name, "reason": type(exc).__name__})
-                continue
-            if stat.S_ISDIR(mode):
-                task_dirs.append(entry)
         kiro = _is_kiro(Path(source))
+        workspace = "kiro" if kiro else "claude"
         tool = None if kiro else claude_tool_dir_for(Path(source), sources)
-        for task_dir in task_dirs:
+        for task_dir in _task_dirs(entries, Path(source), "", unreadable):
             name = task_dir.name
-            manifest = task_dir / "task.yaml"
-            probe = probe_path(manifest)
-            if probe.absent:
-                unreadable.append({"source": str(source), "task": name, "reason": "no task.yaml"})
-                continue
-            if probe.unknown or not probe.is_file():
-                unreadable.append({"source": str(source), "task": name,
-                                   "reason": probe.reason() if probe.unknown else "task.yaml is not a file"})
-                continue
-            try:
-                document = yaml.safe_load(manifest.read_text(encoding="utf-8"))
-            except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
-                unreadable.append({"source": str(source), "task": name, "reason": type(exc).__name__})
-                continue
-            if not isinstance(document, dict):
-                unreadable.append({"source": str(source), "task": name,
-                                   "reason": f"task.yaml is not a mapping ({type(document).__name__})"})
-                continue
-            status = _status(document)
-            if status is not None and status != "active":
-                inactive += 1
+            document = _manifest(task_dir, Path(source), name, unreadable)
+            if document is None:
                 continue
             key = work_key(source, name)
+            status = _status(document)
+            if status is not None and status != "active":
+                shelved.append(ShelvedProject(key=key, source=str(source), task=name, title=_title(document),
+                                              workspace=workspace, status=status, archived_dir=False))
+                continue
             if kiro:
                 agent, why = kiro_agent_for(Path(source), name)
                 projects.append(WorkProject(key=key, source=str(source), task=name, title=_title(document),
@@ -138,4 +178,28 @@ def scan_work_projects(sources: list[Path]) -> WorkScan:
                     reason=None if tool else "claude-workspace tool directory not found next to this work root "
                                              "(set AGORA_CLAUDE_WORKSPACE_TOOL)",
                 ))
-    return WorkScan(projects=projects, unreadable=unreadable, inactive=inactive)
+        # ``cw archive`` moves a task into ``tasks/_archive/``: listed as shelved, whatever
+        # its status says, so it can be restored from the overview (CR-80).
+        archive_dir = tasks_dir / "_archive"
+        probe = probe_path(archive_dir)
+        if probe.absent:
+            continue
+        try:
+            if probe.unknown or not probe.is_dir():
+                raise NotADirectoryError(probe.reason() if probe.unknown else "_archive is not a directory")
+            archived = sorted(archive_dir.iterdir())
+        except OSError as exc:
+            unreadable.append({"source": str(source), "task": "_archive",
+                               "reason": str(exc) if isinstance(exc, NotADirectoryError) else type(exc).__name__})
+            continue
+        for task_dir in _task_dirs(archived, Path(source), "_archive/", unreadable):
+            name = task_dir.name
+            document = _manifest(task_dir, Path(source), "_archive/" + name, unreadable)
+            if document is None:
+                continue
+            # Its own key: ``tasks/foo`` and ``tasks/_archive/foo`` may both exist, and
+            # restoring one must not act on the other (codex review CR-80 round 3).
+            shelved.append(ShelvedProject(key=work_key(source, ARCHIVED_PREFIX + name), source=str(source), task=name,
+                                          title=_title(document), workspace=workspace,
+                                          status=_status(document) or "archived", archived_dir=True))
+    return WorkScan(projects=projects, unreadable=unreadable, inactive=len(shelved), shelved=shelved)

@@ -23,6 +23,7 @@ from typing import Any, Callable
 
 from agora.terminal.manager import PtyUnavailable, TerminalLimitReached, TerminalManager, TerminalSession, command_argv
 from agora.work import hooks as hooks_module
+from agora.work import shelf
 from agora.work.procs import creation_time, liveness
 from agora.work.projects import WorkProject, WorkScan, scan_work_projects, work_key
 from agora.work.reports import SESSION_ID_RE, Journal, has_conversation, read_journal, trusted_transcript
@@ -36,6 +37,10 @@ CONFIRM_SECONDS = 60.0
 
 class WorkProjectNotFound(LookupError):
     pass
+
+
+class WorkProjectBusy(RuntimeError):
+    """Its terminal is open or opening: closed first, then paused or archived."""
 
 
 @dataclass
@@ -80,6 +85,11 @@ class WorkService:
     _pending_close: dict[str, asyncio.Task] = field(default_factory=dict)
     #: The closes themselves, held here so a cancelled request cannot abandon one.
     _close_tasks: set[asyncio.Task] = field(default_factory=set)
+    #: How many times each key has been paused or archived (CR-80). An open that scanned
+    #: before one of those does not launch from that scan (codex review CR-80 round 1).
+    _shelve_seq: dict[str, int] = field(default_factory=dict)
+    #: Shelf changes under way, held so a cancelled request cannot abandon one.
+    _shelf_tasks: set[asyncio.Task] = field(default_factory=set)
 
     # --- lookups -------------------------------------------------------------------------
     def scan(self) -> WorkScan:
@@ -137,10 +147,14 @@ class WorkService:
         # A retry keeps the count this open first saw: a close arriving while it waited
         # came after it, and wins (codex review).
         seen_closes = self._close_seq.get(key, 0) if _seen_closes is None else _seen_closes
+        seen_shelves = self._shelve_seq.get(key, 0)
         project = await asyncio.to_thread(self._project, key)
         async with self._lock:
             if self._close_seq.get(key, 0) != seen_closes:
                 return {"result": "closed"}
+            if self._shelve_seq.get(key, 0) != seen_shelves:
+                # The scan above saw it active; it has been paused or archived since.
+                return {"result": "unavailable", "detail": "paused or archived meanwhile"}
             # A close still under way would end whatever is live now, or what this open
             # joined: wait for it, then open afresh (codex review, CR-77).
             pending = self._pending_close.get(key)
@@ -471,8 +485,65 @@ class WorkService:
                          if u.get("task") else {})}
                 for u in scan.unreadable
             ],
-            "inactive": scan.inactive, "missing": missing,
+            "inactive": scan.inactive, "shelved": [p.payload() for p in scan.shelved], "missing": missing,
             "detached": detached,
             "restore": restore, "restoring": self._restore_task is not None and not self._restore_task.done(),
             "hook_problem": self._hooks.reason if self._hooks is not None else None,
         }
+
+    # --- pause / archive / restore (CR-80) -------------------------------------------------
+    async def shelve(self, key: str, action: str) -> None:
+        """``pause`` or ``archive`` an active project: its own task.yaml says so afterwards.
+        Refused while its terminal is open or meant to be: a project put away with a
+        terminal running would leave the page with a terminal it no longer lists."""
+        if action not in ("pause", "archive"):
+            raise ValueError(action)
+        await self._owned(self._shelve(key, action))
+
+    async def _owned(self, work) -> None:
+        """Run a shelf change as a task the service holds: a cancelled request neither
+        releases the lock nor moves the count while the file write is still running in
+        its thread (codex review CR-80 round 3) — the change ends, then the lock goes."""
+        task = asyncio.create_task(work)
+        self._shelf_tasks.add(task)
+        task.add_done_callback(self._shelf_tasks.discard)
+        await asyncio.shield(task)
+
+    async def _shelve(self, key: str, action: str) -> None:
+        async with self._lock:
+            project = await asyncio.to_thread(self._project, key)
+            if project is None:
+                raise WorkProjectNotFound(key)
+            row = self.store.get(key)
+            # Any terminal not ended, closing ones included: a close that timed out leaves
+            # one running with nothing else marking it (codex review CR-80 round 1).
+            busy = (key in self._starting or key in self._pending_close
+                    or any(s.exited_at is None for s in self._terminals(key))
+                    or (row is not None and row.want_open))
+            if busy:
+                raise WorkProjectBusy(key)
+            source = Path(project.source)
+            # Counted before the write and again after it, whatever its outcome: an open
+            # whose scan came before the write, or ran while it was under way, does not
+            # launch from that scan (codex review CR-80 rounds 1 and 2).
+            self._shelve_seq[key] = self._shelve_seq.get(key, 0) + 1
+            try:
+                if action == "pause":
+                    await asyncio.to_thread(shelf.pause, source, project.task)
+                else:
+                    await asyncio.to_thread(shelf.archive, source, project.task,
+                                            move=project.workspace == "claude")
+            finally:
+                self._shelve_seq[key] += 1
+
+    async def unshelve(self, key: str) -> None:
+        """Back to ``status: active`` (out of ``_archive/`` first, where it is there)."""
+        await self._owned(self._unshelve(key))
+
+    async def _unshelve(self, key: str) -> None:
+        async with self._lock:
+            scan = await asyncio.to_thread(self.scan)
+            held = next((p for p in scan.shelved if p.key == key), None)
+            if held is None:
+                raise WorkProjectNotFound(key)
+            await asyncio.to_thread(shelf.restore, Path(held.source), held.task, archived_dir=held.archived_dir)

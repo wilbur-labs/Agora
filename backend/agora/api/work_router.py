@@ -7,15 +7,17 @@ from __future__ import annotations
 import asyncio
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel
 
 from agora.api.terminal_router import _data_dir, get_terminal_manager, require_terminal_session
 from agora.config.settings import get_config, resolve_control_plane_db_path
 from agora.projects.registry import ProjectRegistry
 from agora.tasks.router import get_project_registry
-from agora.work.service import WorkProjectNotFound, WorkService
+from agora.work.shelf import ShelfRefused
+from agora.work.service import WorkProjectBusy, WorkProjectNotFound, WorkService
 from agora.work.store import WorkSessionStore
 
 router = APIRouter(prefix="/work", dependencies=[Depends(require_terminal_session)])
@@ -61,3 +63,34 @@ async def close_work_project(key: str, service: WorkService = Depends(_service))
 @router.post("/restore")
 async def restore_work_projects(service: WorkService = Depends(_service)) -> dict[str, Any]:
     return {"restore": await service.restore()}
+
+
+class ShelveRequest(BaseModel):
+    action: Literal["pause", "archive"]
+
+
+@router.post("/projects/{key}/shelve")
+async def shelve_work_project(key: str, body: ShelveRequest,
+                              service: WorkService = Depends(_service)) -> dict[str, Any]:
+    """Pause or archive: written into the project's own task.yaml (CR-80). Not committed."""
+    try:
+        await service.shelve(key, body.action)
+    except WorkProjectNotFound:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such active work project.") from None
+    except WorkProjectBusy:
+        raise HTTPException(status.HTTP_409_CONFLICT,
+                            {"code": "terminal_open", "message": "Close this project's terminal first."}) from None
+    except ShelfRefused as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, {"code": "refused", "message": str(exc)}) from None
+    return {"key": key, "action": body.action}
+
+
+@router.post("/shelved/{key}/restore")
+async def restore_shelved_project(key: str, service: WorkService = Depends(_service)) -> dict[str, Any]:
+    try:
+        await service.unshelve(key)
+    except WorkProjectNotFound:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such paused or archived project.") from None
+    except ShelfRefused as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, {"code": "refused", "message": str(exc)}) from None
+    return {"key": key, "restored": True}

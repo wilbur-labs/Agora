@@ -22,8 +22,13 @@ import {
   WORK_SELECTED_KEY,
   bannerLinesOf,
   listWorkProjects,
+  restoreShelvedProject,
   restoreWorkProjects,
+  shelfErrorOf,
+  shelveWorkProject,
+  shelvedGroupsOf,
   type ProjectState,
+  type ShelvedProject,
   type WorkView,
 } from "@/lib/work";
 import type { WorkspaceSourcePayload } from "@/lib/workspace-sources";
@@ -57,6 +62,12 @@ export default function OverviewPage() {
   const shown = useRef(0);
   const restoring = useRef(false);
   const restoreRetryAt = useRef(0);
+  const reload = useRef<() => void>(() => {});
+  // Pause / archive / restore (CR-80): which project a request is out for, what the last
+  // one could not do, and — after one that did — that the record is written, not committed.
+  const [busyKey, setBusyKey] = useState<string | null>(null);
+  const [shelfError, setShelfError] = useState<{ key: string; text: string } | null>(null);
+  const [uncommitted, setUncommitted] = useState(false);
 
   useEffect(() => {
     mounted.current = true;
@@ -102,6 +113,7 @@ export default function OverviewPage() {
         .then((next) => { if (mounted.current && sourcesRead === mine) { setSources(next); setSourcesFailed(false); } })
         .catch(() => { if (mounted.current && sourcesRead === mine) setSourcesFailed(true); });
     }
+    reload.current = () => { loadWork(); loadSources(); };
     loadWork();
     loadSources();
     // The terminals change on their own; the records only when the person edits them, so
@@ -124,6 +136,24 @@ export default function OverviewPage() {
     () => (workView ? overviewCardsOf(workView, sources, sourcesFailed, attentionKeys) : []),
     [workView, sources, sourcesFailed, attentionKeys]);
   const summary = overviewSummaryOf(cards);
+
+  const shelfAction = (key: string, request: () => Promise<unknown>) => {
+    if (busyKey) return;
+    setBusyKey(key);
+    setShelfError(null);
+    request()
+      .then(() => { if (mounted.current) setUncommitted(true); })
+      .catch((err) => {
+        if (!mounted.current) return;
+        if (err instanceof TerminalAuthRequired) { setView("auth"); return; }
+        const why = shelfErrorOf(String((err as Error).message));
+        setShelfError({ key, text: why.kind === "terminalOpen" ? t("overview.shelfTerminalOpen")
+          : t("overview.shelfRefused", { reason: why.reason }) });
+      })
+      .finally(() => { if (mounted.current) setBusyKey(null); reload.current(); });
+  };
+  const shelve = (key: string, action: "pause" | "archive") => shelfAction(key, () => shelveWorkProject(key, action));
+  const unshelve = (key: string) => shelfAction(key, () => restoreShelvedProject(key));
 
   const go = (key: string) => {
     try { window.localStorage.setItem(WORK_SELECTED_KEY, key); } catch { /* a convenience only */ }
@@ -153,6 +183,7 @@ export default function OverviewPage() {
               <Link href="/work" className="font-medium underline">{t("overview.attentionLink")}</Link>
             </p>
           )}
+          {uncommitted && <p className="text-xs text-muted-foreground">{t("overview.shelfUncommitted")}</p>}
           {sourcesFailed && <p className="text-sm text-amber-700 dark:text-amber-400">{t("overview.sourcesFailed")}</p>}
 
           {workView && cards.length === 0 && workView.unreadable.length === 0 && (
@@ -160,7 +191,17 @@ export default function OverviewPage() {
           )}
 
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
-            {cards.map((card) => <Card key={card.key} card={card} onOpen={() => go(card.key)} />)}
+            {cards.map((card) => (
+              <Card
+                key={card.key}
+                card={card}
+                onOpen={() => go(card.key)}
+                onShelve={(action) => shelve(card.key, action)}
+                busy={busyKey !== null}
+                working={busyKey === card.key}
+                error={shelfError?.key === card.key ? shelfError.text : null}
+              />
+            ))}
           </div>
 
           {workView && workView.unreadable.length > 0 && (
@@ -173,8 +214,14 @@ export default function OverviewPage() {
               </ul>
             </section>
           )}
-          {workView && workView.inactive > 0 && (
-            <p className="text-xs text-muted-foreground">{t("work.inactive", { count: workView.inactive })}</p>
+          {workView && workView.shelved.length > 0 && (
+            <Shelved
+              shelved={workView.shelved}
+              onRestore={unshelve}
+              busy={busyKey !== null}
+              workingKey={busyKey}
+              error={shelfError}
+            />
           )}
         </div>
       </main>
@@ -182,19 +229,25 @@ export default function OverviewPage() {
   );
 }
 
-function Card({ card, onOpen }: { card: OverviewCard; onOpen: () => void }) {
+function Card({ card, onOpen, onShelve, busy, working, error }: {
+  card: OverviewCard;
+  onOpen: () => void;
+  onShelve: (action: "pause" | "archive") => void;
+  busy: boolean;
+  working: boolean;
+  error: string | null;
+}) {
   const { t } = useI18n();
+  const [confirming, setConfirming] = useState(false);
   const record = card.record;
   const title = record.show === "read" && record.title ? record.title : card.task;
   return (
+    <div className={cn("flex min-w-0 flex-col rounded-xl border bg-card", card.attention && "border-amber-500/60")}>
     <button
       type="button"
       onClick={onOpen}
       title={t("overview.openHint")}
-      className={cn(
-        "flex min-w-0 flex-col gap-2 rounded-xl border bg-card p-4 text-left transition-colors hover:bg-accent/60",
-        card.attention && "border-amber-500/60",
-      )}
+      className="flex min-w-0 flex-1 flex-col gap-2 rounded-t-xl p-4 text-left transition-colors hover:bg-accent/60"
     >
       <div className="flex min-w-0 items-start gap-2">
         <span className={cn("mt-1.5 size-2 shrink-0 rounded-full", DOT[card.state])} />
@@ -226,5 +279,85 @@ function Card({ card, onOpen }: { card: OverviewCard; onOpen: () => void }) {
       )}
       {card.attention && <p className="text-xs text-amber-700 dark:text-amber-400">{t("overview.restoreAttention")}</p>}
     </button>
+    <div className="flex flex-wrap items-center gap-2 border-t px-4 py-2 text-xs">
+      {working ? (
+        <span className="text-muted-foreground">{t("overview.working")}</span>
+      ) : confirming ? (
+        <>
+          <button type="button" disabled={busy} onClick={() => { setConfirming(false); onShelve("archive"); }}
+            className="rounded border border-amber-500/60 px-2 py-0.5 font-medium text-amber-800 hover:bg-amber-500/10 disabled:opacity-50 dark:text-amber-300">
+            {t("overview.archiveConfirm")}
+          </button>
+          <button type="button" onClick={() => setConfirming(false)}
+            className="rounded px-2 py-0.5 text-muted-foreground hover:bg-accent">
+            {t("overview.cancel")}
+          </button>
+          <p className="basis-full text-muted-foreground">{t("overview.archiveConfirmHint")}</p>
+        </>
+      ) : (
+        <>
+          <button type="button" disabled={busy} title={t("overview.pauseHint")} onClick={() => onShelve("pause")}
+            className="rounded px-2 py-0.5 text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50">
+            {t("overview.pause")}
+          </button>
+          <button type="button" disabled={busy} title={t("overview.archiveHint")} onClick={() => setConfirming(true)}
+            className="rounded px-2 py-0.5 text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50">
+            {t("overview.archive")}
+          </button>
+        </>
+      )}
+      {error && <p className="basis-full text-red-700 dark:text-red-400">{error}</p>}
+    </div>
+    </div>
+  );
+}
+
+function Shelved({ shelved, onRestore, busy, workingKey, error }: {
+  shelved: ShelvedProject[];
+  onRestore: (key: string) => void;
+  busy: boolean;
+  workingKey: string | null;
+  error: { key: string; text: string } | null;
+}) {
+  const { t } = useI18n();
+  const groups = shelvedGroupsOf(shelved);
+  const sections: [string, ShelvedProject[]][] = [
+    [t("overview.shelvedPaused"), groups.paused],
+    [t("overview.shelvedArchived"), groups.archived],
+    [t("overview.shelvedOtherHeading"), groups.other],
+  ];
+  return (
+    <details className="rounded-xl border bg-card px-4 py-3">
+      <summary className="cursor-pointer text-sm font-semibold">
+        {t("overview.shelvedHeading", { paused: groups.paused.length, archived: groups.archived.length })}
+        {groups.other.length > 0 && <> · {t("overview.shelvedOther", { count: groups.other.length })}</>}
+      </summary>
+      <div className="mt-3 space-y-3">
+        {sections.filter(([, items]) => items.length > 0).map(([heading, items]) => (
+          <section key={heading} className="space-y-1">
+            <h3 className="text-xs font-semibold text-muted-foreground">{heading}</h3>
+            <ul className="divide-y">
+              {items.map((p) => (
+                <li key={p.key} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-1.5 text-sm">
+                  <span className="min-w-0 flex-1">
+                    <span className="font-medium">{p.title ?? p.task}</span>
+                    <span className="ml-2 text-xs text-muted-foreground">{p.task} · {p.workspace} · {p.status}</span>
+                  </span>
+                  {workingKey === p.key ? (
+                    <span className="text-xs text-muted-foreground">{t("overview.working")}</span>
+                  ) : (
+                    <button type="button" disabled={busy} onClick={() => onRestore(p.key)}
+                      className="rounded px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50">
+                      {t("overview.restore")}
+                    </button>
+                  )}
+                  {error?.key === p.key && <p className="basis-full text-xs text-red-700 dark:text-red-400">{error.text}</p>}
+                </li>
+              ))}
+            </ul>
+          </section>
+        ))}
+      </div>
+    </details>
   );
 }

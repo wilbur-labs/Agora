@@ -8536,3 +8536,35 @@ round 3 — none.
 
 Restart dev 8001; the owner looks at the overview. Slice 2 (commit review through a git hook)
 is next in the agreed order unless use says otherwise.
+
+## CR-80 — pause, archive and restore projects from the overview
+
+Asked 2026-11-04: the overview listed 24 projects, many not being worked on. A project's
+own `task.yaml` status decides whether it is listed, so pausing and archiving write there
+(no Agora-side hide list that could disagree with claude-workspace). Nothing is committed
+to the work data repository: several sessions write to it at once.
+
+- `agora/work/shelf.py`: line-level status edit, verified by parsing (status reads back,
+  nothing else differs; a layout it cannot change safely is refused, never rewritten).
+  Archiving a claude-workspace task matches `cw archive` (status archived + completed_at,
+  directory into `tasks/_archive/`), done in Python rather than by running `cw.sh`;
+  `test_archive_matches_cw_archive_layout` pins the layout. The workspace's
+  `.current-task` is not archived; a failed move puts task.yaml back.
+- Scan lists `shelved` (paused / other status / everything in `tasks/_archive/`, which has
+  its own key). `POST /api/work/projects/{key}/shelve {action}`,
+  `POST /api/work/shelved/{key}/restore`; refused (409) while any terminal of the project
+  has not ended or it is meant to be open.
+- Overview: Pause / Archive (second click to confirm, says closing checks are not run) on
+  each card; a collapsed "Paused N · Archived N" section with Restore.
+
+Tests: backend test_work + test_work_shelf + test_terminal + test_workspace_sources_api
+collected 175, 173 passed, 2 skipped; frontend test:control-plane collected 588, 587
+passed, 1 skipped; tsc, lint, build, compileall, schema check, diff --check clean. Full
+backend suite not run (release runs it).
+
+Review: codex 3 rounds — round 1 (2): an open that scanned before the shelve still
+launched; a terminal whose close timed out did not block. Round 2 (1): an open scanning
+while the write ran. Round 3 (2): a cancelled request released the lock while the write
+still ran (now a service-held task); an archived entry shared its key with a same-named
+task. All fixed with regression tests; round 3's fixes were not reviewed again (three-round
+limit for a slice).

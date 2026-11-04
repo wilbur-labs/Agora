@@ -69,3 +69,30 @@ test("the terminal state and the restore's attention ride along; the summary cou
   assert.deepEqual(cards.map((c) => [c.state, c.attention]), [["open", false], ["notOpen", true]]);
   assert.deepEqual(overviewSummaryOf(cards), { projects: 2, open: 1 });
 });
+
+// --- pause / archive / restore (CR-80) ------------------------------------------------------
+import { shelfErrorOf, shelvedGroupsOf, type ShelvedProject } from "../src/lib/work-state.ts";
+
+function held(over: Partial<ShelvedProject>): ShelvedProject {
+  return { key: "k", source: "E:/Work", task: "t", title: null, workspace: "claude", status: "paused",
+    archived_dir: false, ...over };
+}
+
+test("a refused change says why; an open terminal is said in the page's words", () => {
+  assert.deepEqual(shelfErrorOf(JSON.stringify({ code: "terminal_open", message: "Close it" })), { kind: "terminalOpen" });
+  assert.deepEqual(shelfErrorOf(JSON.stringify({ code: "refused", message: "tasks/_archive/x already exists" })),
+    { kind: "refused", reason: "tasks/_archive/x already exists" });
+  assert.deepEqual(shelfErrorOf("HTTP 500"), { kind: "refused", reason: "HTTP 500" });
+});
+
+test("shelved projects split into paused, archived, and a status the page has no word for", () => {
+  const groups = shelvedGroupsOf([
+    held({ key: "p", status: "paused" }),
+    held({ key: "a", status: "archived", archived_dir: true }),
+    held({ key: "d", status: "active", archived_dir: true }),
+    held({ key: "x", status: "done" }),
+  ]);
+  assert.deepEqual(groups.paused.map((p) => p.key), ["p"]);
+  assert.deepEqual(groups.archived.map((p) => p.key), ["a", "d"]);
+  assert.deepEqual(groups.other.map((p) => p.key), ["x"]);
+});
