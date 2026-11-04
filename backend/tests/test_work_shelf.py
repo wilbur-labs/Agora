@@ -279,3 +279,17 @@ def test_a_cancelled_request_keeps_the_lock_until_the_write_has_ended(world, mon
         run(service.open(key))
     assert service.manager.sessions == []
     assert "status: paused" in (work / "tasks" / "alpha" / "task.yaml").read_text(encoding="utf-8")
+
+
+def test_put_away_names_only_what_was_paused_or_archived_here(world):
+    """The banner drops a restore line for these keys only: a same-named archive that was
+    not put away from here is not among them."""
+    tmp_path, work, claude = world
+    service = _service(tmp_path, work, claude)
+    _task(work, "_archive/beta", "task:\n  status: archived\n")
+    alpha = work_key(work, "alpha")
+    run(service.shelve(alpha, "archive"))
+    assert service.view()["put_away"] == [alpha]
+    archived_key = next(p.key for p in service.scan().shelved if p.task == "alpha")
+    run(service.unshelve(archived_key))
+    assert service.view()["put_away"] == []

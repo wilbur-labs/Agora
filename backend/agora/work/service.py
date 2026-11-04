@@ -90,6 +90,10 @@ class WorkService:
     _shelve_seq: dict[str, int] = field(default_factory=dict)
     #: Shelf changes under way, held so a cancelled request cannot abandon one.
     _shelf_tasks: set[asyncio.Task] = field(default_factory=set)
+    #: Keys (as listed while active) the person paused or archived from this server since
+    #: it started. The restore banner drops those: it has nothing left to tell about a
+    #: project put away — and only those, never one that merely shares a name.
+    _put_away: set[str] = field(default_factory=set)
 
     # --- lookups -------------------------------------------------------------------------
     def scan(self) -> WorkScan:
@@ -485,7 +489,8 @@ class WorkService:
                          if u.get("task") else {})}
                 for u in scan.unreadable
             ],
-            "inactive": scan.inactive, "shelved": [p.payload() for p in scan.shelved], "missing": missing,
+            "inactive": scan.inactive, "shelved": [p.payload() for p in scan.shelved],
+            "put_away": sorted(self._put_away - {p.key for p in scan.projects}), "missing": missing,
             "detached": detached,
             "restore": restore, "restoring": self._restore_task is not None and not self._restore_task.done(),
             "hook_problem": self._hooks.reason if self._hooks is not None else None,
@@ -533,6 +538,7 @@ class WorkService:
                 else:
                     await asyncio.to_thread(shelf.archive, source, project.task,
                                             move=project.workspace == "claude")
+                self._put_away.add(key)
             finally:
                 self._shelve_seq[key] += 1
 
@@ -547,3 +553,4 @@ class WorkService:
             if held is None:
                 raise WorkProjectNotFound(key)
             await asyncio.to_thread(shelf.restore, Path(held.source), held.task, archived_dir=held.archived_dir)
+            self._put_away.discard(work_key(held.source, held.task))

@@ -81,3 +81,13 @@ test("a restore the person later replaced by opening the project again leaves th
 test("a restored project no longer listed is unconfirmed, not resuming forever", () => {
   assert.equal(bannerLineOf("k", { task: "a", source: "/w", result: "resume" }, undefined)?.message, "unconfirmed");
 });
+
+test("a project paused or archived after the restore leaves the banner; one that just vanished stays said", () => {
+  const entry = { task: "career-assets", source: "E:\\Work", result: "fresh_no_record" as const };
+  assert.deepEqual(bannerLinesOf({ restore: { k: entry }, projects: [], put_away: ["k"] }), []);
+  // Not put away here and not listed (unreadable, gone, or only a same-named archive):
+  // still unconfirmed, not dropped (codex review).
+  assert.equal(bannerLinesOf({ restore: { k: entry }, projects: [], put_away: ["other-key"] })[0]?.message,
+    "freshNoRecordUnconfirmed");
+  assert.equal(bannerLinesOf({ restore: { k: entry }, projects: [] })[0]?.message, "freshNoRecordUnconfirmed");
+});

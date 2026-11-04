@@ -86,6 +86,8 @@ export interface WorkView {
   inactive: number;
   /** Paused or archived projects (CR-80): not listed for work, offered for restoring. */
   shelved: ShelvedProject[];
+  /** Keys (as they were while active) the person paused or archived from this server. */
+  put_away: string[];
   missing: { key: string; task: string; source: string }[];
   /** Running terminals of projects the scan no longer lists: still reachable, to close. */
   detached: { key: string; task: string; terminal: WorkTerminal }[];
@@ -169,10 +171,16 @@ export function bannerLineOf(key: string, entry: RestoreEntry, row: WorkProjectR
   return quiet ? null : { ...base, tone: "pending", message: `${why}Pending` };
 }
 
-export function bannerLinesOf(view: Pick<WorkView, "restore" | "projects">): BannerLine[] {
+export function bannerLinesOf(view: Pick<WorkView, "restore" | "projects"> & Partial<Pick<WorkView, "put_away">>): BannerLine[] {
   if (!view.restore) return [];
   const rows = new Map(view.projects.map((row) => [row.key, row]));
+  // A project the person paused or archived here since the restore: they put it away, so
+  // the restore has nothing left to tell them — and with it no longer listed, its report
+  // is not read, which would otherwise be said as "not confirmed" (CR-80 follow-up). By
+  // key, never by name: a same-named archive must not hide another project's warning.
+  const putAway = new Set(view.put_away ?? []);
   return Object.entries(view.restore)
+    .filter(([key]) => rows.has(key) || !putAway.has(key))
     .map(([key, entry]) => bannerLineOf(key, entry, rows.get(key)))
     .filter((line): line is BannerLine => line !== null);
 }
