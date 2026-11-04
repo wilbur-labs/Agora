@@ -34,6 +34,42 @@ export interface WorkProjectRow {
   launch: { result: LaunchResult; detail: string | null; restored: boolean; confirm: Confirm | null } | null;
   stale: boolean;
   agent_exited: boolean;
+  /** The person's board (CR-81): Agora's own, not in the task record. */
+  stage: Stage;
+  /** Where the person dragged it (CR-82); null for one never placed. */
+  position: number | null;
+}
+
+export type Stage = "todo" | "doing";
+
+/** The projects in the person's order: placed ones by position, then the rest as the
+ *  server listed them. */
+export function orderedRows<T extends Pick<WorkProjectRow, "position">>(rows: readonly T[]): T[] {
+  return rows
+    .map((row, index) => ({ row, index }))
+    .sort((a, b) => {
+      const pa = a.row.position ?? Number.POSITIVE_INFINITY;
+      const pb = b.row.position ?? Number.POSITIVE_INFINITY;
+      return pa === pb ? a.index - b.index : pa - pb;
+    })
+    .map(({ row }) => row);
+}
+
+/** The work page's list: what is doing — and anything whose terminal is open, opening or
+ *  meant to be, whatever its stage says: the page never hides a running terminal. */
+export function workListOf(rows: readonly WorkProjectRow[]): WorkProjectRow[] {
+  return orderedRows(rows).filter((row) =>
+    row.stage === "doing" || row.starting || row.want_open || Boolean(row.terminal?.alive));
+}
+
+/** `keys` with `moved` taken out and put back before `before` (at the end for null, or
+ *  when `before` is not there). The same array's order if nothing moves. */
+export function moveKey(keys: readonly string[], moved: string, before: string | null): string[] {
+  const rest = keys.filter((key) => key !== moved);
+  const at = before === null || before === moved ? -1 : rest.indexOf(before);
+  if (before === moved) return [...keys];
+  if (at < 0) return [...rest, moved];
+  return [...rest.slice(0, at), moved, ...rest.slice(at)];
 }
 
 export type RestoreResult =

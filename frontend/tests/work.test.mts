@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { bannerLineOf, bannerLinesOf, bannerSettled, projectStateOf, type WorkProjectRow } from "../src/lib/work-state.ts";
+import { bannerLineOf, bannerLinesOf, bannerSettled, moveKey, orderedRows, projectStateOf, workListOf, type WorkProjectRow } from "../src/lib/work-state.ts";
 
 function row(over: Partial<WorkProjectRow> = {}): WorkProjectRow {
   return {
     key: "k", source: "/w", task: "alpha", title: null, workspace: "claude", openable: true, reason: null,
     want_open: true, terminal: { terminal_id: "t", alive: true }, starting: false, launch: null, stale: false,
-    agent_exited: false, ...over,
+    agent_exited: false, stage: "doing", position: null, ...over,
   };
 }
 
@@ -90,4 +90,22 @@ test("a project paused or archived after the restore leaves the banner; one that
   assert.equal(bannerLinesOf({ restore: { k: entry }, projects: [], put_away: ["other-key"] })[0]?.message,
     "freshNoRecordUnconfirmed");
   assert.equal(bannerLinesOf({ restore: { k: entry }, projects: [] })[0]?.message, "freshNoRecordUnconfirmed");
+});
+
+test("the work page lists what is doing, in order, and never hides a running terminal", () => {
+  const rows = [
+    row({ key: "todo", stage: "todo", terminal: null, want_open: false }),
+    row({ key: "late", stage: "doing", position: null }),
+    row({ key: "first", stage: "doing", position: 0 }),
+    row({ key: "running-todo", stage: "todo", position: 1, want_open: false }),
+  ];
+  assert.deepEqual(workListOf(rows).map((r) => r.key), ["first", "running-todo", "late"]);
+  assert.deepEqual(orderedRows(rows).map((r) => r.key), ["first", "running-todo", "todo", "late"]);
+});
+
+test("moving a key puts it before another, or at the end", () => {
+  assert.deepEqual(moveKey(["a", "b", "c"], "c", "a"), ["c", "a", "b"]);
+  assert.deepEqual(moveKey(["a", "b", "c"], "a", null), ["b", "c", "a"]);
+  assert.deepEqual(moveKey(["a", "b", "c"], "a", "a"), ["a", "b", "c"]);
+  assert.deepEqual(moveKey(["a", "b", "c"], "a", "gone"), ["b", "c", "a"]);
 });

@@ -67,8 +67,23 @@ class WorkSessionStore:
                     ck_stale INTEGER NOT NULL DEFAULT 0,
                     updated_at REAL NOT NULL
                 );
+                -- The person's board (workspace CR-81/82): todo or doing, and where the
+                -- project sits in the work page's list. Agora's own, never written into
+                -- a task record; kept apart from the launch bookkeeping above.
+                CREATE TABLE IF NOT EXISTS work_board (
+                    key TEXT PRIMARY KEY,
+                    stage TEXT NOT NULL CHECK (stage IN ('todo', 'doing')),
+                    position INTEGER,
+                    updated_at REAL NOT NULL
+                );
                 """
             )
+            # What was meant to be open before the board existed is "doing", written down —
+            # not inferred from want_open, which a close clears (codex review CR-81 round 1).
+            # Idempotent: only keys with no board row, and every later open writes its own.
+            db.execute("INSERT OR IGNORE INTO work_board (key, stage, position, updated_at) "
+                       "SELECT key, 'doing', NULL, ? FROM work_sessions WHERE want_open = 1", (time.time(),))
+            db.commit()
 
     def _connect(self) -> sqlite3.Connection:
         db = sqlite3.connect(str(self.db_path), timeout=60)
@@ -134,6 +149,35 @@ class WorkSessionStore:
         with self._transaction() as db:
             db.execute("UPDATE work_sessions SET want_open = ?, updated_at = ? WHERE key = ?",
                        (1 if want else 0, time.time(), key))
+
+    # --- the board (CR-81/82) ---------------------------------------------------------------
+    def board(self) -> dict[str, tuple[str, int | None]]:
+        """``{key: (stage, position)}`` for every project the person has placed."""
+        with closing(self._connect()) as db:
+            rows = db.execute("SELECT key, stage, position FROM work_board").fetchall()
+        return {r["key"]: (r["stage"], r["position"]) for r in rows}
+
+    def set_stage(self, key: str, stage: str) -> None:
+        if stage not in ("todo", "doing"):
+            raise ValueError(stage)
+        with self._transaction() as db:
+            db.execute(
+                "INSERT INTO work_board (key, stage, position, updated_at) VALUES (?, ?, NULL, ?) "
+                "ON CONFLICT(key) DO UPDATE SET stage = excluded.stage, updated_at = excluded.updated_at",
+                (key, stage, time.time()),
+            )
+
+    def set_order(self, keys: list[str], stages: dict[str, str]) -> None:
+        """Positions 0.. in the order given, in one transaction. A key with no board row
+        yet gets one at ``stages[key]`` — the stage the page was showing it under."""
+        now = time.time()
+        with self._transaction() as db:
+            for position, key in enumerate(keys):
+                db.execute(
+                    "INSERT INTO work_board (key, stage, position, updated_at) VALUES (?, ?, ?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET position = excluded.position, updated_at = excluded.updated_at",
+                    (key, stages[key], position, now),
+                )
 
     def advance_checkpoint(self, key: str, *, session: str | None, transcript: str | None,
                            launch: str | None, stale: bool) -> None:

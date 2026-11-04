@@ -8,7 +8,8 @@ import type { WorkspaceSourcePayload, WorkspaceTaskPayload } from "../src/lib/wo
 function row(over: Partial<WorkProjectRow> = {}): WorkProjectRow {
   return {
     key: "k", source: "E:\\Work", task: "alpha", title: null, workspace: "claude", openable: true, reason: null,
-    want_open: false, terminal: null, starting: false, launch: null, stale: false, agent_exited: false, ...over,
+    want_open: false, terminal: null, starting: false, launch: null, stale: false, agent_exited: false,
+    stage: "todo", position: null, ...over,
   };
 }
 
@@ -95,4 +96,13 @@ test("shelved projects split into paused, archived, and a status the page has no
   assert.deepEqual(groups.paused.map((p) => p.key), ["p"]);
   assert.deepEqual(groups.archived.map((p) => p.key), ["a", "d"]);
   assert.deepEqual(groups.other.map((p) => p.key), ["x"]);
+});
+
+test("cards follow the person's order and carry the stage and whether todo would be refused", () => {
+  const cards = overviewCardsOf({ projects: [
+    row({ key: "a", task: "a" }),
+    row({ key: "b", task: "b", stage: "doing", position: 0, want_open: true }),
+    row({ key: "c", task: "c", position: 1 }),
+  ] }, [], false);
+  assert.deepEqual(cards.map((c) => [c.key, c.stage, c.busy]), [["b", "doing", true], ["c", "todo", false], ["a", "todo", false]]);
 });

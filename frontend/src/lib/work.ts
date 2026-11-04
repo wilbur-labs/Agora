@@ -23,6 +23,16 @@ export const shelveWorkProject = (key: string, action: "pause" | "archive") =>
     method: "POST", body: JSON.stringify({ action }),
   });
 
+/** Todo or doing (CR-81): Agora's own; "todo" is refused while the terminal is open. */
+export const setWorkStage = (key: string, stage: "todo" | "doing") =>
+  call<{ key: string; stage: string }>(`/api/work/projects/${encodeURIComponent(key)}/stage`, {
+    method: "POST", body: JSON.stringify({ stage }),
+  });
+
+/** The order the person dragged the projects into (CR-82). */
+export const setWorkOrder = (keys: string[]) =>
+  call<{ keys: string[] }>("/api/work/order", { method: "PUT", body: JSON.stringify({ keys }) });
+
 /** Back to active; an archived claude-workspace task moves out of tasks/_archive/ first. */
 export const restoreShelvedProject = (key: string) =>
   call<{ key: string; restored: boolean }>(`/api/work/shelved/${encodeURIComponent(key)}/restore`, { method: "POST" });

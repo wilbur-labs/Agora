@@ -10,7 +10,7 @@
  * zero. Free of React and "@/" aliases so `node --test` runs it directly.
  */
 
-import { projectStateOf, type ProjectState, type WorkView } from "./work-state.ts";
+import { orderedRows, projectStateOf, type ProjectState, type Stage, type WorkView } from "./work-state.ts";
 import {
   taskProgressOf,
   type CrLogPayload,
@@ -44,6 +44,10 @@ export interface OverviewCard {
   source: string;
   workspace: "claude" | "kiro";
   state: ProjectState;
+  /** The person's board (CR-81): only "doing" is listed on the work page. */
+  stage: Stage;
+  /** Its terminal is open or meant to be, so it cannot be moved to "todo". */
+  busy: boolean;
   record: CardRecord;
   /** The restore after a restart has something to say about this project. */
   attention: boolean;
@@ -95,7 +99,7 @@ export function overviewCardsOf(
     if (!source.available || !source.tasks) continue;
     for (const task of source.tasks) tasks.set(`${sourceKeyOf(source.root)}\0${task.name}`, task);
   }
-  return view.projects.map((row) => {
+  return orderedRows(view.projects).map((row) => {
     let record: CardRecord;
     if (sourcesFailed) record = { show: "unread" };
     else if (sources === null) record = { show: "loading" };
@@ -109,6 +113,9 @@ export function overviewCardsOf(
       source: row.source,
       workspace: row.workspace,
       state: projectStateOf(row),
+      stage: row.stage,
+      // A terminal open, opening, or meant to be: "todo" would be refused (CR-81).
+      busy: Boolean(row.starting || row.want_open || row.terminal?.alive),
       record,
       attention: attentionKeys.has(row.key),
     };

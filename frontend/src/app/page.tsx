@@ -22,13 +22,17 @@ import {
   WORK_SELECTED_KEY,
   bannerLinesOf,
   listWorkProjects,
+  moveKey,
   restoreShelvedProject,
   restoreWorkProjects,
+  setWorkOrder,
+  setWorkStage,
   shelfErrorOf,
   shelveWorkProject,
   shelvedGroupsOf,
   type ProjectState,
   type ShelvedProject,
+  type Stage,
   type WorkView,
 } from "@/lib/work";
 import type { WorkspaceSourcePayload } from "@/lib/workspace-sources";
@@ -68,6 +72,9 @@ export default function OverviewPage() {
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [shelfError, setShelfError] = useState<{ key: string; text: string } | null>(null);
   const [uncommitted, setUncommitted] = useState(false);
+  // A card being dragged, and where it would land: a column, before a card or at its end.
+  const [dragged, setDragged] = useState<string | null>(null);
+  const [dropAt, setDropAt] = useState<{ stage: Stage; before: string | null } | null>(null);
 
   useEffect(() => {
     mounted.current = true;
@@ -155,10 +162,48 @@ export default function OverviewPage() {
   const shelve = (key: string, action: "pause" | "archive") => shelfAction(key, () => shelveWorkProject(key, action));
   const unshelve = (key: string) => shelfAction(key, () => restoreShelvedProject(key));
 
-  const go = (key: string) => {
-    try { window.localStorage.setItem(WORK_SELECTED_KEY, key); } catch { /* a convenience only */ }
-    router.push("/work");
+  // Todo / doing (CR-81) and the order (CR-82): Agora's own, nothing to commit. A drop
+  // changes the stage first — "todo" may be refused — and only then the place.
+  const boardAction = (key: string, request: () => Promise<unknown>, after?: () => void) => {
+    if (busyKey) return;
+    setBusyKey(key);
+    setShelfError(null);
+    request()
+      .then(() => { if (mounted.current) after?.(); })
+      .catch((err) => {
+        if (!mounted.current) return;
+        if (err instanceof TerminalAuthRequired) { setView("auth"); return; }
+        const why = shelfErrorOf(String((err as Error).message));
+        setShelfError({ key, text: why.kind === "terminalOpen" ? t("overview.todoTerminalOpen")
+          : t("overview.shelfRefused", { reason: why.reason }) });
+      })
+      .finally(() => { if (mounted.current) setBusyKey(null); reload.current(); });
   };
+  const move = (key: string, stage: Stage, before: string | null) => {
+    const card = cards.find((c) => c.key === key);
+    if (!card) return;
+    const keys = moveKey(cards.map((c) => c.key), key, before);
+    const unchanged = card.stage === stage && keys.every((k, i) => k === cards[i]?.key);
+    if (unchanged) return;
+    boardAction(key, async () => {
+      if (card.stage !== stage) await setWorkStage(key, stage);
+      await setWorkOrder(keys);
+    });
+  };
+  const setStage = (key: string, stage: Stage) => boardAction(key, () => setWorkStage(key, stage));
+
+  const go = (key: string) => {
+    const card = cards.find((c) => c.key === key);
+    const navigate = () => {
+      try { window.localStorage.setItem(WORK_SELECTED_KEY, key); } catch { /* a convenience only */ }
+      router.push("/work");
+    };
+    // The work page lists only what is doing: opening a todo project starts it (CR-81).
+    if (card && card.stage === "todo") boardAction(key, () => setWorkStage(key, "doing"), navigate);
+    else navigate();
+  };
+  const doing = cards.filter((card) => card.stage === "doing");
+  const todo = cards.filter((card) => card.stage === "todo");
 
   return (
     <div className="flex h-screen flex-col bg-background">
@@ -190,19 +235,68 @@ export default function OverviewPage() {
             <p className="text-sm text-muted-foreground">{t("work.noProjects")}</p>
           )}
 
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
-            {cards.map((card) => (
-              <Card
-                key={card.key}
-                card={card}
-                onOpen={() => go(card.key)}
-                onShelve={(action) => shelve(card.key, action)}
-                busy={busyKey !== null}
-                working={busyKey === card.key}
-                error={shelfError?.key === card.key ? shelfError.text : null}
-              />
-            ))}
-          </div>
+          {workView && cards.length > 0 && ([["doing", doing], ["todo", todo]] as const).map(([stage, items]) => (
+            <section
+              key={stage}
+              className={cn("space-y-2 rounded-xl p-2 transition-colors", dragged && dropAt?.stage === stage && "bg-accent/40")}
+              onDragOver={(event) => {
+                if (!dragged) return;
+                event.preventDefault();
+                // Anywhere in the column but a card (cards stop the event): its end — the
+                // heading and the gaps included (codex review CR-81 round 1).
+                setDropAt({ stage, before: null });
+              }}
+              onDrop={(event) => {
+                event.preventDefault();
+                // The column receiving the drop decides the stage; a target left over from
+                // another column is not used.
+                const at = dropAt?.stage === stage ? dropAt : { stage, before: null };
+                if (dragged) move(dragged, at.stage, at.before);
+                setDragged(null); setDropAt(null);
+              }}
+            >
+              <h2 className="flex items-baseline gap-2 px-1 text-sm font-semibold">
+                {t(stage === "doing" ? "overview.doingHeading" : "overview.todoHeading", { count: items.length })}
+                <span className="text-xs font-normal text-muted-foreground">
+                  {t(stage === "doing" ? "overview.doingHint" : "overview.todoHint")}
+                </span>
+              </h2>
+              {items.length === 0 && (
+                <p className="rounded-lg border border-dashed px-4 py-6 text-center text-xs text-muted-foreground"
+                  onDragOver={(event) => { if (dragged) { event.preventDefault(); setDropAt({ stage, before: null }); } }}>
+                  {t("overview.dropHere")}
+                </p>
+              )}
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
+                {items.map((card) => (
+                  <div
+                    key={card.key}
+                    draggable={busyKey === null}
+                    onDragStart={(event) => { setDragged(card.key); event.dataTransfer.effectAllowed = "move"; }}
+                    onDragEnd={() => { setDragged(null); setDropAt(null); }}
+                    onDragOver={(event) => {
+                      if (!dragged) return;
+                      event.preventDefault();
+                      event.stopPropagation();
+                      setDropAt({ stage, before: card.key });
+                    }}
+                    className={cn("flex min-w-0 rounded-xl", dragged === card.key && "opacity-50",
+                      dragged && dragged !== card.key && dropAt?.before === card.key && "ring-2 ring-primary ring-offset-2")}
+                  >
+                    <Card
+                      card={card}
+                      onOpen={() => go(card.key)}
+                      onShelve={(action) => shelve(card.key, action)}
+                      onStage={(next) => setStage(card.key, next)}
+                      busy={busyKey !== null}
+                      working={busyKey === card.key}
+                      error={shelfError?.key === card.key ? shelfError.text : null}
+                    />
+                  </div>
+                ))}
+              </div>
+            </section>
+          ))}
 
           {workView && workView.unreadable.length > 0 && (
             <section className="space-y-1">
@@ -229,10 +323,11 @@ export default function OverviewPage() {
   );
 }
 
-function Card({ card, onOpen, onShelve, busy, working, error }: {
+function Card({ card, onOpen, onShelve, onStage, busy, working, error }: {
   card: OverviewCard;
   onOpen: () => void;
   onShelve: (action: "pause" | "archive") => void;
+  onStage: (stage: Stage) => void;
   busy: boolean;
   working: boolean;
   error: string | null;
@@ -242,7 +337,7 @@ function Card({ card, onOpen, onShelve, busy, working, error }: {
   const record = card.record;
   const title = record.show === "read" && record.title ? record.title : card.task;
   return (
-    <div className={cn("flex min-w-0 flex-col rounded-xl border bg-card", card.attention && "border-amber-500/60")}>
+    <div className={cn("flex w-full min-w-0 flex-col rounded-xl border bg-card", card.attention && "border-amber-500/60")}>
     <button
       type="button"
       onClick={onOpen}
@@ -297,6 +392,18 @@ function Card({ card, onOpen, onShelve, busy, working, error }: {
         </>
       ) : (
         <>
+          {card.stage === "todo" ? (
+            <button type="button" disabled={busy} title={t("overview.toDoingHint")} onClick={() => onStage("doing")}
+              className="rounded px-2 py-0.5 font-medium text-foreground hover:bg-accent disabled:opacity-50">
+              {t("overview.toDoing")}
+            </button>
+          ) : (
+            <button type="button" disabled={busy || card.busy}
+              title={card.busy ? t("overview.todoTerminalOpen") : t("overview.toTodoHint")} onClick={() => onStage("todo")}
+              className="rounded px-2 py-0.5 text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50">
+              {t("overview.toTodo")}
+            </button>
+          )}
           <button type="button" disabled={busy} title={t("overview.pauseHint")} onClick={() => onShelve("pause")}
             className="rounded px-2 py-0.5 text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50">
             {t("overview.pause")}

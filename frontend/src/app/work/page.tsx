@@ -8,6 +8,7 @@
  * started terminal is not a resumed conversation. Design: docs/CR75-slice1-work-page.md.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 
 import { TopBar } from "@/components/delivery-shell";
 import { TerminalView } from "@/components/terminal-view";
@@ -19,9 +20,13 @@ import {
   bannerSettled,
   closeWorkProject,
   listWorkProjects,
+  moveKey,
   openWorkProject,
+  orderedRows,
   projectStateOf,
   restoreWorkProjects,
+  setWorkOrder,
+  workListOf,
   type BannerLine,
   type ProjectState,
   type WorkView,
@@ -33,6 +38,11 @@ import { cn } from "@/lib/utils";
 const POLL_MS = 5000;
 const RESTORE_BACKOFF_MIN_MS = 5000;
 const RESTORE_BACKOFF_MAX_MS = 60000;
+
+/** The list with each project's position replaced by the one being saved. */
+function withOrder(view: WorkView, position: ReadonlyMap<string, number>): WorkView {
+  return { ...view, projects: view.projects.map((row) => ({ ...row, position: position.get(row.key) ?? row.position })) };
+}
 
 function readSelected(): string | null {
   try { return window.localStorage.getItem(SELECTED_KEY); } catch { return null; }
@@ -81,6 +91,8 @@ export default function WorkPage() {
   const restoreBackoff = useRef(RESTORE_BACKOFF_MIN_MS);
   // Once the page is gone nothing more is sent, a retry already scheduled included.
   const mounted = useRef(true);
+  // The order being saved (CR-82), applied over any list read until the save has ended.
+  const pendingOrder = useRef<Map<string, number> | null>(null);
 
   const load = useCallback(() => {
     if (!mounted.current) return Promise.resolve();
@@ -90,7 +102,7 @@ export default function WorkPage() {
         // An answer arriving after the page is gone starts nothing (codex review).
         if (!mounted.current || mine < shown.current) return;
         shown.current = mine;
-        setView(next);
+        setView(pendingOrder.current ? withOrder(next, pendingOrder.current) : next);
         setListFailed(false);
         // The server has restored, whatever became of our own request's answer (kiro review).
         if (next.restore !== null) setRestoreError(null);
@@ -142,7 +154,38 @@ export default function WorkPage() {
   }, [load]);
 
   const rows = useMemo(() => (typeof view === "object" && view ? view.projects : []), [view]);
-  const current = rows.find((row) => row.key === selected) ?? null;
+  // Only what is doing (CR-81), in the person's order (CR-82).
+  const listed = useMemo(() => workListOf(rows), [rows]);
+  const todoCount = rows.length - listed.length;
+  const current = listed.find((row) => row.key === selected) ?? null;
+  const [dragged, setDragged] = useState<string | null>(null);
+  const [dropBefore, setDropBefore] = useState<string | null>(null);
+  const [savingOrder, setSavingOrder] = useState(false);
+  // Shown above the list, whichever project is selected (codex review CR-82 round 3).
+  const [orderError, setOrderError] = useState<string | null>(null);
+
+  // The new order is shown at once and sent. One save at a time — dragging waits for it —
+  // and a list read landing meanwhile is shown in that order, not the one it read before
+  // the save (codex review CR-82 round 2). After the save, the next read is the truth.
+  const reorder = useCallback((moved: string, before: string | null) => {
+    if (typeof view !== "object" || !view || pendingOrder.current) return;
+    const keys = moveKey(orderedRows(view.projects).map((row) => row.key), moved, before);
+    const position = new Map(keys.map((key, index) => [key, index]));
+    pendingOrder.current = position;
+    setSavingOrder(true);
+    setView(withOrder(view, position));
+    setOrderError(null);
+    setWorkOrder(keys)
+      .catch((err) => { if (mounted.current) setOrderError(t("work.orderFailed", { detail: String((err as Error).message) })); })
+      .finally(() => {
+        // Every read sent before this point read the old order: none of them may land
+        // once the overlay is gone (codex review CR-82 round 3).
+        shown.current = ++sequence.current;
+        pendingOrder.current = null;
+        if (mounted.current) setSavingOrder(false);
+        void load();
+      });
+  }, [view, load, t]);
   const detached = typeof view === "object" && view ? view.detached.find((d) => d.key === selected) ?? null : null;
   const lines = useMemo(() => (typeof view === "object" && view ? bannerLinesOf(view) : []), [view]);
 
@@ -238,6 +281,7 @@ export default function WorkPage() {
       <div className="flex min-h-0 flex-1">
         <aside className="flex w-[280px] shrink-0 flex-col gap-1 overflow-y-auto border-r p-2 text-sm">
           <p className="px-2 pb-1 text-xs text-muted-foreground">{t("work.projectsHeading")}</p>
+          {orderError && <p className="px-2 text-xs text-red-700 dark:text-red-400">{orderError}</p>}
           {view === "auth" && <p className="px-2 text-amber-700 dark:text-amber-400">{t("work.authRequired")}</p>}
           {view === "failed" && <p className="px-2 text-red-700 dark:text-red-400">{t("work.failedToList")}</p>}
           {listFailed && typeof view === "object" && view && (
@@ -246,12 +290,27 @@ export default function WorkPage() {
           {typeof view === "object" && view && rows.length === 0 && (
             <p className="px-2 text-muted-foreground">{t("work.noProjects")}</p>
           )}
-          {rows.map((row) => {
+          {typeof view === "object" && view && rows.length > 0 && listed.length === 0 && (
+            <p className="px-2 text-muted-foreground">{t("work.noneDoing")}</p>
+          )}
+          {listed.map((row) => {
             const state = projectStateOf(row);
             return (
               <button key={row.key} type="button" onClick={() => choose(row.key)}
+                draggable={!savingOrder}
+                title={t("work.dragHint")}
+                onDragStart={(event) => { setDragged(row.key); event.dataTransfer.effectAllowed = "move"; }}
+                onDragEnd={() => { setDragged(null); setDropBefore(null); }}
+                onDragOver={(event) => { if (dragged) { event.preventDefault(); setDropBefore(row.key); } }}
+                onDrop={(event) => {
+                  event.preventDefault();
+                  if (dragged && dragged !== row.key) reorder(dragged, row.key);
+                  setDragged(null); setDropBefore(null);
+                }}
                 className={cn("flex flex-col gap-0.5 rounded-md border px-2.5 py-2 text-left",
-                  row.key === selected ? "border-border bg-accent" : "border-transparent hover:bg-accent/60")}>
+                  row.key === selected ? "border-border bg-accent" : "border-transparent hover:bg-accent/60",
+                  dragged === row.key && "opacity-50",
+                  dropBefore === row.key && dragged !== row.key && "border-t-2 border-t-primary")}>
                 <span className="flex items-center gap-2">
                   <span className={cn("h-2 w-2 shrink-0 rounded-full", DOT[state])} />
                   <span className={cn("min-w-0 flex-1 truncate", row.key === selected && "font-semibold")}>{row.task}</span>
@@ -263,6 +322,21 @@ export default function WorkPage() {
               </button>
             );
           })}
+          {dragged && listed.length > 1 && (
+            // Dropping below the last project puts the dragged one at the end.
+            <div className="h-6 rounded-md border border-dashed"
+              onDragOver={(event) => { event.preventDefault(); setDropBefore(null); }}
+              onDrop={(event) => {
+                event.preventDefault();
+                reorder(dragged, null);
+                setDragged(null);
+              }} />
+          )}
+          {todoCount > 0 && (
+            <Link href="/" className="px-2 pt-2 text-xs text-muted-foreground underline-offset-2 hover:underline">
+              {t("work.todoElsewhere", { count: String(todoCount) })}
+            </Link>
+          )}
           {typeof view === "object" && view && view.inactive > 0 && (
             <p className="px-2 pt-2 text-xs text-muted-foreground">{t("work.inactive", { count: String(view.inactive) })}</p>
           )}

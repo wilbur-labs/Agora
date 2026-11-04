@@ -159,6 +159,13 @@ class WorkService:
             if self._shelve_seq.get(key, 0) != seen_shelves:
                 # The scan above saw it active; it has been paused or archived since.
                 return {"result": "unavailable", "detail": "paused or archived meanwhile"}
+            if restoring and self._stage_of(key) != "doing":
+                # Only what the person is doing comes back after a restart (CR-81).
+                return {"result": "closed"}
+            if not restoring and project is not None:
+                # Opening a project is working on it: it is "doing" from here (CR-81). Under
+                # the lock, so a "todo" set meanwhile is either before this or refused by it.
+                self.store.set_stage(key, "doing")
             # A close still under way would end whatever is live now, or what this open
             # joined: wait for it, then open afresh (codex review, CR-77).
             pending = self._pending_close.get(key)
@@ -432,6 +439,7 @@ class WorkService:
     def view(self) -> dict[str, Any]:
         scan = self.scan()
         rows = {r.key: r for r in self.store.all()}
+        board = self.store.board()
         projects = []
         for project in scan.projects:
             row = rows.get(project.key)
@@ -452,6 +460,8 @@ class WorkService:
                 },
                 "stale": bool(row and row.ck_stale),
                 "agent_exited": bool(alive and journal is not None and journal.ended),
+                "stage": self._stage_of(project.key, board, row),
+                "position": board[project.key][1] if project.key in board else None,
             })
         listed = {p.key for p in scan.projects}
         # A project whose terminal is still running but that the scan no longer lists (its
@@ -519,13 +529,7 @@ class WorkService:
             project = await asyncio.to_thread(self._project, key)
             if project is None:
                 raise WorkProjectNotFound(key)
-            row = self.store.get(key)
-            # Any terminal not ended, closing ones included: a close that timed out leaves
-            # one running with nothing else marking it (codex review CR-80 round 1).
-            busy = (key in self._starting or key in self._pending_close
-                    or any(s.exited_at is None for s in self._terminals(key))
-                    or (row is not None and row.want_open))
-            if busy:
+            if self._busy(key):
                 raise WorkProjectBusy(key)
             source = Path(project.source)
             # Counted before the write and again after it, whatever its outcome: an open
@@ -541,6 +545,50 @@ class WorkService:
                 self._put_away.add(key)
             finally:
                 self._shelve_seq[key] += 1
+
+    def _busy(self, key: str) -> bool:
+        """Its terminal is open, opening, closing, or meant to be open. Any terminal not
+        ended counts, closing ones included: a close that timed out leaves one running
+        with nothing else marking it (codex review CR-80 round 1). Under ``_lock``."""
+        row = self.store.get(key)
+        return (key in self._starting or key in self._pending_close
+                or any(s.exited_at is None for s in self._terminals(key))
+                or (row is not None and row.want_open))
+
+    # --- todo / doing and the order (CR-81/82) ----------------------------------------------
+    def _stage_of(self, key: str, board: dict[str, tuple[str, int | None]] | None = None,
+                  row: WorkSession | None = None) -> str:
+        """The person's stage for a project. One never placed is "doing" if it is meant to
+        be open — so what was open before this existed stays on the work page — else "todo"."""
+        board = self.store.board() if board is None else board
+        if key in board:
+            return board[key][0]
+        row = self.store.get(key) if row is None else row
+        return "doing" if row is not None and row.want_open else "todo"
+
+    async def set_stage(self, key: str, stage: str) -> None:
+        """``todo`` is refused while the terminal is open or meant to be: the work page
+        lists only what is doing, and must never hide a running terminal."""
+        if stage not in ("todo", "doing"):
+            raise ValueError(stage)
+        async with self._lock:
+            if await asyncio.to_thread(self._project, key) is None:
+                raise WorkProjectNotFound(key)
+            if stage == "todo" and self._busy(key):
+                raise WorkProjectBusy(key)
+            self.store.set_stage(key, stage)
+
+    async def set_order(self, keys: list[str]) -> None:
+        """The work page's order, as the person dragged it: every key must be listed."""
+        if len(set(keys)) != len(keys):
+            raise ValueError("a project appears twice")
+        async with self._lock:
+            listed = {p.key for p in (await asyncio.to_thread(self.scan)).projects}
+            unknown = [k for k in keys if k not in listed]
+            if unknown:
+                raise WorkProjectNotFound(unknown[0])
+            board = self.store.board()
+            self.store.set_order(keys, {k: self._stage_of(k, board) for k in keys})
 
     async def unshelve(self, key: str) -> None:
         """Back to ``status: active`` (out of ``_archive/`` first, where it is there)."""

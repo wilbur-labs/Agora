@@ -8568,3 +8568,35 @@ while the write ran. Round 3 (2): a cancelled request released the lock while th
 still ran (now a service-held task); an archived entry shared its key with a same-named
 task. All fixed with regression tests; round 3's fixes were not reviewed again (three-round
 limit for a slice).
+
+## 2026-11-04 — workspace CR-81/82: todo / doing and the order of the projects
+
+The owner: the work page lists too many conversations; add todo/doing on the overview so
+the work page shows only what is doing, and let the order be dragged (overview included).
+Decided with the owner: the stage is Agora's own (never written into task.yaml); opening a
+project makes it doing; "todo" is refused while its terminal is open or meant to be; a
+restart reopens only what is doing.
+
+- `work_board` table (`agora/work/store.py`): key, stage (todo|doing), position. At start
+  every project meant to be open with no board row is written as doing (idempotent).
+- `WorkService.set_stage` / `set_order`; `open()` (not a restore) writes doing under the
+  lock; the restore returns `closed` for anything not doing. `view()` carries `stage` and
+  `position`. Routes: `POST /api/work/projects/{key}/stage {stage}` (409 terminal_open),
+  `PUT /api/work/order {keys}` (404 unlisted, 422 repeated).
+- Work page: only doing — and anything whose terminal is open, opening or meant to be,
+  whatever its stage — in the person's order; drag to reorder, one save at a time, the
+  order being saved laid over list reads, reads sent before the save dropped after it.
+- Overview: "Doing" and "To do" columns; drag a card onto another card (placed before it)
+  or into a column (its end) to move it; Start / To do buttons on each card; opening a todo
+  project from the overview starts it first.
+
+Tests: backend test_work_board + test_work + test_work_shelf + test_terminal collected
+156, 154 passed, 2 skipped; frontend test:control-plane collected 592, 591 passed,
+1 skipped; tsc, lint, build, diff --check clean.
+
+Review: codex 3 rounds — round 1 (2): a project open before the board existed fell to
+todo when closed (now written as doing at start, regression test); a drop over a column's
+heading or gap used a stale target. Round 2 (1): overlapping reorder saves and polls could
+undo a move. Round 3 (2): a read sent before the save could land after it; an order
+failure showed only with a project selected. All fixed; round 3's fixes were not reviewed
+again (three-round limit for a slice).

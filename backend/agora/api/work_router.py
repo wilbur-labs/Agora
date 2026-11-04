@@ -85,6 +85,39 @@ async def shelve_work_project(key: str, body: ShelveRequest,
     return {"key": key, "action": body.action}
 
 
+class StageRequest(BaseModel):
+    stage: Literal["todo", "doing"]
+
+
+@router.post("/projects/{key}/stage")
+async def set_work_stage(key: str, body: StageRequest, service: WorkService = Depends(_service)) -> dict[str, Any]:
+    """Todo or doing (CR-81): Agora's own, not written into the task record."""
+    try:
+        await service.set_stage(key, body.stage)
+    except WorkProjectNotFound:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such active work project.") from None
+    except WorkProjectBusy:
+        raise HTTPException(status.HTTP_409_CONFLICT,
+                            {"code": "terminal_open", "message": "Close this project's terminal first."}) from None
+    return {"key": key, "stage": body.stage}
+
+
+class OrderRequest(BaseModel):
+    keys: list[str]
+
+
+@router.put("/order")
+async def set_work_order(body: OrderRequest, service: WorkService = Depends(_service)) -> dict[str, Any]:
+    """The order the person dragged the projects into (CR-82)."""
+    try:
+        await service.set_order(body.keys)
+    except WorkProjectNotFound:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such active work project.") from None
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
+    return {"keys": body.keys}
+
+
 @router.post("/shelved/{key}/restore")
 async def restore_shelved_project(key: str, service: WorkService = Depends(_service)) -> dict[str, Any]:
     try:
