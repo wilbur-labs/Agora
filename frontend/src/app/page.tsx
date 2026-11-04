@@ -254,9 +254,10 @@ function Card({ card, onOpen, onShelve, busy, working, error }: {
         <div className="min-w-0 flex-1">
           <p className="line-clamp-2 text-sm font-semibold leading-snug">{title}</p>
           <p className="truncate text-xs text-muted-foreground">
-            {card.task} · {card.workspace} · {t(`work.state.${card.state}`)}
+            {card.task} · {t(`work.state.${card.state}`)}
           </p>
         </div>
+        <WorkspaceBadge workspace={card.workspace} />
       </div>
 
       {record.show === "loading" && <p className="text-xs text-muted-foreground">{t("overview.loadingRecord")}</p>}
@@ -312,6 +313,25 @@ function Card({ card, onOpen, onShelve, busy, working, error }: {
   );
 }
 
+/** Which workspace keeps the project's record (CR-80): the same task name can sit in
+ *  both, so it is a badge with its own colour, not a word in a grey line. */
+const WORKSPACE_BADGE: Record<"claude" | "kiro", { label: string; className: string }> = {
+  claude: { label: "Claude", className: "border-orange-500/50 bg-orange-500/10 text-orange-800 dark:text-orange-300" },
+  kiro: { label: "Kiro", className: "border-violet-500/50 bg-violet-500/10 text-violet-800 dark:text-violet-300" },
+};
+
+function WorkspaceBadge({ workspace }: { workspace: "claude" | "kiro" }) {
+  const badge = WORKSPACE_BADGE[workspace];
+  return (
+    <span
+      title={`${workspace}-workspace`}
+      className={cn("shrink-0 rounded border px-1.5 py-0.5 text-[0.7rem] font-semibold leading-none", badge.className)}
+    >
+      {badge.label}
+    </span>
+  );
+}
+
 function Shelved({ shelved, onRestore, busy, workingKey, error }: {
   shelved: ShelvedProject[];
   onRestore: (key: string) => void;
@@ -341,8 +361,9 @@ function Shelved({ shelved, onRestore, busy, workingKey, error }: {
                 <li key={p.key} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-1.5 text-sm">
                   <span className="min-w-0 flex-1">
                     <span className="font-medium">{p.title ?? p.task}</span>
-                    <span className="ml-2 text-xs text-muted-foreground">{p.task} · {p.workspace} · {p.status}</span>
+                    <span className="ml-2 text-xs text-muted-foreground">{p.task} · {p.status}</span>
                   </span>
+                  <WorkspaceBadge workspace={p.workspace} />
                   {workingKey === p.key ? (
                     <span className="text-xs text-muted-foreground">{t("overview.working")}</span>
                   ) : (
