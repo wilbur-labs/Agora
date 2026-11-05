@@ -16,7 +16,14 @@ import { useRouter } from "next/navigation";
 import { TopBar } from "@/components/delivery-shell";
 import { ProgressSnapshotBar } from "@/components/progress-snapshot-bar";
 import { listWorkspaceSources } from "@/lib/control-plane";
-import { overviewCardsOf, overviewSummaryOf, type OverviewCard } from "@/lib/overview";
+import {
+  WORKFLOW_FEATURES,
+  overviewCardsOf,
+  overviewSummaryOf,
+  type OverviewCard,
+  type WorkflowFeature,
+  type WorkflowFeatures,
+} from "@/lib/overview";
 import { TerminalAuthRequired } from "@/lib/terminal";
 import {
   WORK_SELECTED_KEY,
@@ -27,6 +34,7 @@ import {
   restoreWorkProjects,
   setWorkOrder,
   setWorkStage,
+  setWorkWorkflow,
   shelfErrorOf,
   shelveWorkProject,
   shelvedGroupsOf,
@@ -161,6 +169,10 @@ export default function OverviewPage() {
   };
   const shelve = (key: string, action: "pause" | "archive") => shelfAction(key, () => shelveWorkProject(key, action));
   const unshelve = (key: string) => shelfAction(key, () => restoreShelvedProject(key));
+  // The workflow selection (CR-75 slice 4): written into task.yaml like a pause, so the
+  // same "not committed" note and the same refusal text.
+  const saveWorkflow = (key: string, features: WorkflowFeatures, base: string) =>
+    shelfAction(key, () => setWorkWorkflow(key, features, base));
 
   // Todo / doing (CR-81) and the order (CR-82): Agora's own, nothing to commit. A drop
   // changes the stage first — "todo" may be refused — and only then the place.
@@ -287,6 +299,7 @@ export default function OverviewPage() {
                       card={card}
                       onOpen={() => go(card.key)}
                       onShelve={(action) => shelve(card.key, action)}
+                      onWorkflow={(features, base) => saveWorkflow(card.key, features, base)}
                       onStage={(next) => setStage(card.key, next)}
                       busy={busyKey !== null}
                       working={busyKey === card.key}
@@ -323,10 +336,11 @@ export default function OverviewPage() {
   );
 }
 
-function Card({ card, onOpen, onShelve, onStage, busy, working, error }: {
+function Card({ card, onOpen, onShelve, onWorkflow, onStage, busy, working, error }: {
   card: OverviewCard;
   onOpen: () => void;
   onShelve: (action: "pause" | "archive") => void;
+  onWorkflow: (features: WorkflowFeatures, base: string) => void;
   onStage: (stage: Stage) => void;
   busy: boolean;
   working: boolean;
@@ -334,7 +348,11 @@ function Card({ card, onOpen, onShelve, onStage, busy, working, error }: {
 }) {
   const { t } = useI18n();
   const [confirming, setConfirming] = useState(false);
+  // The switches being edited, or null while the panel is closed. Taken from the record
+  // when the panel opens; saving sends the base that record was read from.
+  const [draft, setDraft] = useState<{ features: WorkflowFeatures; base: string } | null>(null);
   const record = card.record;
+  const workflow = record.show === "read" ? record.workflow : null;
   const title = record.show === "read" && record.title ? record.title : card.task;
   return (
     <div className={cn("flex w-full min-w-0 flex-col rounded-xl border bg-card", card.attention && "border-amber-500/60")}>
@@ -386,6 +404,16 @@ function Card({ card, onOpen, onShelve, onStage, busy, working, error }: {
               {record.gate.truncated && <span className="text-muted-foreground"> {t("overview.gateTruncated")}</span>}
             </p>
           )}
+          {workflow?.show === "unreadable" && (
+            <p className="text-xs text-amber-700 dark:text-amber-400">{t("overview.workflowUnreadable", { reason: workflow.reason })}</p>
+          )}
+          {workflow?.show === "editable" && (workflow.off > 0 || workflow.features.aidlc) && (
+            <p className="text-xs text-muted-foreground">
+              {workflow.off > 0 && t("overview.workflowSummaryOff", { count: workflow.off })}
+              {workflow.off > 0 && workflow.features.aidlc && " · "}
+              {workflow.features.aidlc && t("overview.workflowSummaryAidlc")}
+            </p>
+          )}
         </>
       )}
       {card.attention && <p className="text-xs text-amber-700 dark:text-amber-400">{t("overview.restoreAttention")}</p>}
@@ -427,10 +455,83 @@ function Card({ card, onOpen, onShelve, onStage, busy, working, error }: {
             className="rounded px-2 py-0.5 text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50">
             {t("overview.archive")}
           </button>
+          {workflow?.show === "editable" && (
+            <button type="button" disabled={busy} title={t("overview.workflowHint")} aria-expanded={draft !== null}
+              onClick={() => setDraft(draft ? null : { features: { ...workflow.features }, base: workflow.base })}
+              className={cn("rounded px-2 py-0.5 hover:bg-accent hover:text-foreground disabled:opacity-50",
+                draft ? "bg-accent text-foreground" : "text-muted-foreground")}>
+              {t("overview.workflow")}
+            </button>
+          )}
         </>
+      )}
+      {draft && workflow?.show === "editable" && !working && (
+        <WorkflowPanel
+          draft={draft.features}
+          isDefault={workflow.isDefault}
+          gateInstalled={workflow.gateInstalled}
+          busy={busy}
+          onToggle={(key) => setDraft({ ...draft, features: { ...draft.features, [key]: !draft.features[key] } })}
+          onSave={() => { onWorkflow(draft.features, draft.base); setDraft(null); }}
+          onCancel={() => setDraft(null)}
+        />
       )}
       {error && <p className="basis-full text-red-700 dark:text-red-400">{error}</p>}
     </div>
+    </div>
+  );
+}
+
+const WORKFLOW_LABEL: Record<WorkflowFeature, string> = {
+  requirements: "wfRequirements",
+  breakdown: "wfBreakdown",
+  aidlc: "wfAidlc",
+  deviation: "wfDeviation",
+  review: "wfReview",
+  records: "wfRecords",
+};
+
+/** The six switches (CR-75 slice 4), with what each one means and the three things no
+ *  switch changes. Saving writes the project's task.yaml; the session reads it next time. */
+function WorkflowPanel({ draft, isDefault, gateInstalled, busy, onToggle, onSave, onCancel }: {
+  draft: WorkflowFeatures;
+  isDefault: boolean;
+  gateInstalled: boolean;
+  busy: boolean;
+  onToggle: (key: WorkflowFeature) => void;
+  onSave: () => void;
+  onCancel: () => void;
+}) {
+  const { t } = useI18n();
+  return (
+    <div className="flex basis-full flex-col gap-1.5 pt-1">
+      {isDefault && <p className="text-muted-foreground">{t("overview.workflowDefault")}</p>}
+      {WORKFLOW_FEATURES.map((key) => (
+        <label key={key} className="flex cursor-pointer items-start gap-2 rounded border px-2 py-1.5 hover:bg-accent/50">
+          <input type="checkbox" className="mt-0.5" checked={draft[key]} disabled={busy} onChange={() => onToggle(key)} />
+          <span className="min-w-0 flex-1">
+            <span className="font-medium text-foreground">{t(`overview.${WORKFLOW_LABEL[key]}`)}</span>
+            <span className="block text-muted-foreground">{t(`overview.${WORKFLOW_LABEL[key]}Hint`)}</span>
+            {key === "aidlc" && draft.aidlc && (
+              <span className="block text-amber-700 dark:text-amber-400">{t("overview.workflowAidlcNote")}</span>
+            )}
+            {key === "review" && !draft.review && gateInstalled && (
+              <span className="block text-amber-700 dark:text-amber-400">{t("overview.workflowGateNote")}</span>
+            )}
+          </span>
+        </label>
+      ))}
+      <p className="text-muted-foreground">{t("overview.workflowKeep")}</p>
+      <div className="flex items-center gap-2">
+        <button type="button" disabled={busy} onClick={onSave}
+          className="rounded border px-2 py-0.5 font-medium text-foreground hover:bg-accent disabled:opacity-50">
+          {t("overview.workflowSave")}
+        </button>
+        <button type="button" onClick={onCancel} className="rounded px-2 py-0.5 text-muted-foreground hover:bg-accent">
+          {t("overview.cancel")}
+        </button>
+        <span className="text-muted-foreground">{t("overview.workflowEffect")}</span>
+      </div>
     </div>
   );
 }

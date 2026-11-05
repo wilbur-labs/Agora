@@ -40,6 +40,19 @@ export interface ManifestPayload {
   status: string | null;
   machine: string | null;
   milestones: { id: string; status: string }[] | null;
+  /** The `workflow:` block (CR-75 slice 4); null when the manifest was not read. Absent
+   *  from servers older than slice 4. */
+  workflow?: WorkflowPayload | null;
+}
+
+/** A project's workflow selection, as the server read its task.yaml. */
+export interface WorkflowPayload {
+  /** "default": no block; "set": a block that reads; "unreadable": one that does not. */
+  state: "default" | "set" | "unreadable";
+  features: Record<string, boolean> | null;
+  reason: string | null;
+  /** sha256 of the task.yaml text read: an edit is refused if the file changed since. */
+  base: string;
 }
 
 export interface ResumePayload {

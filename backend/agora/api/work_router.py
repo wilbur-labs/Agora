@@ -16,6 +16,7 @@ from agora.api.terminal_router import _data_dir, get_terminal_manager, require_t
 from agora.config.settings import get_config, resolve_control_plane_db_path
 from agora.projects.registry import ProjectRegistry
 from agora.tasks.router import get_project_registry
+from agora.projects.workflow_selection import WorkflowChanged, WorkflowRefused
 from agora.work.shelf import ShelfRefused
 from agora.work.service import WorkProjectBusy, WorkProjectNotFound, WorkService
 from agora.work.store import WorkSessionStore
@@ -83,6 +84,28 @@ async def shelve_work_project(key: str, body: ShelveRequest,
     except ShelfRefused as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, {"code": "refused", "message": str(exc)}) from None
     return {"key": key, "action": body.action}
+
+
+class WorkflowRequest(BaseModel):
+    features: dict[str, bool]
+    #: sha256 of the task.yaml text the page showed (the read's ``workflow.base``).
+    base: str
+
+
+@router.post("/projects/{key}/workflow")
+async def set_work_workflow(key: str, body: WorkflowRequest,
+                            service: WorkService = Depends(_service)) -> dict[str, Any]:
+    """The workflow selection, written into the project's own task.yaml (CR-75 slice 4).
+    Not committed; takes effect at the next session start or /clear."""
+    try:
+        base = await service.set_workflow(key, body.features, body.base)
+    except WorkProjectNotFound:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such active work project.") from None
+    except WorkflowChanged as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, {"code": "changed", "message": str(exc)}) from None
+    except WorkflowRefused as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, {"code": "refused", "message": str(exc)}) from None
+    return {"key": key, "base": base}
 
 
 class StageRequest(BaseModel):

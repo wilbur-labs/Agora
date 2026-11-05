@@ -23,6 +23,13 @@ export const shelveWorkProject = (key: string, action: "pause" | "archive") =>
     method: "POST", body: JSON.stringify({ action }),
   });
 
+/** The workflow selection, written into the project's task.yaml (CR-75 slice 4). `base`
+ *  is the read's sha256: a file changed since is refused, not overwritten. */
+export const setWorkWorkflow = (key: string, features: Record<string, boolean>, base: string) =>
+  call<{ key: string; base: string }>(`/api/work/projects/${encodeURIComponent(key)}/workflow`, {
+    method: "POST", body: JSON.stringify({ features, base }),
+  });
+
 /** Todo or doing (CR-81): Agora's own; "todo" is refused while the terminal is open. */
 export const setWorkStage = (key: string, stage: "todo" | "doing") =>
   call<{ key: string; stage: string }>(`/api/work/projects/${encodeURIComponent(key)}/stage`, {

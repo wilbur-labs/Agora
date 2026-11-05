@@ -17,6 +17,7 @@ import {
   type ReviewGatePayload,
   type TaskProgress,
   type WorkspaceSourcePayload,
+  type WorkflowPayload,
   type WorkspaceTaskPayload,
 } from "./workspace-sources.ts";
 
@@ -45,9 +46,55 @@ export function gateLineOf(gate: ReviewGatePayload | undefined): GateLine | null
   return { show: "counts", unrecorded: gate.unrecorded, skipped: gate.skipped, truncated: gate.truncated };
 }
 
+/** The six workflow switches (CR-75 slice 4), in the order the card lists them. The same
+ *  keys and defaults as the server (agora/projects/workflow_selection.py). */
+export const WORKFLOW_FEATURES = ["requirements", "breakdown", "aidlc", "deviation", "review", "records"] as const;
+export type WorkflowFeature = (typeof WORKFLOW_FEATURES)[number];
+export type WorkflowFeatures = Record<WorkflowFeature, boolean>;
+
+/** What the card can do with the project's workflow selection. Null — no button — when
+ *  the project is not a claude-workspace one (nothing else reads it yet: offering the
+ *  switch would say otherwise) or its task.yaml was not read. */
+export type WorkflowView =
+  | {
+      show: "editable";
+      /** The file has no block: every switch at its default. */
+      isDefault: boolean;
+      features: WorkflowFeatures;
+      base: string;
+      /** Switches turned off — aidlc not counted, it is off by default. */
+      off: number;
+      /** The repository has the review gate installed: turning review off does not stop git
+       *  enforcing it, and the panel says so. */
+      gateInstalled: boolean;
+    }
+  | { show: "unreadable"; reason: string };
+
+export function workflowViewOf(task: WorkspaceTaskPayload, workspace: "claude" | "kiro"): WorkflowView | null {
+  const wf: WorkflowPayload | null | undefined = task.manifest.workflow;
+  if (workspace !== "claude" || !wf) return null;
+  if (wf.state === "unreadable" || !wf.features) return { show: "unreadable", reason: wf.reason ?? "unreadable" };
+  const features = {} as WorkflowFeatures;
+  for (const key of WORKFLOW_FEATURES) features[key] = wf.features[key] === true;
+  const off = WORKFLOW_FEATURES.filter((key) => key !== "aidlc" && !features[key]).length;
+  const gate = task.review_gate;
+  return {
+    show: "editable",
+    isDefault: wf.state === "default",
+    features,
+    base: wf.base,
+    off,
+    // "unreadable" counts: the gate's marker is there, it is the record that would not read.
+    gateInstalled: gate !== undefined && gate.state !== "not_installed",
+  };
+}
+
 /** Where the project's own record stands, as far as the sources read covers it. */
 export type CardRecord =
-  | { show: "read"; title: string | null; progress: TaskProgress; cr: CrCount; gate: GateLine | null }
+  | {
+      show: "read"; title: string | null; progress: TaskProgress; cr: CrCount; gate: GateLine | null;
+      workflow: WorkflowView | null;
+    }
   /** The sources read is still out. */
   | { show: "loading" }
   /** The sources read failed, or did not cover this project: nothing is claimed. */
@@ -89,13 +136,14 @@ export function crCountOf(log: CrLogPayload): CrCount {
   return { show: "counts", notClosed, unrecognised };
 }
 
-function recordOf(task: WorkspaceTaskPayload): CardRecord {
+function recordOf(task: WorkspaceTaskPayload, workspace: "claude" | "kiro"): CardRecord {
   return {
     show: "read",
     title: task.manifest.title,
     progress: taskProgressOf(task.resume),
     cr: crCountOf(task.cr_log),
     gate: gateLineOf(task.review_gate),
+    workflow: workflowViewOf(task, workspace),
   };
 }
 
@@ -121,7 +169,7 @@ export function overviewCardsOf(
     else if (sources === null) record = { show: "loading" };
     else {
       const task = tasks.get(`${sourceKeyOf(row.source)}\0${row.task}`);
-      record = task ? recordOf(task) : { show: "unread" };
+      record = task ? recordOf(task, row.workspace) : { show: "unread" };
     }
     return {
       key: row.key,

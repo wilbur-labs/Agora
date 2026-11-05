@@ -8660,3 +8660,44 @@ machine); the gate is claude-workspace `cd0f7c6` + `54c41c6` (codex 3 rounds + 1
 Installed on this repository 2026-11-05 (install commit `7e9fbe9`); this slice's own
 commit is the first to pass it. Review of this repository's part: written before the
 review, so its outcome is in the commit message and trailers, not here.
+
+## 2026-11-06 — CR-75 slice 4 (first cut): the workflow, chosen per project — claude first
+
+Owner (2026-11-06, three recommended options): claude first (kiro/codex read the same
+selection in a later slice); "off" is declared at session start, CLAUDE.md is not split;
+the selection lives in the project's own `task.yaml` and is edited from the overview card.
+Design: `docs/CR75-slice4-workflow.md` (codex design round 1: no findings).
+
+Six switches — requirements, breakdown, aidlc (off by default), deviation, review,
+records. No `workflow:` block = today's behaviour, and nothing is said about it.
+
+- claude-workspace (`a9f46fd`, codex 3 rounds 1+1+0): the SessionStart hook prints
+  「本项目的工作流」: which CLAUDE.md sections do not apply, what no switch turns off
+  (tests, the defer rule, an installed review gate), and that aidlc is not supported in
+  claude sessions yet. Its tests: `scripts/tests/test_workflow_section.sh` 37 passed.
+- `backend/agora/projects/workflow_selection.py`: the same reading rules as the hook —
+  block form only, known keys only, YAML 1.1 booleans only; anything else "unreadable",
+  never the defaults. The edit writes all six switches, verified by parsing the result
+  (nothing else in the document may change), refuses an unreadable block, and refuses a
+  file whose sha256 is not the one the page read ("changed"). Not committed.
+- `workspace_tasks.py`: the manifest carries `workflow` (state / features / reason /
+  base). The manifest is now read as bytes: `read_text` translated CRLF, so the base
+  the page got never matched the bytes the edit hashes and every save on a CRLF file
+  would have come back "changed" (caught by this slice's own API test on Windows).
+- `POST /api/work/projects/{key}/workflow` (terminal token, like the shelf routes);
+  claude-workspace projects only — kiro does not read the block yet.
+- Overview card: a 工作流 button opening six checkboxes with their meaning, the AI-DLC
+  note, the gate note when review is turned off on a repository with the gate, what no
+  switch changes, and "takes effect at the next session start or /clear". A one-line
+  summary only when something is off or AI-DLC is selected; an unreadable block is said.
+
+Codex round 1 (2 findings, both fixed): the reader now applies the hook's exact line grammar and
+reads anything YAML takes but the hook cannot (an indented `{review: off}`, a quoted key, a
+tag) as unreadable, and requires both readings to agree; the write runs as a task the
+service owns, so a cancelled request cannot release the lock mid-write. The hook's header
+rule was tightened to match (`workflow:#x` is not the key; claude-workspace).
+
+Tests: backend test_workflow_selection collected 25, 25 passed; with test_work_shelf,
+test_review_gate_read, test_workspace_tasks: 128 passed; test_workspace_sources_api,
+test_workspaces, test_work: 148 passed, 2 skipped. Frontend test:control-plane collected
+597, 596 passed, 1 skipped; tsc, lint clean. Review outcome: in the commit message.

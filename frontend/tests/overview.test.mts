@@ -120,3 +120,50 @@ test("the review gate line: quiet when installed and clean or not installed, sai
   assert.deepEqual(cards[0].record.show === "read" && cards[0].record.gate,
     { show: "counts", unrecorded: 3, skipped: 0, truncated: false });
 });
+
+// --- the workflow selection (CR-75 slice 4) ---------------------------------------------------
+import { workflowViewOf } from "../src/lib/overview.ts";
+
+const ALL = { requirements: true, breakdown: true, aidlc: false, deviation: true, review: true, records: true };
+
+function withWorkflow(workflow: unknown, gate?: WorkspaceTaskPayload["review_gate"]): WorkspaceTaskPayload {
+  const t = task("t");
+  return { ...t, manifest: { ...t.manifest, workflow } as WorkspaceTaskPayload["manifest"], review_gate: gate };
+}
+
+test("the workflow switch is offered on claude-workspace projects only, and only when the file was read", () => {
+  const read = withWorkflow({ state: "default", features: ALL, reason: null, base: "b" });
+  assert.equal(workflowViewOf(read, "kiro"), null);              // kiro does not read it yet
+  assert.equal(workflowViewOf(withWorkflow(null), "claude"), null);     // manifest not read
+  assert.equal(workflowViewOf(withWorkflow(undefined), "claude"), null); // an older server
+  const view = workflowViewOf(read, "claude");
+  assert.ok(view && view.show === "editable");
+  assert.equal(view.isDefault, true);
+  assert.equal(view.off, 0);
+  assert.equal(view.base, "b");
+});
+
+test("off counts the switches turned off; aidlc, off by default, is not one of them", () => {
+  const view = workflowViewOf(withWorkflow({ state: "set", features: { ...ALL, records: false, deviation: false },
+    reason: null, base: "b" }), "claude");
+  assert.ok(view && view.show === "editable");
+  assert.equal(view.off, 2);
+  assert.equal(view.isDefault, false);
+  const aidlc = workflowViewOf(withWorkflow({ state: "set", features: { ...ALL, aidlc: true }, reason: null, base: "b" }), "claude");
+  assert.ok(aidlc && aidlc.show === "editable" && aidlc.off === 0 && aidlc.features.aidlc);
+});
+
+test("an unreadable block is said, never shown as the defaults", () => {
+  assert.deepEqual(workflowViewOf(withWorkflow({ state: "unreadable", features: null, reason: "unknown switch: x", base: "b" }), "claude"),
+    { show: "unreadable", reason: "unknown switch: x" });
+});
+
+test("the panel knows whether the repository's review gate is installed, whatever review is set to", () => {
+  const wf = { state: "set", features: ALL, reason: null, base: "b" };
+  const installed = workflowViewOf(withWorkflow(wf, { state: "unreadable", reason: "x" }), "claude");
+  assert.ok(installed && installed.show === "editable" && installed.gateInstalled);
+  const absent = workflowViewOf(withWorkflow(wf, { state: "not_installed", reason: null }), "claude");
+  assert.ok(absent && absent.show === "editable" && !absent.gateInstalled);
+  const older = workflowViewOf(withWorkflow(wf), "claude");
+  assert.ok(older && older.show === "editable" && !older.gateInstalled);
+});

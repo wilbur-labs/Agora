@@ -52,6 +52,7 @@ from agora.projects.cr_log import CRLog, read_cr_log_file
 from agora.projects.decisions import DecisionLog, read_decisions_dir
 from agora.projects.importer import DuplicateKeyError, StrictLoader
 from agora.projects.progress_snapshot import ProgressVerdict, count_progress_verdict
+from agora.projects.workflow_selection import WorkflowRead, read_workflow
 
 #: Where a workspace keeps its tasks. One fixed name, not a search.
 TASKS_DIR = Path("tasks")
@@ -152,6 +153,8 @@ class TaskManifestRead:
     primary_repo_malformed: bool
     #: Milestone ids and their statuses, in file order. None when unavailable.
     milestones: tuple[tuple[str, str], ...] | None
+    #: The `workflow:` block (CR-75 slice 4). None when the manifest is unavailable.
+    workflow: WorkflowRead | None = None
 
     def payload(self) -> dict[str, Any]:
         return {
@@ -167,6 +170,7 @@ class TaskManifestRead:
                 None if self.milestones is None
                 else [{"id": i, "status": s} for i, s in self.milestones]
             ),
+            "workflow": None if self.workflow is None else self.workflow.payload(),
         }
 
 
@@ -416,7 +420,9 @@ def _read_manifest(path: Path) -> TaskManifestRead:
     if probe.size is not None and probe.size > MAX_TASK_YAML_BYTES:
         return unavailable("too_large")
     try:
-        text = path.read_text(encoding="utf-8")
+        # Bytes, not read_text: newline translation would hash a CRLF file as LF, and the
+        # workflow edit (which hashes the bytes) would then refuse every change as "changed".
+        text = path.read_bytes().decode("utf-8")
     except (OSError, UnicodeDecodeError):
         return unavailable("unreadable")
     try:
@@ -469,6 +475,7 @@ def _read_manifest(path: Path) -> TaskManifestRead:
             "primary_repo" in document and text_of(document.get("primary_repo")) is None
         ),
         milestones=tuple(milestones),
+        workflow=read_workflow(document, text),
     )
 
 

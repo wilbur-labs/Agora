@@ -23,6 +23,8 @@ from typing import Any, Callable
 
 from agora.terminal.manager import PtyUnavailable, TerminalLimitReached, TerminalManager, TerminalSession, command_argv
 from agora.work import hooks as hooks_module
+from agora.projects import workflow_selection
+from agora.projects.importer import StrictLoader
 from agora.work import shelf
 from agora.work.procs import creation_time, liveness
 from agora.work.projects import WorkProject, WorkScan, scan_work_projects, work_key
@@ -515,6 +517,30 @@ class WorkService:
             raise ValueError(action)
         await self._owned(self._shelve(key, action))
 
+    async def set_workflow(self, key: str, features: dict[str, bool], base: str) -> str:
+        """Write the project's workflow selection into its task.yaml (CR-75 slice 4); the
+        new text's sha256 back. claude-workspace projects only: kiro does not read the
+        block yet, and a switch it ignores would say it does. No terminal check — the
+        hook reads the file at the next session start or /clear.
+
+        Run as a task the service owns, as the shelf changes are: a cancelled request must
+        not release the lock while the write still runs in its thread (codex review round 1)."""
+        task = asyncio.create_task(self._set_workflow(key, features, base))
+        self._shelf_tasks.add(task)
+        task.add_done_callback(self._shelf_tasks.discard)
+        return await asyncio.shield(task)
+
+    async def _set_workflow(self, key: str, features: dict[str, bool], base: str) -> str:
+        async with self._lock:
+            project = await asyncio.to_thread(self._project, key)
+            if project is None:
+                raise WorkProjectNotFound(key)
+            if project.workspace != "claude":
+                raise workflow_selection.WorkflowRefused(
+                    "only claude-workspace projects read the workflow selection so far")
+            path = Path(project.source) / "tasks" / project.task / "task.yaml"
+            return await asyncio.to_thread(_write_workflow, path, features, base)
+
     async def _owned(self, work) -> None:
         """Run a shelf change as a task the service holds: a cancelled request neither
         releases the lock nor moves the count while the file write is still running in
@@ -602,3 +628,20 @@ class WorkService:
                 raise WorkProjectNotFound(key)
             await asyncio.to_thread(shelf.restore, Path(held.source), held.task, archived_dir=held.archived_dir)
             self._put_away.discard(work_key(held.source, held.task))
+
+
+def _write_workflow(path: Path, features: dict[str, bool], base: str) -> str:
+    try:
+        text = path.read_bytes().decode("utf-8")
+    except FileNotFoundError:
+        raise workflow_selection.WorkflowRefused("task.yaml is not there") from None
+    except (OSError, UnicodeDecodeError) as exc:
+        raise workflow_selection.WorkflowRefused(f"task.yaml could not be read ({type(exc).__name__})") from None
+    if workflow_selection.text_sha(text) != base:
+        raise workflow_selection.WorkflowChanged("task.yaml changed since this page read it; reopen and choose again")
+    edited = workflow_selection.edit_workflow(text, features, loader=StrictLoader)
+    try:
+        shelf._write(path, edited)
+    except shelf.ShelfRefused as exc:
+        raise workflow_selection.WorkflowRefused(str(exc)) from None
+    return workflow_selection.text_sha(edited)
