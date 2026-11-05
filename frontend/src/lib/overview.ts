@@ -14,6 +14,7 @@ import { orderedRows, projectStateOf, type ProjectState, type Stage, type WorkVi
 import {
   taskProgressOf,
   type CrLogPayload,
+  type ReviewGatePayload,
   type TaskProgress,
   type WorkspaceSourcePayload,
   type WorkspaceTaskPayload,
@@ -30,9 +31,23 @@ export type CrCount =
   /** It is there and could not be read (malformed, too large, unreadable). */
   | { show: "unreadable"; reason: string };
 
+/** What a card says about the commit review gate (CR-75 slice 2). Null — nothing on the
+ *  card — when the gate is not installed, or every commit since carries a review: quiet is
+ *  the normal state. A failed read is said, never shown as nothing. */
+export type GateLine =
+  | { show: "counts"; unrecorded: number; skipped: number; truncated: boolean }
+  | { show: "unreadable"; reason: string };
+
+export function gateLineOf(gate: ReviewGatePayload | undefined): GateLine | null {
+  if (!gate || gate.state === "not_installed") return null;
+  if (gate.state === "unreadable") return { show: "unreadable", reason: gate.reason ?? "unreadable" };
+  if (gate.unrecorded === 0 && gate.skipped === 0 && !gate.truncated) return null;
+  return { show: "counts", unrecorded: gate.unrecorded, skipped: gate.skipped, truncated: gate.truncated };
+}
+
 /** Where the project's own record stands, as far as the sources read covers it. */
 export type CardRecord =
-  | { show: "read"; title: string | null; progress: TaskProgress; cr: CrCount }
+  | { show: "read"; title: string | null; progress: TaskProgress; cr: CrCount; gate: GateLine | null }
   /** The sources read is still out. */
   | { show: "loading" }
   /** The sources read failed, or did not cover this project: nothing is claimed. */
@@ -80,6 +95,7 @@ function recordOf(task: WorkspaceTaskPayload): CardRecord {
     title: task.manifest.title,
     progress: taskProgressOf(task.resume),
     cr: crCountOf(task.cr_log),
+    gate: gateLineOf(task.review_gate),
   };
 }
 

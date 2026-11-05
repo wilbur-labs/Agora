@@ -8617,3 +8617,46 @@ diff --check clean. The build is run when the owner is not navigating 8001 (it r
 the files 8001 serves).
 
 Review: codex 1 round, no findings.
+
+## 2026-11-05 — CR-75 slice 2: a commit is refused unless its content was reviewed
+
+Owner (2026-11-05, three recommended options): block and check afterwards; skipping takes
+a written reason; installed on Agora-private only for now. Design and its three codex
+design rounds (1+2+3 findings, all folded in): `docs/CR75-slice2-review-gate.md`.
+
+The gate itself is claude-workspace's (`scripts/review-gate.sh` + three hooks; reviewed
+and committed there). What this repository adds:
+
+- `backend/agora/projects/review_gate.py` — part D, the check afterwards: commits since
+  the install sorted into reviewed / skipped / merge / unrecorded by their trailers, a
+  record counting only when its `Review-patch` equals the commit's own patch-id (so a
+  trailer carried along by `--amend --no-verify` or a hand-resolved replay counts as no
+  record). Patch-ids cached by sha; 500 commits at most, said when cut; a failed read is
+  "unreadable", never zero. Its diff options must stay identical to the hooks' (named in
+  both files). Attached to each workspace task as `review_gate`.
+- Edge cases from review (codex round 1, kiro round 2 standing in for codex out of
+  credits): a malformed or field-less install record, a relative `primary_repo`, a marker
+  that cannot be stat'd, a branch without the install commit — all "unreadable", never
+  "not installed" or a count from the wrong range; an empty skip reason is no reason;
+  `--root` so `log.showRoot=false` cannot change a root commit's patch-id; an installed
+  empty repository reads zero.
+- Overview card: one line only when there is something to say (commits without a record
+  in the warning colour, skipped-with-reason muted, a failed read said).
+- `scripts/release.ps1`: the "release: vX.Y.Z" commit carries
+  `AGORA_REVIEW_SKIP="release version bump"`.
+
+What it does not claim: that a review approved, or that a record cannot be forged — it
+stops forgetting; `--no-verify` shows up afterwards, a forged stamp does not.
+
+Checked end to end: real hooks writing trailers in a scratch repository, then this
+reader classifying them (reviewed 2 / skipped 1 / a `--no-verify` commit unrecorded 1,
+an amend kept with its whole-commit patch).
+
+Tests: backend test_review_gate_read collected 19, 19 passed; frontend test:control-plane
+collected 593, 592 passed, 1 skipped; tsc, lint clean. claude-workspace
+`scripts/tests/test_review_gate.sh` 39 passed (symlink case skipped: no symlinks on this
+machine); the gate is claude-workspace `cd0f7c6` + `54c41c6` (codex 3 rounds + 1).
+
+Installed on this repository 2026-11-05 (install commit `7e9fbe9`); this slice's own
+commit is the first to pass it. Review of this repository's part: written before the
+review, so its outcome is in the commit message and trailers, not here.

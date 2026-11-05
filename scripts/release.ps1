@@ -110,7 +110,17 @@ try {
 
 # 4. Commit, tag, push (origin only) -------------------------------------------
 Assert-Ok (Invoke-Tool 'git' (@('add', '--') + $Files)) 'git add'
-Assert-Ok (Invoke-Tool 'git' @('commit', '-m', "release: $Tag")) 'git commit'
+# The commit review gate (CR-75 slice 2) would refuse it: the version files no reviewer
+# read. Recorded as skipped with this reason, for this one commit only.
+$priorSkip = $env:AGORA_REVIEW_SKIP
+$env:AGORA_REVIEW_SKIP = 'release version bump'
+try {
+    Assert-Ok (Invoke-Tool 'git' @('commit', '-m', "release: $Tag")) 'git commit'
+} finally {
+    # Put back whatever the caller had (kiro review round 3).
+    if ($null -eq $priorSkip) { Remove-Item env:AGORA_REVIEW_SKIP -ErrorAction SilentlyContinue }
+    else { $env:AGORA_REVIEW_SKIP = $priorSkip }
+}
 Assert-Ok (Invoke-Tool 'git' @('tag', '-a', $Tag, '-m', "Agora $Tag")) 'git tag'
 Assert-Ok (Invoke-Tool 'git' @('push', 'origin', 'main')) 'git push origin main'
 Assert-Ok (Invoke-Tool 'git' @('push', 'origin', $Tag)) "git push origin $Tag"

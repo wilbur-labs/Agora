@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { crCountOf, overviewCardsOf, overviewSummaryOf, sourceKeyOf } from "../src/lib/overview.ts";
+import { crCountOf, gateLineOf, overviewCardsOf, overviewSummaryOf, sourceKeyOf } from "../src/lib/overview.ts";
 import type { WorkProjectRow } from "../src/lib/work-state.ts";
 import type { WorkspaceSourcePayload, WorkspaceTaskPayload } from "../src/lib/workspace-sources.ts";
 
@@ -105,4 +105,18 @@ test("cards follow the person's order and carry the stage and whether todo would
     row({ key: "c", task: "c", position: 1 }),
   ] }, [], false);
   assert.deepEqual(cards.map((c) => [c.key, c.stage, c.busy]), [["b", "doing", true], ["c", "todo", false], ["a", "todo", false]]);
+});
+
+test("the review gate line: quiet when installed and clean or not installed, said when a read fails", () => {
+  const read = (over: object) => ({ state: "read", reviewed: 4, skipped: 0, merges: 1, unrecorded: 0, truncated: false, ...over }) as const;
+  assert.equal(gateLineOf(undefined), null);  // an older server: nothing claimed
+  assert.equal(gateLineOf({ state: "not_installed", reason: null }), null);
+  assert.equal(gateLineOf(read({})), null);
+  assert.deepEqual(gateLineOf(read({ unrecorded: 2, skipped: 1 })), { show: "counts", unrecorded: 2, skipped: 1, truncated: false });
+  assert.deepEqual(gateLineOf(read({ truncated: true })), { show: "counts", unrecorded: 0, skipped: 0, truncated: true });
+  assert.deepEqual(gateLineOf({ state: "unreadable", reason: null }), { show: "unreadable", reason: "unreadable" });
+  const cards = overviewCardsOf({ projects: [row()] },
+    [source("E:/Work", [task("alpha", { review_gate: read({ unrecorded: 3 }) })])], false);
+  assert.deepEqual(cards[0].record.show === "read" && cards[0].record.gate,
+    { show: "counts", unrecorded: 3, skipped: 0, truncated: false });
 });

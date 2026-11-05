@@ -115,7 +115,15 @@ export interface WorkspaceTaskPayload {
   cr_log: CrLogPayload;
   decisions: DecisionsPayload;
   has_workflow: boolean;
+  /** The commit review gate's record in `primary_repo` (CR-75 slice 2). Absent from a
+   *  server older than this UI: nothing is said then. */
+  review_gate?: ReviewGatePayload;
 }
+
+export type ReviewGatePayload =
+  | { state: "not_installed"; reason: null }
+  | { state: "unreadable"; reason: string | null }
+  | { state: "read"; reviewed: number; skipped: number; merges: number; unrecorded: number; truncated: boolean };
 
 export interface WorkspaceSourcePayload {
   available: boolean;

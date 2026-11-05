@@ -39,6 +39,7 @@ this module adds is the *shape of a workspace* and nothing about how a table is 
 from __future__ import annotations
 
 import re
+from agora.projects.review_gate import NOT_INSTALLED, ReviewGateRead, read_review_gate
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -335,6 +336,9 @@ class WorkspaceTask:
     has_workflow: bool
     #: Where this task's work happens, if Agora knows that place. See `RepoLink`.
     repo_link: RepoLink
+    #: The commit review gate's record in `primary_repo` (CR-75 slice 2). See
+    #: `review_gate.py`; "not_installed" also when no repository is named.
+    review_gate: ReviewGateRead = NOT_INSTALLED
 
     def payload(self) -> dict[str, Any]:
         return {
@@ -345,6 +349,7 @@ class WorkspaceTask:
             "decisions": self.decisions.payload(),
             "has_workflow": self.has_workflow,
             "repo_link": self.repo_link.payload(),
+            "review_gate": self.review_gate.payload(),
         }
 
 
@@ -570,6 +575,10 @@ def read_workspace_source(
             ),
             has_workflow=probe_path(entry / WORKFLOW_MD).is_file(),
             repo_link=link_repo(manifest, project_roots),
+            review_gate=read_review_gate(
+                manifest.primary_repo
+                if manifest.available and not manifest.primary_repo_malformed else None
+            ),
         ))
 
     return WorkspaceSource(

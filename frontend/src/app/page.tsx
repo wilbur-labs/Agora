@@ -371,6 +371,21 @@ function Card({ card, onOpen, onShelve, onStage, busy, working, error }: {
             )}
             {record.cr.show === "unreadable" && t("overview.crUnreadable", { reason: record.cr.reason })}
           </p>
+          {record.gate?.show === "unreadable" && (
+            <p className="text-xs text-amber-700 dark:text-amber-400">{t("overview.gateUnreadable", { reason: record.gate.reason })}</p>
+          )}
+          {record.gate?.show === "counts" && (
+            <p className="text-xs">
+              {record.gate.unrecorded > 0 && (
+                <span className="text-amber-700 dark:text-amber-400">{t("overview.gateUnrecorded", { count: record.gate.unrecorded })}</span>
+              )}
+              {record.gate.unrecorded > 0 && record.gate.skipped > 0 && <span className="text-muted-foreground"> · </span>}
+              {record.gate.skipped > 0 && (
+                <span className="text-muted-foreground">{t("overview.gateSkipped", { count: record.gate.skipped })}</span>
+              )}
+              {record.gate.truncated && <span className="text-muted-foreground"> {t("overview.gateTruncated")}</span>}
+            </p>
+          )}
         </>
       )}
       {card.attention && <p className="text-xs text-amber-700 dark:text-amber-400">{t("overview.restoreAttention")}</p>}
