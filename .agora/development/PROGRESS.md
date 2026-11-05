@@ -8600,3 +8600,20 @@ heading or gap used a stale target. Round 2 (1): overlapping reorder saves and p
 undo a move. Round 3 (2): a read sent before the save could land after it; an order
 failure showed only with a project selected. All fixed; round 3's fixes were not reviewed
 again (three-round limit for a slice).
+
+## 2026-11-05 — terminal drawn on WebGL: the cursor sits where the text ends
+
+The owner: "终端的输入光标跟实际的位置有偏差". Measured in headless Chromium with the
+terminal's own fonts at 14px: cells are 8.4px and CJK characters fill their two cells
+exactly, but the DOM renderer drew each full-width mark (，。：、) 6.8px wider than two
+cells, so every one pushed the rest of the line right — on `> 你，好。世：界？（中）「文」、日本語です。`
+the text ended about 27px (three cells) past the cursor. `@xterm/addon-webgl` 0.19.0
+(released with xterm 6.0.0) draws every glyph inside its cells; screenshots of the same
+line show the text ending at the cursor. Without WebGL, or on context loss, the terminal
+stays on / falls back to the DOM renderer.
+
+Tests: frontend test:control-plane collected 592, 591 passed, 1 skipped; tsc, lint,
+diff --check clean. The build is run when the owner is not navigating 8001 (it rewrites
+the files 8001 serves).
+
+Review: codex 1 round, no findings.

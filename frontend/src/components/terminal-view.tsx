@@ -29,7 +29,9 @@ export function TerminalView({ terminalId, onExit }: { terminalId: string; onExi
     let disposed = false;
     let cleanup = () => {};
     void (async () => {
-      const [{ Terminal }, { FitAddon }] = await Promise.all([import("@xterm/xterm"), import("@xterm/addon-fit")]);
+      const [{ Terminal }, { FitAddon }, { WebglAddon }] = await Promise.all([
+        import("@xterm/xterm"), import("@xterm/addon-fit"), import("@xterm/addon-webgl"),
+      ]);
       if (disposed || !host.current) return;
       const term = new Terminal({
         cursorBlink: true,
@@ -45,6 +47,20 @@ export function TerminalView({ terminalId, onExit }: { terminalId: string; onExi
       const fit = new FitAddon();
       term.loadAddon(fit);
       term.open(host.current);
+      // Drawn on WebGL, each glyph inside its own cells. The default DOM renderer lays a run
+      // out as text, and a full-width mark (，。：、) came out 6.8px wider than its two
+      // cells at 14px, so every one pushed the rest of the line right and the cursor sat
+      // cells away from the text (11-05: "终端的输入光标跟实际的位置有偏差"). Without
+      // WebGL, or when the context is lost, it stays on / falls back to the DOM renderer.
+      let webgl: InstanceType<typeof WebglAddon> | null = null;
+      try {
+        webgl = new WebglAddon();
+        webgl.onContextLoss(() => { webgl?.dispose(); webgl = null; });
+        term.loadAddon(webgl);
+      } catch {
+        webgl?.dispose();
+        webgl = null;
+      }
       fit.fit();
       const socket = new WebSocket(terminalStreamUrl(terminalId, window.location, getApiBase()));
       let exited = false;
