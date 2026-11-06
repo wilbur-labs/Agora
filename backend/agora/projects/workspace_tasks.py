@@ -52,7 +52,7 @@ from agora.projects.cr_log import CRLog, read_cr_log_file
 from agora.projects.decisions import DecisionLog, read_decisions_dir
 from agora.projects.importer import DuplicateKeyError, StrictLoader
 from agora.projects.progress_snapshot import ProgressVerdict, count_progress_verdict
-from agora.projects.workflow_selection import WorkflowRead, read_workflow
+from agora.projects.workflow_selection import WorkflowRead, defaults_for, read_workflow
 
 #: Where a workspace keeps its tasks. One fixed name, not a search.
 TASKS_DIR = Path("tasks")
@@ -406,11 +406,13 @@ class WorkspaceSource:
         }
 
 
-def _read_manifest(path: Path) -> TaskManifestRead:
-    unavailable = lambda reason: TaskManifestRead(  # noqa: E731 - one shape, many exits
+def _read_manifest(path: Path, *, workspace: str | None = "claude") -> TaskManifestRead:
+    """``workspace`` (``claude`` / ``kiro``) picks the workflow switches' defaults; None —
+    a workspace whose sessions are not known to read the selection — carries no workflow."""
+    unavailable = lambda reason, workflow=None: TaskManifestRead(  # noqa: E731 - one shape, many exits
         available=False, reason=reason, title=None, goal=None,
         status=None, machine=None, primary_repo=None, primary_repo_malformed=False,
-        milestones=None,
+        milestones=None, workflow=workflow,
     )
     probe = probe_path(path)
     if probe.absent:
@@ -438,8 +440,11 @@ def _read_manifest(path: Path) -> TaskManifestRead:
         return unavailable("malformed")
 
     if "task" not in document:
-        # Parsed cleanly and simply is not this shape.
-        return unavailable("unknown_schema")
+        # Parsed cleanly and simply is not this shape. A kiro-workspace task.yaml is
+        # exactly that, and its `workflow:` block is still read: the kiro agent loads the
+        # file and follows the block (CR-75 slice 4, kiro).
+        return unavailable("unknown_schema",
+                           read_workflow(document, text, defaults_for("kiro")) if workspace == "kiro" else None)
     task = document.get("task")
     if not isinstance(task, dict):
         return unavailable("malformed")
@@ -475,7 +480,7 @@ def _read_manifest(path: Path) -> TaskManifestRead:
             "primary_repo" in document and text_of(document.get("primary_repo")) is None
         ),
         milestones=tuple(milestones),
-        workflow=read_workflow(document, text),
+        workflow=read_workflow(document, text, defaults_for(workspace)) if workspace else None,
     )
 
 
@@ -506,6 +511,26 @@ def _read_resume(path: Path) -> ResumeRead:
         # section was read but cannot be counted. None only when there is no section.
         progress=None if progress_section is None else count_progress_verdict(progress_section),
     )
+
+
+#: Where a kiro-workspace explains the `workflow:` block to its agents (CR-75 slice 4, kiro).
+KIRO_WORKFLOW_STEERING = Path(".kiro") / "steering" / "workflow-selection.md"
+
+
+def workflow_workspace(root: Path) -> str | None:
+    """Which workspace's sessions read a task's `workflow:` block here: ``claude``, ``kiro``,
+    or None when that is not established — nothing is then offered or claimed.
+
+    The terminal targets' test (agora/terminal/targets.py `_is_kiro`: `.kiro/` and no
+    `.claude/`), with an unknown probe kept unknown rather than read as absent; and a
+    kiro-workspace counts only when it has the steering file that tells kiro what the
+    block means — an older kiro-workspace would ignore every switch (kiro review)."""
+    kiro, claude = probe_path(root / ".kiro").is_dir(), probe_path(root / ".claude").is_dir()
+    if kiro is None or claude is None:
+        return None
+    if not kiro or claude:
+        return "claude"
+    return "kiro" if probe_path(root / KIRO_WORKFLOW_STEERING).is_file() is True else None
 
 
 def read_workspace_source(
@@ -549,6 +574,8 @@ def read_workspace_source(
     except OSError:
         return unavailable("unreadable")
 
+    workspace = workflow_workspace(root)
+
     tasks: list[WorkspaceTask] = []
     skipped: list[str] = []
     unreadable_entries: list[str] = []
@@ -567,7 +594,7 @@ def read_workspace_source(
             skipped.append(entry.name)
             continue
         resume_path = entry / RESUME_MD
-        manifest = _read_manifest(entry / TASK_YAML)
+        manifest = _read_manifest(entry / TASK_YAML, workspace=workspace)
         tasks.append(WorkspaceTask(
             name=entry.name,
             manifest=manifest,

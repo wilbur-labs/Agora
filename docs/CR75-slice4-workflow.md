@@ -154,3 +154,19 @@ when the state is not default ("工作流：关 2 项" / "工作流：读不了"
   edit — append, replace, CRLF, comments elsewhere preserved, verify-by-parse refusal,
   sha mismatch 409, unreadable 409, unknown key 404.
 - Agora frontend: summary line and panel state derivation in `overview.ts`.
+
+## Second cut — kiro (2026-11-06)
+
+- **Steering, one file for all tasks**: kiro-workspace `.kiro/steering/workflow-selection.md`
+  (text approved by the owner before it was written). A kiro agent loads its task's
+  `task.yaml` as a resource, so the block is in its context; the steering maps each
+  switch to the kiro steering files / skills that stop applying, repeats the reading
+  rules (unreadable → say so, apply everything) and what no switch turns off (tests, a
+  row for a known hazard left unfixed, an installed review gate).
+- **AI-DLC defaults to on for kiro** (owner, 2026-11-06): kiro proposes AI-DLC today, so
+  a task without the block — or a save that changed nothing — must not switch it off.
+  The panel shows no "not supported" note on a kiro card.
+- Agora reads the block from kiro task.yaml (another schema; the manifest reader marks it
+  `unknown_schema` and still carries `workflow`) and writes it with the kiro defaults.
+- **codex**: Agora opens no codex session per project, so nothing reads the selection on
+  that side; codex is the reviewer, which the switches do not configure.

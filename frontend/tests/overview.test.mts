@@ -131,9 +131,8 @@ function withWorkflow(workflow: unknown, gate?: WorkspaceTaskPayload["review_gat
   return { ...t, manifest: { ...t.manifest, workflow } as WorkspaceTaskPayload["manifest"], review_gate: gate };
 }
 
-test("the workflow switch is offered on claude-workspace projects only, and only when the file was read", () => {
+test("the workflow switch is offered only when the file was read", () => {
   const read = withWorkflow({ state: "default", features: ALL, reason: null, base: "b" });
-  assert.equal(workflowViewOf(read, "kiro"), null);              // kiro does not read it yet
   assert.equal(workflowViewOf(withWorkflow(null), "claude"), null);     // manifest not read
   assert.equal(workflowViewOf(withWorkflow(undefined), "claude"), null); // an older server
   const view = workflowViewOf(read, "claude");
@@ -151,6 +150,22 @@ test("off counts the switches turned off; aidlc, off by default, is not one of t
   assert.equal(view.isDefault, false);
   const aidlc = workflowViewOf(withWorkflow({ state: "set", features: { ...ALL, aidlc: true }, reason: null, base: "b" }), "claude");
   assert.ok(aidlc && aidlc.show === "editable" && aidlc.off === 0 && aidlc.features.aidlc);
+  assert.ok(aidlc.aidlcUnsupported);   // claude records it and says it is not applied
+});
+
+test("a kiro project is offered the switch too; there AI-DLC is on by default and supported", () => {
+  const KIRO_ALL = { ...ALL, aidlc: true };
+  const view = workflowViewOf(withWorkflow({ state: "default", features: KIRO_ALL, reason: null, base: "b" }), "kiro");
+  assert.ok(view && view.show === "editable");
+  assert.equal(view.workspace, "kiro");
+  assert.equal(view.off, 0);
+  assert.equal(view.aidlcUnsupported, false);
+  const off = workflowViewOf(withWorkflow({ state: "set", features: { ...KIRO_ALL, aidlc: false, review: false },
+    reason: null, base: "b" }), "kiro");
+  assert.ok(off && off.show === "editable");
+  assert.equal(off.off, 2);            // turning kiro's AI-DLC off is one of the switches turned off
+  assert.deepEqual(workflowViewOf(withWorkflow({ state: "unreadable", features: null, reason: "r", base: "b" }), "kiro"),
+    { show: "unreadable", reason: "r" });
 });
 
 test("an unreadable block is said, never shown as the defaults", () => {

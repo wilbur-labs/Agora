@@ -24,6 +24,7 @@ from typing import Any, Callable
 from agora.terminal.manager import PtyUnavailable, TerminalLimitReached, TerminalManager, TerminalSession, command_argv
 from agora.work import hooks as hooks_module
 from agora.projects import workflow_selection
+from agora.projects.workspace_tasks import workflow_workspace
 from agora.projects.importer import StrictLoader
 from agora.work import shelf
 from agora.work.procs import creation_time, liveness
@@ -519,9 +520,9 @@ class WorkService:
 
     async def set_workflow(self, key: str, features: dict[str, bool], base: str) -> str:
         """Write the project's workflow selection into its task.yaml (CR-75 slice 4); the
-        new text's sha256 back. claude-workspace projects only: kiro does not read the
-        block yet, and a switch it ignores would say it does. No terminal check — the
-        hook reads the file at the next session start or /clear.
+        new text's sha256 back. claude-workspace and kiro-workspace projects: the claude
+        hook and the kiro steering file both read it; the defaults differ (``aidlc``). No
+        terminal check — the session reads the file when it next starts.
 
         Run as a task the service owns, as the shelf changes are: a cancelled request must
         not release the lock while the write still runs in its thread (codex review round 1)."""
@@ -535,11 +536,15 @@ class WorkService:
             project = await asyncio.to_thread(self._project, key)
             if project is None:
                 raise WorkProjectNotFound(key)
-            if project.workspace != "claude":
+            if await asyncio.to_thread(workflow_workspace, Path(project.source)) != project.workspace:
+                # The read would have offered no switch either: a kiro-workspace without the
+                # steering file, or a workspace whose kind could not be established.
                 raise workflow_selection.WorkflowRefused(
-                    "only claude-workspace projects read the workflow selection so far")
+                    "this workspace's sessions are not known to read the workflow selection"
+                    + (" (no .kiro/steering/workflow-selection.md)" if project.workspace == "kiro" else ""))
             path = Path(project.source) / "tasks" / project.task / "task.yaml"
-            return await asyncio.to_thread(_write_workflow, path, features, base)
+            return await asyncio.to_thread(_write_workflow, path, features, base,
+                                           workflow_selection.defaults_for(project.workspace))
 
     async def _owned(self, work) -> None:
         """Run a shelf change as a task the service holds: a cancelled request neither
@@ -630,16 +635,19 @@ class WorkService:
             self._put_away.discard(work_key(held.source, held.task))
 
 
-def _write_workflow(path: Path, features: dict[str, bool], base: str) -> str:
+def _write_workflow(path: Path, features: dict[str, bool], base: str,
+                    defaults: dict[str, bool] = workflow_selection.DEFAULTS) -> str:
     try:
         text = path.read_bytes().decode("utf-8")
     except FileNotFoundError:
         raise workflow_selection.WorkflowRefused("task.yaml is not there") from None
     except (OSError, UnicodeDecodeError) as exc:
         raise workflow_selection.WorkflowRefused(f"task.yaml could not be read ({type(exc).__name__})") from None
+    # Compared here and replaced below with no lock across processes: a write landing in
+    # between is overwritten. Workspace CR-84 (defer, OPEN) carries that.
     if workflow_selection.text_sha(text) != base:
         raise workflow_selection.WorkflowChanged("task.yaml changed since this page read it; reopen and choose again")
-    edited = workflow_selection.edit_workflow(text, features, loader=StrictLoader)
+    edited = workflow_selection.edit_workflow(text, features, loader=StrictLoader, defaults=defaults)
     try:
         shelf._write(path, edited)
     except shelf.ShelfRefused as exc:

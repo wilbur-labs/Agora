@@ -407,11 +407,11 @@ function Card({ card, onOpen, onShelve, onWorkflow, onStage, busy, working, erro
           {workflow?.show === "unreadable" && (
             <p className="text-xs text-amber-700 dark:text-amber-400">{t("overview.workflowUnreadable", { reason: workflow.reason })}</p>
           )}
-          {workflow?.show === "editable" && (workflow.off > 0 || workflow.features.aidlc) && (
+          {workflow?.show === "editable" && (workflow.off > 0 || workflow.aidlcUnsupported) && (
             <p className="text-xs text-muted-foreground">
               {workflow.off > 0 && t("overview.workflowSummaryOff", { count: workflow.off })}
-              {workflow.off > 0 && workflow.features.aidlc && " · "}
-              {workflow.features.aidlc && t("overview.workflowSummaryAidlc")}
+              {workflow.off > 0 && workflow.aidlcUnsupported && " · "}
+              {workflow.aidlcUnsupported && t("overview.workflowSummaryAidlc")}
             </p>
           )}
         </>
@@ -468,6 +468,7 @@ function Card({ card, onOpen, onShelve, onWorkflow, onStage, busy, working, erro
       {draft && workflow?.show === "editable" && !working && (
         <WorkflowPanel
           draft={draft.features}
+          workspace={workflow.workspace}
           isDefault={workflow.isDefault}
           gateInstalled={workflow.gateInstalled}
           busy={busy}
@@ -493,8 +494,9 @@ const WORKFLOW_LABEL: Record<WorkflowFeature, string> = {
 
 /** The six switches (CR-75 slice 4), with what each one means and the three things no
  *  switch changes. Saving writes the project's task.yaml; the session reads it next time. */
-function WorkflowPanel({ draft, isDefault, gateInstalled, busy, onToggle, onSave, onCancel }: {
+function WorkflowPanel({ draft, workspace, isDefault, gateInstalled, busy, onToggle, onSave, onCancel }: {
   draft: WorkflowFeatures;
+  workspace: "claude" | "kiro";
   isDefault: boolean;
   gateInstalled: boolean;
   busy: boolean;
@@ -512,7 +514,7 @@ function WorkflowPanel({ draft, isDefault, gateInstalled, busy, onToggle, onSave
           <span className="min-w-0 flex-1">
             <span className="font-medium text-foreground">{t(`overview.${WORKFLOW_LABEL[key]}`)}</span>
             <span className="block text-muted-foreground">{t(`overview.${WORKFLOW_LABEL[key]}Hint`)}</span>
-            {key === "aidlc" && draft.aidlc && (
+            {key === "aidlc" && draft.aidlc && workspace === "claude" && (
               <span className="block text-amber-700 dark:text-amber-400">{t("overview.workflowAidlcNote")}</span>
             )}
             {key === "review" && !draft.review && gateInstalled && (
@@ -530,7 +532,9 @@ function WorkflowPanel({ draft, isDefault, gateInstalled, busy, onToggle, onSave
         <button type="button" onClick={onCancel} className="rounded px-2 py-0.5 text-muted-foreground hover:bg-accent">
           {t("overview.cancel")}
         </button>
-        <span className="text-muted-foreground">{t("overview.workflowEffect")}</span>
+        <span className="text-muted-foreground">
+          {t(workspace === "kiro" ? "overview.workflowEffectKiro" : "overview.workflowEffect")}
+        </span>
       </div>
     </div>
   );

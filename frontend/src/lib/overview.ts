@@ -52,18 +52,28 @@ export const WORKFLOW_FEATURES = ["requirements", "breakdown", "aidlc", "deviati
 export type WorkflowFeature = (typeof WORKFLOW_FEATURES)[number];
 export type WorkflowFeatures = Record<WorkflowFeature, boolean>;
 
+/** Whether a switch is on by default: all of them, except AI-DLC in a claude-workspace
+ *  (claude does not run it; kiro proposes it today, so there it is on). */
+export function workflowDefaultOn(key: WorkflowFeature, workspace: "claude" | "kiro"): boolean {
+  return key !== "aidlc" || workspace === "kiro";
+}
+
 /** What the card can do with the project's workflow selection. Null — no button — when
- *  the project is not a claude-workspace one (nothing else reads it yet: offering the
- *  switch would say otherwise) or its task.yaml was not read. */
+ *  its task.yaml was not read. Both workspaces read it: claude through its SessionStart
+ *  hook, kiro through `.kiro/steering/workflow-selection.md`. */
 export type WorkflowView =
   | {
       show: "editable";
+      workspace: "claude" | "kiro";
       /** The file has no block: every switch at its default. */
       isDefault: boolean;
       features: WorkflowFeatures;
       base: string;
-      /** Switches turned off — aidlc not counted, it is off by default. */
+      /** Switches turned off that are on by default (claude's AI-DLC is off by default and
+       *  not counted; kiro's is). */
       off: number;
+      /** AI-DLC ticked in a claude project: recorded, and not applied (claude has no AI-DLC). */
+      aidlcUnsupported: boolean;
       /** The repository has the review gate installed: turning review off does not stop git
        *  enforcing it, and the panel says so. */
       gateInstalled: boolean;
@@ -72,18 +82,20 @@ export type WorkflowView =
 
 export function workflowViewOf(task: WorkspaceTaskPayload, workspace: "claude" | "kiro"): WorkflowView | null {
   const wf: WorkflowPayload | null | undefined = task.manifest.workflow;
-  if (workspace !== "claude" || !wf) return null;
+  if (!wf) return null;
   if (wf.state === "unreadable" || !wf.features) return { show: "unreadable", reason: wf.reason ?? "unreadable" };
   const features = {} as WorkflowFeatures;
   for (const key of WORKFLOW_FEATURES) features[key] = wf.features[key] === true;
-  const off = WORKFLOW_FEATURES.filter((key) => key !== "aidlc" && !features[key]).length;
+  const off = WORKFLOW_FEATURES.filter((key) => workflowDefaultOn(key, workspace) && !features[key]).length;
   const gate = task.review_gate;
   return {
     show: "editable",
+    workspace,
     isDefault: wf.state === "default",
     features,
     base: wf.base,
     off,
+    aidlcUnsupported: workspace === "claude" && features.aidlc,
     // "unreadable" counts: the gate's marker is there, it is the record that would not read.
     gateInstalled: gate !== undefined && gate.state !== "not_installed",
   };

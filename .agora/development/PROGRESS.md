@@ -8701,3 +8701,68 @@ Tests: backend test_workflow_selection collected 25, 25 passed; with test_work_s
 test_review_gate_read, test_workspace_tasks: 128 passed; test_workspace_sources_api,
 test_workspaces, test_work: 148 passed, 2 skipped. Frontend test:control-plane collected
 597, 596 passed, 1 skipped; tsc, lint clean. Review outcome: in the commit message.
+
+## 2026-11-06 — CR-75 slice 4 (second cut): kiro reads the same workflow selection
+
+Owner (2026-11-06): approved the kiro steering text before it was written ("写"), with
+AI-DLC on by default for kiro and the known-hazard row as a rule no switch turns off.
+
+- kiro-workspace `1ee192e` (not pushed): `.kiro/steering/workflow-selection.md`, one
+  file for every task. A kiro agent already loads its `tasks/<name>/task.yaml` as a
+  resource; the steering says what each switch turns off there, the same reading rules
+  (unreadable → say so, apply everything), and what no switch turns off. No existing
+  steering or skill was changed.
+- `workflow_selection.py`: `KIRO_DEFAULTS` (all six on — kiro proposes AI-DLC today, so
+  a task without the block must not read as AI-DLC off) and `defaults_for(workspace)`;
+  the reader and the edit take the workspace's defaults, the grammar is unchanged.
+- `workspace_tasks.py`: a kiro-workspace (`.kiro/`, no `.claude/`, as the terminal
+  targets decide) reads `workflow` even though its task.yaml is `unknown_schema` to the
+  claude-shaped manifest reader; outside a kiro-workspace an unknown shape carries none.
+- `POST /api/work/projects/{key}/workflow` accepts kiro projects, with kiro defaults.
+- Overview card: the 工作流 button on kiro cards too. AI-DLC note and summary only for
+  claude (kiro supports it); kiro's AI-DLC turned off counts as a switch turned off;
+  "takes effect when the next kiro session starts".
+- codex: nothing to read. Agora opens no codex session per project (work projects are
+  claude or kiro); codex is the reviewer, which the switches do not configure.
+- Not covered: the gate note on a kiro card — the review-gate read follows
+  `primary_repo`, which kiro task.yaml does not have (it has `project_path`), so the note
+  is absent rather than wrong; the steering itself tells kiro about an installed gate.
+
+Review: codex round 1 exited 4 (its Windows sandbox failed every local command, so the
+review never showed this patch) → kiro substituted. Kiro round 1, 5 findings:
+- fixed: `shelf._write` used one fixed temp name, so two Agora instances (stable and
+  dev read the same work roots) could put each other's text in place — now `mkstemp`.
+- fixed: a kiro-workspace without `.kiro/steering/workflow-selection.md` was offered
+  the switch its agents would ignore — `workflow_workspace()` offers it only with the
+  steering file, and the write refuses otherwise.
+- fixed: an unknown `.claude/` probe read as absent (→ kiro defaults) — unknown now
+  carries no workflow.
+- fixed: a file mixing CRLF and LF was rewritten whole — only the block's lines change.
+- deferred: sha compared, then replaced, no lock across processes (a write landing in
+  between is lost; also CR-80's shelf) → workspace CR-84 (defer, OPEN), named at
+  `_write_workflow`.
+
+Kiro round 2, 4 findings:
+- fixed: `mkstemp` makes the file 0600, so a save on POSIX dropped task.yaml's mode —
+  the original mode is copied onto the temp file before the replace.
+- rejected: the sha/replace window — already CR-84.
+- rejected: no gate note on a kiro card — kiro task.yaml has `project_path` in an MSYS
+  spelling (`/e/...`), not `primary_repo`; the card then says nothing (absent, not
+  wrong), and the steering tells kiro about an installed gate. Recorded above.
+- rejected: checking the steering file's content — the file is installed by a person;
+  its presence is the claim the card relies on, a content check would be guesswork.
+
+Kiro round 3 (the last), 4 findings:
+- fixed: new block lines take only an LF or CRLF break — a lone CR, NEL or U+2028 at
+  the end of the file would have left `workflow:` on no line of its own for the hook.
+- fixed: a failed write of a read-only task.yaml (Windows) left its temp file behind,
+  read-only like the original — made writable before it is removed.
+- rejected: the sha/replace window — CR-84.
+- rejected: a workspace changing kind (claude → kiro) while the page is open — the
+  write would apply the new workspace's defaults to a stale reading; too remote.
+These two fixes came after the third round: committed with a skip reason.
+
+Tests: backend test_workflow_selection collected 35, 35 passed; with test_work,
+test_workspace_tasks, test_workspace_sources_api, test_workspaces, test_work_shelf:
+269 collected, 267 passed, 2 skipped. Frontend test:control-plane
+collected 598, 597 passed, 1 skipped; tsc, lint clean.

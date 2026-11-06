@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import os
 import re
+import stat
+import tempfile
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -144,15 +146,31 @@ def _read(path: Path) -> str:
 
 
 def _write(path: Path, text: str) -> None:
-    temp = path.with_name(path.name + ".agora-tmp")
+    # A temp file of its own (O_EXCL), not one fixed name: the stable and the dev instance
+    # read the same work roots, and two writers sharing `task.yaml.agora-tmp` could each
+    # put the other's text in place and report their own (kiro review, CR-75 slice 4).
+    temp: Path | None = None
     try:
-        temp.write_bytes(text.encode("utf-8"))
+        fd, name = tempfile.mkstemp(prefix=path.name + ".", suffix=".agora-tmp", dir=path.parent)
+        temp = Path(name)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(text.encode("utf-8"))
+        # mkstemp makes the file 0600; the task.yaml keeps the mode it had (kiro review).
+        try:
+            os.chmod(temp, stat.S_IMODE(os.stat(path).st_mode))
+        except FileNotFoundError:
+            pass
         os.replace(temp, path)
     except OSError as exc:
-        try:
-            temp.unlink(missing_ok=True)
-        except OSError:
-            pass
+        if temp is not None:
+            try:
+                # It may carry a read-only mode copied from task.yaml, which Windows will
+                # not delete (kiro review round 3).
+                if temp.exists():
+                    os.chmod(temp, stat.S_IREAD | stat.S_IWRITE)
+                temp.unlink(missing_ok=True)
+            except OSError:
+                pass
         raise ShelfRefused(f"task.yaml could not be written ({type(exc).__name__})") from None
 
 
