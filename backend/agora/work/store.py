@@ -76,6 +76,13 @@ class WorkSessionStore:
                     position INTEGER,
                     updated_at REAL NOT NULL
                 );
+                -- The name the person gave a project's card (workspace CR-85). Agora's own:
+                -- shown on the overview and work pages, never written into the task record.
+                CREATE TABLE IF NOT EXISTS work_names (
+                    key TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    updated_at REAL NOT NULL
+                );
                 """
             )
             # What was meant to be open before the board existed is "doing", written down —
@@ -177,6 +184,24 @@ class WorkSessionStore:
                     "INSERT INTO work_board (key, stage, position, updated_at) VALUES (?, ?, ?, ?) "
                     "ON CONFLICT(key) DO UPDATE SET position = excluded.position, updated_at = excluded.updated_at",
                     (key, stages[key], position, now),
+                )
+
+    # --- display names (CR-85) ---------------------------------------------------------------
+    def names(self) -> dict[str, str]:
+        with closing(self._connect()) as db:
+            rows = db.execute("SELECT key, name FROM work_names").fetchall()
+        return {r["key"]: r["name"] for r in rows}
+
+    def set_name(self, key: str, name: str | None) -> None:
+        """``None`` removes the name: the card shows the record's title again."""
+        with self._transaction() as db:
+            if name is None:
+                db.execute("DELETE FROM work_names WHERE key = ?", (key,))
+            else:
+                db.execute(
+                    "INSERT INTO work_names (key, name, updated_at) VALUES (?, ?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET name = excluded.name, updated_at = excluded.updated_at",
+                    (key, name, time.time()),
                 )
 
     def advance_checkpoint(self, key: str, *, session: str | None, transcript: str | None,

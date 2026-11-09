@@ -58,6 +58,25 @@ class LaunchInfo:
     restored: bool = False
 
 
+#: A card name is one short line (CR-85).
+MAX_NAME_LENGTH = 80
+
+
+def normalise_name(name: str | None) -> str | None:
+    """Blank means no name. Control characters (line breaks included) are refused, not
+    stripped: the name is shown as typed or not at all."""
+    if name is None:
+        return None
+    cleaned = name.strip()
+    if not cleaned:
+        return None
+    if len(cleaned) > MAX_NAME_LENGTH:
+        raise ValueError(f"at most {MAX_NAME_LENGTH} characters")
+    if any(ord(c) < 32 or 127 <= ord(c) < 160 or c in "\u2028\u2029" for c in cleaned):
+        raise ValueError("one line, no control characters")
+    return cleaned
+
+
 @dataclass
 class WorkService:
     store: WorkSessionStore
@@ -443,6 +462,7 @@ class WorkService:
         scan = self.scan()
         rows = {r.key: r for r in self.store.all()}
         board = self.store.board()
+        names = self.store.names()
         projects = []
         for project in scan.projects:
             row = rows.get(project.key)
@@ -465,6 +485,7 @@ class WorkService:
                 "agent_exited": bool(alive and journal is not None and journal.ended),
                 "stage": self._stage_of(project.key, board, row),
                 "position": board[project.key][1] if project.key in board else None,
+                "name": names.get(project.key),
             })
         listed = {p.key for p in scan.projects}
         # A project whose terminal is still running but that the scan no longer lists (its
@@ -517,6 +538,17 @@ class WorkService:
         if action not in ("pause", "archive"):
             raise ValueError(action)
         await self._owned(self._shelve(key, action))
+
+    async def set_name(self, key: str, name: str | None) -> str | None:
+        """The card's name in Agora (CR-85); blank or None removes it. Returns what is
+        stored. Only a listed project: a name for a key nothing shows would never be seen."""
+        cleaned = normalise_name(name)
+        async with self._lock:
+            project = await asyncio.to_thread(self._project, key)
+            if project is None:
+                raise WorkProjectNotFound(key)
+            await asyncio.to_thread(self.store.set_name, key, cleaned)
+        return cleaned
 
     async def set_workflow(self, key: str, features: dict[str, bool], base: str) -> str:
         """Write the project's workflow selection into its task.yaml (CR-75 slice 4); the

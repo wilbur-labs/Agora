@@ -30,6 +30,12 @@ export const setWorkWorkflow = (key: string, features: Record<string, boolean>, 
     method: "POST", body: JSON.stringify({ features, base }),
   });
 
+/** The card's name (CR-85): Agora's own; blank or null removes it. */
+export const setWorkName = (key: string, name: string | null) =>
+  call<{ key: string; name: string | null }>(`/api/work/projects/${encodeURIComponent(key)}/name`, {
+    method: "POST", body: JSON.stringify({ name }),
+  });
+
 /** Todo or doing (CR-81): Agora's own; "todo" is refused while the terminal is open. */
 export const setWorkStage = (key: string, stage: "todo" | "doing") =>
   call<{ key: string; stage: string }>(`/api/work/projects/${encodeURIComponent(key)}/stage`, {

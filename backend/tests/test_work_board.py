@@ -120,3 +120,58 @@ def test_stage_and_order_through_the_api(api, tmp_path):
     client.post(f"/api/work/projects/{alpha}/open")
     reply = client.post(f"/api/work/projects/{alpha}/stage", json={"stage": "todo"})
     assert reply.status_code == 409 and reply.json()["detail"]["code"] == "terminal_open"
+
+
+# --- the card's name (workspace CR-85) -------------------------------------------------------
+
+def _names(service) -> dict[str, str | None]:
+    return {p["task"]: p["name"] for p in service.view()["projects"]}
+
+
+def test_a_name_is_agoras_own_and_blank_removes_it(world):
+    tmp_path, work, claude = world
+    service = _service(tmp_path, work, claude)
+    record = work / "tasks" / "alpha" / "task.yaml"
+    before = record.read_bytes()
+    key = work_key(work, "alpha")
+    assert _names(service) == {"alpha": None, "beta": None}
+    assert run(service.set_name(key, "  社内ポータル  ")) == "社内ポータル"
+    assert _names(service)["alpha"] == "社内ポータル"
+    assert record.read_bytes() == before
+    # The next server run reads the same database.
+    assert _names(_service(tmp_path, work, claude))["alpha"] == "社内ポータル"
+    assert run(service.set_name(key, "   ")) is None
+    assert _names(service)["alpha"] is None
+
+
+@pytest.mark.parametrize("name", ["a\nb", "tab\there", "x" * 81, "line\u2028sep", "c1\x85d", "del\x7fx"])
+def test_a_name_that_is_not_one_short_line_is_refused(world, name):
+    tmp_path, work, claude = world
+    service = _service(tmp_path, work, claude)
+    key = work_key(work, "alpha")
+    run(service.set_name(key, "kept"))
+    with pytest.raises(ValueError):
+        run(service.set_name(key, name))
+    assert _names(service)["alpha"] == "kept"
+
+
+def test_a_name_for_an_unlisted_project_is_refused(world):
+    tmp_path, work, claude = world
+    service = _service(tmp_path, work, claude)
+    with pytest.raises(WorkProjectNotFound):
+        run(service.set_name("nope", "x"))
+    assert service.store.names() == {}
+
+
+def test_name_through_the_api(api, tmp_path):
+    client, service, work = api
+    alpha = work_key(work, "alpha")
+    assert client.post(f"/api/work/projects/{alpha}/name", json={"name": "A"}).status_code == 401
+    client.headers["X-Agora-Terminal-Token"] = load_or_create_token(tmp_path / "data")
+    reply = client.post(f"/api/work/projects/{alpha}/name", json={"name": " 名前 "})
+    assert reply.status_code == 200 and reply.json() == {"key": alpha, "name": "名前"}
+    assert client.post(f"/api/work/projects/{alpha}/name", json={"name": "a\nb"}).status_code == 422
+    assert client.post("/api/work/projects/nope/name", json={"name": "x"}).status_code == 404
+    listed = {p["task"]: p["name"] for p in client.get("/api/work/projects").json()["projects"]}
+    assert listed == {"alpha": "名前", "beta": None}
+    assert client.post(f"/api/work/projects/{alpha}/name", json={"name": None}).json()["name"] is None

@@ -108,6 +108,23 @@ async def set_work_workflow(key: str, body: WorkflowRequest,
     return {"key": key, "base": base}
 
 
+class NameRequest(BaseModel):
+    #: Blank or null removes the name.
+    name: str | None = None
+
+
+@router.post("/projects/{key}/name")
+async def set_work_name(key: str, body: NameRequest, service: WorkService = Depends(_service)) -> dict[str, Any]:
+    """The card's name (CR-85): Agora's own, not written into the task record."""
+    try:
+        name = await service.set_name(key, body.name)
+    except WorkProjectNotFound:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such active work project.") from None
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
+    return {"key": key, "name": name}
+
+
 class StageRequest(BaseModel):
     stage: Literal["todo", "doing"]
 

@@ -8766,3 +8766,48 @@ Tests: backend test_workflow_selection collected 35, 35 passed; with test_work,
 test_workspace_tasks, test_workspace_sources_api, test_workspaces, test_work_shelf:
 269 collected, 267 passed, 2 skipped. Frontend test:control-plane
 collected 598, 597 passed, 1 skipped; tsc, lint clean.
+
+## 2026-11-09 — v1.8.0 released; CR-85: the card's settings (a name in Agora, the workflow)
+
+Release (owner said 「发布」): main fast-forwarded to `8da0944`, `release: v1.8.0`
+`f2bac68` tagged and pushed to origin, stable install upgraded 1.7.0 → v1.8.0 (backup
+`agora-1.7.0-before-v1.8.0-20261109-104547.db`), `/health` reports 1.8.0. Every release
+gate passed (the release log does not print the pytest counts). origin's default branch
+is `main` again (owner: 要改回main).
+
+Remote account (CR-9 → adr/0002): dev environment `wu-35` tested — host key trusted,
+auth ok, root present, claude/codex/kiro-cli all in `/home/wu`; a remote shell as `wu`
+ran all three `--version` and `claude -p` answered. The stable install has no remote
+environment registered, so there is nothing to switch yet: it waits on which project
+to bind.
+
+CR-85 (workspace, owner 2026-11-09): the card's 工作流 button becomes 设置.
+- `work_names` table (Agora's own, beside the board; never written into task.yaml),
+  `WorkSessionStore.names/set_name`, `WorkService.set_name` (only a listed project;
+  blank removes; one line of at most 80 characters, control characters refused, not
+  stripped), `POST /api/work/projects/{key}/name`; the work list carries `name`.
+- Overview card: title = name, else the record's title, else the task; the sub-line
+  keeps the task name. 设置 is on every card — a name can be given even where the
+  workflow is unreadable (the panel then says why). Save sends only what changed: the
+  name first (cannot be refused for the file's sake), then a changed workflow through
+  the same task.yaml write as before.
+- Work page: the list and the terminal bar show the name, with the task beside it.
+
+Tests: backend test_work_board collected 17, 17 passed; with test_work,
+test_workflow_selection, test_work_shelf, test_workspace_tasks: 233 collected, 231
+passed, 2 skipped. Frontend test:control-plane collected 599, 598 passed, 1 skipped;
+tsc, lint clean; `git diff --check` clean.
+
+Review: codex round 1 (its gate exited 5 — the tree changed under it — so no stamp), 2 findings,
+both fixed:
+- Enter in the name field saved while an IME was composing (Chinese/Japanese names) —
+  ignored while `isComposing` / keyCode 229.
+- the save compared the draft with the card as the 10-second poll last showed it, so a
+  name changed in another tab meanwhile was overwritten by an unrelated save — the draft
+  keeps the values it opened on, and only fields that differ from those are sent.
+
+Codex round 2: no findings (its own run: 17 backend, 26 frontend tests, tsc, lint).
+Its gate exited 5 again: codex left `.tmp-review-cr85/` and `.tmp-review-names-1109/`
+(its pytest temp directories) in the working tree while reviewing, so no stamp was
+recorded although the code did not change after round 2 started. Removed; committed
+with a skip reason naming this.

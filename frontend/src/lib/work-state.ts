@@ -38,6 +38,9 @@ export interface WorkProjectRow {
   stage: Stage;
   /** Where the person dragged it (CR-82); null for one never placed. */
   position: number | null;
+  /** The name the person gave its card (CR-85): Agora's own; null when none. Absent
+   *  from a server older than CR-85. */
+  name?: string | null;
 }
 
 export type Stage = "todo" | "doing";

@@ -313,11 +313,11 @@ export default function WorkPage() {
                   dropBefore === row.key && dragged !== row.key && "border-t-2 border-t-primary")}>
                 <span className="flex items-center gap-2">
                   <span className={cn("h-2 w-2 shrink-0 rounded-full", DOT[state])} />
-                  <span className={cn("min-w-0 flex-1 truncate", row.key === selected && "font-semibold")}>{row.task}</span>
+                  <span className={cn("min-w-0 flex-1 truncate", row.key === selected && "font-semibold")}>{row.name || row.task}</span>
                 </span>
                 <span className="truncate pl-4 text-xs text-muted-foreground" title={row.title ?? undefined}>
                   {row.openable ? t(`work.state.${state}`) : t("work.cannotOpen", { reason: row.reason ?? "?" })}
-                  {row.title ? ` · ${row.title}` : ""}
+                  {row.name ? ` · ${row.task}` : row.title ? ` · ${row.title}` : ""}
                 </span>
               </button>
             );
@@ -385,7 +385,8 @@ export default function WorkPage() {
           {current ? (
             <>
               <div className="flex h-11 shrink-0 items-center gap-3 border-b px-4 text-sm" style={{ background: TERMINAL_CHROME.bar, borderColor: TERMINAL_CHROME.border }}>
-                <span className="font-semibold">{current.task}</span>
+                <span className="font-semibold">{current.name || current.task}</span>
+                {current.name && <span className="text-xs text-[var(--term-muted)]">{current.task}</span>}
                 <span className="text-xs text-[var(--term-muted)]">{t(`work.state.${projectStateOf(current)}`)}</span>
                 <div className="flex-1" />
                 <span className="text-xs text-[var(--term-muted)]">{t("work.where", { agent: current.workspace === "kiro" ? "kiro" : "claude" })}</span>

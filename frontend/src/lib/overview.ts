@@ -115,6 +115,8 @@ export type CardRecord =
 export interface OverviewCard {
   key: string;
   task: string;
+  /** The person's name for the card (CR-85), Agora's own; null when none. */
+  name: string | null;
   source: string;
   workspace: "claude" | "kiro";
   state: ProjectState;
@@ -186,6 +188,7 @@ export function overviewCardsOf(
     return {
       key: row.key,
       task: row.task,
+      name: row.name ?? null,
       source: row.source,
       workspace: row.workspace,
       state: projectStateOf(row),

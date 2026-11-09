@@ -34,6 +34,7 @@ import {
   restoreWorkProjects,
   setWorkOrder,
   setWorkStage,
+  setWorkName,
   setWorkWorkflow,
   shelfErrorOf,
   shelveWorkProject,
@@ -169,10 +170,21 @@ export default function OverviewPage() {
   };
   const shelve = (key: string, action: "pause" | "archive") => shelfAction(key, () => shelveWorkProject(key, action));
   const unshelve = (key: string) => shelfAction(key, () => restoreShelvedProject(key));
-  // The workflow selection (CR-75 slice 4): written into task.yaml like a pause, so the
-  // same "not committed" note and the same refusal text.
-  const saveWorkflow = (key: string, features: WorkflowFeatures, base: string) =>
-    shelfAction(key, () => setWorkWorkflow(key, features, base));
+  // The card's settings (CR-85): the name is Agora's own (nothing to commit); a changed
+  // workflow (CR-75 slice 4) is written into task.yaml like a pause, so the same "not
+  // committed" note and the same refusal text. The name goes first: it cannot be
+  // refused for the file's sake, and a workflow refusal then leaves the name saved.
+  const saveSettings = (key: string, change: SettingsChange) => {
+    if (change.workflow === undefined) {
+      if (change.name !== undefined) boardAction(key, () => setWorkName(key, change.name ?? null));
+      return;
+    }
+    const workflow = change.workflow;
+    shelfAction(key, async () => {
+      if (change.name !== undefined) await setWorkName(key, change.name);
+      await setWorkWorkflow(key, workflow.features, workflow.base);
+    });
+  };
 
   // Todo / doing (CR-81) and the order (CR-82): Agora's own, nothing to commit. A drop
   // changes the stage first — "todo" may be refused — and only then the place.
@@ -299,7 +311,7 @@ export default function OverviewPage() {
                       card={card}
                       onOpen={() => go(card.key)}
                       onShelve={(action) => shelve(card.key, action)}
-                      onWorkflow={(features, base) => saveWorkflow(card.key, features, base)}
+                      onSettings={(change) => saveSettings(card.key, change)}
                       onStage={(next) => setStage(card.key, next)}
                       busy={busyKey !== null}
                       working={busyKey === card.key}
@@ -336,11 +348,17 @@ export default function OverviewPage() {
   );
 }
 
-function Card({ card, onOpen, onShelve, onWorkflow, onStage, busy, working, error }: {
+/** What the settings panel saves (CR-85): only what changed; undefined = untouched. */
+interface SettingsChange {
+  name?: string | null;
+  workflow?: { features: WorkflowFeatures; base: string };
+}
+
+function Card({ card, onOpen, onShelve, onSettings, onStage, busy, working, error }: {
   card: OverviewCard;
   onOpen: () => void;
   onShelve: (action: "pause" | "archive") => void;
-  onWorkflow: (features: WorkflowFeatures, base: string) => void;
+  onSettings: (change: SettingsChange) => void;
   onStage: (stage: Stage) => void;
   busy: boolean;
   working: boolean;
@@ -348,12 +366,40 @@ function Card({ card, onOpen, onShelve, onWorkflow, onStage, busy, working, erro
 }) {
   const { t } = useI18n();
   const [confirming, setConfirming] = useState(false);
-  // The switches being edited, or null while the panel is closed. Taken from the record
-  // when the panel opens; saving sends the base that record was read from.
-  const [draft, setDraft] = useState<{ features: WorkflowFeatures; base: string } | null>(null);
+  // The settings being edited, or null while the panel is closed (CR-85). Taken from the
+  // card when the panel opens, with the values it opened on: an edit is a difference from
+  // those, not from the card as a later poll shows it — a name changed elsewhere meanwhile
+  // is not overwritten by a save that did not touch it (codex review round 1). Saving
+  // sends the base the switches were read from.
+  const [draft, setDraft] = useState<{
+    name: string; openedName: string;
+    features: WorkflowFeatures | null; openedFeatures: WorkflowFeatures | null; base: string | null;
+  } | null>(null);
   const record = card.record;
   const workflow = record.show === "read" ? record.workflow : null;
-  const title = record.show === "read" && record.title ? record.title : card.task;
+  const recordTitle = record.show === "read" && record.title ? record.title : null;
+  const title = card.name || recordTitle || card.task;
+  const openSettings = () => setDraft(draft ? null : {
+    name: card.name ?? "",
+    openedName: card.name ?? "",
+    features: workflow?.show === "editable" ? { ...workflow.features } : null,
+    openedFeatures: workflow?.show === "editable" ? { ...workflow.features } : null,
+    base: workflow?.show === "editable" ? workflow.base : null,
+  });
+  const saveSettings = () => {
+    if (!draft) return;
+    const change: SettingsChange = {};
+    const name = draft.name.trim();
+    if (name !== draft.openedName) change.name = name || null;
+    const { features, openedFeatures, base } = draft;
+    if (features && openedFeatures && base && WORKFLOW_FEATURES.some((k) => features[k] !== openedFeatures[k])) {
+      // The base is the text the switches were read from: a task.yaml changed since is
+      // refused by the write, not overwritten.
+      change.workflow = { features, base };
+    }
+    setDraft(null);
+    if (change.name !== undefined || change.workflow) onSettings(change);
+  };
   return (
     <div className={cn("flex w-full min-w-0 flex-col rounded-xl border bg-card", card.attention && "border-amber-500/60")}>
     <button
@@ -367,7 +413,7 @@ function Card({ card, onOpen, onShelve, onWorkflow, onStage, busy, working, erro
         <div className="min-w-0 flex-1">
           <p className="line-clamp-2 text-sm font-semibold leading-snug">{title}</p>
           <p className="truncate text-xs text-muted-foreground">
-            {card.task} · {t(`work.state.${card.state}`)}
+            {card.task}{card.name && recordTitle ? ` · ${recordTitle}` : ""} · {t(`work.state.${card.state}`)}
           </p>
         </div>
         <WorkspaceBadge workspace={card.workspace} />
@@ -455,27 +501,60 @@ function Card({ card, onOpen, onShelve, onWorkflow, onStage, busy, working, erro
             className="rounded px-2 py-0.5 text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50">
             {t("overview.archive")}
           </button>
-          {workflow?.show === "editable" && (
-            <button type="button" disabled={busy} title={t("overview.workflowHint")} aria-expanded={draft !== null}
-              onClick={() => setDraft(draft ? null : { features: { ...workflow.features }, base: workflow.base })}
-              className={cn("rounded px-2 py-0.5 hover:bg-accent hover:text-foreground disabled:opacity-50",
-                draft ? "bg-accent text-foreground" : "text-muted-foreground")}>
-              {t("overview.workflow")}
-            </button>
-          )}
+          <button type="button" disabled={busy} title={t("overview.settingsHint")} aria-expanded={draft !== null}
+            onClick={openSettings}
+            className={cn("rounded px-2 py-0.5 hover:bg-accent hover:text-foreground disabled:opacity-50",
+              draft ? "bg-accent text-foreground" : "text-muted-foreground")}>
+            {t("overview.settings")}
+          </button>
         </>
       )}
-      {draft && workflow?.show === "editable" && !working && (
-        <WorkflowPanel
-          draft={draft.features}
-          workspace={workflow.workspace}
-          isDefault={workflow.isDefault}
-          gateInstalled={workflow.gateInstalled}
-          busy={busy}
-          onToggle={(key) => setDraft({ ...draft, features: { ...draft.features, [key]: !draft.features[key] } })}
-          onSave={() => { onWorkflow(draft.features, draft.base); setDraft(null); }}
-          onCancel={() => setDraft(null)}
-        />
+      {draft && !working && (
+        <div className="flex basis-full flex-col gap-2 pt-1">
+          <label className="flex flex-col gap-1">
+            <span className="font-medium text-foreground">{t("overview.settingsName")}</span>
+            <input type="text" value={draft.name} maxLength={80} disabled={busy}
+              placeholder={recordTitle ?? card.task}
+              onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+              onKeyDown={(e) => {
+                // Enter while an IME is composing confirms the candidate, not the form
+                // (codex review round 1); 229 is what some browsers report meanwhile.
+                if (e.key === "Enter" && !e.nativeEvent.isComposing && e.keyCode !== 229) saveSettings();
+              }}
+              className="rounded border bg-background px-2 py-1 text-sm text-foreground" />
+            <span className="text-muted-foreground">{t("overview.settingsNameHint")}</span>
+          </label>
+          <p className="font-medium text-foreground">{t("overview.workflow")}</p>
+          {draft.features && workflow?.show === "editable" ? (
+            <WorkflowPanel
+              draft={draft.features}
+              workspace={workflow.workspace}
+              isDefault={workflow.isDefault}
+              gateInstalled={workflow.gateInstalled}
+              busy={busy}
+              onToggle={(key) => setDraft({ ...draft, features: { ...draft.features!, [key]: !draft.features![key] } })}
+            />
+          ) : (
+            <p className="text-muted-foreground">
+              {workflow?.show === "unreadable" ? t("overview.workflowUnreadable", { reason: workflow.reason })
+                : t("overview.settingsWorkflowUnavailable")}
+            </p>
+          )}
+          <div className="flex items-center gap-2">
+            <button type="button" disabled={busy} onClick={saveSettings}
+              className="rounded border px-2 py-0.5 font-medium text-foreground hover:bg-accent disabled:opacity-50">
+              {t("overview.workflowSave")}
+            </button>
+            <button type="button" onClick={() => setDraft(null)} className="rounded px-2 py-0.5 text-muted-foreground hover:bg-accent">
+              {t("overview.cancel")}
+            </button>
+            {draft.features && workflow?.show === "editable" && (
+              <span className="text-muted-foreground">
+                {t(workflow.workspace === "kiro" ? "overview.workflowEffectKiro" : "overview.workflowEffect")}
+              </span>
+            )}
+          </div>
+        </div>
       )}
       {error && <p className="basis-full text-red-700 dark:text-red-400">{error}</p>}
     </div>
@@ -493,20 +572,19 @@ const WORKFLOW_LABEL: Record<WorkflowFeature, string> = {
 };
 
 /** The six switches (CR-75 slice 4), with what each one means and the three things no
- *  switch changes. Saving writes the project's task.yaml; the session reads it next time. */
-function WorkflowPanel({ draft, workspace, isDefault, gateInstalled, busy, onToggle, onSave, onCancel }: {
+ *  switch changes. Inside the card's settings (CR-85), which saves them into task.yaml;
+ *  the session reads it next time. */
+function WorkflowPanel({ draft, workspace, isDefault, gateInstalled, busy, onToggle }: {
   draft: WorkflowFeatures;
   workspace: "claude" | "kiro";
   isDefault: boolean;
   gateInstalled: boolean;
   busy: boolean;
   onToggle: (key: WorkflowFeature) => void;
-  onSave: () => void;
-  onCancel: () => void;
 }) {
   const { t } = useI18n();
   return (
-    <div className="flex basis-full flex-col gap-1.5 pt-1">
+    <div className="flex basis-full flex-col gap-1.5">
       {isDefault && <p className="text-muted-foreground">{t("overview.workflowDefault")}</p>}
       {WORKFLOW_FEATURES.map((key) => (
         <label key={key} className="flex cursor-pointer items-start gap-2 rounded border px-2 py-1.5 hover:bg-accent/50">
@@ -524,18 +602,6 @@ function WorkflowPanel({ draft, workspace, isDefault, gateInstalled, busy, onTog
         </label>
       ))}
       <p className="text-muted-foreground">{t("overview.workflowKeep")}</p>
-      <div className="flex items-center gap-2">
-        <button type="button" disabled={busy} onClick={onSave}
-          className="rounded border px-2 py-0.5 font-medium text-foreground hover:bg-accent disabled:opacity-50">
-          {t("overview.workflowSave")}
-        </button>
-        <button type="button" onClick={onCancel} className="rounded px-2 py-0.5 text-muted-foreground hover:bg-accent">
-          {t("overview.cancel")}
-        </button>
-        <span className="text-muted-foreground">
-          {t(workspace === "kiro" ? "overview.workflowEffectKiro" : "overview.workflowEffect")}
-        </span>
-      </div>
     </div>
   );
 }

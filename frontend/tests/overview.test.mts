@@ -182,3 +182,14 @@ test("the panel knows whether the repository's review gate is installed, whateve
   const older = workflowViewOf(withWorkflow(wf), "claude");
   assert.ok(older && older.show === "editable" && !older.gateInstalled);
 });
+
+test("a card carries the person's name for it, and none when the server sends none (CR-85)", () => {
+  const named = overviewCardsOf({ projects: [row({ name: "社内ポータル" })] }, null, false)[0];
+  assert.equal(named.name, "社内ポータル");
+  assert.equal(named.task, "alpha");
+  assert.equal(overviewCardsOf({ projects: [row({ name: null })] }, null, false)[0].name, null);
+  // A server older than CR-85 sends no name at all.
+  const older = row();
+  delete older.name;
+  assert.equal(overviewCardsOf({ projects: [older] }, null, false)[0].name, null);
+});
