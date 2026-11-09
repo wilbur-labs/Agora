@@ -11,6 +11,7 @@ import { cn } from "@/lib/utils";
 import {
   USAGE_AGENTS,
   getUsage,
+  leftPercent,
   unavailableKeyOf,
   untilText,
   usageLevel,
@@ -84,10 +85,17 @@ function Cell({ agent, reading, now }: { agent: UsageAgent; reading: UsageReadin
       <span className="font-medium text-foreground">{LABEL[agent]}</span>
       {reading.windows.map((w) => {
         const until = untilText(w.resets_at, now);
+        const left = leftPercent(w.used);
+        const credits = typeof reading.credits_left === "number" && typeof reading.credits_limit === "number";
         return (
           <span key={w.label} className={LEVEL_CLASS[usageLevel(w.used)]}
             title={until ? t("work.usage.resetsIn", { until }) : undefined}>
-            {w.label} {w.used === null ? t("work.usage.reset") : `${Math.round(w.used)}%`}
+            {credits
+              ? t("work.usage.creditsLeft", {
+                  left: creditsText(reading.credits_left as number),
+                  limit: Math.round(reading.credits_limit as number).toLocaleString(),
+                })
+              : <>{w.label} {left === null ? t("work.usage.reset") : t("work.usage.left", { pct: left })}</>}
             {until && w.used !== null && usageLevel(w.used) !== "ok" && (
               <span className="text-muted-foreground"> ({t("work.usage.resetsIn", { until })})</span>
             )}
@@ -103,4 +111,9 @@ function Cell({ agent, reading, now }: { agent: UsageAgent; reading: UsageReadin
       )}
     </span>
   );
+}
+
+/** Credits left, rounded down — but "<1" rather than "0" while some is left (kiro review). */
+function creditsText(left: number): string {
+  return left > 0 && left < 1 ? "<1" : Math.floor(left).toLocaleString();
 }

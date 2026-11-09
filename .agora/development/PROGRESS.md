@@ -8927,3 +8927,40 @@ Tests: backend test_work_usage collected 21, 21 passed; with test_work, test_wor
 test_work_newer, test_workflow_selection, test_work_shelf, test_workspace_tasks: 269
 collected, 267 passed, 2 skipped. Frontend test:control-plane collected 603, 602 passed,
 1 skipped (usage.test.mts added to it); tsc, lint clean.
+
+Codex round 3: clean; committed `b606ce9`.
+
+### 2026-11-09 — CR-87 follow-up: what is left, and kiro's credits
+
+The user, on the bar as described: not tokens used — what `/usage` says is **left**:
+claude's and codex's percentage, kiro-cli's credits.
+
+- The bar shows what is left of each window (`5h 剩 46%`), rounded down, and 1% rather
+  than 0% while anything is left (`leftPercent`); colours still follow what is used.
+- kiro: kiro-cli 3.1.0's own `/usage` calls the ACP extension method
+  `_kiro/account/getUsage` (read from its `tui.js`). `kiro-cli acp --agent-engine=v3`,
+  `initialize`, then that call answers in under a second **without a session** (with
+  `session/new` it also works, but leaves a "New Session" in kiro's list — one was left
+  in `%TEMP%` by the probe). The v2 engine answers -32601, shown as `kiro_no_api` (now
+  "this kiro-cli has no usage call; 3.x has"). Measured here: KIRO POWER, 2874.17 /
+  10000 credits used, resets 2026-12-01. Credits left = limit - used, floored at 0;
+  add-on and bonus credits not counted, as kiro's own status line does not.
+  Kept 300 s (`KIRO_TTL`).
+- `_ask` is the JSON-RPC-on-stdio read `_ask_codex` was, shared by both: same job
+  object / process group / pipe-close ending.
+
+Tests: backend test_work_usage collected 26, 26 passed. Frontend test:control-plane
+collected 604, 603 passed, 1 skipped; tsc, lint clean. Live reads from this machine:
+kiro ok (above), codex ok (5h 0%, 7d 12% used, 2 resets).
+
+Review round 1: codex said no findings but its gate exited 4 (its Windows sandbox failed
+local commands; the patch was not in its output) — kiro stood in, 4 findings, all fixed:
+- a refused `initialize` still sent the next request, so its later -32601 read as
+  "no such call" — a failed handshake is now the answer ("kiro: initialize failed: …").
+- kiro values were not checked: negative used showed more left than the limit, and
+  NaN/inf would fail the whole `/work/usage` response — `_number` keeps finite numbers
+  only (codex too), and negative used is unavailable.
+- the credit breakdown was picked by its localisable display name, else the first
+  limited one — now by `resourceType == "CREDIT"`, then the name, else unavailable.
+- 0.5 credits left showed "0" — shown as "<1".
+Tests: backend test_work_usage collected 29, 29 passed; tsc, lint clean; live kiro read ok.

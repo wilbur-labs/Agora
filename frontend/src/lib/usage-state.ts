@@ -21,6 +21,9 @@ export type UsageReading =
       read_at: number | null;
       reset_credits?: number | null;
       limit_reached?: boolean;
+      /** kiro: credits left of the month's limit. */
+      credits_left?: number | null;
+      credits_limit?: number | null;
     }
   | { state: "unavailable"; reason: string; seen_at?: number | null };
 
@@ -34,6 +37,14 @@ export function usageLevel(used: number | null): "ok" | "warn" | "high" | "unkno
   if (used >= 95) return "high";
   if (used >= 80) return "warn";
   return "ok";
+}
+
+/** What is left of a window, 0–100, rounded down so "0% left" is never shown while
+ *  something is still left and "100%" only when nothing is used; null when not known. */
+export function leftPercent(used: number | null): number | null {
+  if (used === null) return null;
+  const left = 100 - Math.min(100, Math.max(0, used));
+  return left > 0 && left < 1 ? 1 : Math.floor(left);
 }
 
 /** "2h 05m" / "3d 4h" / "12m" until `at`, from `now` (both Unix seconds); null when not
@@ -59,6 +70,7 @@ export function unavailableKeyOf(reason: string): { key: string; detail: string 
     unreadable: "unreadable",
     kiro_no_api: "kiroNoApi",
     "codex is not installed": "notInstalled",
+    "kiro-cli is not installed": "notInstalled",
   };
   return reason in known ? { key: known[reason], detail: null } : { key: "failed", detail: reason };
 }

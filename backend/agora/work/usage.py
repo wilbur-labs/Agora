@@ -8,7 +8,9 @@ unpublished endpoint):
   Pro/Max/Ultra subscribers, and only after a session's first answer.
 - codex: ``codex app-server``'s ``account/rateLimits/read``, a short-lived process per
   read, kept for ``CODEX_TTL`` seconds.
-- kiro-cli: has no non-interactive way to read ``/usage``; said so, not guessed.
+- kiro-cli: ``kiro-cli acp --agent-engine=v3``'s ``_kiro/account/getUsage`` — the call
+  kiro's own ``/usage`` makes, through the installed CLI; a short-lived process per read,
+  kept for ``KIRO_TTL`` seconds. A kiro without it (before 3.x) is said to be unreadable.
 
 Every answer is ``ok`` with what was read and when, or ``unavailable`` with why — an
 agent whose usage could not be read is never shown as unused.
@@ -16,6 +18,7 @@ agent whose usage could not be read is never shown as unused.
 from __future__ import annotations
 
 import json
+import math
 import os
 import shutil
 import signal
@@ -29,10 +32,14 @@ from agora.execution.dispatcher import ExecutionDispatcher
 
 CODEX_TTL = 60.0
 CODEX_TIMEOUT = 20.0
+KIRO_TTL = 300.0  # credits move slowly; a month-long budget
+KIRO_TIMEOUT = 20.0
 _WINDOW_NAMES = {"five_hour": "5h", "seven_day": "7d"}
 
 _codex_lock = threading.Lock()
 _codex_cache: tuple[float, dict[str, Any]] | None = None
+_kiro_lock = threading.Lock()
+_kiro_cache: tuple[float, dict[str, Any]] | None = None
 
 
 def _unavailable(reason: str) -> dict[str, Any]:
@@ -40,7 +47,12 @@ def _unavailable(reason: str) -> dict[str, Any]:
 
 
 def _number(value: object) -> float | None:
-    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+    """A finite number, or None: NaN or infinity would not serialise, and would take the
+    other agents' readings down with it (kiro review)."""
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
 
 
 # --- claude ---------------------------------------------------------------------------------
@@ -118,26 +130,23 @@ def _end(proc: subprocess.Popen, reader: threading.Thread | None, job: object | 
         reader.join(5)
 
 
-def _ask_codex(exe: str) -> dict[str, Any]:
-    """One ``account/rateLimits/read`` from a short-lived app-server, or why not."""
-    requests = [
-        {"jsonrpc": "2.0", "id": 1, "method": "initialize",
-         "params": {"clientInfo": {"name": "agora", "version": "1"}}},
-        {"jsonrpc": "2.0", "method": "initialized"},
-        {"jsonrpc": "2.0", "id": 2, "method": "account/rateLimits/read"},
-    ]
+def _ask(argv: list[str], requests: list[dict[str, Any]], name: str,
+         timeout: float) -> dict[str, Any]:
+    """Answer ``id`` 2 of a short-lived JSON-RPC server on stdio, or why not: the first
+    request (``id`` 1, ``initialize``) is sent at once, the rest once it is answered.
+    Returns the message itself, or ``unavailable``."""
     try:
-        proc = subprocess.Popen([exe, "app-server"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                 stderr=subprocess.DEVNULL,
                                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                                 start_new_session=os.name != "nt")
     except OSError as exc:
-        return _unavailable(f"could not start codex ({type(exc).__name__})")
+        return _unavailable(f"could not start {name} ({type(exc).__name__})")
     # Into a job object at once, so what the wrapper starts is held with it.
     job = ExecutionDispatcher._adopt_process_tree(proc)
     answer: dict[str, Any] | None = None
     reader: threading.Thread | None = None
-    deadline = time.monotonic() + CODEX_TIMEOUT
+    deadline = time.monotonic() + timeout
     try:
         assert proc.stdin is not None and proc.stdout is not None
         proc.stdin.write(json.dumps(requests[0]).encode("utf-8") + b"\n")
@@ -165,24 +174,47 @@ def _ask_codex(exe: str) -> dict[str, Any]:
         reader = threading.Thread(target=read_safely, daemon=True)
         reader.start()
         while time.monotonic() < deadline and reader.is_alive():
-            if sent == 1 and any(m.get("id") == 1 for m in result):
+            first = next((m for m in result if m.get("id") == 1), None)
+            if first is not None and "error" in first:
+                answer = first  # a failed handshake is the answer: nothing more is asked (kiro review)
+                break
+            if sent == 1 and first is not None:
                 for request in requests[1:]:
                     proc.stdin.write(json.dumps(request).encode("utf-8") + b"\n")
                 proc.stdin.flush()
-                sent = 3
+                sent = len(requests)
             reader.join(0.1)
-        answer = next((m for m in result if m.get("id") == 2), None)
+        if answer is None:
+            answer = next((m for m in result if m.get("id") == 2), None)
     except OSError as exc:
-        return _unavailable(f"codex app-server failed ({type(exc).__name__})")
+        return _unavailable(f"{name} failed ({type(exc).__name__})")
     finally:
         _end(proc, reader, job)
     if answer is None:
-        return _unavailable("codex app-server did not answer")
-    if "error" in answer:
-        error = answer.get("error")
-        message = error.get("message") if isinstance(error, dict) else None
-        return _unavailable(f"codex: {message or 'error'}"[:200])
-    return parse_codex(answer.get("result"))
+        return _unavailable(f"{name} did not answer")
+    return answer
+
+
+def _error_of(answer: dict[str, Any], name: str) -> dict[str, Any] | None:
+    if "error" not in answer:
+        return None
+    error = answer.get("error")
+    message = error.get("message") if isinstance(error, dict) else None
+    step = "initialize failed: " if answer.get("id") == 1 else ""
+    return _unavailable(f"{name}: {step}{message or 'error'}"[:200])
+
+
+def _ask_codex(exe: str) -> dict[str, Any]:
+    """One ``account/rateLimits/read`` from a short-lived app-server, or why not."""
+    answer = _ask([exe, "app-server"], [
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+         "params": {"clientInfo": {"name": "agora", "version": "1"}}},
+        {"jsonrpc": "2.0", "method": "initialized"},
+        {"jsonrpc": "2.0", "id": 2, "method": "account/rateLimits/read"},
+    ], "codex app-server", CODEX_TIMEOUT)
+    if answer.get("state") == "unavailable":
+        return answer
+    return _error_of(answer, "codex") or parse_codex(answer.get("result"))
 
 
 def parse_codex(result: object) -> dict[str, Any]:
@@ -224,8 +256,83 @@ def read_codex(*, now: float | None = None) -> dict[str, Any]:
         return answer
 
 
-def read_kiro() -> dict[str, Any]:
-    return _unavailable("kiro_no_api")
+# --- kiro -----------------------------------------------------------------------------------
+def _kiro_exe() -> str | None:
+    return shutil.which("kiro-cli") or (shutil.which("kiro-cli.cmd") if os.name == "nt" else None)
+
+
+def _ask_kiro(exe: str) -> dict[str, Any]:
+    """One ``_kiro/account/getUsage`` from a short-lived ``kiro-cli acp``, or why not. No
+    session is made: nothing is left in kiro's session list (measured, 3.1.0)."""
+    answer = _ask([exe, "acp", "--agent-engine=v3"], [
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+         "params": {"protocolVersion": 1, "clientCapabilities": {},
+                    "clientInfo": {"name": "agora", "version": "1"}}},
+        {"jsonrpc": "2.0", "id": 2, "method": "_kiro/account/getUsage", "params": {}},
+    ], "kiro-cli acp", KIRO_TIMEOUT)
+    if answer.get("state") == "unavailable":
+        return answer
+    error = answer.get("error")
+    if answer.get("id") == 2 and isinstance(error, dict) and error.get("code") == -32601:
+        return _unavailable("kiro_no_api")  # a kiro that has no such call
+    return _error_of(answer, "kiro") or parse_kiro(answer.get("result"))
+
+
+def parse_kiro(result: object) -> dict[str, Any]:
+    """The credits from a ``getUsage`` result: the breakdown of resource type ``CREDIT``
+    (or named so) with a limit; another limited resource is never shown as credits. Left = limit - used, never below 0; add-on and
+    bonus credits are not counted, as kiro's own status line does not count them."""
+    data = result.get("data") if isinstance(result, dict) else None
+    if isinstance(result, dict) and result.get("success") is False:
+        message = result.get("message")
+        return _unavailable(f"kiro: {message}"[:200] if isinstance(message, str) and message
+                            else "kiro answered without usage")
+    breakdowns = data.get("usageBreakdowns") if isinstance(data, dict) else None
+    if not isinstance(breakdowns, list):
+        return _unavailable("kiro answered without usage")
+    limited = [b for b in breakdowns if isinstance(b, dict) and b.get("hasLimit") is True
+               and (_number(b.get("limit")) or 0) > 0 and (_number(b.get("used")) or 0) >= 0
+               and _number(b.get("used")) is not None]
+    if not limited:
+        return _unavailable("kiro answered without a credit limit")
+    # By the stable resource type first; the display name is localisable (kiro review).
+    chosen = next((b for b in limited if b.get("resourceType") == "CREDIT"), None) \
+        or next((b for b in limited if str(b.get("displayName", "")).strip().lower() in ("credit", "credits")), None)
+    if chosen is None:
+        return _unavailable("kiro answered without a credit limit")
+    limit, used = float(chosen["limit"]), float(chosen["used"])
+    return {"state": "ok",
+            "windows": [{"label": "month", "used": min(100.0, used / limit * 100),
+                         "resets_at": _date_at(data.get("billingCycleReset")), "reset": False}],
+            "read_at": time.time(),
+            "credits_left": max(0.0, limit - used), "credits_limit": limit,
+            "limit_reached": used >= limit and data.get("overagesEnabled") is not True,
+            "plan": data.get("planName") if isinstance(data.get("planName"), str) else None}
+
+
+def _date_at(value: object) -> float | None:
+    """``2026-12-01`` as Unix seconds at that day's start, UTC (kiro does not say the
+    zone); None when it is not a date."""
+    if not isinstance(value, str):
+        return None
+    try:
+        from datetime import datetime, timezone
+        return datetime.strptime(value[:10], "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp()
+    except ValueError:
+        return None
+
+
+def read_kiro(*, now: float | None = None) -> dict[str, Any]:
+    """Kept for ``KIRO_TTL`` seconds; one read at a time."""
+    global _kiro_cache
+    with _kiro_lock:
+        moment = time.time() if now is None else now
+        if _kiro_cache is not None and moment - _kiro_cache[0] < KIRO_TTL:
+            return _kiro_cache[1]
+        exe = _kiro_exe()
+        answer = _unavailable("kiro-cli is not installed") if exe is None else _ask_kiro(exe)
+        _kiro_cache = (moment, answer)
+        return answer
 
 
 def read_all(usage_dir: Path | None) -> dict[str, Any]:

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { unavailableKeyOf, untilText, usageLevel } from "../src/lib/usage-state.ts";
+import { leftPercent, unavailableKeyOf, untilText, usageLevel } from "../src/lib/usage-state.ts";
 
 test("a window warns from 80% and is about to stop from 95%; reset is unknown, not zero (CR-87)", () => {
   assert.equal(usageLevel(0), "ok");
@@ -28,4 +28,15 @@ test("why a reading is unavailable is said; an unknown reason is shown as it cam
   assert.deepEqual(unavailableKeyOf("codex is not installed"), { key: "notInstalled", detail: null });
   assert.deepEqual(unavailableKeyOf("codex app-server did not answer"),
     { key: "failed", detail: "codex app-server did not answer" });
+});
+
+test("what is left of a window is shown, rounded so it never claims 0 while some is left", () => {
+  assert.equal(leftPercent(null), null);
+  assert.equal(leftPercent(0), 100);
+  assert.equal(leftPercent(12), 88);
+  assert.equal(leftPercent(28.74), 71);
+  assert.equal(leftPercent(99.6), 1);
+  assert.equal(leftPercent(100), 0);
+  assert.equal(leftPercent(130), 0);
+  assert.deepEqual(unavailableKeyOf("kiro-cli is not installed"), { key: "notInstalled", detail: null });
 });

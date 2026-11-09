@@ -140,8 +140,64 @@ def test_codex_not_installed_is_said(monkeypatch):
     assert usage.read_codex(now=1.0) == {"state": "unavailable", "reason": "codex is not installed"}
 
 
-def test_kiro_is_said_to_be_unreadable():
-    assert usage.read_kiro() == {"state": "unavailable", "reason": "kiro_no_api"}
+KIRO_RESULT = {"success": True, "message": "Plan: KIRO POWER | 1 usage breakdowns", "data": {
+    "planName": "KIRO POWER", "billingCycleReset": "2026-12-01", "overagesEnabled": False,
+    "isEnterprise": True, "usageBreakdowns": [
+        {"resourceType": "CREDIT", "displayName": "Credits", "used": 2874.17, "limit": 10000,
+         "percentage": 28, "hasLimit": True}],
+    "bonusCredits": [], "addOnCredits": []}}
+
+
+def test_kiro_credits_are_read_as_left_of_the_limit():
+    reading = usage.parse_kiro(KIRO_RESULT)
+    assert reading["state"] == "ok"
+    assert reading["credits_left"] == pytest.approx(7125.83)
+    assert reading["credits_limit"] == 10000
+    [window] = reading["windows"]
+    assert window["used"] == pytest.approx(28.7417)
+    assert window["resets_at"] == 1796083200.0  # 2026-12-01T00:00Z
+    assert reading["limit_reached"] is False and reading["plan"] == "KIRO POWER"
+
+
+def test_kiro_over_its_limit_is_zero_left_and_reached():
+    data = json.loads(json.dumps(KIRO_RESULT))
+    data["data"]["usageBreakdowns"][0]["used"] = 10400
+    reading = usage.parse_kiro(data)
+    assert reading["credits_left"] == 0 and reading["windows"][0]["used"] == 100
+    assert reading["limit_reached"] is True
+
+
+def test_kiro_without_a_limit_is_unavailable_not_unused():
+    assert usage.parse_kiro({})["state"] == "unavailable"
+    unlimited = json.loads(json.dumps(KIRO_RESULT))
+    unlimited["data"]["usageBreakdowns"][0]["hasLimit"] = False
+    assert usage.parse_kiro(unlimited)["state"] == "unavailable"
+    assert usage.parse_kiro({"success": False, "message": "not logged in"}) == {
+        "state": "unavailable", "reason": "kiro: not logged in"}
+
+
+def test_a_kiro_without_the_call_is_said_to_be_unreadable(monkeypatch):
+    monkeypatch.setattr(usage, "_ask", lambda *a: {
+        "jsonrpc": "2.0", "id": 2, "error": {"code": -32601, "message": "Method not found"}})
+    assert usage._ask_kiro("kiro-cli") == {"state": "unavailable", "reason": "kiro_no_api"}
+
+
+def test_kiro_is_asked_at_most_every_five_minutes(monkeypatch):
+    calls = []
+    monkeypatch.setattr(usage, "_kiro_cache", None)
+    monkeypatch.setattr(usage, "_kiro_exe", lambda: "kiro-cli")
+    monkeypatch.setattr(usage, "_ask_kiro", lambda exe: calls.append(exe) or usage.parse_kiro(KIRO_RESULT))
+    usage.read_kiro(now=1000.0)
+    usage.read_kiro(now=1000.0 + usage.KIRO_TTL - 1)
+    assert len(calls) == 1
+    usage.read_kiro(now=1000.0 + usage.KIRO_TTL + 1)
+    assert len(calls) == 2
+
+
+def test_kiro_not_installed_is_said(monkeypatch):
+    monkeypatch.setattr(usage, "_kiro_cache", None)
+    monkeypatch.setattr(usage, "_kiro_exe", lambda: None)
+    assert usage.read_kiro(now=1.0) == {"state": "unavailable", "reason": "kiro-cli is not installed"}
 
 
 # --- wiring -------------------------------------------------------------------------------------
@@ -197,6 +253,7 @@ def test_a_work_page_claude_gets_the_relay_environment(world):
 def test_usage_through_the_api(api, tmp_path, monkeypatch):
     client, service, work = api
     monkeypatch.setattr(usage, "read_codex", lambda: {"state": "unavailable", "reason": "codex is not installed"})
+    monkeypatch.setattr(usage, "read_kiro", lambda: {"state": "unavailable", "reason": "kiro_no_api"})
     assert client.get("/api/work/usage").status_code == 401
     client.headers["X-Agora-Terminal-Token"] = load_or_create_token(tmp_path / "data")
     body = client.get("/api/work/usage").json()
@@ -252,3 +309,44 @@ def _alive(pid: int) -> bool:
     except OSError:
         return False
     return True
+
+
+def test_a_broken_kiro_reading_is_unavailable_not_ok():
+    for used in (-1, float("nan"), float("inf")):
+        data = json.loads(json.dumps(KIRO_RESULT))
+        data["data"]["usageBreakdowns"][0]["used"] = used
+        assert usage.parse_kiro(data)["state"] == "unavailable", used
+
+
+def test_kiro_credits_are_chosen_by_resource_type_not_by_position_or_name():
+    data = json.loads(json.dumps(KIRO_RESULT))
+    credit = data["data"]["usageBreakdowns"][0]
+    credit["displayName"] = "クレジット"
+    other = {"resourceType": "AGENTIC_REQUEST", "displayName": "Requests", "used": 5, "limit": 50, "hasLimit": True}
+    data["data"]["usageBreakdowns"] = [other, credit]
+    assert usage.parse_kiro(data)["credits_limit"] == 10000
+    data["data"]["usageBreakdowns"] = [other]
+    assert usage.parse_kiro(data)["state"] == "unavailable"
+
+
+def test_a_failed_handshake_is_said_and_nothing_more_is_asked(tmp_path, monkeypatch):
+    """A stand-in server that refuses ``initialize``: the refusal is the answer, not a
+    later 'no such method' (kiro review)."""
+    script = tmp_path / "refuse.py"
+    seen = tmp_path / "seen.txt"
+    script.write_text(
+        "import json, sys\n"
+        f"log = open(r'{seen}', 'w')\n"
+        "for line in sys.stdin:\n"
+        "    m = json.loads(line); log.write(str(m.get('id')) + '\\n'); log.flush()\n"
+        "    if m.get('id') == 1:\n"
+        "        print(json.dumps({'jsonrpc': '2.0', 'id': 1, 'error': {'code': -32602, 'message': 'bad protocolVersion'}}), flush=True)\n"
+        "    elif m.get('id') == 2:\n"
+        "        print(json.dumps({'jsonrpc': '2.0', 'id': 2, 'error': {'code': -32601, 'message': 'Method not found'}}), flush=True)\n",
+        encoding="utf-8")
+    real_popen = subprocess.Popen
+    monkeypatch.setattr(usage.subprocess, "Popen",
+                        lambda args, **kw: real_popen([sys.executable, str(script)], **kw))
+    assert usage._ask_kiro("kiro-cli") == {"state": "unavailable",
+                                           "reason": "kiro: initialize failed: bad protocolVersion"}
+    assert seen.read_text().split() == ["1"]
