@@ -37,6 +37,9 @@ export const work = {
     authRequired: "Open Agora from its launcher or desktop shortcut to use terminals on this machine.",
     openFailed: "Could not open: {detail}",
     hookProblem: "Conversations cannot be recorded for a restart: {reason}",
+    newerTaken: "Brought back a newer conversation of this task, opened outside the work page ({when} · {cwd}).",
+    newerBusy: "A conversation of this task opened outside the work page was still being written at {when} ({cwd}): it may still be open there, so the recorded one was brought back instead. Close it there, then reopen this project to take it.",
+    newerBusyFresh: "A conversation of this task opened outside the work page was still being written at {when} ({cwd}): it may still be open there, so a new conversation was started instead. Close it there, then reopen this project to take it.",
     restoreFailed: "Could not reopen the projects left open last time ({detail}). Trying again shortly.",
     restore: {
       heading: "After the restart",
@@ -99,6 +102,9 @@ export const work = {
     authRequired: "请从 Agora 的启动器或桌面快捷方式打开，才能在这台机器上用终端。",
     openFailed: "没打开：{detail}",
     hookProblem: "没法记录对话，重启后接不回：{reason}",
+    newerTaken: "接回的是在工作页外开的、这个任务更新的对话（{when} · {cwd}）。",
+    newerBusy: "在工作页外开的这个任务的对话 {when} 还在更新（{cwd}），可能还开着，所以接回的是记录里的那段。那边关掉后，重开这一格就会接它。",
+    newerBusyFresh: "在工作页外开的这个任务的对话 {when} 还在更新（{cwd}），可能还开着，所以这里开的是新对话。那边关掉后，重开这一格就会接它。",
     restoreFailed: "上次开着的项目没能接回（{detail}），稍后会再试。",
     restore: {
       heading: "重启后",
@@ -161,6 +167,9 @@ export const work = {
     authRequired: "このマシンでターミナルを使うには、Agora をランチャーかデスクトップのショートカットから開いてください。",
     openFailed: "開けませんでした：{detail}",
     hookProblem: "会話を記録できないため、再起動後に再開できません：{reason}",
+    newerTaken: "作業ページの外で開いた、このタスクの新しい会話を再開しました（{when} · {cwd}）。",
+    newerBusy: "作業ページの外で開いたこのタスクの会話が {when} にまだ更新されていました（{cwd}）。まだ開いている可能性があるため、記録された会話を再開しました。そちらを閉じてからこのプロジェクトを開き直すと、そちらを再開します。",
+    newerBusyFresh: "作業ページの外で開いたこのタスクの会話が {when} にまだ更新されていました（{cwd}）。まだ開いている可能性があるため、新しい会話を始めました。そちらを閉じてからこのプロジェクトを開き直すと、そちらを再開します。",
     restoreFailed: "前回開いていたプロジェクトを再開できませんでした（{detail}）。しばらくして再試行します。",
     restore: {
       heading: "再起動後",

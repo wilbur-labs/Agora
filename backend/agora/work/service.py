@@ -29,7 +29,8 @@ from agora.projects.importer import StrictLoader
 from agora.work import shelf
 from agora.work.procs import creation_time, liveness
 from agora.work.projects import WorkProject, WorkScan, scan_work_projects, work_key
-from agora.work.reports import SESSION_ID_RE, Journal, has_conversation, read_journal, trusted_transcript
+from agora.work.reports import (BUSY_SECONDS, SESSION_ID_RE, Journal, claude_projects_dir, has_conversation,
+                                last_spoken, newer_task_conversation, read_journal, trusted_transcript)
 from agora.work.store import WorkSession, WorkSessionStore
 
 #: The terminal's project id for a work project: ``work:<key>``.
@@ -56,6 +57,9 @@ class LaunchInfo:
     result: str
     detail: str | None = None
     restored: bool = False
+    #: A newer conversation of the task opened outside the work page (CR-86): taken
+    #: (``newer``) or left because it may still be open elsewhere (``newer_busy``).
+    note: dict[str, Any] | None = None
 
 
 #: A card name is one short line (CR-85).
@@ -244,6 +248,7 @@ class WorkService:
         env: dict[str, str] = {}
         launch_id = uuid.uuid4().hex
         previous: Journal | None = None
+        note: dict[str, Any] | None = None
         if project.workspace == "kiro":
             mode, result, detail = "fresh", "fresh_unsupported", None
             argv = command_argv("kiro", kiro_agent=project.agent)
@@ -274,6 +279,9 @@ class WorkService:
                 except OSError as exc:  # a link in its place, or it cannot be made: no recording
                     setup = hooks_module.HookSetup(None, None, f"{type(exc).__name__}: {exc}")
             mode, result, detail, resume = self._decide(row, setup)
+            if setup.settings is not None:
+                mode, result, detail, resume, note = await asyncio.to_thread(
+                    self._newer_elsewhere, project, row, (mode, result, detail, resume))
             args: list[str] = []
             if setup.settings is not None and folder is not None:
                 env.update({"AGORA_WORK_DIR": str(folder), "AGORA_WORK_KEY": key, "AGORA_WORK_LAUNCH": launch_id})
@@ -295,7 +303,7 @@ class WorkService:
             with self._checkpoint_lock:
                 self.store.begin_launch(key=key, source=project.source, task=project.task,
                                         workspace=project.workspace, launch_id=launch_id, launch_mode=mode,
-                                        expect_session=row.ck_session if (row and mode == "resume") else None)
+                                        expect_session=resume if mode == "resume" else None)
         try:
             session = await asyncio.to_thread(
                 self.manager.create, project_id=PREFIX + key, label=f"{project.task} · {project.workspace}",
@@ -318,8 +326,72 @@ class WorkService:
             # behind an error (kiro review round 12).
             await asyncio.to_thread(self.manager.close, session.terminal_id)
             raise
-        self._launches[key] = LaunchInfo(launch_id, mode, result, detail, restored=restoring)
-        return {"result": result, "detail": detail, "terminal": session.view()}
+        self._launches[key] = LaunchInfo(launch_id, mode, result, detail, restored=restoring, note=note)
+        return {"result": result, "detail": detail, "terminal": session.view(), "note": note}
+
+    def _newer_elsewhere(self, project: WorkProject, row: WorkSession | None,
+                         decided: tuple[str, str, str | None, str | None]
+                         ) -> tuple[str, str, str | None, str | None, dict[str, Any] | None]:
+        """A newer conversation of this task than the recovery point, opened outside the
+        work page (CR-86: ``cw open`` in a terminal, often in the task's primary_repo).
+        Taken over the recovery point, or over a fresh start; claude resumes it by id from
+        any directory and keeps writing its transcript where it is. One written to in the
+        last ``BUSY_SECONDS`` may still be open elsewhere: named, not taken."""
+        mode, result, detail, resume = decided
+        base = self.claude_projects or claude_projects_dir()
+        after = self._cutoff(row, base, self._recorded_source(row))
+        if after is None:
+            return mode, result, detail, resume, None  # newer than what is not known
+        known = resume or (row.ck_session if row else None)
+        newer = newer_task_conversation(base, project.task, project.source, after=after, exclude=known)
+        if newer is None:
+            return mode, result, detail, resume, None
+        when = time.strftime("%Y-%m-%d %H:%M", time.localtime(newer.spoken))
+        note = {"kind": "newer", "when": when, "cwd": newer.cwd, "session": newer.session_id}
+        if time.time() - newer.modified < BUSY_SECONDS:
+            # Said with what was done instead: the recorded conversation, or a new one
+            # when there was none to bring back (codex review round 2).
+            return mode, result, detail, resume, {**note, "kind": "newer_busy", "fallback": mode}
+        return "resume", "resume", None, newer.session_id, note
+
+    def _recorded_source(self, row: WorkSession | None) -> str | None:
+        """How the recovery point's conversation began (``startup`` / ``resume`` /
+        ``clear``), from the journal of the launch that recorded it; None when unknown."""
+        if row is None or not row.ck_session or not row.ck_launch:
+            return None
+        path = self._journal_path(row.key, row.ck_launch)
+        if path is None:
+            return None
+        journal = read_journal(path, key=row.key, launch_id=row.ck_launch, base=self.claude_projects)
+        source = None
+        for record in journal.events:
+            if record.get("event") == "SessionStart" and record.get("session_id") == row.ck_session:
+                source = record.get("source") if isinstance(record.get("source"), str) else None
+        return source
+
+    @staticmethod
+    def _cutoff(row: WorkSession | None, base: Path, source: str | None = None) -> float | None:
+        """What a conversation must have spoken after to be newer than the recovery point,
+        whatever was decided about resuming it (codex review round 1): when someone last
+        spoke in it. One nobody spoke in: after a /clear — or begun in a way not known —
+        when it was written, since the person chose to start over; one a launch started and
+        nobody used (``startup``) says nothing, so it bounds nothing (codex review round 3:
+        a fresh start made while a newer conversation was busy elsewhere must not shut that
+        one out for good). Its file gone or unreadable: when the point was recorded, or —
+        not known — None. Never recorded at all: 0, any conversation of the task is newer
+        than nothing."""
+        if row is None or not row.ck_session:
+            return 0.0
+        transcript = trusted_transcript(row.ck_transcript, base)
+        if transcript is not None:
+            try:
+                spoken = last_spoken(transcript)
+                if spoken is not None:
+                    return spoken
+                return 0.0 if source == "startup" else transcript.stat().st_mtime
+            except OSError:
+                pass
+        return row.ck_at
 
     def _decide(self, row: WorkSession | None, setup: hooks_module.HookSetup) -> tuple[str, str, str | None, str | None]:
         """(mode, result, detail, session to resume)."""
@@ -478,7 +550,7 @@ class WorkService:
                 "terminal": latest.view() if latest else None,
                 "starting": project.key in self._starting,
                 "launch": None if info is None or row is None or info.launch_id != row.launch_id else {
-                    "result": info.result, "detail": info.detail, "restored": info.restored,
+                    "result": info.result, "detail": info.detail, "restored": info.restored, "note": info.note,
                     "confirm": self.confirmation(row, journal),
                 },
                 "stale": bool(row and row.ck_stale),

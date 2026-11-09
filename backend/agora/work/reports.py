@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from datetime import datetime
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -162,3 +163,137 @@ def _unreadable_line(journal: Journal) -> None:
 
 def _str(value: object) -> str | None:
     return value if isinstance(value, str) else None
+
+
+# --- a newer conversation of the same task, opened outside the work page (CR-86) -------------
+#: How claude-workspace's SessionStart hook names the task and the work root (its first
+#: line, and the line in its 路径 block). Without both, a transcript is not claimed.
+_ACTIVE_TASK_RE = re.compile(r"^# Active Task: (\S+)")
+_WORK_ROOT_RE = re.compile(r"^- 工作根：(.+?)(?: —— .*)?$", re.M)
+#: A newer conversation written to this recently may still be open in another window:
+#: resuming it here as well would fork it, so it is named, not taken.
+BUSY_SECONDS = 600
+
+
+@dataclass(frozen=True)
+class TaskConversation:
+    session_id: str
+    transcript: Path
+    #: The file's last write — any write, so a window that may still be open.
+    modified: float
+    #: When someone last spoke in it: what "newer" is measured by.
+    spoken: float
+    #: The directory the conversation ran in, as its last entries say.
+    cwd: str | None
+
+
+def _same_dir(a: str, b: str) -> bool:
+    def norm(path: str) -> str:
+        return os.path.normcase(path.replace("\\", "/").rstrip("/"))
+    return norm(a) == norm(b)
+
+
+def conversation_task(transcript: Path) -> tuple[str, str, str | None] | None:
+    """(task, work root, cwd) named by the transcript's last SessionStart hook output —
+    the last, since an unpinned window can change task at /clear — or None when it names
+    none. Every SessionStart output with content counts: one that names no task and work
+    root (claude-workspace's ``(无)``, or any other) clears what came before (codex review
+    round 2). Empty outputs — hooks that print nothing, Agora's reporter among them — say
+    nothing. Raises ``OSError`` when the file cannot be read."""
+    found: tuple[str, str] | None = None
+    cwd: str | None = None
+    with transcript.open("rb") as handle:
+        for line in handle:
+            if b'"cwd"' in line and b'"hook_success"' not in line:
+                try:
+                    entry = json.loads(line)
+                except ValueError:
+                    entry = None
+                if isinstance(entry, dict) and isinstance(entry.get("cwd"), str):
+                    cwd = entry["cwd"]
+            if b'"hook_success"' not in line or b"SessionStart" not in line:
+                continue
+            try:
+                entry = json.loads(line)
+            except ValueError:
+                continue
+            attachment = entry.get("attachment") if isinstance(entry, dict) else None
+            if not isinstance(attachment, dict) or attachment.get("type") != "hook_success" \
+                    or attachment.get("hookEvent") != "SessionStart":
+                continue
+            content = attachment.get("content")
+            if not isinstance(content, str) or not content.strip():
+                continue
+            task, root = _ACTIVE_TASK_RE.match(content), _WORK_ROOT_RE.search(content)
+            found = (task.group(1), root.group(1).strip()) if task and root else None
+            if isinstance(entry.get("cwd"), str):
+                cwd = entry["cwd"]
+    return (*found, cwd) if found else None
+
+
+def last_spoken(transcript: Path) -> float | None:
+    """When the last user or assistant message was written, or None when there is none
+    with a readable time. Not the file's mtime: resuming a conversation writes startup
+    bookkeeping into it without anyone speaking (codex review round 1). Raises ``OSError``
+    when the file cannot be read."""
+    last: float | None = None
+    with transcript.open("rb") as handle:
+        for line in handle:
+            if b'"user"' not in line and b'"assistant"' not in line:
+                continue
+            try:
+                entry = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(entry, dict) or entry.get("type") not in ("user", "assistant"):
+                continue
+            stamp = entry.get("timestamp")
+            try:
+                at = datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp() if isinstance(stamp, str) else None
+            except ValueError:
+                at = None
+            if at is not None and (last is None or at > last):
+                last = at
+    return last
+
+
+def newer_task_conversation(base: Path, task: str, work_root: str, *, after: float,
+                            exclude: str | None = None) -> TaskConversation | None:
+    """The conversation under ``base`` (Claude's projects directory) in which someone
+    spoke last, after ``after``, whose last SessionStart hook named ``task`` under
+    ``work_root``. Transcripts that cannot be read, or name no task, are passed over: this
+    only ever adds a candidate, it never says there is none."""
+    candidates: list[tuple[float, Path]] = []
+    try:
+        folders = [f for f in base.iterdir() if f.is_dir()]
+    except OSError:
+        return None
+    for folder in folders:
+        try:
+            for path in folder.glob("*.jsonl"):
+                if not SESSION_ID_RE.fullmatch(path.stem) or path.stem == exclude:
+                    continue
+                modified = path.stat().st_mtime
+                if modified > after:
+                    candidates.append((modified, path))
+        except OSError:
+            continue
+    best: TaskConversation | None = None
+    # A file is written to at least as late as anyone spoke in it, so the mtime filter
+    # above loses nothing; the order is decided by when someone spoke.
+    for modified, path in sorted(candidates, reverse=True):
+        if best is not None and modified <= best.spoken:
+            break  # nothing older-written can have spoken later
+        try:
+            named = conversation_task(path)
+            if named is None or named[0] != task or not _same_dir(named[1], work_root):
+                continue
+            spoken = last_spoken(path)
+        except OSError:
+            continue
+        if spoken is None or spoken <= after:
+            continue
+        if best is None or spoken > best.spoken:
+            best = TaskConversation(session_id=path.stem, transcript=path, modified=modified,
+                                    spoken=spoken, cwd=named[2])
+    return best

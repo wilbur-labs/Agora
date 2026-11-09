@@ -32,10 +32,12 @@ class WorkSession:
     ck_transcript: str | None
     ck_launch: str | None
     ck_stale: bool
+    #: When the recovery point was last moved (not when its conversation last spoke).
+    ck_at: float | None = None
 
 
 _COLUMNS = ("key, source, task, workspace, want_open, launch_id, launch_mode, expect_session, "
-            "shell_pid, shell_created, launched_at, ck_session, ck_transcript, ck_launch, ck_stale")
+            "shell_pid, shell_created, launched_at, ck_session, ck_transcript, ck_launch, ck_stale, ck_at")
 
 
 class WorkSessionStore:
@@ -115,7 +117,7 @@ class WorkSessionStore:
             want_open=bool(row["want_open"]), launch_id=row["launch_id"], launch_mode=row["launch_mode"],
             expect_session=row["expect_session"], shell_pid=row["shell_pid"], shell_created=row["shell_created"],
             launched_at=row["launched_at"], ck_session=row["ck_session"], ck_transcript=row["ck_transcript"],
-            ck_launch=row["ck_launch"], ck_stale=bool(row["ck_stale"]),
+            ck_launch=row["ck_launch"], ck_stale=bool(row["ck_stale"]), ck_at=row["ck_at"],
         )
 
     def get(self, key: str) -> WorkSession | None:

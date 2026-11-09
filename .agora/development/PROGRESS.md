@@ -8811,3 +8811,64 @@ Its gate exited 5 again: codex left `.tmp-review-cr85/` and `.tmp-review-names-1
 (its pytest temp directories) in the working tree while reviewing, so no stamp was
 recorded although the code did not change after round 2 started. Removed; committed
 with a skip reason naming this.
+
+## 2026-11-09 — CR-86: bring back the newer conversation opened outside the work page
+
+Owner (2026-11-09): the work page brought back an older conversation. Measured: the
+newest gitlab-ultimate-automation conversation (`92d84e06`, 11-04 → 11-06) was started
+with `cw open` in a terminal, in that task's primary_repo (pleasanter-workflow), so its
+transcript sits under that directory; the work page knew only the conversations it
+launched. Owner: 「如果你推荐做的话就做」.
+
+- `reports.newer_task_conversation`: the newest transcript under Claude's projects
+  directory written after the recovery point whose **last** claude-workspace SessionStart
+  hook names this task (`# Active Task: <task>`) under this work root (`- 工作根：…`),
+  and in which someone spoke. Nothing else claims a transcript; unreadable ones are
+  passed over (it only ever adds a candidate, never says there is none).
+- `WorkService._newer_elsewhere`: on a claude open with the hook installed, such a
+  conversation is resumed instead of the recovery point (or of a fresh start). Measured
+  first: `claude --resume <id>` from another directory brings it back and keeps writing
+  its transcript where it is, so the launch directory does not change. One written to
+  in the last 10 minutes may still be open in another window — resuming it here too
+  would fork it — so it is named, not taken. `expect_session` is the conversation asked
+  for, so the confirmation stays honest.
+- The launch carries `note` (`newer` / `newer_busy`, when, cwd); the work page says it
+  above the terminal.
+- Real data (read only): gitlab-ultimate-automation → `92d84e06` (cwd
+  pleasanter-workflow); three tasks scanned in about 3 s.
+
+Codex round 1 (stamp recorded), 2 findings, both fixed:
+- "newer" was measured by file mtime, but resuming the recorded conversation writes
+  startup bookkeeping into its file without anyone speaking, so a conversation left
+  while busy could never be taken afterwards — newer is now when someone last spoke
+  (`reports.last_spoken`, the last user/assistant message's timestamp); mtime only
+  prefilters (a file is written at least as late as anyone spoke) and decides busy.
+- a fresh decision (e.g. the recorded conversation empty after /clear) dropped the
+  cutoff to 0 and could bring back an older conversation called newer — the cutoff
+  (`WorkService._cutoff`) is kept whatever was decided: when the recorded one last
+  spoke; empty → when it was written; its file gone or unreadable → when the point was
+  recorded (`ck_at`, now on `WorkSession`); not known → nothing is claimed.
+
+Codex round 2 (stamp recorded), 2 findings, both fixed:
+- the task was taken from the last hook output *mentioning* `Active Task`, so a later
+  start that named no task kept the earlier attribution — every SessionStart output
+  with content now decides (no task/work-root pair clears it); empty outputs (hooks
+  that print nothing, Agora's reporter among them, measured in real transcripts) say
+  nothing.
+- the busy notice said the recorded conversation was brought back even when there was
+  none and a new one started — the note carries `fallback` (resume / fresh) and the
+  page says which.
+
+Codex round 3 (the last; stamp recorded), 1 finding, fixed after it:
+- with nothing recorded and the other conversation busy, the fresh start made instead
+  became the recovery point; nobody speaking in it, its file time became the cutoff and
+  shut the other conversation out for good — an empty recorded conversation now bounds
+  only when it began by /clear (or its start is unknown); one a launch started and
+  nobody used (`startup`, read from the recording launch's journal) bounds nothing.
+Committed with a skip reason (fix after the third round).
+
+Tests: backend test_work_newer collected 15, 15 passed; with test_work, test_work_board,
+test_workflow_selection, test_work_shelf, test_workspace_tasks: 248 collected, 246
+passed, 2 skipped. Frontend test:control-plane collected 600, 599 passed, 1 skipped;
+tsc, lint clean. Real data again: gitlab-ultimate-automation → `92d84e06`, last spoken
+11-09 10:57 — still in use in another window, which is exactly the busy case.

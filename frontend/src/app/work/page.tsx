@@ -19,6 +19,7 @@ import {
   bannerLinesOf,
   bannerSettled,
   closeWorkProject,
+  launchNoteLineOf,
   listWorkProjects,
   moveKey,
   openWorkProject,
@@ -409,6 +410,14 @@ export default function WorkPage() {
               </div>
               {error && <p className="shrink-0 px-4 py-1 text-xs text-amber-400">{error}</p>}
               {current.agent_exited && <p className="shrink-0 px-4 py-1 text-xs text-amber-400">{t("work.agentExitedHint")}</p>}
+              {current.terminal && (() => {
+                const line = launchNoteLineOf(current.launch?.note);
+                return line && (
+                  <p className={cn("shrink-0 px-4 py-1 text-xs", line.key === "work.newerBusy" ? "text-amber-400" : "text-[var(--term-muted)]")}>
+                    {t(line.key, line.vars)}
+                  </p>
+                );
+              })()}
               {current.terminal && current.launch?.result === "no_hook" && (
                 // For as long as it runs, not only until the next click (kiro review round 11).
                 <p className="shrink-0 px-4 py-1 text-xs text-amber-400">

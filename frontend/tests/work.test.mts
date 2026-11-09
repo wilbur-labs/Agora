@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { bannerLineOf, bannerLinesOf, bannerSettled, moveKey, orderedRows, projectStateOf, workListOf, type WorkProjectRow } from "../src/lib/work-state.ts";
+import { bannerLineOf, bannerLinesOf, launchNoteLineOf, bannerSettled, moveKey, orderedRows, projectStateOf, workListOf, type WorkProjectRow } from "../src/lib/work-state.ts";
 
 function row(over: Partial<WorkProjectRow> = {}): WorkProjectRow {
   return {
@@ -108,4 +108,19 @@ test("moving a key puts it before another, or at the end", () => {
   assert.deepEqual(moveKey(["a", "b", "c"], "a", null), ["b", "c", "a"]);
   assert.deepEqual(moveKey(["a", "b", "c"], "a", "a"), ["a", "b", "c"]);
   assert.deepEqual(moveKey(["a", "b", "c"], "a", "gone"), ["b", "c", "a"]);
+});
+
+test("a launch's note about a conversation opened outside is said, taken or left (CR-86)", () => {
+  const note = { when: "2026-11-06 15:49", cwd: "E:/Work/2026/Projects/pleasanter-workflow", session: "s" };
+  assert.deepEqual(launchNoteLineOf({ ...note, kind: "newer" }),
+    { key: "work.newerTaken", vars: { when: note.when, cwd: note.cwd } });
+  assert.equal(launchNoteLineOf({ ...note, kind: "newer_busy", fallback: "resume" })?.key, "work.newerBusy");
+  // Nothing recorded to bring back: it is not said that the recorded one was.
+  assert.equal(launchNoteLineOf({ ...note, kind: "newer_busy", fallback: "fresh" })?.key, "work.newerBusyFresh");
+  assert.equal(launchNoteLineOf({ ...note, kind: "newer_busy" })?.key, "work.newerBusyFresh");
+  assert.equal(launchNoteLineOf({ ...note, cwd: null, kind: "newer" })?.vars.cwd, "?");
+  // Nothing to say: no note, an older server, or a kind this page does not know.
+  assert.equal(launchNoteLineOf(null), null);
+  assert.equal(launchNoteLineOf(undefined), null);
+  assert.equal(launchNoteLineOf({ ...note, kind: "other" as "newer" }), null);
 });

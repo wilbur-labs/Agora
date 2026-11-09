@@ -31,7 +31,12 @@ export interface WorkProjectRow {
   want_open: boolean;
   terminal: WorkTerminal | null;
   starting: boolean;
-  launch: { result: LaunchResult; detail: string | null; restored: boolean; confirm: Confirm | null } | null;
+  launch: {
+    result: LaunchResult; detail: string | null; restored: boolean; confirm: Confirm | null;
+    /** A newer conversation of the task opened outside the work page (CR-86): taken, or
+     *  left because it may still be open elsewhere. Absent from older servers. */
+    note?: LaunchNote | null;
+  } | null;
   stale: boolean;
   agent_exited: boolean;
   /** The person's board (CR-81): Agora's own, not in the task record. */
@@ -44,6 +49,26 @@ export interface WorkProjectRow {
 }
 
 export type Stage = "todo" | "doing";
+
+export interface LaunchNote {
+  kind: "newer" | "newer_busy";
+  /** Its last write, local time, as the server read it. */
+  when: string;
+  cwd: string | null;
+  session: string;
+  /** With ``newer_busy``: what was launched instead — the recorded conversation, or a
+   *  new one when there was none to bring back. */
+  fallback?: "resume" | "fresh";
+}
+
+/** The line the work page shows about a launch's note (CR-86), as an i18n key and vars. */
+export function launchNoteLineOf(note: LaunchNote | null | undefined): { key: string; vars: Record<string, string> } | null {
+  if (!note || (note.kind !== "newer" && note.kind !== "newer_busy")) return null;
+  return {
+    key: note.kind === "newer" ? "work.newerTaken" : note.fallback === "resume" ? "work.newerBusy" : "work.newerBusyFresh",
+    vars: { when: note.when, cwd: note.cwd ?? "?" },
+  };
+}
 
 /** The projects in the person's order: placed ones by position, then the rest as the
  *  server listed them. */
