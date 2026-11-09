@@ -45,8 +45,9 @@ async def _service(registry: ProjectRegistry = Depends(get_project_registry)) ->
 
 @router.get("/usage")
 async def work_usage(service: WorkService = Depends(_service)) -> dict[str, Any]:
-    """How much of each agent's limits is used (CR-87): claude as its status line last
-    reported it in a work-page session, codex from its app-server, kiro not readable."""
+    """How much of each agent's limits is used (CR-87): claude from its own ``/usage``
+    (the status-line record when that fails), codex from its app-server, kiro from
+    ``kiro-cli acp``."""
     folder = service.data_dir / "work-usage"
     return await asyncio.to_thread(usage.read_all, folder if folder.is_dir() else None)
 

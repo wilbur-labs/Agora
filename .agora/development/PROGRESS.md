@@ -8964,3 +8964,65 @@ local commands; the patch was not in its output) — kiro stood in, 4 findings, 
   limited one — now by `resourceType == "CREDIT"`, then the name, else unavailable.
 - 0.5 credits left showed "0" — shown as "<1".
 Tests: backend test_work_usage collected 29, 29 passed; tsc, lint clean; live kiro read ok.
+
+Review round 2: codex, clean (it read the patch this time); committed `719ff9b`.
+
+### 2026-11-09 — CR-87 follow-up 2: claude on a Team plan
+
+The user is on a Claude Team plan, whose status line carries no `rate_limits`, so the
+claude cell had nothing. Measured: `claude -p "/usage" --output-format json` answers
+locally — 0 turns, 0 cost — with "Current session: 5% used · resets Nov 9, 6:59pm
+(Etc/GMT-9)" and "Current week (all models): 18% used · …" on this Team account, in
+about 6 s; `--no-session-persistence` leaves no transcript (the first probe, without
+it, left one under `~/.claude/projects/C--Users-…-Local-Temp/`).
+
+- `read_claude_usage`: that call in the temp directory, process tree ended as codex's,
+  kept 120 s; the session line is "5h", the all-models week "7d" (per-model weeks are
+  not shown). The status-line record stands in only when `/usage` cannot be read.
+- Reset times: this Python has no tzdata and `TZ` does not change what claude prints, so
+  `Etc/GMT±N` and UTC are read by hand (Etc's sign inverted), other zones through
+  zoneinfo when it can; an unknown zone gives no reset time, never a wrong one. The year
+  is the one that puts the reset nearest after now.
+- `read_all` reads the three at once (7.1 s measured, was claude + codex + kiro in turn).
+
+Tests: backend test_work_usage + test_work + test_work_board + test_work_newer collected
+165, 163 passed, 2 skipped (test_work_usage alone 36). Live read_all: all three ok.
+
+Review round 1: codex, 1 finding, but its gate exited 4 (its sandbox again; it also left
+`backend/.tmp-review-usage-now/` with 79 test configs — removed, and `.tmp-review-*/` is
+now excluded at any depth), so kiro stands in for the gate:
+- an IANA zone's offset was taken now and applied to the reset date, an hour off across
+  a clock change — `_zone` returns the zone itself (fixed offsets for `Etc/GMT±N` and
+  UTC) and the reset is built in it. Tests: a stand-in zone that changes offset between
+  the read and the reset (this machine has no tz database); Etc's inverted sign.
+Tests: test_work_usage collected 38, 38 passed.
+Kiro (standing in), 4 findings, all fixed:
+- the job is joined after the start, so a child `claude.cmd` started first is outside
+  it — a timed-out read also starts `taskkill /T` (not waited for: it takes a minute or
+  two, measured; waiting made the stand-in test take 2 min).
+- a cached reading was served past its window's reset — `_fresh` drops a cache entry
+  once any window's `resets_at` has passed (claude, codex, kiro).
+- the repeated hour of a fall-back night took the first reading — both folds are tried;
+  the nearest at or after now wins, else the latest within a day before.
+- `Etc/GMT+24` raised and took the whole response down — Etc offsets past 14 h are no
+  zone, and `read_all` turns one agent's exception into that agent's `unavailable`
+  (which caught my own slip while fixing: `os.killpg` reached on Windows).
+Tests: test_work_usage collected 43, 43 passed; live read_all: all three ok.
+
+Review round 2: codex (it read the patch, 3/4 files), 1 finding, fixed:
+- "6:59pm" read at 18:59:30 had next year's date as the only one ahead, so the reset
+  just past became a year-long countdown — candidates are bounded to a day before and
+  8 days ahead (no window is longer than a week); the nearest ahead, else the latest past.
+Tests: test_work_usage collected 44, 44 passed.
+
+Review round 3: codex (read 3/4), 1 finding (P1), fixed after the last round:
+- the job was joined after the start, and the round-1 answer (a later `taskkill /T`) ran
+  after the job had already killed the parent, so it could not find the escaped child,
+  which kept the pipe — `communicate()`'s reader blocked the close and `_claude_lock`
+  with it. The race itself is gone: `_spawn` starts the reader **suspended** on Windows
+  (`CREATE_SUSPENDED`), joins the job, then `NtResumeProcess` — nothing it starts can
+  be outside the job; `taskkill` after a job is dropped. POSIX unchanged (own session,
+  `killpg`). Test: a stand-in claude that at once starts a child inheriting stdout and
+  never answers — the read ends in ~3 s and the child is dead.
+Tests: test_work_usage collected 44, 44 passed. Live: claude 6.6 s, codex 1.5 s, kiro
+2.7 s, all ok. Committed with AGORA_REVIEW_SKIP (fix after round 3).

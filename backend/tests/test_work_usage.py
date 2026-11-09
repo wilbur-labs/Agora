@@ -254,11 +254,12 @@ def test_usage_through_the_api(api, tmp_path, monkeypatch):
     client, service, work = api
     monkeypatch.setattr(usage, "read_codex", lambda: {"state": "unavailable", "reason": "codex is not installed"})
     monkeypatch.setattr(usage, "read_kiro", lambda: {"state": "unavailable", "reason": "kiro_no_api"})
+    monkeypatch.setattr(usage, "read_claude_usage", lambda: {"state": "unavailable", "reason": "claude is not installed"})
     assert client.get("/api/work/usage").status_code == 401
     client.headers["X-Agora-Terminal-Token"] = load_or_create_token(tmp_path / "data")
     body = client.get("/api/work/usage").json()
     assert set(body) == {"claude", "codex", "kiro"}
-    assert body["claude"] == {"state": "unavailable", "reason": "no_hook"}
+    assert body["claude"] == {"state": "unavailable", "reason": "claude is not installed"}
     assert body["kiro"]["reason"] == "kiro_no_api"
 
 
@@ -350,3 +351,191 @@ def test_a_failed_handshake_is_said_and_nothing_more_is_asked(tmp_path, monkeypa
     assert usage._ask_kiro("kiro-cli") == {"state": "unavailable",
                                            "reason": "kiro: initialize failed: bad protocolVersion"}
     assert seen.read_text().split() == ["1"]
+
+
+CLAUDE_USAGE = """You are currently using your subscription to power your Claude Code usage
+
+Current session: 5% used \u00b7 resets Nov 9, 6:59pm (Etc/GMT-9)
+Current week (all models): 18% used \u00b7 resets Nov 10, 11:59am (Etc/GMT-9)
+Current week (Fable): 0% used \u00b7 resets Nov 10, 12pm (Etc/GMT-9)
+
+What's contributing to your usage?
+"""
+NOW_1109 = 1794204000.0  # 2026-11-09T06:00Z = 15:00 at UTC+9
+
+
+def test_claude_usage_text_gives_the_session_and_week_windows():
+    reading = usage.parse_claude_usage(CLAUDE_USAGE, now=NOW_1109)
+    assert reading["state"] == "ok"
+    session, week = reading["windows"]
+    assert (session["label"], session["used"]) == ("5h", 5.0)
+    assert (week["label"], week["used"]) == ("7d", 18.0)
+    # 18:59 on 11-09 at UTC+9 = 09:59Z; 11:59 on 11-10 at UTC+9 = 02:59Z on 11-10.
+    assert session["resets_at"] == 1794218340.0
+    assert week["resets_at"] == 1794279540.0
+
+
+def test_a_claude_reset_in_an_unknown_zone_is_no_time_not_a_wrong_one():
+    text = "Current session: 40% used \u00b7 resets Nov 9, 6:59pm (Mars/Olympus)"
+    [window] = usage.parse_claude_usage(text, now=NOW_1109)["windows"]
+    assert window["used"] == 40.0 and window["resets_at"] is None
+
+
+def test_the_reset_year_rolls_over_at_new_year():
+    dec31 = 1830211200.0  # 2027-12-31T00:00Z
+    at = usage._claude_reset_at("Jan 1, 9am", "UTC", dec31)
+    assert at == 1830330000.0  # 2028-01-01T09:00Z
+
+
+def test_claude_usage_without_windows_is_unavailable_not_unused():
+    reading = usage.parse_claude_usage("Usage is only available for subscription plans.\n", now=NOW_1109)
+    assert reading == {"state": "unavailable",
+                       "reason": "claude /usage: Usage is only available for subscription plans."}
+    assert usage.parse_claude_usage(None)["state"] == "unavailable"
+
+
+def test_claude_usage_is_asked_at_most_every_two_minutes(monkeypatch):
+    calls = []
+    monkeypatch.setattr(usage, "_claude_cache", None)
+    monkeypatch.setattr(usage, "_claude_exe", lambda: "claude")
+    monkeypatch.setattr(usage, "_ask_claude", lambda exe: calls.append(exe) or usage.parse_claude_usage(CLAUDE_USAGE))
+    usage.read_claude_usage(now=1000.0)
+    usage.read_claude_usage(now=1000.0 + usage.CLAUDE_TTL - 1)
+    assert len(calls) == 1
+    usage.read_claude_usage(now=1000.0 + usage.CLAUDE_TTL + 1)
+    assert len(calls) == 2
+
+
+def test_the_status_line_record_stands_in_only_when_usage_cannot_be_read(tmp_path, monkeypatch):
+    ok = usage.parse_claude_usage(CLAUDE_USAGE, now=NOW_1109)
+    recorded = {"state": "ok", "windows": [], "read_at": 1.0}
+    monkeypatch.setattr(usage, "read_claude", lambda d: recorded)
+    monkeypatch.setattr(usage, "read_claude_usage", lambda: ok)
+    assert usage._claude_reading(tmp_path) is ok
+    failed = {"state": "unavailable", "reason": "claude /usage did not answer"}
+    monkeypatch.setattr(usage, "read_claude_usage", lambda: failed)
+    assert usage._claude_reading(tmp_path) is recorded
+    monkeypatch.setattr(usage, "read_claude", lambda d: {"state": "unavailable", "reason": "no_hook"})
+    assert usage._claude_reading(tmp_path) is failed
+
+
+def test_claude_usage_through_a_stand_in_cli(tmp_path, monkeypatch):
+    script = tmp_path / "fake_claude.py"
+    script.write_text("import json\nprint(json.dumps({'is_error': False, 'result': "
+                      + repr(CLAUDE_USAGE) + "}))\n", encoding="utf-8")
+    real_popen = subprocess.Popen
+    monkeypatch.setattr(usage.subprocess, "Popen",
+                        lambda args, **kw: real_popen([sys.executable, str(script)], **kw))
+    reading = usage._ask_claude("claude")
+    assert reading["state"] == "ok" and [w["used"] for w in reading["windows"]] == [5.0, 18.0]
+
+
+def test_a_reset_after_a_clock_change_gets_that_days_offset(monkeypatch):
+    """Read on 2026-03-06 (UTC-8), reset 2026-03-09 9am after a change to UTC-7: 16:00Z,
+    not 17:00Z — the zone is asked at the reset's date (codex review). A stand-in zone,
+    as this machine has no tz database."""
+    from datetime import datetime, timedelta, timezone, tzinfo
+
+    class Pacific(tzinfo):
+        def utcoffset(self, dt):
+            return timedelta(hours=-7 if dt.replace(tzinfo=None) >= datetime(2026, 3, 8, 2) else -8)
+
+        def dst(self, dt):
+            return timedelta(0)
+
+    monkeypatch.setattr(usage, "_zone", lambda zone: Pacific())
+    march6 = datetime(2026, 3, 6, 8, tzinfo=timezone.utc).timestamp()
+    expected = datetime(2026, 3, 9, 16, tzinfo=timezone.utc).timestamp()
+    assert usage._claude_reset_at("Mar 9, 9am", "America/Los_Angeles", march6) == expected
+
+
+def test_etc_zones_are_read_with_the_sign_inverted():
+    from datetime import datetime
+    assert datetime(2026, 1, 1, tzinfo=usage._zone("Etc/GMT-9")).utcoffset().total_seconds() == 9 * 3600
+    assert datetime(2026, 1, 1, tzinfo=usage._zone("Etc/GMT+5")).utcoffset().total_seconds() == -5 * 3600
+    assert usage._zone("Mars/Olympus") is None
+
+
+def test_a_cached_reading_is_not_served_past_its_reset(monkeypatch):
+    calls = []
+    monkeypatch.setattr(usage, "_claude_cache", None)
+    monkeypatch.setattr(usage, "_claude_exe", lambda: "claude")
+    reading = {"state": "ok", "windows": [{"label": "5h", "used": 99.0, "resets_at": 1060.0, "reset": False}],
+               "read_at": 1000.0}
+    monkeypatch.setattr(usage, "_ask_claude", lambda exe: calls.append(exe) or reading)
+    usage.read_claude_usage(now=1000.0)
+    usage.read_claude_usage(now=1050.0)
+    assert len(calls) == 1
+    usage.read_claude_usage(now=1061.0)  # within the TTL, past the reset
+    assert len(calls) == 2
+
+
+def test_a_repeated_hour_takes_the_reading_ahead(monkeypatch):
+    """At the second 01:15 of a fall-back night, "1:30am" is fifteen minutes ahead, not
+    forty-five behind (kiro review). A stand-in zone: UTC-4 until 06:00Z, then UTC-5."""
+    from datetime import datetime, timedelta, timezone, tzinfo
+
+    class Eastern(tzinfo):
+        def utcoffset(self, dt):
+            naive = dt.replace(tzinfo=None)
+            if naive < datetime(2026, 11, 1, 1) or (naive < datetime(2026, 11, 1, 2) and not dt.fold):
+                return timedelta(hours=-4)
+            return timedelta(hours=-5)
+
+        def dst(self, dt):
+            return timedelta(0)
+
+    monkeypatch.setattr(usage, "_zone", lambda zone: Eastern())
+    second_0115 = datetime(2026, 11, 1, 6, 15, tzinfo=timezone.utc).timestamp()
+    expected = datetime(2026, 11, 1, 6, 30, tzinfo=timezone.utc).timestamp()
+    assert usage._claude_reset_at("Nov 1, 1:30am", "America/New_York", second_0115) == expected
+
+
+def test_an_out_of_range_etc_zone_is_no_reset_time():
+    text = "Current session: 40% used \u00b7 resets Nov 9, 6:59pm (Etc/GMT+24)"
+    [window] = usage.parse_claude_usage(text, now=NOW_1109)["windows"]
+    assert window["used"] == 40.0 and window["resets_at"] is None
+
+
+def test_one_agent_failing_leaves_the_others(monkeypatch):
+    def boom(_):
+        raise RuntimeError("x")
+    monkeypatch.setattr(usage, "_claude_reading", boom)
+    monkeypatch.setattr(usage, "read_codex", lambda: {"state": "ok", "windows": [], "read_at": 1.0})
+    monkeypatch.setattr(usage, "read_kiro", lambda: {"state": "unavailable", "reason": "kiro_no_api"})
+    body = usage.read_all(None)
+    assert body["claude"] == {"state": "unavailable", "reason": "reading failed (RuntimeError)"}
+    assert body["codex"]["state"] == "ok"
+
+
+def test_a_claude_that_never_answers_is_ended_with_the_child_holding_its_pipe(tmp_path, monkeypatch):
+    """A stand-in that at once starts a child inheriting stdout and never answers: the
+    read times out, the child is ended with it — it started inside the job, as the
+    process ran only once it had joined (codex review round 3)."""
+    script = tmp_path / "fake_claude.py"
+    marker = tmp_path / "child.pid"
+    script.write_text(
+        "import subprocess, sys, time\n"
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
+        f"open(r'{marker}', 'w').write(str(child.pid))\n"
+        "time.sleep(120)\n", encoding="utf-8")
+    monkeypatch.setattr(usage, "CLAUDE_TIMEOUT", 3.0)
+    real_popen = subprocess.Popen
+    monkeypatch.setattr(usage.subprocess, "Popen",
+                        lambda args, **kw: real_popen([sys.executable, str(script)], **kw))
+    started = time.monotonic()
+    assert usage._ask_claude("claude") == {"state": "unavailable", "reason": "claude /usage did not answer"}
+    assert time.monotonic() - started < 30
+    child = int(marker.read_text())
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline and _alive(child):
+        time.sleep(0.2)
+    assert not _alive(child)
+
+def test_a_reset_just_past_is_not_next_years():
+    """"6:59pm" read at 18:59:30 is the reset half a minute ago, not 2027's (codex review
+    round 2); and a date far from now is no reset time at all."""
+    from datetime import datetime, timezone
+    just_after = datetime(2026, 11, 9, 9, 59, 30, tzinfo=timezone.utc).timestamp()
+    assert usage._claude_reset_at("Nov 9, 6:59pm", "Etc/GMT-9", just_after) == 1794218340.0
+    assert usage._claude_reset_at("Mar 3, 6:59pm", "Etc/GMT-9", just_after) is None

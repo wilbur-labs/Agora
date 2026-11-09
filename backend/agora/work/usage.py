@@ -3,9 +3,11 @@
 Only official paths, and nothing read from a credential (CR-12: no OAuth token, no
 unpublished endpoint):
 
-- claude: the ``rate_limits`` Claude Code sends its status line, recorded by the work
-  page's status-line relay (``statusline_relay.py``). Present only for claude.ai
-  Pro/Max/Ultra subscribers, and only after a session's first answer.
+- claude: ``claude -p /usage --no-session-persistence`` — Claude Code's own ``/usage``,
+  answered locally (no model turn, no cost; Team plans included, measured), kept for
+  ``CLAUDE_TTL`` seconds. When it cannot be read, the ``rate_limits`` Claude Code sends
+  its status line, recorded by the work page's status-line relay
+  (``statusline_relay.py``; Pro/Max/Ultra only, after a session's first answer).
 - codex: ``codex app-server``'s ``account/rateLimits/read``, a short-lived process per
   read, kept for ``CODEX_TTL`` seconds.
 - kiro-cli: ``kiro-cli acp --agent-engine=v3``'s ``_kiro/account/getUsage`` — the call
@@ -20,6 +22,8 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
+import tempfile
 import shutil
 import signal
 import subprocess
@@ -32,14 +36,28 @@ from agora.execution.dispatcher import ExecutionDispatcher
 
 CODEX_TTL = 60.0
 CODEX_TIMEOUT = 20.0
+CLAUDE_TTL = 120.0
+CLAUDE_TIMEOUT = 30.0
 KIRO_TTL = 300.0  # credits move slowly; a month-long budget
 KIRO_TIMEOUT = 20.0
 _WINDOW_NAMES = {"five_hour": "5h", "seven_day": "7d"}
 
 _codex_lock = threading.Lock()
 _codex_cache: tuple[float, dict[str, Any]] | None = None
+_claude_lock = threading.Lock()
+_claude_cache: tuple[float, dict[str, Any]] | None = None
 _kiro_lock = threading.Lock()
 _kiro_cache: tuple[float, dict[str, Any]] | None = None
+
+
+def _fresh(cache: tuple[float, dict[str, Any]] | None, ttl: float, moment: float) -> bool:
+    """A cached reading is served within ``ttl`` — unless one of its windows has reset
+    since: what was used before a reset says nothing about now (kiro review)."""
+    if cache is None or moment - cache[0] >= ttl:
+        return False
+    windows = cache[1].get("windows") or []
+    return not any(isinstance(w, dict) and isinstance(w.get("resets_at"), (int, float))
+                   and w["resets_at"] <= moment for w in windows)
 
 
 def _unavailable(reason: str) -> dict[str, Any]:
@@ -88,9 +106,154 @@ def read_claude(usage_dir: Path | None, *, now: float | None = None) -> dict[str
     return {"state": "ok", "windows": windows, "read_at": _number(data.get("limits_at"))}
 
 
+# Claude Code's /usage text, e.g. "Current session: 5% used · resets Nov 9, 6:59pm (Etc/GMT-9)".
+_CLAUDE_LINE_RE = re.compile(
+    r"^\s*Current (session|week \(all models\)):\s*(\d+(?:\.\d+)?)%\s*used"
+    r"(?:\s*·\s*resets\s+(.+?)\s*\(([^)]+)\))?\s*$", re.MULTILINE)
+_CLAUDE_LABELS = {"session": "5h", "week (all models)": "7d"}
+_MONTHS = {m: i for i, m in enumerate(
+    ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"], 1)}
+
+
+def _zone(zone: str) -> Any:
+    """The tzinfo for the zones Claude Code prints here (``Etc/GMT-9``, ``UTC``) — fixed
+    offsets, read by hand as this Python may have no tz database — then any zone it
+    knows, as a real zone so a reset after a clock change gets that day's offset (codex
+    review); None otherwise: no reset time rather than a wrong one. ``Etc/GMT-9`` is
+    UTC+9: the Etc sign is inverted."""
+    from datetime import timedelta, timezone
+    zone = zone.strip()
+    if zone in ("UTC", "Etc/UTC", "GMT", "Etc/GMT"):
+        return timezone.utc
+    match = re.fullmatch(r"Etc/GMT([+-])(\d{1,2})", zone)
+    if match:
+        hours = int(match.group(2))
+        if hours > 14:  # the Etc zones run -14..+12; beyond is not a zone (kiro review)
+            return None
+        return timezone(timedelta(hours=-hours if match.group(1) == "+" else hours))
+    try:
+        from zoneinfo import ZoneInfo
+        return ZoneInfo(zone)
+    except Exception:  # noqa: BLE001 — no tz database, unknown key: no reset time
+        return None
+
+
+def _claude_reset_at(text: str, zone: str, now: float) -> float | None:
+    """``Nov 9, 6:59pm`` / ``Nov 10, 12pm`` in ``zone`` as Unix seconds; the year is the
+    one that puts it nearest after ``now`` (a reset is never long past)."""
+    from datetime import datetime
+    match = re.fullmatch(r"([A-Za-z]{3})[a-z]*\s+(\d{1,2}),\s*(\d{1,2})(?::(\d{2}))?\s*([ap]m)", text.strip(), re.I)
+    tz = _zone(zone)
+    if not match or tz is None or match.group(1).lower() not in _MONTHS:
+        return None
+    hour = int(match.group(3)) % 12 + (12 if match.group(5).lower() == "pm" else 0)
+    year = datetime.fromtimestamp(now, tz).year
+    times = set()
+    for candidate in (year - 1, year, year + 1):
+        # Both readings of an hour a clock change repeats (kiro review).
+        for fold in (0, 1):
+            try:
+                times.add(datetime(candidate, _MONTHS[match.group(1).lower()], int(match.group(2)), hour,
+                                   int(match.group(4) or 0), tzinfo=tz, fold=fold).timestamp())
+            except (ValueError, OverflowError):
+                continue
+    # No window is longer than a week: a candidate beyond 8 days ahead is the wrong year,
+    # not a reset — "6:59pm" read at 6:59:30 is the one just past, not next year's
+    # (codex review round 2).
+    plausible = [at for at in times if now - 86400 <= at <= now + 8 * 86400]
+    ahead = [at for at in plausible if at >= now]
+    if ahead:
+        return min(ahead)
+    return max(plausible) if plausible else None
+
+
+def parse_claude_usage(text: object, *, now: float | None = None) -> dict[str, Any]:
+    """The session and all-models week windows from ``/usage``'s text; unavailable when
+    neither is there (an API-key login, a changed format) — never shown as unused."""
+    moment = time.time() if now is None else now
+    if not isinstance(text, str):
+        return _unavailable("claude /usage answered nothing")
+    windows = []
+    for kind, used, reset_text, zone in _CLAUDE_LINE_RE.findall(text):
+        resets_at = _claude_reset_at(reset_text, zone, moment) if reset_text else None
+        windows.append({"label": _CLAUDE_LABELS[kind], "used": float(used),
+                        "resets_at": resets_at, "reset": False})
+    if not windows:
+        first = text.strip().splitlines()[0] if text.strip() else "nothing"
+        return _unavailable(f"claude /usage: {first}"[:200])
+    return {"state": "ok", "windows": windows, "read_at": moment}
+
+
+def _claude_exe() -> str | None:
+    return shutil.which("claude") or (shutil.which("claude.cmd") if os.name == "nt" else None)
+
+
+def _ask_claude(exe: str) -> dict[str, Any]:
+    """One ``claude -p /usage`` in a neutral directory, saving no session; the process
+    tree is ended as codex's is."""
+    try:
+        proc, job = _spawn([exe, "-p", "/usage", "--output-format", "json", "--no-session-persistence"],
+                           stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                           cwd=tempfile.gettempdir())
+    except OSError as exc:
+        return _unavailable(f"could not start claude ({type(exc).__name__})")
+    try:
+        out, _ = proc.communicate(timeout=CLAUDE_TIMEOUT)
+    except (subprocess.TimeoutExpired, OSError):
+        return _unavailable("claude /usage did not answer")
+    finally:
+        _end(proc, None, job)
+    try:
+        answer = json.loads(out.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return _unavailable("claude /usage answered unreadably")
+    if not isinstance(answer, dict) or answer.get("is_error") is True:
+        return _unavailable("claude /usage failed")
+    return parse_claude_usage(answer.get("result"))
+
+
+def read_claude_usage(*, now: float | None = None) -> dict[str, Any]:
+    """Kept for ``CLAUDE_TTL`` seconds; one read at a time."""
+    global _claude_cache
+    with _claude_lock:
+        moment = time.time() if now is None else now
+        if _fresh(_claude_cache, CLAUDE_TTL, moment):
+            return _claude_cache[1]
+        exe = _claude_exe()
+        answer = _unavailable("claude is not installed") if exe is None else _ask_claude(exe)
+        _claude_cache = (moment, answer)
+        return answer
+
+
 # --- codex ----------------------------------------------------------------------------------
 def _codex_exe() -> str | None:
     return shutil.which("codex") or (shutil.which("codex.cmd") if os.name == "nt" else None)
+
+
+_CREATE_SUSPENDED = 0x00000004
+
+
+def _spawn(argv: list[str], **kwargs: Any) -> tuple[subprocess.Popen, object | None]:
+    """Start a reader process whose whole tree can be ended. On Windows it starts
+    suspended, joins a job object, then runs: nothing it starts can be outside the job —
+    joining a running ``.cmd`` wrapper raced its node/exe child, which then held the
+    pipes past a timeout (kiro review; codex review round 3). Elsewhere it gets its own
+    session, so its process group can be killed."""
+    if os.name != "nt":
+        return subprocess.Popen(argv, start_new_session=True, **kwargs), None
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | _CREATE_SUSPENDED
+    proc = subprocess.Popen(argv, creationflags=flags, **kwargs)
+    job = ExecutionDispatcher._adopt_process_tree(proc)
+    try:
+        import ctypes
+        status = ctypes.WinDLL("ntdll").NtResumeProcess(ctypes.c_void_p(int(proc._handle)))  # type: ignore[attr-defined]
+        if status != 0:
+            raise OSError(f"NtResumeProcess {status:#x}")
+    except (OSError, AttributeError, ValueError):
+        ExecutionDispatcher._release_process_tree(job)
+        proc.kill()
+        raise OSError("could not resume the reader process")
+    return proc, job
 
 
 def _end(proc: subprocess.Popen, reader: threading.Thread | None, job: object | None = None) -> None:
@@ -98,13 +261,15 @@ def _end(proc: subprocess.Popen, reader: threading.Thread | None, job: object | 
     whose node child holds the pipes, and killing the wrapper alone left it running with
     the reader blocked on it (codex review round 1). The job object holds every
     descendant (as for runs); ``taskkill /T`` only when there is none — measured, it can
-    take a minute. Then the pipes, then the reader."""
+    take a minute. Then the pipes, then the reader. ``_spawn`` puts the process in its
+    job before it runs, so the job holds every descendant."""
     try:
         if job is not None:
             ExecutionDispatcher._release_process_tree(job)
-        elif os.name == "nt":
-            subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True, timeout=10,
-                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        if os.name == "nt":
+            if job is None:
+                subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True, timeout=10,
+                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         else:
             # Its own process group, started that way: the group goes with it, before
             # the pipes are closed — a child still holding them would otherwise block
@@ -136,14 +301,9 @@ def _ask(argv: list[str], requests: list[dict[str, Any]], name: str,
     request (``id`` 1, ``initialize``) is sent at once, the rest once it is answered.
     Returns the message itself, or ``unavailable``."""
     try:
-        proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                stderr=subprocess.DEVNULL,
-                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                                start_new_session=os.name != "nt")
+        proc, job = _spawn(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     except OSError as exc:
         return _unavailable(f"could not start {name} ({type(exc).__name__})")
-    # Into a job object at once, so what the wrapper starts is held with it.
-    job = ExecutionDispatcher._adopt_process_tree(proc)
     answer: dict[str, Any] | None = None
     reader: threading.Thread | None = None
     deadline = time.monotonic() + timeout
@@ -248,7 +408,7 @@ def read_codex(*, now: float | None = None) -> dict[str, Any]:
     global _codex_cache
     with _codex_lock:
         moment = time.time() if now is None else now
-        if _codex_cache is not None and moment - _codex_cache[0] < CODEX_TTL:
+        if _fresh(_codex_cache, CODEX_TTL, moment):
             return _codex_cache[1]
         exe = _codex_exe()
         answer = _unavailable("codex is not installed") if exe is None else _ask_codex(exe)
@@ -327,7 +487,7 @@ def read_kiro(*, now: float | None = None) -> dict[str, Any]:
     global _kiro_cache
     with _kiro_lock:
         moment = time.time() if now is None else now
-        if _kiro_cache is not None and moment - _kiro_cache[0] < KIRO_TTL:
+        if _fresh(_kiro_cache, KIRO_TTL, moment):
             return _kiro_cache[1]
         exe = _kiro_exe()
         answer = _unavailable("kiro-cli is not installed") if exe is None else _ask_kiro(exe)
@@ -335,5 +495,30 @@ def read_kiro(*, now: float | None = None) -> dict[str, Any]:
         return answer
 
 
+def _claude_reading(usage_dir: Path | None) -> dict[str, Any]:
+    """``/usage`` first; the status-line record when that cannot be read and the record
+    can. Both unreadable: ``/usage``'s reason, the one that applies to every plan."""
+    asked = read_claude_usage()
+    if asked.get("state") == "ok":
+        return asked
+    recorded = read_claude(usage_dir)
+    return recorded if recorded.get("state") == "ok" else asked
+
+
 def read_all(usage_dir: Path | None) -> dict[str, Any]:
-    return {"claude": read_claude(usage_dir), "codex": read_codex(), "kiro": read_kiro()}
+    """The three at once: claude's ``/usage`` alone takes about 6 s (measured)."""
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        claude = pool.submit(_claude_reading, usage_dir)
+        codex = pool.submit(read_codex)
+        kiro = pool.submit(read_kiro)
+        return {"claude": _result(claude), "codex": _result(codex), "kiro": _result(kiro)}
+
+
+def _result(future: Any) -> dict[str, Any]:
+    """One agent's reading; an error in reading it is that agent's, not the bar's —
+    the others' readings still go back (kiro review)."""
+    try:
+        return future.result()
+    except Exception as exc:  # noqa: BLE001
+        return _unavailable(f"reading failed ({type(exc).__name__})")
