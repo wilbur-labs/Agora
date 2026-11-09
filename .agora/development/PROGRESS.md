@@ -8872,3 +8872,58 @@ test_workflow_selection, test_work_shelf, test_workspace_tasks: 248 collected, 2
 passed, 2 skipped. Frontend test:control-plane collected 600, 599 passed, 1 skipped;
 tsc, lint clean. Real data again: gitlab-ultimate-automation → `92d84e06`, last spoken
 11-09 10:57 — still in use in another window, which is exactly the busy case.
+
+## 2026-11-09 — CR-87 (= CR-12 item 6): the usage bar
+
+Owner (2026-11-09): each agent's /usage at the bottom of the page, like Orca, to see codex
+nearing its limit and reset or switch account before it stops. Official paths only, no
+credential read (CR-12):
+
+- claude: Claude Code sends `rate_limits` (5-hour / 7-day: used_percentage, resets_at)
+  to its status line, for claude.ai Pro/Max/Ultra and only after a session's first
+  answer (docs: code.claude.com/docs/en/statusline). A `--settings` status line replaces
+  the workspace's, so the work page's settings carry a relay —
+  `"<python>" "<data>/work-hooks/statusline_relay.py" | bash -c "$AGORA_STATUSLINE_COMMAND"`:
+  the relay records the windows in `<data>/work-usage/claude.json` and passes the
+  document on unchanged; the launch puts the workspace's own command (`settings.json`,
+  `settings.local.json` over it) in `AGORA_STATUSLINE_COMMAND`, so the person's status
+  line is the same as before. A report without limits keeps the last ones; a window past
+  its reset time is said as reset, with no figure. `still_installed` checks the relay.
+- codex: `codex app-server` → `account/rateLimits/read` (measured: 5h 73%, 7d 11%, plan
+  team, one "Full reset (Weekly + 5 hr)" credit available), one short-lived process per
+  read, kept 60 s. Only the windows, reset-credit count, limit-reached and plan name are
+  kept — no account id, no credit ids.
+- kiro-cli: `/usage` is interactive only (`chat --no-interactive "/usage"` is sent to the
+  model as a prompt, measured), so the bar says it cannot be read.
+- `GET /api/work/usage` (terminal token, like the work routes); every reading is `ok`
+  with when, or `unavailable` with why.
+- Frontend: a fixed bar at the bottom of every page (`--usage-bar`, pages leave its
+  height), polled each minute; amber from 80%, red from 95%, time to reset when loud,
+  reset credits, the age of a claude reading over 10 minutes; hidden without the token.
+
+Codex round 1 (stamp recorded), 2 findings, both fixed:
+- the status line passed on was only the workspace's, so one set only in the user's
+  Claude settings was replaced by nothing — `workspace_statusline` now resolves what
+  claude would use: `$CLAUDE_CONFIG_DIR` (or `~/.claude`) `settings.json`, then the
+  workspace's `settings.json`, then `settings.local.json`.
+- on a timeout only the `codex.cmd` wrapper was killed; its node child held the pipes
+  and the reader thread with them, once a minute — the app-server is put in a job object
+  at once (`ExecutionDispatcher._adopt_process_tree`, as for runs) and the job is
+  terminated, `taskkill /T` only without one (measured: it can take a minute), then the
+  pipes are closed and the reader joined. Test: a stand-in that starts a child holding
+  the pipe and never answers — read ends in about 3 s, the child is dead (asked of the
+  process with GetExitCodeProcess; a `tasklist` child in the test waited out the
+  stand-in's pipes, measured), no reader left.
+
+Codex round 2 (its gate exited 5: codex left `.review-usage-1109/` in the tree — now
+excluded locally like `.tmp-review-*`), 1 finding, fixed:
+- on Linux/macOS there is no job object, so a timeout killed only the launcher and a
+  child holding the pipe would block the close, and with `_codex_lock` every later read —
+  the app-server starts in its own session (`start_new_session`) and the group is
+  SIGKILLed before the pipes close. **Not run on Linux here** (this machine is
+  Windows); the stand-in test covers it there.
+
+Tests: backend test_work_usage collected 21, 21 passed; with test_work, test_work_board,
+test_work_newer, test_workflow_selection, test_work_shelf, test_workspace_tasks: 269
+collected, 267 passed, 2 skipped. Frontend test:control-plane collected 603, 602 passed,
+1 skipped (usage.test.mts added to it); tsc, lint clean.

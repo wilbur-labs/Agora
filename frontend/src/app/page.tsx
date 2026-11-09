@@ -230,7 +230,7 @@ export default function OverviewPage() {
   const todo = cards.filter((card) => card.stage === "todo");
 
   return (
-    <div className="flex h-screen flex-col bg-background">
+    <div className="flex h-[calc(100dvh-var(--usage-bar))] flex-col bg-background">
       <TopBar active="Overview" />
       <main className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto max-w-[1600px] space-y-5 p-4 md:p-8">

@@ -30,6 +30,16 @@ class HookSetup:
     sessions_dir: Path | None
     #: Why there is no hook, when ``settings`` is None.
     reason: str | None
+    #: Where the status-line relay records claude's usage (CR-87).
+    usage_dir: Path | None = None
+
+
+#: The status line a work-page claude gets (CR-87): the relay records ``rate_limits`` and
+#: passes the document on to the workspace's own status line, which the launch names in
+#: ``AGORA_STATUSLINE_COMMAND`` (a ``--settings`` status line replaces the workspace's, so
+#: it is run from here). Empty: no line, as before there was one.
+def _statusline_command(python_path: str, relay_path: str) -> str:
+    return f'"{python_path}" "{relay_path}" | bash -c "$AGORA_STATUSLINE_COMMAND"'
 
 
 def _restrict_dir(path: Path) -> None:
@@ -81,8 +91,9 @@ def _posix(path: Path) -> str:
 def install(data_dir: Path, python: str | None = None) -> HookSetup:
     python = python or sys.executable
     hooks_dir, sessions_dir = Path(data_dir) / "work-hooks", Path(data_dir) / "work-sessions"
+    usage_dir = Path(data_dir) / "work-usage"
     try:
-        for folder in (hooks_dir, sessions_dir):
+        for folder in (hooks_dir, sessions_dir, usage_dir):
             folder.mkdir(parents=True, exist_ok=True)
             refuse_link(folder)
             _restrict_dir(folder)
@@ -96,17 +107,21 @@ def install(data_dir: Path, python: str | None = None) -> HookSetup:
         if not SAFE_PATH_RE.fullmatch(value):
             return HookSetup(None, None, f"the {label} path has characters the hook's shell would interpret: {value}")
     command = f'"{python_path}" "{script_path}"'
+    relay = hooks_dir / "statusline_relay.py"
     settings = {"hooks": {name: [{"hooks": [{"type": "command", "command": command, "timeout": 10}]}]
-                          for name in ("SessionStart", "SessionEnd")}}
+                          for name in ("SessionStart", "SessionEnd")},
+                "statusLine": {"type": "command", "command": _statusline_command(python_path, _posix(relay))}}
     try:
         source = (Path(__file__).parent / "report_hook.py").read_bytes()
-        for target in (script, hooks_dir / "settings.json"):
+        relay_source = (Path(__file__).parent / "statusline_relay.py").read_bytes()
+        for target in (script, relay, hooks_dir / "settings.json"):
             refuse_link(target)
         _write_if_changed(script, source)
+        _write_if_changed(relay, relay_source)
         _write_if_changed(hooks_dir / "settings.json", json.dumps(settings, indent=2).encode("utf-8"))
     except OSError as exc:
         return HookSetup(None, None, f"could not write the session reporter: {type(exc).__name__}")
-    return HookSetup(hooks_dir / "settings.json", sessions_dir, None)
+    return HookSetup(hooks_dir / "settings.json", sessions_dir, None, usage_dir)
 
 
 def _write_if_changed(path: Path, content: bytes) -> None:
@@ -169,14 +184,14 @@ def still_installed(setup: HookSetup) -> bool:
         return False
     try:
         for path in (setup.settings.parent, setup.settings, setup.settings.parent / "report_hook.py",
-                     setup.sessions_dir):
+                     setup.settings.parent / "statusline_relay.py", setup.sessions_dir):
             refuse_link(path)
         if not setup.sessions_dir.is_dir():
             return False
         # The content too: a file emptied or cut short is not the hook (kiro review round 9).
-        if (setup.settings.parent / "report_hook.py").read_bytes() != \
-                (Path(__file__).parent / "report_hook.py").read_bytes():
-            return False
+        for name in ("report_hook.py", "statusline_relay.py"):
+            if (setup.settings.parent / name).read_bytes() != (Path(__file__).parent / name).read_bytes():
+                return False
         hooks = json.loads(setup.settings.read_bytes()).get("hooks", {})
         script = _posix(setup.settings.parent / "report_hook.py")
         return all(

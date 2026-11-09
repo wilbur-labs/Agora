@@ -265,7 +265,7 @@ function TextSizeButton() {
  */
 export function DeliveryShell({ active, children }: { active: string; children: ReactNode }) {
   return (
-    <div data-delivery-shell-root className="flex min-h-screen flex-col bg-muted/20">
+    <div data-delivery-shell-root className="flex min-h-[calc(100dvh-var(--usage-bar))] flex-col bg-muted/20">
       <TopBar active={active} />
       <main className="min-w-0 flex-1">{children}</main>
     </div>

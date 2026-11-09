@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { ThemeProvider } from "@/components/theme-provider";
 import { TerminalCodeRedeemer } from "@/components/terminal-code-redeemer";
+import { UsageBar } from "@/components/usage-bar";
 import { LocaleProvider } from "@/lib/i18n";
 // CR-55: fonts ship with the build (no network at runtime). Latin from Inter, CJK
 // from Noto Sans SC — kana included, so Japanese text on a page uses SC's glyph
@@ -36,9 +37,13 @@ export default function RootLayout({
         <style>{`html:not([data-i18n-ready]) body{visibility:hidden}`}</style>
         <script dangerouslySetInnerHTML={{ __html: localeBootstrap }} />
       </head>
-      <body className="min-h-full flex flex-col">
+      {/* The usage bar (CR-87) is fixed to the bottom; pages leave its height free. */}
+      <body className="min-h-full flex flex-col pb-[var(--usage-bar)]">
         <ThemeProvider>
-          <LocaleProvider>{children}</LocaleProvider>
+          <LocaleProvider>
+            {children}
+            <UsageBar />
+          </LocaleProvider>
           <TerminalCodeRedeemer />
         </ThemeProvider>
       </body>

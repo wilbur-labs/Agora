@@ -245,7 +245,7 @@ export default function WorkPage() {
     && !(bannerHidden && bannerSettled(lines));
 
   return (
-    <div className="flex h-screen flex-col bg-background">
+    <div className="flex h-[calc(100dvh-var(--usage-bar))] flex-col bg-background">
       <TopBar active="Work" />
       {showBanner && typeof view === "object" && view && (
         <div className="shrink-0 border-b bg-muted/40 px-4 py-2 text-sm">

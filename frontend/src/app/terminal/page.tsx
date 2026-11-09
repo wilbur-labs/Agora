@@ -41,7 +41,7 @@ export default function TerminalPage() {
   const current = Array.isArray(rows) ? rows.find((row) => row.terminal_id === selected) ?? null : null;
 
   return (
-    <div className="flex h-screen flex-col bg-background">
+    <div className="flex h-[calc(100dvh-var(--usage-bar))] flex-col bg-background">
       <header className="flex shrink-0 flex-wrap items-center gap-2 border-b px-3 py-2 text-sm">
         <Link href="/" className="font-semibold">{t("common.brand.name")}</Link>
         <span className="text-muted-foreground">· {t("workspace.terminal.title")}</span>

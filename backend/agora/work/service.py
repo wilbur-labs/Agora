@@ -12,6 +12,7 @@ nothing more.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import stat
 import threading
@@ -60,6 +61,28 @@ class LaunchInfo:
     #: A newer conversation of the task opened outside the work page (CR-86): taken
     #: (``newer``) or left because it may still be open elsewhere (``newer_busy``).
     note: dict[str, Any] | None = None
+
+
+def workspace_statusline(tool_dir: Path, config_dir: Path | None = None) -> str | None:
+    """The status-line command a claude started in ``tool_dir`` would use without Agora's
+    ``--settings``: the user's (``$CLAUDE_CONFIG_DIR`` or ``~/.claude``), then the
+    workspace's ``.claude/settings.json``, then its ``settings.local.json``, each over the
+    one before — so a line set only for the user is kept too (codex review round 1). None
+    when none sets one; a file that cannot be read is passed over."""
+    if config_dir is None:
+        configured = os.environ.get("CLAUDE_CONFIG_DIR", "").strip()
+        config_dir = Path(configured).expanduser() if configured else Path.home() / ".claude"
+    command = None
+    for path in (config_dir / "settings.json", tool_dir / ".claude" / "settings.json",
+                 tool_dir / ".claude" / "settings.local.json"):
+        try:
+            data = json.loads(path.read_bytes().decode("utf-8"))
+        except (OSError, ValueError):
+            continue
+        line = data.get("statusLine") if isinstance(data, dict) else None
+        if isinstance(line, dict) and line.get("type") == "command" and isinstance(line.get("command"), str):
+            command = line["command"]
+    return command
 
 
 #: A card name is one short line (CR-85).
@@ -285,6 +308,11 @@ class WorkService:
             args: list[str] = []
             if setup.settings is not None and folder is not None:
                 env.update({"AGORA_WORK_DIR": str(folder), "AGORA_WORK_KEY": key, "AGORA_WORK_LAUNCH": launch_id})
+                # The status line (CR-87): the relay records usage, then runs the
+                # workspace's own line, which the --settings line would otherwise replace.
+                env["AGORA_STATUSLINE_COMMAND"] = workspace_statusline(Path(project.tool_dir)) or ""
+                if setup.usage_dir is not None:
+                    env["AGORA_USAGE_DIR"] = str(setup.usage_dir)
                 args += ["--settings", str(setup.settings)]
                 if resume:
                     args += ["--resume", resume]

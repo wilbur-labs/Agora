@@ -61,6 +61,8 @@
 }
 
 :root {
+  /* The usage bar at the bottom of every page (CR-87). */
+  --usage-bar: 1.5rem;
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
   --card: oklch(1 0 0);
