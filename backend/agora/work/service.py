@@ -40,6 +40,17 @@ PREFIX = "work:"
 CONFIRM_SECONDS = 60.0
 
 
+
+def _skills_repo(project: WorkProject) -> str | None:
+    """The claude-workspace task's ``primary_repo`` when it is a directory here and is not
+    the tool directory itself; None otherwise (nothing added, as before)."""
+    from agora.skills.inventory import _repo_of
+
+    repo, _ = _repo_of(Path(project.source), project.task, False)
+    if repo is None or '"' in repo or os.path.normcase(repo) == os.path.normcase(str(project.tool_dir)):
+        return None
+    return repo
+
 class WorkProjectNotFound(LookupError):
     pass
 
@@ -321,6 +332,12 @@ class WorkService:
                 if row is None or (previous is not None and not previous.read_failed):
                     self._prune_journals(folder, keep={launch_id, row.ck_launch if row else None})
             env["CW_TASK"] = project.task
+            # The task's repository, so claude loads the skills installed there
+            # (``.claude/skills``; CR-75 slice 5): ``--add-dir`` loads an added directory's
+            # skills, and the session still starts — and resumes — in the tool directory.
+            repo = await asyncio.to_thread(_skills_repo, project)
+            if repo is not None:
+                args += ["--add-dir", repo]
             argv = command_argv("claude", agent_args=args)
         async with self._lock:
             # A close that came in while this launch was being prepared wins: the intent is

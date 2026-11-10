@@ -47,7 +47,6 @@ class TestLegacyCouncilRetirement:
         "artifacts",
         "sessions",
         "shared",
-        "skills",
         "memory",
         "profile",
     )
@@ -99,7 +98,6 @@ class TestLegacyCouncilRetirement:
             "/chat",
             "/agents",
             "/agents/scout",
-            "/skills/learned",
             "/shared/share-1",
         ):
             response = client.get(path, follow_redirects=False)
@@ -135,7 +133,7 @@ class TestLegacyCouncilRetirement:
             "agora.context",
             "agora.memory",
             "agora.models",
-            "agora.skills",
+            # "agora.skills" is the skills library since CR-75 slice 5, not the council's.
             "agora.tools",
             "agora.api._state",
             "agora.api.chat",

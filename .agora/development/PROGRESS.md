@@ -9026,3 +9026,61 @@ Review round 3: codex (read 3/4), 1 finding (P1), fixed after the last round:
   never answers — the read ends in ~3 s and the child is dead.
 Tests: test_work_usage collected 44, 44 passed. Live: claude 6.6 s, codex 1.5 s, kiro
 2.7 s, all ok. Committed with AGORA_REVIEW_SKIP (fix after round 3).
+
+## 2026-11-10 — CR-75 slice 5: skills management (first slice)
+
+Owner's decisions (2026-11-10): one original per skill in Agora's library
+(`<claude-workspace work root>/skills/<name>/SKILL.md`, `AGORA_SKILLS_LIBRARY` overrides);
+installed copies stay out of the project's git (`.git/info/exclude`); the workflow's own
+commands are shown, not managed; first slice = library + add/edit/delete + import +
+install per local project for all three CLIs. Design: `docs/CR75-slice5-skills.md`.
+
+- Backend: `agora/skills/{library,install,inventory}.py`, `agora/api/skills_router.py`
+  (`/api/skills`, terminal token). Copies carry `.agora-skill.json` (name + content hash):
+  current / outdated / modified (edited in place: never overwritten or removed without
+  `force`) / foreign (no marker: never touched; refuses the whole install before writing).
+  Library names clashing with a workflow command are refused (a claude skill replaces
+  the command). Delete refuses while installed anywhere.
+- Work page: claude starts with `--add-dir <primary_repo>` so the repository's
+  `.claude/skills` load (claude docs: skills under an added directory are loaded); the
+  session still starts and resumes in the tool directory.
+- `/skills` and `/api/skills` left the 0.5 retirement lists (`/skills` had been
+  redirecting to `/control-plane`, so the placeholder page was unreachable);
+  `agora.skills` left the legacy-module import ban.
+- Frontend: Skills page rewritten; `lib/skills.ts` + `lib/skills-state.ts`; en/zh/ja.
+- Not covered (said on the page): kiro-workspace task agents read only the skills their
+  profile lists; global ("every project") installs and remote projects are slice 2.
+
+Tests: backend full non-integration suite 2354 passed, 12 skipped, 4 deselected
+(2370 collected) before the `test_web_ui` fix; `test_web_ui.py` + `test_skills.py` +
+`test_work.py` after it: 133 passed, 2 skipped (135 collected). New `test_skills.py`: 24.
+Frontend `test:control-plane` 607 (606 passed, 1 skipped); `tsc --noEmit`, eslint on the
+changed files clean. compileall, schema `--check`, `git diff --check` clean.
+
+Review round 1 (codex, gate exit 0): 3 x P2, all fixed — the edit token hashed decoded
+text while the save compared raw bytes (a CRLF SKILL.md could never be saved); os.walk
+skipped an unreadable subdirectory (an incomplete copy reported as the whole skill; now
+raises); copyfile dropped the mode (helper scripts lost +x; now shutil.copy). +3 tests:
+test_skills.py 27 passed (27 collected).
+Review round 2 (codex, gate exit 0): 3 x P2, all fixed — paused/archived projects were
+dropped from install accounting (a library original could be deleted under their copies,
+and they could not be uninstalled; now listed as shelved, archived task.yaml read from
+tasks/_archive/); exclude lines were anchored at the repository top when primary_repo is
+a subdirectory (now `git rev-parse --show-prefix` is prepended); uninstall removed lines
+a linked worktree sharing the exclude file still needed (uninstall now leaves them).
++3 tests: test_skills.py 29 passed (29 collected); frontend 607 (606 passed, 1 skipped).
+Review round 3 (codex, gate exit 0): 2 x P2, both fixed after the round limit, so
+committed with AGORA_REVIEW_SKIP — a project whose task.yaml or repository could not be
+read was dropped, so delete could remove the library original under its copies (now
+`inventory_gaps` blocks delete and names the project; a directory with no task.yaml is a
+definite non-project and is not a gap — otherwise kiro-workspace's `ppt-agent` folder
+would block every delete on this machine); a project path with gitignore metacharacters
+(`apps/[web]`) became a glob (now escaped). +2 tests.
+Final: test_skills.py + test_web_ui.py + test_work.py 140 passed, 2 skipped (142
+collected); frontend 607 (606 passed, 1 skipped); `git diff --check` clean. The full
+non-integration backend suite was run once before the review rounds (2354 passed, 12
+skipped, 4 deselected); the rounds changed only `agora/skills/`, `skills_router.py` and
+their tests.
+Next safe action: owner's acceptance on 8001 (needs a frontend build and an 8001
+restart): Skills page → import or create a skill → install into a project → open that
+project on the work page and check claude lists the skill.
