@@ -9141,3 +9141,32 @@ skill was already installed (with only broken entries: "none installed" and "all
 installed" at once). `projectSkillsOf` now counts them (`unreadable`); the panel says
 "nothing to add" and that N cannot be read, and points at the Skills page. Test extended.
 Frontend 610 (609 passed, 1 skipped); tsc, eslint clean. Round 2: pending.
+
+## 2026-11-11 — CR-75 slice 5 follow-up: the library keeps to the Agent Skills standard (workspace CR-91)
+
+Owner: every skill in one format that claude, codex and kiro can all use, and new ones
+built that way. The common format exists — the Agent Skills standard
+(agentskills.io/specification): `<name>/SKILL.md`, front matter `name` + `description`;
+read from `.claude/skills`, `.agents/skills` and `.kiro/skills`. The library already
+wrote that shape; this makes it check the standard's rules.
+
+- Refused on write (the standard's "must" for the two required fields): a description
+  over 1024 characters; a name with consecutive hyphens (frontend rule too).
+- Reported as notes, not refused, so a skill written elsewhere can still be read and
+  imported: no front matter, name not the folder's, no description, description too long,
+  `compatibility` not text of 1-500 characters, fields outside the standard (other CLIs
+  ignore them), SKILL.md over 500 lines. `standard_notes` in `agora/skills/library.py`;
+  on each library entry and each importable skill; the Skills page words them (en/zh/ja).
+- Not claimed: an empty notes list is not a certificate. The standard's own validator
+  (`skills-ref validate`) is the authority and is not run here.
+
+Tests: `test_skills.py` 34 passed (34 collected; +2). Frontend `test:control-plane` 610
+(609 passed, 1 skipped); `tsc --noEmit`, eslint on the changed files clean.
+Review: pending (codex).
+Next safe action: review, commit, build + restart 8001 (backend changed), then convert
+kiro-workspace's `.kiro/skills` to the standard (workspace CR-92).
+Review round 1 (codex, gate exit 0): 1 x P2, fixed — the stricter name rule was put in the
+shared `check_name`, so a skill already named `a--b` could no longer be read, deleted or
+uninstalled. `check_name` is back to what every version accepted (lookup, delete,
+uninstall); `check_new_name` adds the standard's rule for create and import. Test extended:
+`test_skills.py` 34 passed (34 collected). Round 2: pending.

@@ -4,12 +4,20 @@
 export type CopyStateKind = "absent" | "current" | "outdated" | "modified" | "foreign" | "unreadable";
 export type InstallSummary = "installed" | "not_installed" | "outdated" | "modified" | "foreign" | "unreadable" | "partial";
 
+/** A departure from the Agent Skills standard (agentskills.io), as the server found it. */
+export interface StandardNote {
+  code: "no_front_matter" | "bad_name" | "name_mismatch" | "no_description" | "description_too_long"
+    | "bad_compatibility" | "extra_fields" | "long_body";
+  [arg: string]: string | number;
+}
+
 export interface SkillEntry {
   name: string;
   description: string | null;
   sha: string | null;
   updated: string | null;
   error: string | null;
+  notes?: StandardNote[];
 }
 
 export interface SkillProject {
@@ -30,6 +38,7 @@ export interface FoundSkill {
   where: string;
   path: string;
   error: string | null;
+  notes?: StandardNote[];
 }
 
 export interface SkillsView {
@@ -67,8 +76,9 @@ export function refusalOf(message: string): { code: string; message: string } {
 export const skillTemplate = (name: string) =>
   `---\nname: ${name}\ndescription: What this skill does and when the agent should use it.\n---\n\n# ${name}\n\n`;
 
-/** Names the library accepts: lower-case words joined by hyphens, at most 64. */
-export const SKILL_NAME_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
+/** Names the library accepts (the Agent Skills standard): lower-case words joined by
+ *  single hyphens, at most 64. */
+export const SKILL_NAME_RE = /^(?!.*--)[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 
 /** One project's skills, for the card's settings (CR-90): the ones it has, each with its
  *  state, and the library skills it could take. A skill the library cannot read is in

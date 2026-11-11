@@ -24,7 +24,7 @@ test("the server's refusal message is taken out of the error text", () => {
 
 test("names follow claude's rule, and the template carries the front matter", () => {
   for (const ok of ["a", "pdf-tips", "x1"]) assert.ok(SKILL_NAME_RE.test(ok), ok);
-  for (const bad of ["", "-a", "a-", "A", "a_b", "a".repeat(65)]) assert.ok(!SKILL_NAME_RE.test(bad), bad);
+  for (const bad of ["", "-a", "a-", "A", "a_b", "a--b", "a".repeat(65)]) assert.ok(!SKILL_NAME_RE.test(bad), bad);
   assert.match(skillTemplate("x"), /^---\nname: x\ndescription: .+\n---\n/);
 });
 

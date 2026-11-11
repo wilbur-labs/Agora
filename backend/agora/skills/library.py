@@ -39,6 +39,13 @@ MARKER = ".agora-skill.json"
 #: safe as a directory name and a git exclude line on every platform.
 NAME_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
 MAX_SKILL_MD_BYTES = 256 * 1024
+# The Agent Skills standard (agentskills.io/specification), which claude, codex and kiro
+# all read. What it says "must" about the two required fields is refused on write; the
+# rest is reported as notes, so a skill written elsewhere can still be read and imported.
+MAX_DESCRIPTION_CHARS = 1024
+MAX_COMPATIBILITY_CHARS = 500
+RECOMMENDED_MAX_LINES = 500
+STANDARD_FIELDS = ("name", "description", "license", "compatibility", "metadata", "allowed-tools")
 #: A skill directory is a handful of files. Past these it is not one, and copying it on
 #: every install is not something a click should do.
 MAX_FILES = 200
@@ -127,12 +134,55 @@ def check_skill_md(name: str, text: str) -> str:
     description = meta.get("description")
     if not isinstance(description, str) or not description.strip():
         raise SkillRefused("the front matter needs a description")
+    if len(description.strip()) > MAX_DESCRIPTION_CHARS:
+        raise SkillRefused(f"the description is {len(description.strip())} characters; the Agent Skills "
+                           f"standard allows at most {MAX_DESCRIPTION_CHARS}")
     return description.strip()
 
 
+def standard_notes(name: str, text: str) -> list[dict[str, Any]]:
+    """Where a SKILL.md departs from the Agent Skills standard, as ``{code, ...}`` for the
+    page to word. Empty means nothing was found by these checks — not a certificate: the
+    standard's own validator (``skills-ref validate``) is the authority."""
+    meta = front_matter(text)
+    if meta is None:
+        return [{"code": "no_front_matter"}]
+    notes: list[dict[str, Any]] = []
+    if not NAME_RE.fullmatch(name) or "--" in name:
+        notes.append({"code": "bad_name"})
+    if meta.get("name") != name:
+        notes.append({"code": "name_mismatch", "found": str(meta.get("name"))[:80]})
+    description = meta.get("description")
+    if not isinstance(description, str) or not description.strip():
+        notes.append({"code": "no_description"})
+    elif len(description.strip()) > MAX_DESCRIPTION_CHARS:
+        notes.append({"code": "description_too_long", "length": len(description.strip()), "max": MAX_DESCRIPTION_CHARS})
+    compatibility = meta.get("compatibility")
+    if compatibility is not None and (not isinstance(compatibility, str)
+                                      or not 1 <= len(compatibility) <= MAX_COMPATIBILITY_CHARS):
+        notes.append({"code": "bad_compatibility", "max": MAX_COMPATIBILITY_CHARS})
+    extra = sorted(str(k) for k in meta if k not in STANDARD_FIELDS)
+    if extra:
+        notes.append({"code": "extra_fields", "fields": ", ".join(extra)[:200]})
+    lines = len(text.splitlines())
+    if lines > RECOMMENDED_MAX_LINES:
+        notes.append({"code": "long_body", "lines": lines, "max": RECOMMENDED_MAX_LINES})
+    return notes
+
+
 def check_name(name: str) -> None:
+    """A name that is safe to look up: what every version of the library has accepted.
+    Reading, deleting and uninstalling use this, so a skill named before the standard's
+    stricter rule (``a--b``) can still be managed (codex review)."""
     if not NAME_RE.fullmatch(name):
         raise SkillRefused("a name is lower-case letters, digits and hyphens (at most 64)")
+
+
+def check_new_name(name: str) -> None:
+    """A name a new skill may take: the Agent Skills standard also forbids ``--``."""
+    check_name(name)
+    if "--" in name:
+        raise SkillRefused("a name is lower-case letters, digits and single hyphens (at most 64)")
 
 
 @dataclass
@@ -145,10 +195,12 @@ class SkillEntry:
     updated: str | None
     #: Why it could not be read, when it could not.
     error: str | None = None
+    #: Departures from the Agent Skills standard (``standard_notes``); empty when unread.
+    notes: list[dict[str, Any]] = field(default_factory=list)
 
     def payload(self) -> dict[str, Any]:
         return {"name": self.name, "description": self.description, "sha": self.sha,
-                "updated": self.updated, "error": self.error}
+                "updated": self.updated, "error": self.error, "notes": self.notes}
 
 
 @dataclass
@@ -176,7 +228,8 @@ def read_entry(path: Path) -> SkillEntry:
         description = meta.get("description") if isinstance(meta.get("description"), str) else None
         newest = max(p.stat().st_mtime for _, p in files)
         return SkillEntry(name, description, tree_sha(path),
-                          datetime.fromtimestamp(newest, timezone.utc).isoformat(timespec="seconds"))
+                          datetime.fromtimestamp(newest, timezone.utc).isoformat(timespec="seconds"),
+                          notes=standard_notes(name, text))
     except SkillRefused as exc:
         return SkillEntry(name, None, None, None, str(exc))
     except (OSError, UnicodeDecodeError) as exc:
@@ -230,7 +283,7 @@ class SkillLibrary:
         return {**entry.payload(), "content": raw.decode("utf-8"), "content_sha": _sha(raw), "files": files}
 
     def create(self, name: str, text: str, *, reserved: set[str]) -> SkillEntry:
-        check_name(name)
+        check_new_name(name)
         if name in reserved:
             raise SkillRefused(f"{name!r} is a workflow command; a skill of that name would replace /{name}")
         check_skill_md(name, text)
@@ -265,7 +318,7 @@ class SkillLibrary:
     def import_from(self, source: Path, name: str, *, reserved: set[str]) -> SkillEntry:
         """Copy the skill directory at ``source`` into the library as ``name``. The source
         is only read."""
-        check_name(name)
+        check_new_name(name)
         if name in reserved:
             raise SkillRefused(f"{name!r} is a workflow command; a skill of that name would replace /{name}")
         root = self._need_root()

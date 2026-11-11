@@ -9,7 +9,7 @@ place that cannot be read is reported as such, never as empty.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -116,10 +116,13 @@ class FoundSkill:
     where: str
     path: str
     error: str | None = None
+    #: Departures from the Agent Skills standard, for an importable skill; a workflow
+    #: command is another format on purpose and carries none.
+    notes: list[dict[str, Any]] = field(default_factory=list)
 
     def payload(self) -> dict[str, Any]:
         return {"name": self.name, "description": self.description, "kind": self.kind,
-                "where": self.where, "path": self.path, "error": self.error}
+                "where": self.where, "path": self.path, "error": self.error, "notes": self.notes}
 
 
 def _first_line(text: str) -> str | None:
@@ -204,5 +207,6 @@ def importable(extra: list[tuple[Path, str]] | None = None) -> list[FoundSkill]:
             if child.name.startswith(".") or not (child / SKILL_FILE).is_file() or (child / MARKER).exists():
                 continue
             entry = read_entry(child)
-            out.append(FoundSkill(child.name, entry.description, "importable", where, str(child), entry.error))
+            out.append(FoundSkill(child.name, entry.description, "importable", where, str(child), entry.error,
+                                  entry.notes))
     return out

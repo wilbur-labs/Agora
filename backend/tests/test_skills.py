@@ -131,6 +131,44 @@ def test_a_copy_keeps_the_file_mode(tmp_path):
     assert os.stat(tmp_path / "dst" / "run.sh").st_mode == script.stat().st_mode
 
 
+def test_the_standards_musts_are_refused_on_write(tmp_path):
+    """agentskills.io: description at most 1024 characters, no consecutive hyphens."""
+    lib = SkillLibrary(tmp_path / "lib")
+    with pytest.raises(SkillRefused, match="1024"):
+        lib.create("long", md("long", description="d" * 1025), reserved=set())
+    lib.create("edge", md("edge", description="d" * 1024), reserved=set())
+    with pytest.raises(SkillRefused, match="single hyphens"):
+        lib.create("a--b", md("a--b"), reserved=set())
+    # One named before the rule is still read, flagged, and removable.
+    (tmp_path / "lib" / "a--b").mkdir()
+    (tmp_path / "lib" / "a--b" / "SKILL.md").write_text(md("a--b"), encoding="utf-8")
+    assert lib.content("a--b")["notes"] == [{"code": "bad_name"}]
+    lib.delete("a--b", [])
+    assert not (tmp_path / "lib" / "a--b").exists()
+
+
+def test_a_skill_written_elsewhere_is_read_with_what_departs_from_the_standard(tmp_path):
+    from agora.skills.library import read_entry, standard_notes
+
+    assert standard_notes("ok", md("ok")) == []
+    assert standard_notes("ok", "no front matter") == [{"code": "no_front_matter"}]
+    text = ("---\nname: other\ndescription: " + "d" * 1030 + "\nversion: 2\nmodel: x\ncompatibility: 7\n---\n"
+            + "line\n" * 500)
+    codes = {n["code"]: n for n in standard_notes("ok", text)}
+    assert set(codes) == {"name_mismatch", "description_too_long", "bad_compatibility", "extra_fields", "long_body"}
+    assert codes["extra_fields"]["fields"] == "model, version"
+    assert codes["description_too_long"]["length"] == 1030 and codes["long_body"]["lines"] == 507
+
+    # Reading keeps working: the entry is listed with its notes, not turned into an error.
+    place = tmp_path / "place" / "theirs"
+    place.mkdir(parents=True)
+    (place / "SKILL.md").write_text("---\nname: theirs\ndescription: d\neffort: high\n---\nbody\n", encoding="utf-8")
+    entry = read_entry(place)
+    assert entry.error is None and entry.notes == [{"code": "extra_fields", "fields": "effort"}]
+    found = [f for f in importable([(tmp_path / "place", "here")]) if f.where == "here"]
+    assert found[0].payload()["notes"] == entry.notes
+
+
 def test_check_skill_md_returns_the_description():
     assert check_skill_md("a", md("a", "  hi  ")) == "hi"
 

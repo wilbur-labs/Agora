@@ -22,7 +22,7 @@ import { TerminalAuthRequired } from "@/lib/terminal";
 import {
   createSkill, deleteSkill, getFoundSkill, getSkill, getSkills, importSkill, installSkill, nextAction, refusalOf,
   SKILL_NAME_RE, skillTemplate, uninstallSkill, updateSkill,
-  type FoundSkill, type FoundSkillContent, type InstallSummary, type SkillsView,
+  type FoundSkill, type FoundSkillContent, type InstallSummary, type SkillsView, type StandardNote,
 } from "@/lib/skills";
 
 type Editor = { mode: "new"; name: string; content: string } | { mode: "edit"; name: string; content: string; base: string };
@@ -96,6 +96,14 @@ export default function SkillsPage() {
       )}
       <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-lg border bg-muted/40 p-3 font-mono text-xs">{viewer.content}</pre>
     </div>
+  );
+
+  // What the standard's checks found, under a skill. Other CLIs ignore fields they do
+  // not know, so an extra field is information; the rest are things to fix.
+  const standardNotes = (notes: StandardNote[] | undefined) => !!notes?.length && (
+    <ul className="text-xs text-amber-700 dark:text-amber-400">
+      {notes.map((n) => <li key={n.code}>{t(`skills.note.${n.code}`, n)}</li>)}
+    </ul>
   );
 
   const save = () => {
@@ -193,6 +201,7 @@ export default function SkillsPage() {
                     {skill.error
                       ? <p className="text-sm text-red-700 dark:text-red-400">{t("skills.entryError", { reason: skill.error })}</p>
                       : <p className="text-sm text-muted-foreground">{skill.description}</p>}
+                    {standardNotes(skill.notes)}
                     {skill.updated && <p className="text-xs text-muted-foreground">{t("skills.updated", { when: new Date(skill.updated).toLocaleString() })}</p>}
                   </div>
                   <div className="flex gap-1">
@@ -272,6 +281,7 @@ export default function SkillsPage() {
                       <div className="min-w-0">
                         <p className="font-mono text-sm">{f.name} <span className="text-xs text-muted-foreground">· {f.where}</span></p>
                         <p className="truncate text-xs text-muted-foreground">{f.error ? t("skills.entryError", { reason: f.error }) : f.description}</p>
+                        {standardNotes(f.notes)}
                       </div>
                       <div className="flex shrink-0 gap-1">
                         {viewButton(f)}
