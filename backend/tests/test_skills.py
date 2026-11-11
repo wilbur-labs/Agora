@@ -355,6 +355,43 @@ def test_create_install_and_import_through_the_api(api, tmp_path, monkeypatch):
     assert client.delete("/api/skills/library/x").status_code == 200
 
 
+def test_a_listed_skill_can_be_read_and_nothing_else(api, tmp_path, monkeypatch):
+    """The page shows what an importable skill or a workflow command says (read-only);
+    the route reads only the paths the view lists."""
+    client, _, work = api
+    monkeypatch.setenv("AGORA_SKILLS_LIBRARY", str(tmp_path / "lib"))
+    repo = git_repo(tmp_path / "repo")
+    _task(work, "alpha", f"task:\n  title: Alpha\nprimary_repo: {repo.as_posix()}\n")
+    client.headers["X-Agora-Terminal-Token"] = load_or_create_token(tmp_path / "data")
+    theirs = repo / ".claude/skills/theirs"
+    theirs.mkdir(parents=True)
+    (theirs / "SKILL.md").write_text(md("theirs", body="Their body.\n"), encoding="utf-8")
+    (theirs / "helper.py").write_text("pass\n", encoding="utf-8")
+    commands = tmp_path / "tool" / ".claude" / "commands"
+    commands.mkdir(parents=True, exist_ok=True)
+    (commands / "adr.md").write_text("---\ndescription: Start an ADR\n---\nADR body", encoding="utf-8")
+
+    view = client.get("/api/skills").json()
+    offered = [f for f in view["importable"] if f["name"] == "theirs"][0]
+    got = client.get("/api/skills/found", params={"path": offered["path"]})
+    assert got.status_code == 200
+    assert "Their body." in got.json()["content"] and got.json()["kind"] == "importable"
+    assert sorted(got.json()["files"]) == ["SKILL.md", "helper.py"]
+
+    command = [f for f in view["workflow"] if f["name"] == "adr"][0]
+    got = client.get("/api/skills/found", params={"path": command["path"]})
+    assert got.status_code == 200 and "ADR body" in got.json()["content"] and got.json()["kind"] == "workflow"
+
+    # Not listed: a file that exists, the directory above a listed one, a file inside one.
+    secret = tmp_path / "secret.txt"
+    secret.write_text("no", encoding="utf-8")
+    for path in (str(secret), str(theirs.parent), str(theirs / "SKILL.md")):
+        refused = client.get("/api/skills/found", params={"path": path})
+        assert refused.status_code == 409 and refused.json()["detail"]["code"] == "refused"
+    client.headers.pop("X-Agora-Terminal-Token")
+    assert client.get("/api/skills/found", params={"path": offered["path"]}).status_code == 401
+
+
 def test_the_work_page_adds_the_task_repository_for_its_skills(world, tmp_path):
     from agora.work.service import _skills_repo
     from agora.work.projects import scan_work_projects

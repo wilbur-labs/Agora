@@ -9084,3 +9084,26 @@ their tests.
 Next safe action: owner's acceptance on 8001 (needs a frontend build and an 8001
 restart): Skills page → import or create a skill → install into a project → open that
 project on the work page and check claude lists the skill.
+
+## 2026-11-11 — CR-75 slice 5 follow-up: read a listed skill before importing it (workspace CR-89)
+
+Owner on 8001: "the skill's content cannot be seen or edited". Only library skills had an
+Edit button; the "found elsewhere" and "provided by the workflow" lists showed a name and
+one truncated line, and the owner's library was still empty, so nothing on the page could
+be opened.
+
+- `GET /api/skills/found?path=` returns a listed skill's text and file names, read-only.
+  It reads only a path the view itself lists (a workflow command or an importable skill);
+  anything else is refused (409), and it needs the terminal token like every skills route.
+- Skills page: a View button on each importable skill and each workflow command opens the
+  text under the row, with where the file is and why it is read-only (import it to edit
+  the library's copy / it belongs to the workflow). en/zh/ja.
+- Unchanged on purpose (owner's decisions of 2026-11-10): the original is never edited in
+  place; workflow commands are not edited here.
+
+Tests: `test_skills.py` 32 passed (32 collected; +1 `test_a_listed_skill_can_be_read_and_nothing_else`).
+Frontend `test:control-plane` 607 (606 passed, 1 skipped); `tsc --noEmit` and eslint on the
+changed files clean. The full backend suite was not rerun: the change is one new route and
+its test.
+Review: pending (codex).
+Next safe action: review, commit, then build + restart 8001 for the owner to check.

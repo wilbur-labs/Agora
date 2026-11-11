@@ -85,6 +85,32 @@ async def skill_content(name: str, registry: ProjectRegistry = Depends(get_proje
     return await _run(lambda: _library(_sources(registry)).content(name))
 
 
+def _found_content(sources: list[Path], path: str) -> dict[str, Any]:
+    """What a listed skill outside the library says, read-only. Only a path the view
+    itself lists (a workflow command or an importable skill) is read: this route is not
+    a way to read arbitrary files."""
+    from agora.skills.library import SKILL_FILE, tree_files
+
+    listed = {f.path: f for f in [*workflow_commands(sources),
+                                  *importable(_extra_places(skill_projects(sources)))]}
+    found = listed.get(path)
+    if found is None:
+        raise SkillRefused("that path is not one of the skills listed on this page")
+    target = Path(found.path)
+    if target.is_dir():
+        text = (target / SKILL_FILE).read_bytes().decode("utf-8")
+        files = [rel for rel, _ in tree_files(target)]
+    else:
+        text = target.read_bytes().decode("utf-8")
+        files = [target.name]
+    return {**found.payload(), "content": text, "files": files}
+
+
+@router.get("/found")
+async def found_skill_content(path: str, registry: ProjectRegistry = Depends(get_project_registry)) -> dict[str, Any]:
+    return await _run(_found_content, _sources(registry), path)
+
+
 class CreateBody(BaseModel):
     name: str
     content: str

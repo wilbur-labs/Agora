@@ -48,6 +48,12 @@ export interface SkillContent extends SkillEntry {
   files: string[];
 }
 
+/** A listed skill outside the library, with what it says (read-only). */
+export interface FoundSkillContent extends FoundSkill {
+  content: string;
+  files: string[];
+}
+
 /** The server's refusal text out of `call`'s error message (a JSON `{code, message}`). */
 export function refusalOf(message: string): { code: string; message: string } {
   try {

@@ -12,7 +12,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertTriangle, Download, Library, Pencil, Plus, Trash2 } from "lucide-react";
+import { AlertTriangle, Download, Eye, Library, Pencil, Plus, Trash2 } from "lucide-react";
 
 import { DeliveryShell } from "@/components/delivery-shell";
 import { Button } from "@/components/ui/button";
@@ -20,9 +20,9 @@ import { Textarea } from "@/components/ui/textarea";
 import { useI18n } from "@/lib/i18n";
 import { TerminalAuthRequired } from "@/lib/terminal";
 import {
-  createSkill, deleteSkill, getSkill, getSkills, importSkill, installSkill, nextAction, refusalOf,
+  createSkill, deleteSkill, getFoundSkill, getSkill, getSkills, importSkill, installSkill, nextAction, refusalOf,
   SKILL_NAME_RE, skillTemplate, uninstallSkill, updateSkill,
-  type InstallSummary, type SkillsView,
+  type FoundSkill, type FoundSkillContent, type InstallSummary, type SkillsView,
 } from "@/lib/skills";
 
 type Editor = { mode: "new"; name: string; content: string } | { mode: "edit"; name: string; content: string; base: string };
@@ -44,6 +44,7 @@ export default function SkillsPage() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [editor, setEditor] = useState<Editor | null>(null);
+  const [viewer, setViewer] = useState<FoundSkillContent | null>(null);
   const mounted = useRef(true);
 
   const reload = useCallback(() => {
@@ -72,6 +73,30 @@ export default function SkillsPage() {
 
   const openEdit = (name: string) =>
     act(`edit:${name}`, () => getSkill(name).then((s) => setEditor({ mode: "edit", name, content: s.content, base: s.content_sha })));
+
+  // One listed skill outside the library, open read-only; a second click closes it.
+  const toggleView = (path: string) => {
+    if (viewer?.path === path) { setViewer(null); return; }
+    act(`view:${path}`, () => getFoundSkill(path).then((s) => { if (mounted.current) setViewer(s); }));
+  };
+
+  const viewButton = (f: FoundSkill) => (
+    <Button size="sm" variant="outline" disabled={!!busy || !!f.error} onClick={() => toggleView(f.path)}>
+      <Eye className="size-3.5" /> {viewer?.path === f.path ? t("skills.hide") : t("skills.view")}
+    </Button>
+  );
+
+  const viewPanel = (f: FoundSkill) => viewer?.path === f.path && (
+    <div className="space-y-2 pt-2">
+      <p className="text-xs text-muted-foreground">
+        {t(f.kind === "workflow" ? "skills.viewWorkflow" : "skills.viewImportable", { path: viewer.path })}
+      </p>
+      {viewer.files.length > 1 && (
+        <p className="text-xs text-muted-foreground">{t("skills.viewFiles", { files: viewer.files.join(", ") })}</p>
+      )}
+      <pre className="max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-lg border bg-muted/40 p-3 font-mono text-xs">{viewer.content}</pre>
+    </div>
+  );
 
   const save = () => {
     if (!editor) return;
@@ -236,16 +261,22 @@ export default function SkillsPage() {
               {view.importable.map((f) => {
                 const taken = skills.some((s) => s.name === f.name) || view.reserved.includes(f.name);
                 return (
-                  <div key={f.path} className="flex items-start justify-between gap-3 px-4 py-2">
-                    <div className="min-w-0">
-                      <p className="font-mono text-sm">{f.name} <span className="text-xs text-muted-foreground">· {f.where}</span></p>
-                      <p className="truncate text-xs text-muted-foreground">{f.error ? t("skills.entryError", { reason: f.error }) : f.description}</p>
+                  <div key={f.path} className="px-4 py-2">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="font-mono text-sm">{f.name} <span className="text-xs text-muted-foreground">· {f.where}</span></p>
+                        <p className="truncate text-xs text-muted-foreground">{f.error ? t("skills.entryError", { reason: f.error }) : f.description}</p>
+                      </div>
+                      <div className="flex shrink-0 gap-1">
+                        {viewButton(f)}
+                        <Button size="sm" variant="outline" disabled={!!busy || taken || !!f.error}
+                          title={taken ? t("skills.importTaken") : undefined}
+                          onClick={() => act(`imp:${f.path}`, () => importSkill(f.path, f.name))}>
+                          <Download className="size-3.5" /> {t("skills.import")}
+                        </Button>
+                      </div>
                     </div>
-                    <Button size="sm" variant="outline" disabled={!!busy || taken || !!f.error}
-                      title={taken ? t("skills.importTaken") : undefined}
-                      onClick={() => act(`imp:${f.path}`, () => importSkill(f.path, f.name))}>
-                      <Download className="size-3.5" /> {t("skills.import")}
-                    </Button>
+                    {viewPanel(f)}
                   </div>
                 );
               })}
@@ -260,8 +291,14 @@ export default function SkillsPage() {
             <div className="divide-y rounded-lg border bg-card">
               {view.workflow.map((f) => (
                 <div key={f.path} className="px-4 py-2">
-                  <p className="font-mono text-sm">{f.name} <span className="text-xs text-muted-foreground">· {f.where}</span></p>
-                  <p className="truncate text-xs text-muted-foreground">{f.error ? t("skills.entryError", { reason: f.error }) : f.description}</p>
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="font-mono text-sm">{f.name} <span className="text-xs text-muted-foreground">· {f.where}</span></p>
+                      <p className="truncate text-xs text-muted-foreground">{f.error ? t("skills.entryError", { reason: f.error }) : f.description}</p>
+                    </div>
+                    <div className="shrink-0">{viewButton(f)}</div>
+                  </div>
+                  {viewPanel(f)}
                 </div>
               ))}
             </div>
