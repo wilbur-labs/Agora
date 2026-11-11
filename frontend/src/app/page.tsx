@@ -15,6 +15,7 @@ import { useRouter } from "next/navigation";
 
 import { TopBar } from "@/components/delivery-shell";
 import { ProgressSnapshotBar } from "@/components/progress-snapshot-bar";
+import { ProjectSkills } from "@/components/project-skills";
 import { listWorkspaceSources } from "@/lib/control-plane";
 import {
   WORKFLOW_FEATURES,
@@ -540,6 +541,7 @@ function Card({ card, onOpen, onShelve, onSettings, onStage, busy, working, erro
                 : t("overview.settingsWorkflowUnavailable")}
             </p>
           )}
+          <ProjectSkills projectKey={card.key} projectName={title} />
           <div className="flex items-center gap-2">
             <button type="button" disabled={busy} onClick={saveSettings}
               className="rounded border px-2 py-0.5 font-medium text-foreground hover:bg-accent disabled:opacity-50">

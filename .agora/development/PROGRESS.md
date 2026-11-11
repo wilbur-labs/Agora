@@ -9107,3 +9107,37 @@ changed files clean. The full backend suite was not rerun: the change is one new
 its test.
 Review: pending (codex).
 Next safe action: review, commit, then build + restart 8001 for the owner to check.
+
+## 2026-11-11 — CR-75 slice 5 follow-up: a project's skills are chosen in its card (workspace CR-90)
+
+Owner, after asking what Import on the Skills page was for: choosing skills for a project
+belongs in that project's card, not on the Skills page — and as a dropdown, not a list of
+checkboxes, because the library will grow.
+
+- Overview card → Settings gains "Skills": the skills this project has (each with its
+  state; update / replace / remove), and a dropdown with a filter to add one from the
+  library. Choosing installs at once for claude, codex and kiro; it does not wait for the
+  panel's Save, and the panel says so. A project with no repository, an unknown or
+  unreadable library, and a failed refresh are each said, not shown as an empty list.
+  `components/project-skills.tsx`; pure parts `projectSkillsOf` / `matchSkills` in
+  `lib/skills-state.ts`. No backend change: it uses the slice-5 routes.
+- Skills page: under a skill only the projects that already have a copy are shown
+  (update / remove stay there — a paused or archived project has no card to do it from);
+  the install-into-any-project buttons are gone, with a line saying where that is done
+  now. "Found elsewhere" is folded into a closed `<details>` with its count.
+- en/zh/ja.
+
+The owner did not answer what the Skills page should keep; the above is the recommended
+option put to them, and is said to them as a choice made, not as their decision.
+
+Tests: frontend `test:control-plane` 610 (609 passed, 1 skipped; +3 in `skills.test.mts`);
+`tsc --noEmit` and eslint on the changed files clean. Backend untouched.
+Review: pending (codex).
+Next safe action: review, commit, build (no 8001 restart needed: frontend only, the
+static export is read from disk per request), owner checks on 8001.
+Review round 1 (codex, gate exit 0): 1 x P2, fixed — library skills that cannot be read
+were left out of the dropdown, so with none left to offer the panel said every library
+skill was already installed (with only broken entries: "none installed" and "all
+installed" at once). `projectSkillsOf` now counts them (`unreadable`); the panel says
+"nothing to add" and that N cannot be read, and points at the Skills page. Test extended.
+Frontend 610 (609 passed, 1 skipped); tsc, eslint clean. Round 2: pending.

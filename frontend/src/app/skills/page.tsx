@@ -210,8 +210,11 @@ export default function SkillsPage() {
                     {usable.map((p) => {
                       const cell = view.installs[skill.name]?.[p.key];
                       const summary = cell?.summary ?? "not_installed";
-                      // A paused or archived project is not installed into, only cleaned up.
-                      if (p.shelved && summary === "not_installed") return null;
+                      // Only where a copy is: choosing a project's skills is done in its
+                      // overview card's settings (CR-90). What stays here is seeing where a
+                      // skill is and updating or removing a copy — including in a paused
+                      // or archived project, which has no card to do it from.
+                      if (summary === "not_installed") return null;
                       const action = nextAction(summary);
                       const key = `${skill.name}:${p.key}`;
                       const detail = cell?.copies.filter((c) => c.state !== "current")
@@ -249,14 +252,17 @@ export default function SkillsPage() {
                 </ul>
               </details>
             )}
+            <p className="text-xs text-muted-foreground">{t("skills.installFromCard")}</p>
             <p className="text-xs text-muted-foreground">{t("skills.whereCopies")}</p>
           </section>
         )}
 
         {view && view.importable.length > 0 && view.library.state !== "unknown" && (
-          <section className="space-y-2">
-            <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">{t("skills.importable")}</h2>
-            <p className="text-xs text-muted-foreground">{t("skills.importHint")}</p>
+          <details className="space-y-2">
+            <summary className="cursor-pointer text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+              {t("skills.importable")} ({view.importable.length})
+            </summary>
+            <p className="pt-2 text-xs text-muted-foreground">{t("skills.importHint")}</p>
             <div className="divide-y rounded-lg border bg-card">
               {view.importable.map((f) => {
                 const taken = skills.some((s) => s.name === f.name) || view.reserved.includes(f.name);
@@ -281,7 +287,7 @@ export default function SkillsPage() {
                 );
               })}
             </div>
-          </section>
+          </details>
         )}
 
         {view && view.workflow.length > 0 && (
