@@ -9170,3 +9170,24 @@ shared `check_name`, so a skill already named `a--b` could no longer be read, de
 uninstalled. `check_name` is back to what every version accepted (lookup, delete,
 uninstall); `check_new_name` adds the standard's rule for create and import. Test extended:
 `test_skills.py` 34 passed (34 collected). Round 2: pending.
+
+## 2026-11-12 — CR-75 slice 5 follow-up: a kiro-workspace's skills are listed in either layout (workspace CR-92)
+
+Workspace CR-92 converts kiro-workspace's `.kiro/skills/<name>.md` to the Agent Skills
+layout `.kiro/skills/<name>/SKILL.md` (measured on kiro-cli 3.1.0: a `skill://` resource
+without front matter is not offered to the agent, so none of the ten was loading).
+`workflow_commands` read only the flat layout, so after the conversion the Skills page's
+"provided by the workflow" list would have lost every kiro-workspace skill and said
+nothing — "none" where it meant "moved".
+
+- `agora/skills/inventory.py` `workflow_commands`: a kiro-workspace is read as
+  `*/SKILL.md` and as flat `*.md`, so a converted workspace and one that has not been
+  converted are both listed. `README.md` is still skipped. Nothing else changes: the
+  entries stay `kind: workflow`, shown and not edited, and reserve no library name.
+
+Tests: `test_skills.py` 35 passed (35 collected; +1,
+`test_a_kiro_workspaces_skills_are_listed_in_either_layout`). `compileall agora/skills`
+and `git diff --check` clean. Backend only; the full non-integration suite was not run.
+Review: pending (codex).
+Next safe action: review, commit, restart 8001 (backend changed; ask the owner first when
+the restart would end an open session).

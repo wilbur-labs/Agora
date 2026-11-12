@@ -295,6 +295,23 @@ def test_workflow_commands_are_listed_and_reserved(world):
     assert reserved_names(found) == {"adr"}
 
 
+def test_a_kiro_workspaces_skills_are_listed_in_either_layout(tmp_path):
+    # workspace CR-92 moved kiro-workspace's skills to <name>/SKILL.md; reading only the
+    # flat layout made every one of them disappear from the list without a word.
+    kiro = tmp_path / "kiro-workspace"
+    skills = kiro / ".kiro" / "skills"
+    (skills / "adr").mkdir(parents=True)
+    (skills / "adr" / "SKILL.md").write_text(md("adr", "Record a decision"), encoding="utf-8")
+    (skills / "old-style.md").write_text("# Old style\n\nBody.\n", encoding="utf-8")
+    (skills / "README.md").write_text("# Convention\n", encoding="utf-8")
+    found = workflow_commands([kiro])
+    assert sorted((f.name, f.description, f.where) for f in found) == [
+        ("adr", "Record a decision", "kiro-workspace"),
+        ("old-style", "Old style", "kiro-workspace"),
+    ]
+    assert reserved_names(found) == set()
+
+
 def test_projects_carry_their_primary_repo_or_why_not(world, tmp_path):
     _, work, _ = world
     repo = git_repo(tmp_path / "repo")

@@ -139,26 +139,30 @@ def _first_line(text: str) -> str | None:
 def workflow_commands(sources: list[Path]) -> list[FoundSkill]:
     """The commands the registered workspaces provide: claude-workspace's
     ``.claude/commands/*.md`` (and their codex ports in ``.agents/skills``), kiro-workspace's
-    ``.kiro/skills/*.md``. They belong to the workflow (CR-75 slice 4), so they are shown
-    and not edited here (the person's choice, 2026-11-10)."""
+    ``.kiro/skills``. They belong to the workflow (CR-75 slice 4), so they are shown
+    and not edited here (the person's choice, 2026-11-10).
+
+    A kiro-workspace keeps its skills as ``<name>/SKILL.md`` since workspace CR-92; one
+    that has not been converted still has flat ``<name>.md``. Both are read: reading only
+    one layout would show "none" for a workspace that merely uses the other."""
     out: list[FoundSkill] = []
     seen: set[str] = set()
     for source in sources:
         if _is_kiro(source):
-            places = [(source / ".kiro" / "skills", "kiro-workspace", "*.md")]
+            places = [(source / ".kiro" / "skills", "kiro-workspace", (f"*/{SKILL_FILE}", "*.md"))]
         else:
             tool = claude_tool_dir_for(source, sources)
             if tool is None:
                 continue
-            places = [(tool / ".claude" / "commands", "claude-workspace", "*.md"),
-                      (tool / ".agents" / "skills", "claude-workspace (codex)", f"*/{SKILL_FILE}")]
-        for folder, where, pattern in places:
+            places = [(tool / ".claude" / "commands", "claude-workspace", ("*.md",)),
+                      (tool / ".agents" / "skills", "claude-workspace (codex)", (f"*/{SKILL_FILE}",))]
+        for folder, where, patterns in places:
             key = os.path.normcase(str(folder))
             if key in seen:
                 continue
             seen.add(key)
             try:
-                files = sorted(folder.glob(pattern))
+                files = sorted(f for pattern in patterns for f in folder.glob(pattern))
             except OSError:
                 continue
             for f in files:
