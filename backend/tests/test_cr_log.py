@@ -192,6 +192,48 @@ def test_an_id_cell_that_merely_contains_a_cr_id_is_not_a_row():
     assert not CR_ID_PATTERN.match("CR-4 and CR-5")
 
 
+def test_a_revision_suffix_is_part_of_the_id(tmp_path):
+    """`CR-113v6` is how a real log writes a follow-up, and the hook that injects open
+    CRs counts it. Refused, it read as an unreadable row naming CR-113 and the whole
+    log was malformed, blaming the row that was fine."""
+    _write(tmp_path, HEADER + _row("CR-113", status="DONE") + _row("CR-113v2"))
+    log = read_cr_log(tmp_path)
+    assert [row.id for row in log.rows] == ["CR-113", "CR-113v2"]
+    assert log.open_count == 1
+    for not_an_id in ("CR-113v", "CR-113a", "CR-113-2", "CR-113 v2", "CR-v2"):
+        assert not CR_ID_PATTERN.match(not_an_id), not_an_id
+
+
+def test_an_over_long_row_is_named_even_after_a_vertical_tab(tmp_path):
+    """A vertical tab is a line break to `str.splitlines()` and not to the parser. With
+    one in an earlier cell the source count came from the next row: the log named
+    CR-3, which was fine, and the over-long CR-2 would have passed had it come last."""
+    long_row = "| CR-2 | 2026-09-05 | agent | 描述 | refine | OPEN | 决定 | x | extra |\n"
+    _write(tmp_path, HEADER + _row("CR-1").replace("描述", "描\x0b述") + long_row + _row("CR-3"))
+    log = read_cr_log(tmp_path)
+    assert (log.reason, log.malformed_ids) == ("malformed", ("CR-2",))
+
+
+def test_rows_cut_off_from_their_table_are_still_read(tmp_path):
+    """The template's example comment sits between the delimiter and the rows, and a
+    blank line inside a log is easy to leave. Either ends the table for the parser, and
+    a real log of five change requests then read as "0 rows, 0 open"."""
+    comment = '<!-- 示例：| CR-1 | 2026-05-30 | user | "x" | creep | OPEN | | | -->\n'
+    _write(tmp_path, HEADER + comment + _row("CR-1", status="DONE") + _row("CR-2")
+           + "\n" + _row("CR-3") + "| CR-4 | 2026-09-05 | agent | 短 | bug |\n")
+    log = read_cr_log(tmp_path)
+    assert [row.id for row in log.rows] == ["CR-1", "CR-2", "CR-3", "CR-4"]
+    assert (log.open_count, log.unrecognised_status_count) == (2, 1)
+    assert log.rows[1].propagated_to == "x"
+
+
+def test_a_cut_off_row_that_is_too_long_is_malformed_like_any_other(tmp_path):
+    _write(tmp_path, HEADER + _row("CR-1") + "\n"
+           + "| CR-2 | 2026-09-05 | agent | a | bug | OPEN | d | x | extra |\n")
+    log = read_cr_log(tmp_path)
+    assert (log.reason, log.malformed_ids) == ("malformed", ("CR-2",))
+
+
 def test_a_row_a_cr_log_s_own_table_does_not_recognise_makes_it_malformed(tmp_path):
     # …and the file-level consequence of the same input, stated separately.
     _write(

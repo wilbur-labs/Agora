@@ -784,6 +784,68 @@ def test_the_cr_table_inside_resume_is_read_by_the_project_cr_log_parser(tmp_pat
     assert cr_log.source == "tasks/alpha/RESUME.md"
 
 
+def test_other_tables_in_a_resume_may_name_change_requests(tmp_path):
+    """A RESUME's phase table and acceptance checklist name CRs all the time. Read as
+    part of the log, each mention was "a CR id in a row nobody can read" and the card
+    said the CR table was malformed, naming rows that were fine."""
+    phases = "## 三个阶段\n\n| 阶段 | 内容 |\n|---|---|\n| **P1 读全** | 见 CR-2、CR-44 |\n\n"
+    _task(tmp_path, "alpha", resume=RESUME_MD.replace("## 当前状态", phases + "## 当前状态"))
+
+    cr_log = read_workspace_source(tmp_path).tasks[0].cr_log
+
+    assert (cr_log.available, cr_log.open_count) == (True, 1)
+    assert [row.id for row in cr_log.rows] == ["CR-1", "CR-2"]
+
+
+def test_a_bad_row_inside_the_cr_section_still_makes_the_log_malformed(tmp_path):
+    """The scope narrows where the log is, not what counts as broken in it."""
+    _task(tmp_path, "alpha", resume=RESUME_MD + "| CR-3 | d | user | 描述 | bug | OPEN | 决定 | a | b |\n")
+
+    cr_log = read_workspace_source(tmp_path).tasks[0].cr_log
+
+    assert (cr_log.available, cr_log.reason, cr_log.malformed_ids) == (False, "malformed", ("CR-3",))
+
+
+def test_a_vertical_tab_in_a_cr_cell_does_not_split_the_row(tmp_path):
+    """Cutting the section out must not re-break its lines: `splitlines()` treats a
+    vertical tab as a line end, and the OPEN row holding one came back with no status."""
+    _task(tmp_path, "alpha", resume=RESUME_MD.replace("| agent | 描述 |", "| agent | 描\x0b述 |"))
+
+    cr_log = read_workspace_source(tmp_path).tasks[0].cr_log
+
+    assert (cr_log.available, cr_log.open_count, cr_log.unrecognised_status_count) == (True, 1, 0)
+
+
+def test_a_fenced_example_of_the_heading_is_not_the_cr_section(tmp_path):
+    """Scoped to an example in a code fence, the real log read as "0 rows, 0 open"."""
+    example = "## 写法\n\n```markdown\n## 变更记录 (CR Log)\n\n（示例）\n```\n\n"
+    _task(tmp_path, "alpha", resume=RESUME_MD.replace("## 当前状态", example + "## 当前状态"))
+
+    cr_log = read_workspace_source(tmp_path).tasks[0].cr_log
+
+    assert (cr_log.available, len(cr_log.rows), cr_log.open_count) == (True, 2, 1)
+
+
+def test_a_log_continued_under_a_second_heading_is_one_log(tmp_path):
+    more = ("\n## 别的\n\n| 项 | 说明 |\n|---|---|\n| A1 | 见 CR-9 |\n\n## 变更记录（续）\n\n" + RESUME_HEADER
+            + "| CR-3 | 2026-09-07 | user | 描述 | bug | OPEN | 决定 | x |\n")
+    _task(tmp_path, "alpha", resume=RESUME_MD + more)
+
+    cr_log = read_workspace_source(tmp_path).tasks[0].cr_log
+
+    assert ([row.id for row in cr_log.rows], cr_log.open_count) == (["CR-1", "CR-2", "CR-3"], 2)
+
+
+def test_a_resume_with_no_cr_section_is_still_read_whole(tmp_path):
+    """No heading to scope to: a table of CR rows kept under some other heading is
+    found, not reported as an empty log."""
+    _task(tmp_path, "alpha", resume=RESUME_MD.replace("## 变更记录 (CR Log)", "## Changes"))
+
+    cr_log = read_workspace_source(tmp_path).tasks[0].cr_log
+
+    assert (cr_log.available, cr_log.open_count) == (True, 1)
+
+
 def test_an_unreadable_resume_makes_the_cr_log_unreadable_never_zero_open(tmp_path):
     """The load-bearing one: "no CR Log could be read" must not arrive as "0 open"."""
     _task(tmp_path, "alpha", resume=None)

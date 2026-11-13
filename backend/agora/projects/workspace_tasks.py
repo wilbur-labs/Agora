@@ -48,7 +48,7 @@ from typing import Any
 import yaml
 
 from agora.fsprobe import probe_path
-from agora.projects.cr_log import CRLog, read_cr_log_file
+from agora.projects.cr_log import CRLog, read_cr_log_file, section_scope
 from agora.projects.decisions import DecisionLog, read_decisions_dir
 from agora.projects.importer import DuplicateKeyError, StrictLoader
 from agora.projects.progress_snapshot import ProgressVerdict, count_progress_verdict
@@ -84,8 +84,13 @@ MAX_RESUME_BYTES = 4 * 1024 * 1024
 CURRENT_STATE_HEADING = "当前状态"
 NEXT_STEP_HEADING = "下一步"
 PROGRESS_HEADING = "进度快照"
+#: Where the CR table is. The hook that injects open CRs looks under this heading too.
+CR_LOG_HEADING = "变更记录"
 
 _HEADING = re.compile(r"^(#{1,6})\s+(.*?)\s*$")
+
+
+_LINE_END = re.compile(r"\r\n|\r|\n")
 
 
 def _section(text: str, heading: str) -> str | None:
@@ -97,7 +102,10 @@ def _section(text: str, heading: str) -> str | None:
     answer from an empty body: a task that records no next step and a file this reader
     could not find the section in must stay distinguishable.
     """
-    lines = text.splitlines()
+    # Line ends only. `splitlines()` also breaks on a vertical tab and the Unicode
+    # separators, and rejoining with newlines then turns one line holding such a
+    # character into two, which breaks a table row or a list item in the section.
+    lines = _LINE_END.split(text)
     start: int | None = None
     level = 0
     for n, line in enumerate(lines):
@@ -602,7 +610,10 @@ def read_workspace_source(
             # The CR table lives inside RESUME.md here, not in a file of its own, which
             # is the whole reason `read_cr_log_file` takes a path.
             cr_log=read_cr_log_file(
-                resume_path, (TASKS_DIR / entry.name / RESUME_MD).as_posix()
+                resume_path, (TASKS_DIR / entry.name / RESUME_MD).as_posix(),
+                # ... and a RESUME holds other tables that name CRs, so only the log's
+                # own section is read as the log.
+                scope=section_scope(CR_LOG_HEADING),
             ),
             decisions=read_decisions_dir(
                 entry / ADR_DIR, (TASKS_DIR / entry.name / ADR_DIR).as_posix()

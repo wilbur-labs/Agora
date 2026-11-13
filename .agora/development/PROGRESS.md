@@ -9251,3 +9251,33 @@ Tests: `test_skills.py` 36 passed (36 collected; +1); `tests/skills.test.mts` pa
 not run.
 Review: pending (codex).
 Next safe action: review, commit; reaching 8000 needs a release, which the owner asks for.
+
+## 2026-11-13 — CR log: a RESUME's other tables, cut-off rows, revision ids (workspace CR-97)
+
+The owner asked what "CR table unreadable (malformed)" on two cards meant. Four causes
+in the reader, one of them silent:
+
+- `workspace_tasks.py` read the whole `RESUME.md` as the log, so a phase table or an
+  acceptance checklist naming a CR made it malformed. `read_cr_log_file` takes a
+  `scope`; the workspace reader passes the 「变更记录」 section. No such section: the
+  whole file, as before.
+- **Silent**: a line between the delimiter and the rows (the task template's own
+  example comment) or a blank line inside the log ends the table, and the rows after
+  it were dropped unreported — a real log of 12 rows, 6 open, read as "0 rows, 0 open".
+  A row line the parser left in a paragraph is now read as a row.
+- `CR-113v6` is an id (`v` + digits only); refused, it made the log malformed and
+  named CR-113, which was fine.
+- The source-line count used `str.splitlines()`, which also breaks on a vertical tab;
+  one in a cell shifted the count to the neighbouring row. Split as the parser does.
+
+Not changed: a row with more than eight cells is still malformed. Eight such rows in
+two tasks' records are data to repair, not reader behaviour.
+
+Tests: `test_cr_log.py` + `test_workspace_tasks.py` 156 passed, 1 skipped (157
+collected; +10, of which 3 fail without the change and were checked to; 3 came from
+review rounds 1-2, after the full run: the section is now cut by `section_scope`, which
+takes headings from the parser — not a fenced example — and keeps line boundaries). Full backend
+non-integration suite without `test_web_ui.py`: 2373 passed, 12 skipped, 4 deselected
+(2389 collected). `compileall`, schema check, `git diff --check` clean. No frontend change.
+Review: pending (codex).
+Next safe action: review, commit; 8001 needs a restart to show it, 8000 a release.

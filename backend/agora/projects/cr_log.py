@@ -23,6 +23,11 @@ module only reads it.
 
       ``| id | date | source | description | kind | status | decision | propagated to |``
 
+  The id may carry a revision suffix (``CR-113v6``). And **a line written as such a
+  row counts even when the parser put it in no table**: one comment line between the
+  delimiter and the rows, or one blank line inside the log, ends the table, and the
+  rows after it used to be dropped without a word — a log of twelve read as empty.
+
 - A CR row that does not have exactly ``CR_LOG_COLUMNS`` cells makes the whole read
   ``malformed``, and the payload names the offending ids. It would be easy to skip
   such a row and report the others, and that is precisely the wrong thing: the
@@ -89,7 +94,8 @@ module only reads it.
 
   **What it does not cover, stated**: a change request written outside a markdown table
   — as a list item, inside a raw HTML table, in a block quote or in a code fence — is
-  not seen at all. The format is a table. Nor does it see an id whose *own text* is
+  not seen at all. The format is a table. (A row line the parser left in a paragraph is
+  the exception, read as the row it was written as — see the first bullet.) Nor does it see an id whose *own text* is
   broken up by markup the block parser leaves as raw source (an id split across an
   emphasis boundary); what it matches is the cell's source, not a rendering of it.
 
@@ -130,6 +136,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -153,7 +160,13 @@ MAX_CR_LOG_BYTES = 2 * 1024 * 1024
 #: `\d` a full-width `CR-２` was a *valid but different* id from `CR-2`, two rows that
 #: look identical on screen. Not an id, and therefore reported by the scan below
 #: rather than quietly accepted.
-CR_ID_PATTERN = re.compile(r"^CR-[0-9]+$")
+#:
+#: An optional revision suffix, ``CR-113v6``, is an id too: the working model's own
+#: hook counts any row beginning ``| CR-<digit>`` as a change request, and a real log
+#: carries follow-up rows written that way. Read strictly, each of them was "a row
+#: this reader cannot read that names CR-113" and took the whole log down with it,
+#: blaming a row that was fine. Only ``v`` and digits — the one form found in use.
+CR_ID_PATTERN = re.compile(r"^CR-[0-9]+(?:v[0-9]+)?$")
 
 #: The same id, found inside a cell rather than anchored to the whole of one. Used
 #: only to answer: does this unreadable row carry a change request?
@@ -350,12 +363,21 @@ def _source_cell_count(line: str) -> int:
     escaped ``\|`` is content, not a separator — the parser treats it that way and so
     must this, or a description containing a pipe would be reported as the wrong shape.
     """
+    return len(_source_cells(line))
+
+
+def _source_cells(line: str) -> list[str]:
+    """The cells of one row as written: trimmed, an escaped pipe turned back into a pipe
+    — what the parser hands back for a row it does recognise."""
     stripped = line.strip()
     if stripped.startswith("|"):
         stripped = stripped[1:]
     if stripped.endswith("|") and not stripped.endswith("\\|"):
         stripped = stripped[:-1]
-    return len(re.split(r"(?<!\\)\|", stripped))
+    return [cell.strip().replace("\\|", "|") for cell in re.split(r"(?<!\\)\|", stripped)]
+
+
+_LINE_END = re.compile(r"\r\n|\r|\n")
 
 
 def _table_rows(text: str) -> list[tuple[list[str], int | None, bool]]:
@@ -373,7 +395,12 @@ def _table_rows(text: str) -> list[tuple[list[str], int | None, bool]]:
     came from is deliberately not tracked: two rounds of review were spent on rules
     about which tables count, and the rule that finally held is not about tables at all.
     """
-    lines = text.splitlines()
+    # Split exactly as the parser numbers lines — on CR, LF and CRLF only. `splitlines()`
+    # also breaks on a vertical tab, a form feed and the Unicode separators, so one such
+    # character pasted into a cell shifted every later row by a line: the source count
+    # was taken from the neighbouring row, and the log named a row that was fine while
+    # the over-long one went uncounted.
+    lines = _LINE_END.split(text)
     rows: list[tuple[list[str], int | None, bool]] = []
     depth_quoted = 0
     in_head = False
@@ -385,6 +412,23 @@ def _table_rows(text: str) -> list[tuple[list[str], int | None, bool]]:
             depth_quoted += 1
         elif kind == "blockquote_close":
             depth_quoted -= 1
+        elif kind == "paragraph_open" and not depth_quoted and token.map:
+            # A row the parser did not put in any table. One line between the delimiter
+            # and the rows — the template's own `<!-- 示例 … -->` — or one blank line
+            # inside the log ends the table, and every row after it is a paragraph. Those
+            # rows were not read and not reported: a log of five change requests came
+            # back as an empty one, "0 open", which is the answer this module exists
+            # never to give by accident. The line is still a row as its author wrote it,
+            # and the hook that injects open CRs counts it, so it is read as one. Its
+            # cells come from the same split the width check uses; the parser has no
+            # header width to pad it to, so a short one is padded here.
+            for line in lines[token.map[0]:token.map[1]]:
+                if not line.lstrip().startswith("|"):
+                    continue
+                orphan = _source_cells(line)
+                if CR_ID_PATTERN.match(_token_of(orphan[0])):
+                    orphan += [""] * (CR_LOG_COLUMNS - len(orphan))
+                    rows.append((orphan, len(orphan), False))
         elif kind == "thead_open":
             in_head = True
         elif kind == "thead_close":
@@ -417,6 +461,40 @@ def _table_rows(text: str) -> list[tuple[list[str], int | None, bool]]:
     return rows
 
 
+def section_scope(heading: str) -> Callable[[str], str | None]:
+    """A ``scope`` for :func:`read_cr_log_file`: the text under every top-level heading
+    whose words contain ``heading``, or ``None`` when there is no such heading.
+
+    Headings are taken from the parser, not matched line by line: a fenced example
+    that shows ``## 变更记录`` is not a heading, and choosing it would have scoped the
+    read to the example and reported the real log as empty. Each section runs to the
+    next heading of the same or a higher rank. Every matching section is included —
+    a log continued under a second such heading is still one log — and the lines are
+    cut exactly where the parser numbers them, so no row is re-broken on the way.
+    """
+    def scope(text: str) -> str | None:
+        lines = _LINE_END.split(text)
+        tokens = _MARKDOWN.parse(text, {})
+        kept: list[str] = []
+        found = False
+        open_rank: int | None = None
+        start = 0
+        for n, token in enumerate(tokens):
+            if token.type != "heading_open" or token.level != 0 or not token.map:
+                continue
+            rank = int(token.tag[1:])
+            if open_rank is not None and rank <= open_rank:
+                kept += lines[start:token.map[0]] + [""]
+                open_rank = None
+            if open_rank is None and heading in tokens[n + 1].content:
+                found, open_rank, start = True, rank, token.map[1]
+        if open_rank is not None:
+            kept += lines[start:]
+        return "\n".join(kept) if found else None
+
+    return scope
+
+
 def read_cr_log(root: Path) -> CRLog:
     """Read one project's CR Log from its fixed path. Never raises: every failure is a
     reason the UI can render, because a 500 here would take a project's whole view down
@@ -424,7 +502,9 @@ def read_cr_log(root: Path) -> CRLog:
     return read_cr_log_file(root / CR_LOG_RELATIVE_PATH, CR_LOG_RELATIVE_PATH.as_posix())
 
 
-def read_cr_log_file(path: Path, source: str) -> CRLog:
+def read_cr_log_file(
+    path: Path, source: str, *, scope: Callable[[str], str | None] | None = None,
+) -> CRLog:
     """The same read, of a CR table that lives somewhere else.
 
     Split out for W7, which reads the CR rows embedded in a workspace task's
@@ -437,7 +517,17 @@ def read_cr_log_file(path: Path, source: str) -> CRLog:
 
     ``source`` is what the UI names as the thing it read, so the caller supplies it: a
     path relative to whatever root the caller is talking about, which this function
-    cannot know."""
+    cannot know.
+
+    ``scope`` narrows the read to the part of the file that *is* the log, for a file
+    that holds other things as well. A ``RESUME.md`` has a phase table, an acceptance
+    checklist and a progress table, and they name change requests all the time; read
+    whole, every such mention was "a CR id in a row this reader cannot read" and the
+    log came back ``malformed`` naming rows that were fine. The caller says where the
+    log is; when it returns ``None`` — no such section — the whole file is read, as
+    before, so a log kept under some other heading is still found rather than
+    reported as empty. **What that costs, stated**: with a section found, a CR row
+    written outside it is not read and not reported."""
     unavailable = lambda reason, ids=(): CRLog(  # noqa: E731 - one shape, several call sites
         available=False, reason=reason, rows=None, open_count=None,
         unrecognised_status_count=None, malformed_ids=(tuple(ids) if ids else None), source=source,
@@ -458,6 +548,10 @@ def read_cr_log_file(path: Path, source: str) -> CRLog:
     except (OSError, UnicodeDecodeError):
         return unavailable("unreadable")
 
+    if scope is not None:
+        scoped = scope(text)
+        if scoped is not None:
+            text = scoped
     parsed = _table_rows(text)
     rows: list[ChangeRequest] = []
     malformed: list[str] = []
@@ -499,6 +593,7 @@ def read_cr_log_file(path: Path, source: str) -> CRLog:
     # **What it does not cover, stated**: a change request written outside a markdown
     # table — as a list item, or inside a raw HTML table — is not seen. The format is a
     # table, and a rule that also policed prose is the one that had to be withdrawn.
+    # (A row line left in a paragraph is read as a row by `_table_rows`.)
     #
     # **What it costs**: a cell naming a CR that is not a row in this file — one carried
     # to another project's tracker — reads as malformed. Measured against the real
