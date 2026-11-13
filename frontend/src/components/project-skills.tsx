@@ -76,7 +76,7 @@ export function ProjectSkills({ projectKey, projectName }: { projectKey: string;
   const matches = skills?.show === "lists" ? matchSkills(skills.canTake, query) : [];
 
   return (
-    <div className="flex basis-full flex-col gap-1.5">
+    <div className="flex min-w-0 basis-full flex-col gap-1.5">
       <p className="font-medium text-foreground">{t("overview.skills")}</p>
       {state === "loading" && <p className="text-muted-foreground">{t("skills.loading")}</p>}
       {state === "auth" && <p className="text-amber-700 dark:text-amber-400">{t("skills.authRequired")}</p>}
@@ -136,7 +136,7 @@ export function ProjectSkills({ projectKey, projectName }: { projectKey: string;
               <Link href="/skills" className="underline hover:text-foreground">{t("overview.skillsToLibrary")}</Link>
             </p>
           ) : (
-            <div className="flex flex-col gap-1">
+            <div className="flex min-w-0 flex-col gap-1">
               <button type="button" aria-expanded={open} disabled={skills.canTake.length === 0}
                 onClick={() => { setOpen(!open); setQuery(""); }}
                 className="flex items-center justify-between gap-2 rounded border bg-background px-2 py-1 text-left text-foreground hover:bg-accent/50 disabled:opacity-60">
@@ -147,7 +147,7 @@ export function ProjectSkills({ projectKey, projectName }: { projectKey: string;
                 <ChevronDown className={`size-3.5 shrink-0 transition-transform ${open ? "rotate-180" : ""}`} />
               </button>
               {open && skills.canTake.length > 0 && (
-                <div className="rounded border bg-background">
+                <div className="min-w-0 overflow-hidden rounded border bg-background">
                   <input type="text" autoFocus value={query} placeholder={t("overview.skillsFilter")}
                     onChange={(e) => setQuery(e.target.value)}
                     onKeyDown={(e) => { if (e.key === "Escape") setOpen(false); }}
@@ -158,9 +158,10 @@ export function ProjectSkills({ projectKey, projectName }: { projectKey: string;
                       <li key={skill.name}>
                         <button type="button" disabled={!!busy}
                           onClick={() => act(skill.name, () => installSkill(skill.name, projectKey))}
-                          className="flex w-full flex-col px-2 py-1 text-left hover:bg-accent disabled:opacity-50">
-                          <span className="font-mono text-foreground">{skill.name}{busy === skill.name ? " …" : ""}</span>
-                          {skill.description && <span className="truncate text-muted-foreground">{skill.description}</span>}
+                          title={skill.description ?? undefined}
+                          className="flex w-full min-w-0 flex-col px-2 py-1 text-left hover:bg-accent disabled:opacity-50">
+                          <span className="break-all font-mono text-foreground">{skill.name}{busy === skill.name ? " …" : ""}</span>
+                          {skill.description && <span className="line-clamp-2 break-words text-muted-foreground">{skill.description}</span>}
                         </button>
                       </li>
                     ))}

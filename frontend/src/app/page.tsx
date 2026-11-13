@@ -511,7 +511,7 @@ function Card({ card, onOpen, onShelve, onSettings, onStage, busy, working, erro
         </>
       )}
       {draft && !working && (
-        <div className="flex basis-full flex-col gap-2 pt-1">
+        <div className="flex min-w-0 basis-full flex-col gap-2 pt-1">
           <label className="flex flex-col gap-1">
             <span className="font-medium text-foreground">{t("overview.settingsName")}</span>
             <input type="text" value={draft.name} maxLength={80} disabled={busy}
@@ -544,10 +544,10 @@ function Card({ card, onOpen, onShelve, onSettings, onStage, busy, working, erro
           <ProjectSkills projectKey={card.key} projectName={title} />
           <div className="flex items-center gap-2">
             <button type="button" disabled={busy} onClick={saveSettings}
-              className="rounded border px-2 py-0.5 font-medium text-foreground hover:bg-accent disabled:opacity-50">
+              className="shrink-0 whitespace-nowrap rounded border px-2 py-0.5 font-medium text-foreground hover:bg-accent disabled:opacity-50">
               {t("overview.workflowSave")}
             </button>
-            <button type="button" onClick={() => setDraft(null)} className="rounded px-2 py-0.5 text-muted-foreground hover:bg-accent">
+            <button type="button" onClick={() => setDraft(null)} className="shrink-0 whitespace-nowrap rounded px-2 py-0.5 text-muted-foreground hover:bg-accent">
               {t("overview.cancel")}
             </button>
             {draft.features && workflow?.show === "editable" && (

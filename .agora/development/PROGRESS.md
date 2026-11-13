@@ -9191,3 +9191,23 @@ and `git diff --check` clean. Backend only; the full non-integration suite was n
 Review: pending (codex).
 Next safe action: review, commit, restart 8001 (backend changed; ask the owner first when
 the restart would end an open session).
+
+## 2026-11-13 — overview card settings: a long skill description no longer widens the card (workspace CR-94)
+
+Reported by the owner on stable 8000 (v1.10.0) once the library held 32 skills with
+one-paragraph descriptions: opening "add skill" in a card's settings pushed the card to
+3345 px (measured; the card is 364 px wide) and the whole overview scrolled sideways.
+The description line was `truncate` (no wrap) inside a flex item with the default
+`min-width: auto`, so the longest description set the panel's width. With the dropdown
+closed, Save / Cancel were squeezed to one character per line by the hint beside them.
+
+- `app/page.tsx`: the settings panel takes `min-w-0`; Save and Cancel do not shrink or wrap.
+- `components/project-skills.tsx`: the block, the dropdown and each row take `min-w-0`;
+  a description shows two lines (`line-clamp-2`), the full text is the row's `title`.
+
+Tests: `tsc --noEmit` clean, `eslint` clean, `next build` ok; `tests/test_web_ui.py`
+14 passed (14 collected). Layout checked by screenshot on dev 8001 (headless Edge):
+card 364 px, scrollWidth 364 px with the dropdown open. No backend change; the full
+suite was not run.
+Review: pending (codex).
+Next safe action: review, commit; reaching 8000 needs a release, which the owner asks for.
