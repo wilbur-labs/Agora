@@ -121,7 +121,7 @@ export function projectSkillsOf(view: SkillsView, key: string): ProjectSkills {
 }
 
 /** The dropdown's filter: every word typed must be in the name or the description. */
-export function matchSkills(skills: readonly ProjectSkill[], query: string): ProjectSkill[] {
+export function matchSkills<T extends { name: string; description: string | null }>(skills: readonly T[], query: string): T[] {
   const words = query.toLowerCase().split(/\s+/).filter(Boolean);
   if (words.length === 0) return [...skills];
   return skills.filter((s) => {
@@ -141,3 +141,49 @@ export function nextAction(summary: InstallSummary | undefined): "install" | "up
     default: return "blocked";
   }
 }
+
+/** A skill listed by an outside source (CR-98): a repository of published skills. */
+export interface SourceSkill {
+  /** Directory inside the source; the skill's id there. */
+  path: string;
+  name: string;
+  description: string | null;
+  license: string | null;
+  error: string | null;
+  notes?: StandardNote[];
+}
+
+export interface SkillSource {
+  id: string;
+  title: string;
+  url: string;
+  /** `not_fetched`: Agora has no copy yet, which is not an empty source. */
+  state: "ok" | "not_fetched" | "unreadable";
+  fetched: string | null;
+  commit: string | null;
+  reason: string | null;
+  /** The listing stopped early: what is shown is a part. */
+  truncated: boolean;
+  skills: SourceSkill[];
+}
+
+/** One source skill opened for reading. `sha` is what an import must hand back: the
+ *  server takes a skill only as it was shown. */
+export interface SourceSkillContent extends SourceSkill {
+  source: string;
+  content: string;
+  sha: string;
+  files: { path: string; bytes: number }[];
+}
+
+/** Whether a source skill can go into the library, and if not, which reason to show.
+ *  `unknown`: the library's own state is not known, so "not there yet" cannot be said. */
+export function sourceSkillState(skill: SourceSkill, view: SkillsView | null): "available" | "in_library" | "reserved" | "unreadable" | "unknown" {
+  if (skill.error) return "unreadable";
+  if (!view || view.library.state === "unknown" || view.library.state === "unreadable") return "unknown";
+  if (view.library.skills.some((s) => s.name === skill.name)) return "in_library";
+  if (view.reserved.includes(skill.name)) return "reserved";
+  return "available";
+}
+
+export const formatBytes = (n: number) => (n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`);

@@ -9281,3 +9281,38 @@ non-integration suite without `test_web_ui.py`: 2373 passed, 12 skipped, 4 desel
 (2389 collected). `compileall`, schema check, `git diff --check` clean. No frontend change.
 Review: pending (codex).
 Next safe action: review, commit; 8001 needs a restart to show it, 8000 a release.
+
+## 2026-11-13 — skills from outside: fetch, list, read, import (workspace CR-98, slice 1)
+
+The owner asked for published skill repositories to be searchable and usable from Agora,
+and decided: only the official repository preset, a skill must be read before it is
+taken, downloads go direct.
+
+- `agora/skills/sources.py`: one preset source (`https://github.com/anthropics/skills`).
+  `fetch` makes a shallow clone into `<data dir>/skill-sources/<id>/` (no hooks, no
+  submodules, no credential prompt, no autocrlf; `.git` removed; swapped in only when
+  complete). `read` lists every directory holding a `SKILL.md` from that copy, without
+  the network: `not_fetched` and `unreadable` are states, not empty lists. `content`
+  returns `SKILL.md`, each file's name and size, and the tree hash. `import_skill`
+  requires that hash — a skill never opened, or fetched again since, is refused — and
+  then uses the library's own `import_from`, so its limits and name rules apply.
+- Routes under `/api/skills/sources` (terminal token, like the rest of the page).
+- Skills page: an "From outside" section — fetch, filter, open a skill (warning, file
+  list, `SKILL.md`), import from the open panel only. en / zh / ja.
+
+Not built, and the page says so: adding a source by hand, updating a library skill when
+its source changes, recording which source a library skill came from. Agora does not
+inspect a skill's other files; the page says that too.
+
+Checked against the real repository (commit `2c5958e`): 20 skills listed in 5.5 s.
+`claude-api` there has a description over the standard's 1024 characters, so the
+library refuses to import it — shown as a note, not hidden.
+
+Tests: `test_skill_sources.py` 9 passed (9 collected, new; the 9th from review round 1:
+reads and the copy swap share a lock); with `test_skills.py` and `test_web_ui.py`
+59 passed (59 collected). Frontend `test:control-plane` 610 passed,
+1 skipped (611; +1); `tsc`, `eslint`, `next build` clean; schema check and
+`git diff --check` clean. The full backend suite was not run for this change. Not yet
+looked at in a browser: 8001 needs a restart to serve the new routes.
+Review: pending (codex).
+Next safe action: review, commit; restart 8001 and click through; 8000 needs a release.

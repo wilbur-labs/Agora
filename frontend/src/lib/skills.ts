@@ -1,7 +1,7 @@
 /** The skills page's requests (workspace CR-75 slice 5). Every one carries the terminal
  *  token: they name this machine's projects and write into their repositories. */
 import { call } from "@/lib/terminal";
-import type { FoundSkillContent, SkillContent, SkillEntry, SkillsView } from "@/lib/skills-state";
+import type { FoundSkillContent, SkillContent, SkillEntry, SkillSource, SkillsView, SourceSkillContent } from "@/lib/skills-state";
 
 export * from "@/lib/skills-state";
 
@@ -20,3 +20,12 @@ export const installSkill = (name: string, project: string, force = false) =>
   call<unknown>(`/api/skills/library/${encodeURIComponent(name)}/install`, { method: "POST", body: JSON.stringify({ project, force }) });
 export const uninstallSkill = (name: string, project: string, force = false) =>
   call<unknown>(`/api/skills/library/${encodeURIComponent(name)}/uninstall`, { method: "POST", body: JSON.stringify({ project, force }) });
+
+// Skills from outside (CR-98). Only `fetchSkillSource` reaches the network.
+export const getSkillSources = () => call<{ sources: SkillSource[] }>("/api/skills/sources");
+export const fetchSkillSource = (id: string) =>
+  call<SkillSource>(`/api/skills/sources/${encodeURIComponent(id)}/fetch`, { method: "POST" });
+export const getSourceSkill = (id: string, path: string) =>
+  call<SourceSkillContent>(`/api/skills/sources/${encodeURIComponent(id)}/skill?path=${encodeURIComponent(path)}`);
+export const importSourceSkill = (id: string, path: string, sha: string) =>
+  call<SkillEntry>(`/api/skills/sources/${encodeURIComponent(id)}/import`, { method: "POST", body: JSON.stringify({ path, sha }) });

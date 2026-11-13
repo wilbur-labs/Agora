@@ -15,6 +15,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertTriangle, Download, Eye, Library, Pencil, Plus, Trash2 } from "lucide-react";
 
 import { DeliveryShell } from "@/components/delivery-shell";
+import { SkillSources } from "@/components/skill-sources";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { useI18n } from "@/lib/i18n";
@@ -299,6 +300,8 @@ export default function SkillsPage() {
             </div>
           </details>
         )}
+
+        {state === "ok" && <SkillSources view={view} onImported={reload} />}
 
         {view && view.workflow.length > 0 && (
           <section className="space-y-2">

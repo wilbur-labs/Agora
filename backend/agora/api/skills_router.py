@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from agora.api.terminal_router import require_terminal_session
 from agora.projects.registry import ProjectRegistry
 from agora.skills import install as installer
+from agora.skills import sources as remote
 from agora.skills.inventory import (
     importable, inventory_gaps, library_root, reserved_names, skill_projects, workflow_commands,
 )
@@ -183,6 +184,48 @@ async def import_skill(body: ImportBody, registry: ProjectRegistry = Depends(get
             raise SkillRefused("that path is not one of the skills offered for import")
         return _library(sources).import_from(Path(found.path), body.name,
                                              reserved=reserved_names(workflow_commands(sources))).payload()
+    return await _run(go)
+
+
+# --- skills from outside (CR-98) ---------------------------------------------------------
+def _data_dir() -> Path:
+    from agora.api import terminal_router
+
+    return terminal_router._data_dir()
+
+
+class SourceImportBody(BaseModel):
+    #: A path from the source's listing.
+    path: str
+    #: The hash the content route returned for it: proof it was opened as it is now.
+    sha: str
+
+
+@router.get("/sources")
+async def skill_sources() -> dict[str, Any]:
+    def go():
+        return {"sources": [remote.read(_data_dir(), s).payload() for s in remote.SOURCES.values()]}
+    return await _run(go)
+
+
+@router.post("/sources/{source_id}/fetch")
+async def fetch_skill_source(source_id: str) -> dict[str, Any]:
+    return await _run(lambda: remote.fetch(_data_dir(), remote.source_of(source_id)).payload())
+
+
+@router.get("/sources/{source_id}/skill")
+async def source_skill_content(source_id: str, path: str) -> dict[str, Any]:
+    return await _run(lambda: remote.content(_data_dir(), remote.source_of(source_id), path))
+
+
+@router.post("/sources/{source_id}/import")
+async def import_source_skill(source_id: str, body: SourceImportBody,
+                              registry: ProjectRegistry = Depends(get_project_registry)) -> dict[str, Any]:
+    sources = _sources(registry)
+
+    def go():
+        return remote.import_skill(_data_dir(), remote.source_of(source_id), body.path, body.sha, _library(sources),
+                                   reserved=reserved_names(workflow_commands(sources)))
     return await _run(go)
 
 

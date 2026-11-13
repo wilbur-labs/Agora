@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  matchSkills, nextAction, projectSkillsOf, refusalOf, SKILL_NAME_RE, skillTemplate, type SkillsView,
+  formatBytes, matchSkills, nextAction, projectSkillsOf, refusalOf, SKILL_NAME_RE, skillTemplate, sourceSkillState,
+  type SkillsView,
 } from "../src/lib/skills-state.ts";
 
 test("each install state leads to one next step; a foreign or unreadable copy to none (CR-75 slice 5)", () => {
@@ -78,6 +79,20 @@ test("a card says why it has no skills list rather than showing an empty one", (
   assert.deepEqual(projectSkillsOf(unknown, "k1"), { show: "library", state: "unknown", reason: "2 work roots" });
   const empty = projectSkillsOf(view({ library: { state: "absent", root: "/lib", reason: null, skills: [] }, installs: {} }), "k1");
   assert.deepEqual(empty, { show: "lists", has: [], canTake: [], libraryEmpty: true, unreadable: 0 });
+});
+
+test("a source skill is offered only when the library can be seen not to have it (CR-98)", () => {
+  const skill = (name: string, error: string | null = null) =>
+    ({ path: `skills/${name}`, name, description: "d", license: null, error });
+  assert.equal(sourceSkillState(skill("docx"), view()), "available");
+  assert.equal(sourceSkillState(skill("pdf-tips"), view()), "in_library");
+  assert.equal(sourceSkillState(skill("save"), view({ reserved: ["save"] })), "reserved");
+  assert.equal(sourceSkillState(skill("docx", "is a link"), view()), "unreadable");
+  // Not "available": with the library unread, "it is not there yet" is not known.
+  assert.equal(sourceSkillState(skill("docx"), null), "unknown");
+  assert.equal(sourceSkillState(skill("docx"), view({ library: { state: "unknown", root: null, reason: "x", skills: [] } })), "unknown");
+  assert.deepEqual(matchSkills([skill("docx"), skill("pdf")], "pdf").map((s) => s.path), ["skills/pdf"]);
+  assert.deepEqual([formatBytes(12), formatBytes(2048), formatBytes(3 * 1024 * 1024)], ["12 B", "2.0 KB", "3.0 MB"]);
 });
 
 test("the dropdown's filter needs every word, in the name or the description", () => {
