@@ -9211,3 +9211,20 @@ card 364 px, scrollWidth 364 px with the dropdown open. No backend change; the f
 suite was not run.
 Review: pending (codex).
 Next safe action: review, commit; reaching 8000 needs a release, which the owner asks for.
+
+## 2026-11-13 — overview: a card's settings open in their own window (workspace CR-95)
+
+Owner, on seeing the settings unfold inside the card: one open panel stretched every
+card in the same grid row to its height. The settings (name, workflow switches, skills,
+Save / Cancel) now render in a native modal `<dialog>` over the overview (max width
+`2xl`): focus stays inside, the page behind is inert, it closes on Escape, on the
+backdrop, on ✕ and on Cancel, and focus returns to the Settings button. Escape in the
+add-skill filter closes that list only (codex round 1: two P2, both fixed). Same state, same save
+path; nothing about what is saved or when changes. The card keeps showing a refusal
+after the dialog closes, as before.
+
+Tests: `tsc --noEmit` clean, `eslint` clean, `next build` ok; `tests/test_web_ui.py`
+14 passed (14 collected). Checked by screenshot on dev 8001 (headless Edge): the dialog
+opens over the grid, the card stays 364 x 222 px with the add-skill list open.
+Review: pending (codex).
+Next safe action: review, commit; reaching 8000 needs a release, which the owner asks for.

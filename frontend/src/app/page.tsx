@@ -9,7 +9,7 @@
  * as the work page does: the server restores at most once per run, and the person should
  * not have to visit the work page first for what was open to come back.
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 
@@ -511,10 +511,20 @@ function Card({ card, onOpen, onShelve, onSettings, onStage, busy, working, erro
         </>
       )}
       {draft && !working && (
-        <div className="flex min-w-0 basis-full flex-col gap-2 pt-1">
+        // Its own window over the overview, not a panel inside the card: unfolding it in
+        // place stretched every card in the row to the height of the settings.
+        <SettingsDialog label={`${t("overview.settings")} — ${title}`} onClose={() => setDraft(null)}>
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="text-base font-semibold">{t("overview.settings")}</p>
+              <p className="truncate text-muted-foreground">{title} · {card.task}</p>
+            </div>
+            <button type="button" onClick={() => setDraft(null)} aria-label={t("overview.cancel")}
+              className="shrink-0 rounded px-2 py-0.5 text-muted-foreground hover:bg-accent hover:text-foreground">✕</button>
+          </div>
           <label className="flex flex-col gap-1">
             <span className="font-medium text-foreground">{t("overview.settingsName")}</span>
-            <input type="text" value={draft.name} maxLength={80} disabled={busy}
+            <input type="text" autoFocus value={draft.name} maxLength={80} disabled={busy}
               placeholder={recordTitle ?? card.task}
               onChange={(e) => setDraft({ ...draft, name: e.target.value })}
               onKeyDown={(e) => {
@@ -556,11 +566,32 @@ function Card({ card, onOpen, onShelve, onSettings, onStage, busy, working, erro
               </span>
             )}
           </div>
-        </div>
+          {error && <p className="text-red-700 dark:text-red-400">{error}</p>}
+        </SettingsDialog>
       )}
       {error && <p className="basis-full text-red-700 dark:text-red-400">{error}</p>}
     </div>
     </div>
+  );
+}
+
+/** A modal window: the browser's own `<dialog>`, so focus stays inside it, the page
+ *  behind is inert, Escape closes it and focus returns to the button that opened it. */
+function SettingsDialog({ label, onClose, children }: { label: string; onClose: () => void; children: ReactNode }) {
+  const ref = useRef<HTMLDialogElement>(null);
+  useLayoutEffect(() => {
+    const dialog = ref.current;
+    if (dialog && !dialog.open) dialog.showModal();
+    return () => { if (dialog?.open) dialog.close(); };
+  }, []);
+  return (
+    <dialog ref={ref} aria-label={label}
+      onCancel={(e) => { e.preventDefault(); onClose(); }}
+      // A press on the backdrop lands on the dialog element itself.
+      onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
+      className="m-auto w-[calc(100%-2rem)] max-w-2xl rounded-xl border bg-card p-0 text-sm text-foreground shadow-lg backdrop:bg-black/40">
+      <div className="flex min-w-0 flex-col gap-3 p-5">{children}</div>
+    </dialog>
   );
 }
 

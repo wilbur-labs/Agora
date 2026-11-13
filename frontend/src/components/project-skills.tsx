@@ -150,7 +150,9 @@ export function ProjectSkills({ projectKey, projectName }: { projectKey: string;
                 <div className="min-w-0 overflow-hidden rounded border bg-background">
                   <input type="text" autoFocus value={query} placeholder={t("overview.skillsFilter")}
                     onChange={(e) => setQuery(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === "Escape") setOpen(false); }}
+                    // Escape here closes this list only — not the settings window around it,
+                    // which would drop an unsaved name or workflow edit (codex review).
+                    onKeyDown={(e) => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setOpen(false); } }}
                     className="w-full border-b bg-transparent px-2 py-1 text-foreground outline-none" />
                   <ul className="max-h-48 overflow-auto">
                     {matches.length === 0 && <li className="px-2 py-1 text-muted-foreground">{t("overview.skillsNoMatch")}</li>}
