@@ -1,7 +1,7 @@
 /** The skills page's requests (workspace CR-75 slice 5). Every one carries the terminal
  *  token: they name this machine's projects and write into their repositories. */
 import { call } from "@/lib/terminal";
-import type { FoundSkillContent, SkillContent, SkillEntry, SkillSource, SkillsView, SourceSkillContent } from "@/lib/skills-state";
+import type { FoundSkillContent, SkillContent, SkillEntry, SkillSource, SkillsView, SourceSkillContent, SourceSkillSummary } from "@/lib/skills-state";
 
 export * from "@/lib/skills-state";
 
@@ -27,5 +27,9 @@ export const fetchSkillSource = (id: string) =>
   call<SkillSource>(`/api/skills/sources/${encodeURIComponent(id)}/fetch`, { method: "POST" });
 export const getSourceSkill = (id: string, path: string) =>
   call<SourceSkillContent>(`/api/skills/sources/${encodeURIComponent(id)}/skill?path=${encodeURIComponent(path)}`);
+/** A model's one sentence on what the skill is for, in `language`. The first call for a
+ *  skill spends model quota; later ones are answered from what Agora kept. */
+export const getSourceSkillSummary = (id: string, path: string, language: string) =>
+  call<SourceSkillSummary>(`/api/skills/sources/${encodeURIComponent(id)}/summary`, { method: "POST", body: JSON.stringify({ path, language }) });
 export const importSourceSkill = (id: string, path: string, sha: string) =>
   call<SkillEntry>(`/api/skills/sources/${encodeURIComponent(id)}/import`, { method: "POST", body: JSON.stringify({ path, sha }) });

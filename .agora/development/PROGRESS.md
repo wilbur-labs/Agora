@@ -9316,3 +9316,29 @@ reads and the copy swap share a lock); with `test_skills.py` and `test_web_ui.py
 looked at in a browser: 8001 needs a restart to serve the new routes.
 Review: pending (codex).
 Next safe action: review, commit; restart 8001 and click through; 8000 needs a release.
+
+## 2026-11-13 — skills from outside: a model's one-sentence summary (workspace CR-99)
+
+The owner asked that opening a skill say, in one sentence they can read, what it is for —
+in the language the page is set to.
+
+- `agora/skills/summary.py`: one `claude -p` call (`--model haiku`, plan mode, safe mode,
+  no session, `--tools ""`, empty scratch cwd; the skill on stdin as a quoted document).
+  The answer must be one line of at most 200 characters or it is refused. Kept under
+  `<data dir>/skill-summaries/<tree sha>.<language>.json`.
+- `sources.summary` + `POST /api/skills/sources/{id}/summary` (`path`, `language`:
+  en / zh / ja). The reply carries the content hash it was written from.
+- Page: the open panel asks on open and again when the language changes, and shows the
+  sentence only for the content and language on screen, labelled as a model's reading
+  that can be wrong, can be steered by the skill, and replaces neither a check nor reading.
+
+Only source skills get a summary; library skills and the ones found in CLI folders do not.
+
+Checked with the real model on three skills (zh, zh, ja): one sentence each, 5-7 s.
+Tests: `test_skill_sources.py` 17 passed (17 collected; +8, the last from review round 1:
+one summary at a time, so overlapping requests ask the model once); with
+`test_skills.py` and `test_web_ui.py` 67 passed (67 collected). Frontend `test:control-plane` 611 passed,
+1 skipped (612; +1); `tsc`, `eslint`, `next build` clean; schema check clean. The full
+backend suite was not run. Not yet looked at in a browser.
+Review: pending (codex).
+Next safe action: review, commit; restart 8001 and open a skill.

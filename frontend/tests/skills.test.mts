@@ -3,7 +3,7 @@ import test from "node:test";
 
 import {
   formatBytes, matchSkills, nextAction, projectSkillsOf, refusalOf, SKILL_NAME_RE, skillTemplate, sourceSkillState,
-  type SkillsView,
+  summaryLineOf, type SkillsView,
 } from "../src/lib/skills-state.ts";
 
 test("each install state leads to one next step; a foreign or unreadable copy to none (CR-75 slice 5)", () => {
@@ -93,6 +93,17 @@ test("a source skill is offered only when the library can be seen not to have it
   assert.equal(sourceSkillState(skill("docx"), view({ library: { state: "unknown", root: null, reason: "x", skills: [] } })), "unknown");
   assert.deepEqual(matchSkills([skill("docx"), skill("pdf")], "pdf").map((s) => s.path), ["skills/pdf"]);
   assert.deepEqual([formatBytes(12), formatBytes(2048), formatBytes(3 * 1024 * 1024)], ["12 B", "2.0 KB", "3.0 MB"]);
+});
+
+test("a summary is shown only for the content and the language on screen (CR-99)", () => {
+  const result = { summary: "读写 PDF。", language: "zh", cached: false, sha: "s1" };
+  assert.deepEqual(summaryLineOf(null, "k", "s1", "zh"), { show: "loading" });
+  // An answer for another skill, or for the language just switched away from, is not this one's.
+  assert.deepEqual(summaryLineOf({ key: "other", result }, "k", "s1", "zh"), { show: "loading" });
+  assert.deepEqual(summaryLineOf({ key: "k", result }, "k", "s1", "zh"), { show: "text", text: "读写 PDF。" });
+  assert.deepEqual(summaryLineOf({ key: "k", result }, "k", "s2", "zh"), { show: "failed", reason: "stale" });
+  assert.deepEqual(summaryLineOf({ key: "k", result }, "k", "s1", "ja"), { show: "failed", reason: "stale" });
+  assert.deepEqual(summaryLineOf({ key: "k", error: "no claude" }, "k", "s1", "zh"), { show: "failed", reason: "no claude" });
 });
 
 test("the dropdown's filter needs every word, in the name or the description", () => {

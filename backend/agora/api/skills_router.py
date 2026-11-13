@@ -218,6 +218,18 @@ async def source_skill_content(source_id: str, path: str) -> dict[str, Any]:
     return await _run(lambda: remote.content(_data_dir(), remote.source_of(source_id), path))
 
 
+class SourceSummaryBody(BaseModel):
+    path: str
+    #: The page's language: en, zh or ja.
+    language: str
+
+
+@router.post("/sources/{source_id}/summary")
+async def source_skill_summary(source_id: str, body: SourceSummaryBody) -> dict[str, Any]:
+    """POST, not GET: the first call for a skill spends the person's model quota."""
+    return await _run(lambda: remote.summary(_data_dir(), remote.source_of(source_id), body.path, body.language))
+
+
 @router.post("/sources/{source_id}/import")
 async def import_source_skill(source_id: str, body: SourceImportBody,
                               registry: ProjectRegistry = Depends(get_project_registry)) -> dict[str, Any]:

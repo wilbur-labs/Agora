@@ -173,3 +173,89 @@ def test_a_fetch_cannot_replace_the_copy_while_a_skill_is_being_read(tmp_path, u
     hashing.worker.join(timeout=60)
     monkeypatch.setattr(remote, "tree_sha", real)
     assert swapped.is_set() and shown["sha"] == real(data / remote.CACHE_DIR / "test" / "repo" / "skills" / "pdf")
+
+
+# --- a model's one-sentence summary (CR-99) ------------------------------------------
+def test_a_summary_is_asked_once_per_content_and_language(tmp_path, upstream):
+    from agora.skills import summary as summariser
+
+    _, source = upstream
+    data = tmp_path / "data"
+    remote.fetch(data, source)
+    asked = []
+
+    def ask(prompt):
+        asked.append(prompt)
+        return "  读写 PDF 文件。\n"
+
+    got = remote.summary(data, source, "skills/pdf", "zh", ask=ask)
+    assert (got["summary"], got["cached"], got["language"]) == ("读写 PDF 文件。", False, "zh")
+    assert got["sha"] == remote.content(data, source, "skills/pdf")["sha"]
+    # The skill travels as a quoted document, in the language asked for.
+    assert "name: pdf" in asked[0] and "Simplified Chinese" in asked[0] and "DOCUMENT TO DESCRIBE" in asked[0]
+    assert remote.summary(data, source, "skills/pdf", "zh", ask=ask)["cached"] is True and len(asked) == 1
+    remote.summary(data, source, "skills/pdf", "ja", ask=ask)
+    remote.summary(data, source, "skills/slides", "zh", ask=ask)
+    assert len(asked) == 3
+    with pytest.raises(SkillRefused, match="language"):
+        remote.summary(data, source, "skills/pdf", "fr", ask=ask)
+    with pytest.raises(SkillRefused, match="not one of the skills"):
+        remote.summary(data, source, "skills", "zh", ask=ask)
+    assert summariser.MODEL and len(asked) == 3
+
+
+@pytest.mark.parametrize("answer", ["", "\n\n", "One.\nTwo.", "x" * 201, "Sure! Here is the summary:\n\nIt reads PDFs."])
+def test_an_answer_that_is_not_one_short_sentence_is_not_shown_or_kept(tmp_path, upstream, answer):
+    _, source = upstream
+    data = tmp_path / "data"
+    remote.fetch(data, source)
+    with pytest.raises(SkillRefused, match="one"):
+        remote.summary(data, source, "skills/pdf", "en", ask=lambda prompt: answer)
+    assert remote.summary(data, source, "skills/pdf", "en", ask=lambda prompt: '"Reads PDFs."') == {
+        "summary": "Reads PDFs.", "language": "en", "cached": False,
+        "sha": remote.content(data, source, "skills/pdf")["sha"]}
+
+
+def test_the_summariser_is_given_no_tools(monkeypatch):
+    """What is summarised is untrusted instructions: the call must not be able to act."""
+    from agora.skills import summary as summariser
+
+    seen = {}
+
+    def run(command, **kwargs):
+        seen.update(command=command, cwd=kwargs["cwd"], input=kwargs["input"])
+        return subprocess.CompletedProcess(command, 0, stdout="ok.".encode(), stderr=b"")
+
+    monkeypatch.setattr(summariser, "resolve_runtime_command", lambda argv: argv)
+    monkeypatch.setattr(summariser.subprocess, "run", run)
+    assert summariser._ask("the prompt") == "ok."
+    command = seen["command"]
+    assert command[command.index("--tools") + 1] == "" and "--safe-mode" in command
+    assert command[command.index("--permission-mode") + 1] == "plan" and "--no-session-persistence" in command
+    assert seen["input"] == b"the prompt" and "agora-skill-summary-" in seen["cwd"]
+
+
+def test_two_requests_for_one_summary_ask_the_model_once(tmp_path, upstream):
+    import threading
+
+    _, source = upstream
+    data = tmp_path / "data"
+    remote.fetch(data, source)
+    asked, started, release = [], threading.Event(), threading.Event()
+
+    def ask(prompt):
+        asked.append(1)
+        started.set()
+        release.wait(timeout=30)
+        return "Reads PDFs."
+
+    results = []
+    workers = [threading.Thread(target=lambda: results.append(remote.summary(data, source, "skills/pdf", "en", ask=ask)))
+               for _ in range(2)]
+    workers[0].start()
+    assert started.wait(timeout=30)
+    workers[1].start()
+    release.set()
+    for worker in workers:
+        worker.join(timeout=30)
+    assert len(asked) == 1 and sorted(r["cached"] for r in results) == [False, True]

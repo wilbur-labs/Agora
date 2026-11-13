@@ -11,17 +11,18 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertTriangle, Download, Eye, Globe, RefreshCw } from "lucide-react";
+import { AlertTriangle, Download, Eye, Globe, RefreshCw, Sparkles } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { useI18n } from "@/lib/i18n";
 import {
-  fetchSkillSource, formatBytes, getSkillSources, getSourceSkill, importSourceSkill, matchSkills, refusalOf,
-  sourceSkillState, type SkillSource, type SkillsView, type SourceSkillContent,
+  fetchSkillSource, formatBytes, getSkillSources, getSourceSkill, getSourceSkillSummary, importSourceSkill, matchSkills,
+  refusalOf, sourceSkillState, summaryLineOf, type SkillSource, type SkillsView, type SourceSkillContent,
+  type SourceSkillSummary,
 } from "@/lib/skills";
 
 export function SkillSources({ view, onImported }: { view: SkillsView | null; onImported: () => void }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const [sources, setSources] = useState<SkillSource[] | null>(null);
   const [failed, setFailed] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -29,7 +30,21 @@ export function SkillSources({ view, onImported }: { view: SkillsView | null; on
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState<SourceSkillContent | null>(null);
   const [imported, setImported] = useState<string | null>(null);
+  const [summary, setSummary] = useState<{ key: string; result?: SourceSkillSummary; error?: string } | null>(null);
   const mounted = useRef(true);
+
+  // The open skill, said in one sentence by a model, in the page's language. Asked when
+  // a skill is opened and again when the language changes; the key ties an answer to
+  // the skill, content and language it was asked for, so a late one is not shown.
+  const summaryKey = open ? `${open.source}\n${open.path}\n${open.sha}\n${locale}` : null;
+  useEffect(() => {
+    if (!open || !summaryKey) return;
+    let current = true;
+    getSourceSkillSummary(open.source, open.path, locale)
+      .then((result) => { if (current) setSummary({ key: summaryKey, result }); })
+      .catch((err) => { if (current) setSummary({ key: summaryKey, error: refusalOf(String((err as Error).message)).message }); });
+    return () => { current = false; };
+  }, [open, summaryKey, locale]);
 
   const reload = useCallback(() => {
     getSkillSources()
@@ -151,6 +166,22 @@ export function SkillSources({ view, onImported }: { view: SkillsView | null; on
                             <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-300">
                               {t("skills.sources.readFirst")}
                             </p>
+                            {(() => {
+                              const line = summaryLineOf(summary, summaryKey ?? "", shown.sha, locale);
+                              return (
+                                <div className="rounded-lg border bg-muted/40 px-3 py-2 text-sm">
+                                  <p className="flex items-start gap-2">
+                                    <Sparkles className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+                                    <span className="min-w-0 break-words">
+                                      {line.show === "loading" && <span className="text-muted-foreground">{t("skills.sources.summaryLoading")}</span>}
+                                      {line.show === "failed" && <span className="text-muted-foreground">{t("skills.sources.summaryFailed", { reason: line.reason })}</span>}
+                                      {line.show === "text" && line.text}
+                                    </span>
+                                  </p>
+                                  {line.show === "text" && <p className="pl-6 pt-1 text-xs text-muted-foreground">{t("skills.sources.summaryBy")}</p>}
+                                </div>
+                              );
+                            })()}
                             <details className="text-xs text-muted-foreground" open={shown.files.length <= 12}>
                               <summary className="cursor-pointer">
                                 {t("skills.sources.files", { count: shown.files.length, size: formatBytes(shown.files.reduce((a, f) => a + f.bytes, 0)) })}

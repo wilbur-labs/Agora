@@ -176,6 +176,23 @@ export interface SourceSkillContent extends SourceSkill {
   files: { path: string; bytes: number }[];
 }
 
+/** A model's reading of one source skill (CR-99). `sha` is the content it was written
+ *  from: a sentence about other content than the panel shows is not displayed. */
+export interface SourceSkillSummary { summary: string; language: string; cached: boolean; sha: string }
+
+/** What the summary line shows. A sentence is shown only for the content and the
+ *  language on screen; anything else is still loading, or failed, and says so. */
+export type SummaryLine = { show: "loading" } | { show: "failed"; reason: string } | { show: "text"; text: string };
+export function summaryLineOf(
+  got: { key: string; result?: SourceSkillSummary; error?: string } | null, key: string, sha: string, language: string,
+): SummaryLine {
+  if (!got || got.key !== key) return { show: "loading" };
+  if (got.error !== undefined) return { show: "failed", reason: got.error };
+  if (!got.result) return { show: "loading" };
+  if (got.result.sha !== sha || got.result.language !== language) return { show: "failed", reason: "stale" };
+  return { show: "text", text: got.result.summary };
+}
+
 /** Whether a source skill can go into the library, and if not, which reason to show.
  *  `unknown`: the library's own state is not known, so "not there yet" cannot be said. */
 export function sourceSkillState(skill: SourceSkill, view: SkillsView | null): "available" | "in_library" | "reserved" | "unreadable" | "unknown" {

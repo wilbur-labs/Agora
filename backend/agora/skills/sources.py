@@ -262,6 +262,20 @@ def content(data_dir: Path, source: Source, rel: str) -> dict[str, Any]:
                 "files": [{"path": r, "bytes": p.stat().st_size} for r, p in files]}
 
 
+def summary(data_dir: Path, source: Source, rel: str, language: str, *, ask=None) -> dict[str, Any]:
+    """A model's one sentence on what a listed skill is for (``agora.skills.summary``),
+    with the hash of the content it was written from, so the page can tell whether it
+    belongs to what is on screen."""
+    from agora.skills import summary as summariser
+
+    with _COPY_LOCK:
+        _, path = _skill_path(data_dir, source, rel)
+        text = (path / SKILL_FILE).read_bytes().decode("utf-8")
+        sha = tree_sha(path)
+    got = summariser.summarise(data_dir, text, sha, language, **({"ask": ask} if ask else {}))
+    return {**got, "sha": sha}
+
+
 def import_skill(data_dir: Path, source: Source, rel: str, sha: str, library: SkillLibrary,
                  *, reserved: set[str]) -> dict[str, Any]:
     """Copy one listed skill into the library, as it was shown. ``sha`` is the hash the
