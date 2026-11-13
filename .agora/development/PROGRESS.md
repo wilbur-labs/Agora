@@ -9228,3 +9228,26 @@ Tests: `tsc --noEmit` clean, `eslint` clean, `next build` ok; `tests/test_web_ui
 opens over the grid, the card stays 364 x 222 px with the add-skill list open.
 Review: pending (codex).
 Next safe action: review, commit; reaching 8000 needs a release, which the owner asks for.
+
+## 2026-11-13 — skills: a repository on another machine is said to be elsewhere (workspace CR-96)
+
+A task whose project lives on a server declares that machine's path
+(`primary_repo: /srv/...`). Read on Windows it is not absolute, so the card's settings
+said "primary_repo is not an absolute path" — true, and no help: the owner asked why.
+
+- `agora/skills/inventory.py`: a value that is absolute for the other kind of machine
+  (POSIX path read on Windows, drive path read on POSIX) gives the reason
+  "`<key>` is a path on another machine (`<value>`)" and `reason_code: "other_machine"`
+  in the project's payload. A relative path keeps the old reason and no code.
+- Frontend: `projectSkillsOf` carries `elsewhere`; the card says the repository is on
+  another machine, that skills are installed only into a repository on this one, and
+  that installing on a remote machine is not supported yet (en / zh / ja).
+
+Not built: installing into a remote project over SSH. Nothing claims it exists.
+
+Tests: `test_skills.py` 36 passed (36 collected; +1); `tests/skills.test.mts` passes
+(count below); `tsc`, `eslint`, `next build` clean; `tests/test_web_ui.py` 14 passed
+(14 collected); schema check and `git diff --check` clean. The full backend suite was
+not run.
+Review: pending (codex).
+Next safe action: review, commit; reaching 8000 needs a release, which the owner asks for.

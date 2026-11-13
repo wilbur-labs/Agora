@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 import yaml
@@ -40,6 +40,12 @@ def library_root(sources: list[Path]) -> tuple[Path | None, str | None]:
     return None, f"{len(claude)} claude-workspace work roots are registered; set {LIBRARY_ENV} to choose"
 
 
+#: In a reason: the declared repository is an absolute path, of another kind of machine
+#: (a server's ``/srv/...`` read on Windows, or a ``C:\...`` read on Linux). The project
+#: runs there, and skills are only installed into a repository on this machine.
+ELSEWHERE = "is a path on another machine"
+
+
 @dataclass
 class SkillProject:
     key: str
@@ -55,7 +61,8 @@ class SkillProject:
 
     def payload(self) -> dict[str, Any]:
         return {"key": self.key, "task": self.task, "title": self.title, "workspace": self.workspace,
-                "repo": self.repo, "reason": self.reason, "shelved": self.shelved}
+                "repo": self.repo, "reason": self.reason, "shelved": self.shelved,
+                "reason_code": "other_machine" if self.reason and ELSEWHERE in self.reason else None}
 
 
 def _repo_of(source: Path, task: str, kiro: bool, *, archived: bool = False) -> tuple[str | None, str | None]:
@@ -70,7 +77,11 @@ def _repo_of(source: Path, task: str, kiro: bool, *, archived: bool = False) -> 
     value = document.get(key) if isinstance(document, dict) else None
     if value is None or (isinstance(value, str) and not value.strip()):
         return None, f"task.yaml has no {key}"
-    if not isinstance(value, str) or not Path(value).is_absolute():
+    if not isinstance(value, str):
+        return None, f"{key} is not an absolute path"
+    if not Path(value).is_absolute():
+        if PurePosixPath(value).is_absolute() or PureWindowsPath(value).is_absolute():
+            return None, f"{key} {ELSEWHERE} ({value})"
         return None, f"{key} is not an absolute path"
     probe = probe_path(Path(value))
     if probe.absent:

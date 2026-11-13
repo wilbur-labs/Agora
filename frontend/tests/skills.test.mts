@@ -69,6 +69,11 @@ test("a card lists what its project has and what it could take (CR-90)", () => {
 test("a card says why it has no skills list rather than showing an empty one", () => {
   assert.deepEqual(projectSkillsOf(view(), "k2"), { show: "no_repo", reason: "no primary_repo" });
   assert.deepEqual(projectSkillsOf(view(), "nope"), { show: "no_project" });
+  // A repository declared as another machine's path is said to be elsewhere, not mistyped.
+  const remote = view({ projects: [{ key: "k3", task: "remote", title: null, workspace: "claude", repo: null,
+    reason: "primary_repo is a path on another machine (/srv/x)", reason_code: "other_machine", shelved: false }] });
+  assert.deepEqual(projectSkillsOf(remote, "k3"),
+    { show: "no_repo", reason: "primary_repo is a path on another machine (/srv/x)", elsewhere: true });
   const unknown = view({ library: { state: "unknown", root: null, reason: "2 work roots", skills: [] } });
   assert.deepEqual(projectSkillsOf(unknown, "k1"), { show: "library", state: "unknown", reason: "2 work roots" });
   const empty = projectSkillsOf(view({ library: { state: "absent", root: "/lib", reason: null, skills: [] }, installs: {} }), "k1");

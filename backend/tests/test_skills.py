@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -320,6 +321,21 @@ def test_projects_carry_their_primary_repo_or_why_not(world, tmp_path):
     assert by_task["alpha"].repo == str(repo)
     assert by_task["beta"].repo is None and "no primary_repo" in by_task["beta"].reason
     assert by_task["alpha"].shelved is False
+
+
+def test_a_repository_on_another_machine_is_said_to_be_elsewhere(world):
+    """A task whose project lives on a server declares that machine's path. Read here it
+    is not a path at all, which is not the same as a mistyped one: the card says the
+    repository is elsewhere instead of "not an absolute path"."""
+    _, work, _ = world
+    foreign = "/srv/projects/remote" if os.name == "nt" else "C:/work/remote"
+    _task(work, "remote", f"task:\n  title: Remote\nprimary_repo: '{foreign}'\n")
+    _task(work, "typo", "task:\n  title: Typo\nprimary_repo: some/relative/path\n")
+    by_task = {p.task: p for p in skill_projects([work])}
+    assert by_task["remote"].repo is None and foreign in by_task["remote"].reason
+    assert by_task["remote"].payload()["reason_code"] == "other_machine"
+    assert by_task["typo"].reason == "primary_repo is not an absolute path"
+    assert by_task["typo"].payload()["reason_code"] is None
 
 
 def test_a_bracket_in_the_project_path_is_excluded_literally(tmp_path):

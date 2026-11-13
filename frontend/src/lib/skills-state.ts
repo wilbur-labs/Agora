@@ -27,6 +27,8 @@ export interface SkillProject {
   workspace: string;
   repo: string | null;
   reason: string | null;
+  /** "other_machine": the declared repository is a path on another machine. */
+  reason_code?: string | null;
   /** Paused or archived: listed only where a copy is installed, so it can be removed. */
   shelved: boolean;
 }
@@ -87,7 +89,7 @@ export const SKILL_NAME_RE = /^(?!.*--)[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 export interface ProjectSkill { name: string; description: string | null; summary: InstallSummary }
 export type ProjectSkills =
   | { show: "no_project" }
-  | { show: "no_repo"; reason: string | null }
+  | { show: "no_repo"; reason: string | null; elsewhere?: true }
   | { show: "library"; state: "unknown" | "unreadable"; reason: string | null }
   | { show: "lists"; has: ProjectSkill[]; canTake: ProjectSkill[]; libraryEmpty: boolean;
       /** Library skills that cannot be read and are not in this project: not offered,
@@ -100,7 +102,11 @@ export function projectSkillsOf(view: SkillsView, key: string): ProjectSkills {
   }
   const project = view.projects.find((p) => p.key === key);
   if (!project) return { show: "no_project" };
-  if (!project.repo) return { show: "no_repo", reason: project.reason };
+  if (!project.repo) {
+    return project.reason_code === "other_machine"
+      ? { show: "no_repo", reason: project.reason, elsewhere: true }
+      : { show: "no_repo", reason: project.reason };
+  }
   const has: ProjectSkill[] = [];
   const canTake: ProjectSkill[] = [];
   let unreadable = 0;

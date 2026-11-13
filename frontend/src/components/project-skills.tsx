@@ -87,7 +87,9 @@ export function ProjectSkills({ projectKey, projectName }: { projectKey: string;
 
       {skills?.show === "no_project" && <p className="text-muted-foreground">{t("overview.skillsNoProject")}</p>}
       {skills?.show === "no_repo" && (
-        <p className="text-muted-foreground">{t("overview.skillsNoRepo", { reason: skills.reason ?? "" })}</p>
+        <p className="text-muted-foreground">
+          {t(skills.elsewhere ? "overview.skillsElsewhere" : "overview.skillsNoRepo", { reason: skills.reason ?? "" })}
+        </p>
       )}
       {skills?.show === "library" && (
         <p className="text-amber-700 dark:text-amber-400">
