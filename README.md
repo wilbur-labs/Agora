@@ -1,127 +1,178 @@
 # Agora
 
-**English** | [Chinese](README_zh.md) | [Japanese](README_ja.md)
+**English** | [中文](README_zh.md) | [日本語](README_ja.md)
 
-**Agora is a local-first console for supervising several coding agents at once.**
-You give a project a folder, a *worker* agent, and a *different reviewer* agent.
-The worker builds, the reviewer independently cross-reviews its work, and nothing
-advances until you approve. Agora is the single authority that records every
-task, run, and decision across Codex, Claude Code, and Kiro.
+**Agora is a local-first workbench for people who build software with several coding
+agents — Claude Code, Codex and Kiro — across several projects at once.**
+
+Open it in the morning and it tells you, for every project, where you stopped yesterday,
+what is waiting for you, and what comes next. Pick a task and you are back in the same
+conversation with the same agent, on the right machine. When the work is done, the state
+is written back where it belongs — in the project's own repository, not in a database
+only Agora can read.
 
 ```text
-Project (folder + worker agent + reviewer agent)
-   -> Task
-   -> Worker run (isolated git worktree)
-   -> Automatic cross-review by a different agent
-   -> Your approval
-   -> Verified
+Overview (every project, what waits for you)
+   -> Work page (one task = one continuing conversation with an agent)
+   -> Review gate (a different agent reviews before anything is committed)
+   -> State written back: goal, change log (CR), decisions (ADR), progress
 ```
 
-The point is triage: one person watching many agents, seeing at a glance what
-needs a reply, what needs approval, and what is blocked — instead of babysitting
-each agent in its own terminal.
+Current version: **1.10.1**. UI in English, 中文 and 日本語.
 
 ## What you get
 
-- **Attention-first Portfolio.** Tasks are grouped into *Needs you* / *In
-  progress* / *Done*, colored by the one signal that matters — a question to
-  answer, an approval to give, or a blocker — so the work that needs a human
-  surfaces first.
-- **Per-project worker + reviewer.** Each project pins a default implementer and
-  a *different* review agent (e.g. Codex builds, Claude reviews). Self-review is
-  worthless, so the reviewer is always another agent.
-- **Automatic cross-review.** When a worker run succeeds, Agora dispatches an
-  independent review run by the project's reviewer agent, feeds it the worker's
-  deliverables, and raises the result as an approval for you. Approve and the
-  task advances to *verified*; the review has real teeth — it reports concrete
-  findings, not a rubber stamp.
-- **Isolated deliverables.** Every agent workspace is its own git repository, so
-  a run's output is exactly the files it produced — cleanly shown in the UI and
-  reviewed without noise from the surrounding repo.
-- **In-app requirements interview.** The agent asks clarifying questions on the
-  page and your answers become the spec — clarification is a product step, not
-  something done in a chat window on the side.
-- **Settings that tell the truth.** The Settings page probes each runtime's
-  install, version, and login status (without spending tokens), reports Claude
-  token usage per agent, and lets you set the project root and execution limits.
-- **A durable control plane underneath.** Agora is the only writer of
-  cross-agent task and gate state; approvals bind to repo, ref, commit, and
-  artifact; resume and retry are idempotent and fail closed on stale authority.
-  Pinned runtimes are never silently substituted — a missing one blocks its work
-  instead.
+- **Overview as the front page.** One card per project, imported from the workspace
+  directories you register. Each card shows what is in progress, what is waiting for
+  you, the record of its commit review gate, and which workspace it comes from. Projects
+  can be paused, archived and restored; tasks are split into *todo* / *doing* and can be
+  reordered by dragging.
+- **One task = one continuing conversation.** The work page resumes the agent's own
+  session (Claude Code, Codex or Kiro) instead of replaying history, streams the output
+  live, and says plainly how long a running turn has been silent. A conversation you
+  continued outside Agora is picked up again, and a restart recovers what was running.
+- **A worker and a different reviewer.** Each project pins an implementing agent and a
+  *different* reviewing agent — self-review is worthless. Nothing is committed until the
+  review gate has actually read the change.
+- **Your existing work, read in place.** Task records already kept in a workspace
+  (`tasks/<name>/{task.yaml, RESUME.md, WORKFLOW.md, adr/}`) are read live and shown as
+  they are — goal, change log, decisions, progress snapshot. Nothing is copied into
+  Agora's database, so there is nothing to keep in sync.
+- **Remote environments over SSH.** Register a host (pick it from `~/.ssh/config` if you
+  like), test the connection, confirm its host key before trusting it, and run a task or
+  open a terminal on it. Credentials are your SSH keys or a password kept in the OS
+  keyring.
+- **Built-in terminal.** An interactive terminal inside Agora, local or on a registered
+  remote host, opened straight into a task.
+- **Skill library.** One library of skills following the Agent Skills standard,
+  installed per project for Claude, Codex and Kiro. Published skill repositories can be
+  fetched, read and imported — you read a skill before you install it.
+- **Usage at a glance.** Each agent's remaining limits are shown at the bottom of every
+  page — Claude from its own `/usage` (Team plans included) and Kiro's credits.
+- **Desktop app.** An installable Windows app with a window, a tray icon and one-click
+  upgrade, wrapped around the same launcher.
+- **Stable and development installs kept apart.** The stable install is exactly a
+  release tag; upgrading backs the database up first and rolls back on any failure. A
+  development checkout runs on its own port with its own database and keyring namespace,
+  and can never touch the stable data.
 
-> The Agora 0.5 autonomous Scout / Architect / Critic / Synthesizer debate
-> council is retired and is not part of this product; model output never
-> advances state on its own.
+### One rule that runs through everything
 
-## Quick start (Windows)
+**Agora never states what its reads do not support.** "Could not read it", "unknown" and
+"none" are three different answers and are never merged. A half-finished screen that
+says "unknown" is safe to use every day; one that says "none" when it means "I could not
+read it" makes you take the wrong decision.
+
+## Requirements
+
+- Windows 10/11 with PowerShell 5.1+ (the launcher and desktop app are Windows-only; the
+  backend itself is plain Python)
+- Python 3.10+ with [uv](https://docs.astral.sh/uv/)
+- Node.js 20+ with `corepack` (pnpm)
+- Git
+- At least one agent CLI, installed and logged in: `claude`, `codex` or `kiro-cli`.
+  Agents are explicit, pinned adapters — a missing or logged-out one blocks its work and
+  is never silently replaced.
+
+## Quick start
 
 ```powershell
+git clone https://github.com/wilbur-labs/Agora.git
+cd Agora
+
 cd backend
 uv sync --locked --extra dev
-
 cd ..\frontend
 corepack pnpm install --frozen-lockfile
 corepack pnpm build
+cd ..
 
-cd ..\backend
-$env:AGORA_CONTROL_PLANE_TOKEN = "replace-with-a-long-random-secret"
-uv run uvicorn agora.api.app:app --host 127.0.0.1 --port 8000
+.\agora.ps1 up          # start the backend, wait for /health, open Agora
 ```
 
-On Windows, day-to-day use is one command (the backend serves the built frontend, so
-no `pnpm dev` is needed):
+The backend serves the built frontend, so day-to-day use is one process on
+`http://127.0.0.1:8000`. Other launcher commands:
 
 ```powershell
-.\agora.ps1 up          # start the backend, wait for /health, open the browser
 .\agora.ps1 down        # stop it (never kills a non-Agora process on the port)
-.\agora.ps1 status      # running? is frontend/out older than frontend/src?
-.\agora.ps1 shortcut    # put an "Agora" shortcut on the Desktop that runs up
+.\agora.ps1 status      # running? which pid? is the frontend build stale?
+.\agora.ps1 logs        # last 40 lines of the backend log
+.\agora.ps1 up -Build   # rebuild the frontend, then start
+.\agora.ps1 shortcut    # put an "Agora" shortcut on the Desktop
+.\agora.ps1 up -Dev     # this checkout as a development install on port 8001
 ```
 
-Open `http://127.0.0.1:8000/portfolio` for the attention-first board, or
-`http://127.0.0.1:8000/control-plane` for the authenticated task console. Use
-project `agora` and the same bearer token. From there you can create a project
-(it gets its own folder and isolated agent workspaces), assign its worker and
-reviewer agents, and run tasks.
+### A stable install that upgrades itself
 
-To verify the whole formal control path without calling any AI provider or
-touching the configured database:
+Check out a release tag in its own directory and use that one every day:
 
 ```powershell
-.\backend\.venv\Scripts\python.exe scripts\run_task_acceptance.py
+git clone https://github.com/wilbur-labs/Agora.git Agora-stable
+cd Agora-stable
+git checkout v1.10.1
+# install dependencies and build as above, then:
+.\agora.ps1 up
+.\agora.ps1 upgrade -To v1.11.0   # later: backup, checkout, build, start, verify — or roll back
+.\agora.ps1 rollback -Yes          # return to the version before the last upgrade
 ```
 
-It launches deterministic local child processes in a temporary Git project, runs
-every stage and gate, records an explicit human approval, reopens SQLite, prints
-one JSON receipt, and removes the workspace. That is control-plane acceptance,
-not evidence of native Codex/Claude/Kiro output quality.
+### Desktop app
 
-## Runtimes
+```powershell
+cd desktop
+npm install
+npm run build           # produces an NSIS installer in desktop\dist
+```
 
-Codex, Claude Code, and Kiro are explicit, pinned CLI adapters. Their
-subscriptions and availability are external dependencies: a missing or
-logged-out runtime blocks its work and is never silently replaced. Detection and
-login status are surfaced on the Settings page.
+The app starts and upgrades Agora through `agora.ps1`, so every safety check stays in
+one place.
 
-## Learn more
+## First steps
 
-- [`AGENTS.md`](AGENTS.md) — architecture and conventions
-- [Agora practical tutorial](docs/usage/agora-1.0-tutorial.md) — install, first task, approval, recovery, shutdown
-- [`docs/architecture/protocol-domain-freeze-v1.md`](docs/architecture/protocol-domain-freeze-v1.md) — the control-plane protocol
-- [`.agora/development/PROGRESS.md`](.agora/development/PROGRESS.md) — implementation status
+1. **Settings → Work sources**: register the directories that already hold your
+   task records. Agora probes each one before storing it and shows what it yields,
+   including what it could not read.
+2. **Import projects** from those workspaces, or create a new one. Choose its worker
+   and reviewer agents.
+3. **Overview**: pick a task and continue it on the work page.
+4. Optional: **Environments** to add a remote host, **Skills** to install skills into a
+   project.
+
+## Architecture
+
+| Part | Path | Notes |
+|---|---|---|
+| Backend | `backend/agora/` | FastAPI + SQLite. Adapters for Claude Code / Codex / Kiro, sessions and live transcripts, project registry, workspace readers, SSH environments, terminal, skills |
+| Frontend | `frontend/` | Next.js, built to static files the backend serves |
+| Desktop | `desktop/` | Electron shell around `agora.ps1` |
+| Launcher | `agora.ps1` | start / stop / status / upgrade / rollback |
+| Decisions | `.agora/decisions/` | architecture decision records |
+
+The formal control plane from Agora 1.0 (requirements, workflows, stage gates) is still
+in the code base and still tested, but it is frozen and no longer in the main navigation.
 
 ## Development
 
 ```powershell
 cd backend
 .\.venv\Scripts\python.exe -m pytest tests -m "not integration"
+cd ..\frontend
+corepack pnpm test:control-plane
+corepack pnpm exec tsc --noEmit
 cd ..
-.\backend\.venv\Scripts\python.exe scripts\export_protocol_schemas.py --check
 git diff --check
 ```
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md) for contribution guidelines.
+To exercise the whole control path without calling any AI provider or touching your
+database:
+
+```powershell
+.\backend\.venv\Scripts\python.exe scripts\run_task_acceptance.py
+```
+
+More: [`AGENTS.md`](AGENTS.md) (architecture and conventions),
+[`CONTRIBUTING.md`](CONTRIBUTING.md), [`CHANGELOG.md`](CHANGELOG.md),
+[`.agora/development/PROGRESS.md`](.agora/development/PROGRESS.md) (engineering log).
 
 ## License
 
